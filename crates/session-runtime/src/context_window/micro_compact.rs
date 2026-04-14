@@ -4,11 +4,13 @@
 //! 避免每次都因为几段历史工具输出而触发昂贵的摘要压缩。
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     time::{Duration, Instant},
 };
 
 use astrcode_core::LlmMessage;
+
+use super::tool_results::tool_call_name_map;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MicroCompactConfig {
@@ -184,19 +186,6 @@ impl MicroCompactState {
             self.last_tool_activity = None;
         }
     }
-}
-
-fn tool_call_name_map(messages: &[LlmMessage]) -> HashMap<String, String> {
-    let mut names = HashMap::new();
-    for message in messages {
-        let LlmMessage::Assistant { tool_calls, .. } = message else {
-            continue;
-        };
-        for call in tool_calls {
-            names.insert(call.id.clone(), call.name.clone());
-        }
-    }
-    names
 }
 
 fn is_micro_compacted(content: &str) -> bool {

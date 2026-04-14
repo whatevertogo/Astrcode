@@ -44,6 +44,7 @@ impl AgentOrchestrationService {
 
         let queued = self
             .kernel
+            .agent()
             .enqueue_child_delivery(
                 parent_session_id.clone(),
                 parent_turn_id.to_string(),
@@ -86,6 +87,7 @@ impl AgentOrchestrationService {
             .await?;
         let Some(delivery_batch) = self
             .kernel
+            .agent()
             .checkout_parent_delivery_batch(&parent_session_id)
             .await
         else {
@@ -124,12 +126,14 @@ impl AgentOrchestrationService {
             Ok(Some(accepted)) => accepted,
             Ok(None) => {
                 self.kernel
+                    .agent()
                     .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                     .await;
                 return Ok(false);
             },
             Err(error) => {
                 self.kernel
+                    .agent()
                     .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                     .await;
                 self.metrics.record_delivery_buffer_wake_failed();
@@ -230,6 +234,7 @@ impl AgentOrchestrationService {
             .await?;
             let consumed = self
                 .kernel
+                .agent()
                 .consume_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                 .await;
             if consumed {
@@ -240,7 +245,8 @@ impl AgentOrchestrationService {
                 for delivery in &batch_deliveries {
                     if let Some(child_handle) = self
                         .kernel
-                        .get_agent_handle(&delivery.notification.child_ref.agent_id)
+                        .agent()
+                        .get_handle(&delivery.notification.child_ref.agent_id)
                         .await
                     {
                         self.record_fact_best_effort(
@@ -283,6 +289,7 @@ impl AgentOrchestrationService {
         }
 
         self.kernel
+            .agent()
             .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
             .await;
         self.metrics.record_parent_reactivation_failed();
@@ -389,7 +396,8 @@ impl AgentOrchestrationService {
                 .unwrap_or_default();
             if let Some(child_handle) = self
                 .kernel
-                .get_agent_handle(&pending.notification.child_ref.agent_id)
+                .agent()
+                .get_handle(&pending.notification.child_ref.agent_id)
                 .await
             {
                 self.record_fact_best_effort(
@@ -411,6 +419,7 @@ impl AgentOrchestrationService {
             }
             let _ = self
                 .kernel
+                .agent()
                 .enqueue_child_delivery(
                     pending.parent_session_id.clone(),
                     pending.parent_turn_id.clone(),
@@ -431,7 +440,7 @@ impl AgentOrchestrationService {
         else {
             return AgentEventContext::default();
         };
-        let Some(parent_handle) = self.kernel.get_agent_handle(&target_agent_id).await else {
+        let Some(parent_handle) = self.kernel.agent().get_handle(&target_agent_id).await else {
             return AgentEventContext::default();
         };
         if parent_handle.depth == 0 {

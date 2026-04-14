@@ -31,44 +31,33 @@ pub fn resolve_active_selection(
         .find(|p| p.name == active_profile)
         .unwrap_or(&profiles[0]);
 
-    // profile 不存在时回退到第一个 profile 的第一个 model
     if selected_profile.name != active_profile {
-        let fallback_model = first_model_id(selected_profile)?.to_string();
-
-        return Ok(ActiveSelection {
-            active_profile: selected_profile.name.clone(),
-            active_model: fallback_model,
-            warning: Some(format!(
+        return fallback_selection(
+            selected_profile,
+            format!(
                 "配置中的 Profile 不存在，已自动选择 {}",
                 selected_profile.name
-            )),
-        });
+            ),
+        );
     }
 
-    // 尝试精确匹配 model
     if let Some(model) = selected_profile
         .models
         .iter()
         .find(|m| m.id == active_model)
     {
-        return Ok(ActiveSelection {
-            active_profile: selected_profile.name.clone(),
-            active_model: model.id.clone(),
-            warning: None,
-        });
+        return Ok(active_selection(selected_profile, model.id.clone(), None));
     }
 
-    // model 不存在时回退到 profile 的第一个 model
     let fallback_model = first_model_id(selected_profile)?.to_string();
-
-    Ok(ActiveSelection {
-        active_profile: selected_profile.name.clone(),
-        active_model: fallback_model.clone(),
-        warning: Some(format!(
+    Ok(active_selection(
+        selected_profile,
+        fallback_model.clone(),
+        Some(format!(
             "配置中的 {} 在当前 Profile 下不存在，已自动选择 {}",
             active_model, fallback_model
         )),
-    })
+    ))
 }
 
 /// 获取当前生效的模型信息。
@@ -127,6 +116,29 @@ fn first_model_id(profile: &Profile) -> Result<&str, ApplicationError> {
                 profile.name
             ))
         })
+}
+
+fn fallback_selection(
+    profile: &Profile,
+    warning: String,
+) -> Result<ActiveSelection, ApplicationError> {
+    Ok(active_selection(
+        profile,
+        first_model_id(profile)?.to_string(),
+        Some(warning),
+    ))
+}
+
+fn active_selection(
+    profile: &Profile,
+    active_model: String,
+    warning: Option<String>,
+) -> ActiveSelection {
+    ActiveSelection {
+        active_profile: profile.name.clone(),
+        active_model,
+        warning,
+    }
 }
 
 /// 列出所有可用的模型选项。

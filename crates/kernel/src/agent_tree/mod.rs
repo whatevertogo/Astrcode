@@ -10,8 +10,12 @@
 //! `runtime-agent-loop` 专注一次 turn 如何执行，
 //! `runtime-agent-control` 专注多 Agent 生命周期如何被编排和取消。
 
+mod delivery_queue;
+mod state;
+mod tree_ops;
+
 use std::{
-    collections::{BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeSet, HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -24,34 +28,19 @@ use astrcode_core::{
     SubRunResult, SubRunStorageMode, ToolContext,
 };
 use async_trait::async_trait;
+use delivery_queue::{
+    checkout_parent_delivery_batch_locked, checkout_parent_delivery_locked,
+    consume_parent_delivery_batch_locked, consume_parent_delivery_locked,
+    enqueue_parent_delivery_locked, pending_parent_delivery_count_locked,
+    requeue_parent_delivery_batch_locked, requeue_parent_delivery_locked,
+};
+use state::{AgentEntry, AgentRegistryState, resolve_entry_key};
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
-
-#[derive(Default)]
-struct AgentRegistryState {
-    entries: HashMap<String, AgentEntry>,
-    agent_index: HashMap<String, String>,
-    active_count: usize,
-    parent_delivery_queues: HashMap<String, ParentDeliveryQueue>,
-}
-
-struct AgentEntry {
-    handle: SubRunHandle,
-    cancel: CancelToken,
-    status_tx: watch::Sender<AgentLifecycleStatus>,
-    parent_agent_id: Option<String>,
-    children: BTreeSet<String>,
-    finalized_seq: Option<u64>,
-    /// 协作消息收件箱。send / child-delivery 产出信封存放在此。
-    inbox: VecDeque<AgentInboxEnvelope>,
-    /// 收件箱版本号，每次 push_inbox 递增，用于 wait_for_inbox 的变化检测。
-    inbox_version: watch::Sender<u64>,
-    /// 四工具模型的持久生命周期状态。
-    /// Pending → Running → Idle → Terminated，完成单轮后不自动终止。
-    lifecycle_status: AgentLifecycleStatus,
-    /// 最近一轮执行的结束原因。Running 期间为 None，turn 完成后设为 Some。
-    last_turn_outcome: Option<AgentTurnOutcome>,
-}
+use tree_ops::{
+    cancel_tree, cancel_tree_collect, discard_parent_deliveries_locked,
+    prune_finalized_agents_locked, terminate_tree_collect,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingParentDelivery {
@@ -60,24 +49,6 @@ pub struct PendingParentDelivery {
     pub parent_turn_id: String,
     pub queued_at_ms: i64,
     pub notification: astrcode_core::ChildSessionNotification,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PendingParentDeliveryState {
-    Queued,
-    WakingParent,
-}
-
-#[derive(Debug, Clone)]
-struct PendingParentDeliveryEntry {
-    delivery: PendingParentDelivery,
-    state: PendingParentDeliveryState,
-}
-
-#[derive(Default)]
-struct ParentDeliveryQueue {
-    deliveries: VecDeque<PendingParentDeliveryEntry>,
-    known_delivery_ids: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -605,6 +576,9 @@ impl AgentControl {
     /// 因为控制平面只关心“谁挂在谁下面”，不应该把执行器内部任务结构反向泄漏进来。
     pub async fn cancel_for_parent_turn(&self, parent_turn_id: &str) -> Vec<SubRunHandle> {
         let mut state = self.state.write().await;
+        // 只取 parent_turn 的直接子树根，排除嵌套子 agent。
+        // 如果 agent 的 parent 也在同一个 turn 下，它是孙子节点，
+        // 会被祖父级 cancel_tree 级联处理，此处不重复取消。
         let mut roots = state
             .entries
             .values()
@@ -747,40 +721,14 @@ impl AgentControl {
         parent_turn_id: impl Into<String>,
         notification: astrcode_core::ChildSessionNotification,
     ) -> bool {
-        let parent_session_id = parent_session_id.into();
-        let delivery_id = notification.notification_id.clone();
         let mut state = self.state.write().await;
-        let queue = state
-            .parent_delivery_queues
-            .entry(parent_session_id.clone())
-            .or_default();
-        if !queue.known_delivery_ids.insert(delivery_id.clone()) {
-            return false;
-        }
-        if queue.deliveries.len() >= self.parent_delivery_capacity {
-            log::warn!(
-                "parent_delivery_queue 已满 ({}/{}), 丢弃交付 {}",
-                queue.deliveries.len(),
-                self.parent_delivery_capacity,
-                delivery_id
-            );
-            queue.known_delivery_ids.remove(&delivery_id);
-            return false;
-        }
-        queue.deliveries.push_back(PendingParentDeliveryEntry {
-            delivery: PendingParentDelivery {
-                delivery_id,
-                parent_session_id,
-                parent_turn_id: parent_turn_id.into(),
-                queued_at_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_millis() as i64)
-                    .unwrap_or_default(),
-                notification,
-            },
-            state: PendingParentDeliveryState::Queued,
-        });
-        true
+        enqueue_parent_delivery_locked(
+            &mut state,
+            self.parent_delivery_capacity,
+            parent_session_id.into(),
+            parent_turn_id.into(),
+            notification,
+        )
     }
 
     /// 查看并锁定当前父会话最前面的待消费交付。
@@ -792,13 +740,7 @@ impl AgentControl {
         parent_session_id: &str,
     ) -> Option<PendingParentDelivery> {
         let mut state = self.state.write().await;
-        let queue = state.parent_delivery_queues.get_mut(parent_session_id)?;
-        let entry = queue.deliveries.front_mut()?;
-        if !matches!(entry.state, PendingParentDeliveryState::Queued) {
-            return None;
-        }
-        entry.state = PendingParentDeliveryState::WakingParent;
-        Some(entry.delivery.clone())
+        checkout_parent_delivery_locked(&mut state, parent_session_id)
     }
 
     /// 以 turn-start snapshot drain 的方式锁定一个父级交付批次。
@@ -812,39 +754,7 @@ impl AgentControl {
         parent_session_id: &str,
     ) -> Option<Vec<PendingParentDelivery>> {
         let mut state = self.state.write().await;
-        let queue = state.parent_delivery_queues.get_mut(parent_session_id)?;
-        let first = queue.deliveries.front()?;
-        if !matches!(first.state, PendingParentDeliveryState::Queued) {
-            return None;
-        }
-
-        let target_parent_agent_id = first
-            .delivery
-            .notification
-            .child_ref
-            .parent_agent_id
-            .clone();
-        let mut batch_len = 0usize;
-        for entry in &queue.deliveries {
-            if !matches!(entry.state, PendingParentDeliveryState::Queued) {
-                break;
-            }
-            if entry.delivery.notification.child_ref.parent_agent_id != target_parent_agent_id {
-                break;
-            }
-            batch_len += 1;
-        }
-
-        if batch_len == 0 {
-            return None;
-        }
-
-        let mut deliveries = Vec::with_capacity(batch_len);
-        for entry in queue.deliveries.iter_mut().take(batch_len) {
-            entry.state = PendingParentDeliveryState::WakingParent;
-            deliveries.push(entry.delivery.clone());
-        }
-        Some(deliveries)
+        checkout_parent_delivery_batch_locked(&mut state, parent_session_id)
     }
 
     /// 将正在唤醒中的交付标记回 `Queued`，用于父会话繁忙或启动失败后的重试。
@@ -854,18 +764,7 @@ impl AgentControl {
         delivery_id: &str,
     ) -> bool {
         let mut state = self.state.write().await;
-        let Some(queue) = state.parent_delivery_queues.get_mut(parent_session_id) else {
-            return false;
-        };
-        let Some(entry) = queue
-            .deliveries
-            .iter_mut()
-            .find(|entry| entry.delivery.delivery_id == delivery_id)
-        else {
-            return false;
-        };
-        entry.state = PendingParentDeliveryState::Queued;
-        true
+        requeue_parent_delivery_locked(&mut state, parent_session_id, delivery_id)
     }
 
     /// 将一批正在唤醒中的交付重新标记为 `Queued`。
@@ -875,19 +774,7 @@ impl AgentControl {
         delivery_ids: &[String],
     ) -> usize {
         let mut state = self.state.write().await;
-        let Some(queue) = state.parent_delivery_queues.get_mut(parent_session_id) else {
-            return 0;
-        };
-
-        let target_ids = delivery_ids.iter().collect::<HashSet<_>>();
-        let mut updated = 0usize;
-        for entry in &mut queue.deliveries {
-            if target_ids.contains(&entry.delivery.delivery_id) {
-                entry.state = PendingParentDeliveryState::Queued;
-                updated += 1;
-            }
-        }
-        updated
+        requeue_parent_delivery_batch_locked(&mut state, parent_session_id, delivery_ids)
     }
 
     /// 确认最前面的交付已经被父 turn 消费，并将其从缓冲中移除。
@@ -897,25 +784,7 @@ impl AgentControl {
         delivery_id: &str,
     ) -> bool {
         let mut state = self.state.write().await;
-        let Some(queue) = state.parent_delivery_queues.get_mut(parent_session_id) else {
-            return false;
-        };
-        let Some(front) = queue.deliveries.front() else {
-            return false;
-        };
-        if front.delivery.delivery_id != delivery_id {
-            return false;
-        }
-        let removed = queue.deliveries.pop_front();
-        if let Some(removed) = removed {
-            queue
-                .known_delivery_ids
-                .remove(&removed.delivery.delivery_id);
-        }
-        if queue.deliveries.is_empty() {
-            state.parent_delivery_queues.remove(parent_session_id);
-        }
-        true
+        consume_parent_delivery_locked(&mut state, parent_session_id, delivery_id)
     }
 
     /// 确认一整个交付批次已经被父 turn 消费，并按 FIFO 从队头移除。
@@ -925,38 +794,12 @@ impl AgentControl {
         delivery_ids: &[String],
     ) -> bool {
         let mut state = self.state.write().await;
-        let Some(queue) = state.parent_delivery_queues.get_mut(parent_session_id) else {
-            return false;
-        };
-
-        for delivery_id in delivery_ids {
-            let Some(front) = queue.deliveries.front() else {
-                return false;
-            };
-            if front.delivery.delivery_id != *delivery_id {
-                return false;
-            }
-            let removed = queue.deliveries.pop_front();
-            if let Some(removed) = removed {
-                queue
-                    .known_delivery_ids
-                    .remove(&removed.delivery.delivery_id);
-            }
-        }
-
-        if queue.deliveries.is_empty() {
-            state.parent_delivery_queues.remove(parent_session_id);
-        }
-        true
+        consume_parent_delivery_batch_locked(&mut state, parent_session_id, delivery_ids)
     }
 
     pub async fn pending_parent_delivery_count(&self, parent_session_id: &str) -> usize {
         let state = self.state.read().await;
-        state
-            .parent_delivery_queues
-            .get(parent_session_id)
-            .map(|queue| queue.deliveries.len())
-            .unwrap_or(0)
+        pending_parent_delivery_count_locked(&state, parent_session_id)
     }
 
     /// 终止指定 agent 及其整棵子树（四工具模型 close 语义）。
@@ -969,18 +812,33 @@ impl AgentControl {
     /// 2. 触发 cancel token 以中断正在运行的 turn
     /// 3. 级联到所有后代
     pub async fn terminate_subtree(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
+        self.terminate_subtree_and_collect_handles(sub_run_or_agent_id)
+            .await
+            .and_then(|mut handles| handles.drain(..).next())
+    }
+
+    pub(crate) async fn terminate_subtree_and_collect_handles(
+        &self,
+        sub_run_or_agent_id: &str,
+    ) -> Option<Vec<SubRunHandle>> {
         let mut state = self.state.write().await;
         let mut visited = HashSet::new();
+        let mut terminated = Vec::new();
         let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
-        let handle = terminate_tree(&mut state, &key, &mut visited, &self.next_finalized_seq);
-        let terminated_agent_ids = visited
+        terminate_tree_collect(
+            &mut state,
+            &key,
+            &mut visited,
+            &mut terminated,
+            &self.next_finalized_seq,
+        )?;
+        let terminated_agent_ids = terminated
             .iter()
-            .filter_map(|entry_key| state.entries.get(entry_key))
-            .map(|entry| entry.handle.agent_id.clone())
+            .map(|handle| handle.agent_id.clone())
             .collect::<HashSet<_>>();
         discard_parent_deliveries_locked(&mut state, &terminated_agent_ids);
         prune_finalized_agents_locked(&mut state, self.finalized_retain_limit);
-        handle
+        Some(terminated)
     }
 
     /// 收集指定 agent 子树的所有 agent handle（不含自身）。
@@ -1043,234 +901,6 @@ impl AgentControl {
         }
 
         chain
-    }
-}
-
-fn resolve_entry_key<'a>(
-    state: &'a AgentRegistryState,
-    sub_run_or_agent_id: &'a str,
-) -> Option<&'a str> {
-    if state.entries.contains_key(sub_run_or_agent_id) {
-        return Some(sub_run_or_agent_id);
-    }
-    state
-        .agent_index
-        .get(sub_run_or_agent_id)
-        .map(String::as_str)
-}
-
-fn cancel_tree(
-    state: &mut AgentRegistryState,
-    agent_id: &str,
-    visited: &mut HashSet<String>,
-    next_finalized_seq: &AtomicU64,
-) -> Option<SubRunHandle> {
-    if !visited.insert(agent_id.to_string()) {
-        return state
-            .entries
-            .get(agent_id)
-            .map(|entry| entry.handle.clone());
-    }
-
-    let children = state
-        .entries
-        .get(agent_id)
-        .map(|entry| entry.children.iter().cloned().collect::<Vec<_>>())?;
-
-    // 先取消当前节点，再取消子节点，确保父级状态先可见。
-    let entry = state.entries.get_mut(agent_id)?;
-    let was_active = entry.handle.lifecycle.occupies_slot();
-    entry.lifecycle_status = AgentLifecycleStatus::Terminated;
-    entry.handle.lifecycle = AgentLifecycleStatus::Terminated;
-    entry.handle.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
-    entry.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
-    entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
-    if was_active {
-        state.active_count = state.active_count.saturating_sub(1);
-    }
-    entry
-        .status_tx
-        .send_replace(AgentLifecycleStatus::Terminated);
-    entry.cancel.cancel();
-
-    let handle = entry.handle.clone();
-    for child_id in children {
-        // 故意忽略：递归取消子节点，单个失败不阻断其余节点
-        let _ = cancel_tree(state, &child_id, visited, next_finalized_seq);
-    }
-    Some(handle)
-}
-
-/// 四工具模型的 subtree terminate 实现。
-///
-/// terminate 设置 `lifecycle_status = Terminated` 并触发 cancel token，
-/// 同时释放并发槽位。子 agent 在 Terminated 后拒收任何新 send。
-fn terminate_tree(
-    state: &mut AgentRegistryState,
-    agent_id: &str,
-    visited: &mut HashSet<String>,
-    next_finalized_seq: &AtomicU64,
-) -> Option<SubRunHandle> {
-    if !visited.insert(agent_id.to_string()) {
-        return state
-            .entries
-            .get(agent_id)
-            .map(|entry| entry.handle.clone());
-    }
-
-    let children = state
-        .entries
-        .get(agent_id)
-        .map(|entry| entry.children.iter().cloned().collect::<Vec<_>>())?;
-
-    let entry = state.entries.get_mut(agent_id)?;
-    let was_active = entry.handle.lifecycle.occupies_slot();
-
-    entry.lifecycle_status = AgentLifecycleStatus::Terminated;
-    entry.handle.lifecycle = AgentLifecycleStatus::Terminated;
-    entry.handle.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
-    entry.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
-    entry.inbox.clear();
-    entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
-    if was_active {
-        state.active_count = state.active_count.saturating_sub(1);
-    }
-    entry
-        .status_tx
-        .send_replace(AgentLifecycleStatus::Terminated);
-    let current_inbox_version = *entry.inbox_version.borrow();
-    entry.inbox_version.send_replace(current_inbox_version + 1);
-    // 触发 cancel token 以中断正在运行的 turn
-    entry.cancel.cancel();
-
-    let handle = entry.handle.clone();
-    for child_id in children {
-        let _ = terminate_tree(state, &child_id, visited, next_finalized_seq);
-    }
-    Some(handle)
-}
-
-fn cancel_tree_collect(
-    state: &mut AgentRegistryState,
-    agent_id: &str,
-    visited: &mut HashSet<String>,
-    cancelled: &mut Vec<SubRunHandle>,
-    next_finalized_seq: &AtomicU64,
-) {
-    if !visited.insert(agent_id.to_string()) {
-        return;
-    }
-
-    let Some(children) = state
-        .entries
-        .get(agent_id)
-        .map(|entry| entry.children.iter().cloned().collect::<Vec<_>>())
-    else {
-        return;
-    };
-
-    let was_active = state
-        .entries
-        .get(agent_id)
-        .is_some_and(|entry| entry.handle.lifecycle.occupies_slot());
-
-    if let Some(entry) = state.entries.get_mut(agent_id) {
-        if was_active {
-            entry.lifecycle_status = AgentLifecycleStatus::Terminated;
-            entry.handle.lifecycle = AgentLifecycleStatus::Terminated;
-            entry.handle.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
-            entry.last_turn_outcome = Some(AgentTurnOutcome::Cancelled);
-            entry.finalized_seq = Some(next_finalized_seq.fetch_add(1, Ordering::SeqCst));
-            state.active_count = state.active_count.saturating_sub(1);
-            entry
-                .status_tx
-                .send_replace(AgentLifecycleStatus::Terminated);
-            entry.cancel.cancel();
-            // 只有真实发生状态迁移时才对外报告取消
-            cancelled.push(entry.handle.clone());
-        }
-    }
-    for child_id in children {
-        cancel_tree_collect(state, &child_id, visited, cancelled, next_finalized_seq);
-    }
-}
-
-fn discard_parent_deliveries_locked(
-    state: &mut AgentRegistryState,
-    terminated_agent_ids: &HashSet<String>,
-) -> usize {
-    if terminated_agent_ids.is_empty() {
-        return 0;
-    }
-
-    let mut removed_count = 0usize;
-    let mut empty_sessions = Vec::new();
-    for (session_id, queue) in &mut state.parent_delivery_queues {
-        let mut retained = VecDeque::new();
-        let mut removed_delivery_ids = Vec::new();
-
-        while let Some(entry) = queue.deliveries.pop_front() {
-            if terminated_agent_ids.contains(&entry.delivery.notification.child_ref.agent_id) {
-                removed_delivery_ids.push(entry.delivery.delivery_id.clone());
-            } else {
-                retained.push_back(entry);
-            }
-        }
-
-        for delivery_id in &removed_delivery_ids {
-            queue.known_delivery_ids.remove(delivery_id);
-        }
-        removed_count += removed_delivery_ids.len();
-        queue.deliveries = retained;
-
-        if queue.deliveries.is_empty() {
-            empty_sessions.push(session_id.clone());
-        }
-    }
-
-    for session_id in empty_sessions {
-        state.parent_delivery_queues.remove(&session_id);
-    }
-
-    removed_count
-}
-
-fn prune_finalized_agents_locked(state: &mut AgentRegistryState, finalized_retain_limit: usize) {
-    if finalized_retain_limit == usize::MAX {
-        return;
-    }
-
-    loop {
-        let mut finalized_leaf_agents = state
-            .entries
-            .iter()
-            .filter_map(|(agent_id, entry)| {
-                entry
-                    .finalized_seq
-                    .filter(|_| entry.children.is_empty())
-                    .map(|seq| (seq, agent_id.clone(), entry.parent_agent_id.clone()))
-            })
-            .collect::<Vec<_>>();
-        if finalized_leaf_agents.len() <= finalized_retain_limit {
-            break;
-        }
-
-        finalized_leaf_agents.sort_by_key(|(seq, agent_id, _)| (*seq, agent_id.clone()));
-        let Some((_, agent_id, parent_agent_id)) = finalized_leaf_agents.into_iter().next() else {
-            break;
-        };
-
-        // 先从父节点摘链，再删除当前终态 leaf，避免留下悬挂 child 引用。
-        if let Some(parent_agent_id) = parent_agent_id {
-            if let Some(parent_sub_run_id) = state.agent_index.get(&parent_agent_id).cloned() {
-                if let Some(parent) = state.entries.get_mut(&parent_sub_run_id) {
-                    parent.children.remove(&agent_id);
-                }
-            }
-        }
-        if let Some(entry) = state.entries.remove(&agent_id) {
-            state.agent_index.remove(&entry.handle.agent_id);
-        }
     }
 }
 

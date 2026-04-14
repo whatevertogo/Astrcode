@@ -19,10 +19,7 @@
 
 use astrcode_core::{LlmMessage, LlmUsage, ModelLimits, UserMessageOrigin};
 
-/// 压缩时为 summary 预留的 token 数。
-pub(crate) const SUMMARY_RESERVE_TOKENS: usize = 20_000;
-const MESSAGE_BASE_TOKENS: usize = 6;
-const TOOL_CALL_BASE_TOKENS: usize = 12;
+use crate::heuristics::{MESSAGE_BASE_TOKENS, SUMMARY_RESERVE_TOKENS, TOOL_CALL_BASE_TOKENS};
 
 /// Prompt token 使用快照。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

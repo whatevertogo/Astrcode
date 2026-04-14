@@ -358,6 +358,63 @@ pub(crate) fn child_reference_artifacts(
     artifacts
 }
 
+pub(crate) fn spawn_handoff_artifacts(
+    child_handle: Option<&SubRunHandle>,
+    sub_run_id: &str,
+    child_agent_id: Option<&str>,
+    child_session_id: &str,
+    parent_session_id: &str,
+    parent_agent_id: &str,
+) -> Vec<ArtifactRef> {
+    if let Some(child_handle) = child_handle {
+        let mut artifacts = vec![artifact_ref(
+            "subRun",
+            sub_run_id.to_string(),
+            "Sub Run",
+            Some(parent_session_id.to_string()),
+        )];
+        artifacts.extend(child_reference_artifacts(
+            child_handle,
+            parent_session_id,
+            false,
+        ));
+        return artifacts;
+    }
+
+    vec![
+        artifact_ref(
+            "subRun",
+            sub_run_id.to_string(),
+            "Sub Run",
+            Some(parent_session_id.to_string()),
+        ),
+        artifact_ref(
+            "agent",
+            child_agent_id.unwrap_or_default().to_string(),
+            "Agent",
+            Some(child_session_id.to_string()),
+        ),
+        artifact_ref(
+            "parentSession",
+            parent_session_id.to_string(),
+            "Parent Session",
+            Some(parent_session_id.to_string()),
+        ),
+        artifact_ref(
+            "session",
+            child_session_id.to_string(),
+            "Child Session",
+            Some(child_session_id.to_string()),
+        ),
+        artifact_ref(
+            "parentAgent",
+            parent_agent_id.to_string(),
+            "Parent Agent",
+            Some(parent_session_id.to_string()),
+        ),
+    ]
+}
+
 fn map_orchestration_error(error: AgentOrchestrationError) -> astrcode_core::AstrError {
     match error {
         AgentOrchestrationError::InvalidInput(message)
@@ -424,6 +481,10 @@ impl AgentOrchestrationService {
         self.resolve_runtime_config_for_working_dir(Path::new(&working_dir))
     }
 
+    /// 解析子 agent profile，将 ApplicationError 映射为编排层错误。
+    /// NotFound → NotFound（提示用户检查 profile id），
+    /// InvalidArgument → InvalidInput（参数格式问题），
+    /// 其余一律降级为 Internal（避免泄露内部细节）。
     fn resolve_subagent_profile(
         &self,
         working_dir: &Path,
@@ -459,9 +520,13 @@ impl AgentOrchestrationService {
     ) -> std::result::Result<(), AgentOrchestrationError> {
         let turn_id = fact.turn_id.clone();
         let parent_session_id = fact.parent_session_id.clone();
+        // 根据父级 agent 的 depth 决定 event context 类型：
+        // depth == 0 是根级执行（用 root_execution_event_context），
+        // 否则是子运行（用 subrun_event_context 保持 child session 血缘）。
         let event_agent = if let Some(parent_agent_id) = fact.parent_agent_id.as_deref() {
             self.kernel
-                .get_agent_handle(parent_agent_id)
+                .agent()
+                .get_handle(parent_agent_id)
                 .await
                 .map(|handle| {
                     if handle.depth == 0 {
@@ -545,6 +610,50 @@ impl AgentOrchestrationService {
         Err(error)
     }
 
+    async fn reject_spawn<T>(
+        &self,
+        collaboration: &ToolCollaborationContext,
+        reason_code: &str,
+        error: AgentOrchestrationError,
+    ) -> Result<T> {
+        self.record_fact_best_effort(
+            collaboration.runtime(),
+            collaboration
+                .fact(
+                    AgentCollaborationActionKind::Spawn,
+                    AgentCollaborationOutcomeKind::Rejected,
+                )
+                .reason_code(reason_code)
+                .summary(error.to_string()),
+        )
+        .await;
+        Err(map_orchestration_error(error))
+    }
+
+    async fn fail_spawn_internal<T>(
+        &self,
+        collaboration: &ToolCollaborationContext,
+        reason_code: &str,
+        message: String,
+    ) -> Result<T> {
+        self.record_fact_best_effort(
+            collaboration.runtime(),
+            collaboration
+                .fact(
+                    AgentCollaborationActionKind::Spawn,
+                    AgentCollaborationOutcomeKind::Failed,
+                )
+                .reason_code(reason_code)
+                .summary(message.clone()),
+        )
+        .await;
+        Err(astrcode_core::AstrError::Internal(message))
+    }
+
+    /// 三级解析确保父级 agent handle 存在：
+    /// 1. 显式 agent_id → 直接查找，未找到且为 RootExecution 则自动注册
+    /// 2. 无显式 id → 按 session 查找已有 root agent
+    /// 3. 都没有 → 注册一个隐式 root agent（synthetic agent id）
     async fn ensure_parent_agent_handle(
         &self,
         ctx: &ToolContext,
@@ -557,7 +666,7 @@ impl AgentOrchestrationService {
             .filter(|agent_id| !agent_id.trim().is_empty());
 
         if let Some(agent_id) = explicit_agent_id {
-            if let Some(handle) = self.kernel.get_agent_handle(&agent_id).await {
+            if let Some(handle) = self.kernel.agent().get_handle(&agent_id).await {
                 return Ok(handle);
             }
 
@@ -574,7 +683,7 @@ impl AgentOrchestrationService {
                     .unwrap_or_else(|| IMPLICIT_ROOT_PROFILE_ID.to_string());
                 return self
                     .kernel
-                    .agent_control()
+                    .agent()
                     .register_root_agent(agent_id, session_id, profile_id)
                     .await
                     .map_err(|error| {
@@ -592,15 +701,15 @@ impl AgentOrchestrationService {
 
         if let Some(handle) = self
             .kernel
-            .agent_control()
-            .find_root_agent_for_session(&session_id)
+            .agent()
+            .find_root_handle_for_session(&session_id)
             .await
         {
             return Ok(handle);
         }
 
         self.kernel
-            .agent_control()
+            .agent()
             .register_root_agent(
                 implicit_session_root_agent_id(&session_id),
                 session_id,
@@ -622,15 +731,9 @@ impl AgentOrchestrationService {
     ) -> std::result::Result<(), AgentOrchestrationError> {
         let spawned_for_turn = self
             .kernel
-            .agent_control()
-            .list()
-            .await
-            .into_iter()
-            .filter(|handle| {
-                handle.parent_turn_id == parent_turn_id
-                    && handle.parent_agent_id.as_deref() == Some(parent_agent_id)
-            })
-            .count();
+            .agent()
+            .count_children_spawned_for_turn(parent_agent_id, parent_turn_id)
+            .await;
 
         if spawned_for_turn >= max_spawn_per_turn {
             return Err(AgentOrchestrationError::InvalidInput(format!(
@@ -668,18 +771,9 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         let profile = match self.resolve_subagent_profile(ctx.working_dir(), &profile_id) {
             Ok(profile) => profile,
             Err(error) => {
-                self.record_fact_best_effort(
-                    &runtime_config,
-                    collaboration
-                        .fact(
-                            AgentCollaborationActionKind::Spawn,
-                            AgentCollaborationOutcomeKind::Rejected,
-                        )
-                        .reason_code("profile_resolution_failed")
-                        .summary(error.to_string()),
-                )
-                .await;
-                return Err(map_orchestration_error(error));
+                return self
+                    .reject_spawn(&collaboration, "profile_resolution_failed", error)
+                    .await;
             },
         };
 
@@ -700,18 +794,9 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             )
             .await
         {
-            self.record_fact_best_effort(
-                &runtime_config,
-                collaboration
-                    .fact(
-                        AgentCollaborationActionKind::Spawn,
-                        AgentCollaborationOutcomeKind::Rejected,
-                    )
-                    .reason_code("spawn_budget_exhausted")
-                    .summary(error.to_string()),
-            )
-            .await;
-            return Err(map_orchestration_error(error));
+            return self
+                .reject_spawn(&collaboration, "spawn_budget_exhausted", error)
+                .await;
         }
 
         let accepted = match launch_subagent(
@@ -725,25 +810,20 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         {
             Ok(accepted) => accepted,
             Err(error) => {
-                self.record_fact_best_effort(
-                    &runtime_config,
-                    collaboration
-                        .fact(
-                            AgentCollaborationActionKind::Spawn,
-                            AgentCollaborationOutcomeKind::Failed,
-                        )
-                        .reason_code("launch_subagent_failed")
-                        .summary(error.to_string()),
-                )
-                .await;
-                return Err(astrcode_core::AstrError::Internal(error.to_string()));
+                return self
+                    .fail_spawn_internal(
+                        &collaboration,
+                        "launch_subagent_failed",
+                        error.to_string(),
+                    )
+                    .await;
             },
         };
         let mut child_handle_for_handoff = None;
         if let (Some(child_agent_id), Some(parent_turn_id)) =
             (accepted.agent_id.clone(), ctx.turn_id())
         {
-            if let Some(child_handle) = self.kernel.get_agent_handle(&child_agent_id).await {
+            if let Some(child_handle) = self.kernel.agent().get_handle(&child_agent_id).await {
                 let fact = {
                     let mut fact = collaboration
                         .fact(
@@ -771,53 +851,16 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             }
         }
 
-        let handoff_artifacts = if let Some(child_handle) = child_handle_for_handoff.as_ref() {
-            let mut artifacts = vec![artifact_ref(
-                "subRun",
-                accepted.turn_id.to_string(),
-                "Sub Run",
-                Some(parent_session_id.clone()),
-            )];
-            artifacts.extend(child_reference_artifacts(
-                child_handle,
-                &parent_session_id,
-                false,
-            ));
-            artifacts
-        } else {
-            vec![
-                artifact_ref(
-                    "subRun",
-                    accepted.turn_id.to_string(),
-                    "Sub Run",
-                    Some(parent_session_id.clone()),
-                ),
-                artifact_ref(
-                    "agent",
-                    accepted.agent_id.clone().unwrap_or_default().to_string(),
-                    "Agent",
-                    Some(accepted.session_id.to_string()),
-                ),
-                artifact_ref(
-                    "parentSession",
-                    ctx.session_id().to_string(),
-                    "Parent Session",
-                    Some(ctx.session_id().to_string()),
-                ),
-                artifact_ref(
-                    "session",
-                    accepted.session_id.to_string(),
-                    "Child Session",
-                    Some(accepted.session_id.to_string()),
-                ),
-                artifact_ref(
-                    "parentAgent",
-                    parent_agent_id.clone(),
-                    "Parent Agent",
-                    Some(ctx.session_id().to_string()),
-                ),
-            ]
-        };
+        let accepted_sub_run_id = accepted.turn_id.to_string();
+        let accepted_child_session_id = accepted.session_id.to_string();
+        let handoff_artifacts = spawn_handoff_artifacts(
+            child_handle_for_handoff.as_ref(),
+            &accepted_sub_run_id,
+            accepted.agent_id.as_deref(),
+            &accepted_child_session_id,
+            &parent_session_id,
+            &parent_agent_id,
+        );
 
         Ok(SubRunResult {
             lifecycle: AgentLifecycleStatus::Running,
@@ -889,6 +932,58 @@ mod tests {
         TestLlmBehavior, build_agent_test_harness, build_agent_test_harness_with_agent_config,
     };
 
+    fn assert_no_legacy_kernel_agent_methods(source: &str, file: &str) {
+        let production_source = source
+            .split_once("#[cfg(test)]")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(source);
+        let forbidden = [
+            ".get_agent_handle(",
+            ".get_agent_lifecycle(",
+            ".get_agent_turn_outcome(",
+            ".deliver_to_agent(",
+            ".drain_agent_inbox(",
+            ".resume_agent(",
+            ".collect_agent_subtree_handles(",
+            ".terminate_agent_subtree(",
+        ];
+
+        for pattern in forbidden {
+            assert!(
+                !production_source.contains(pattern),
+                "{file} should use kernel.agent() stable surface instead of legacy Kernel method \
+                 {pattern}"
+            );
+        }
+    }
+
+    fn assert_agent_control_boundary(source: &str, file: &str) {
+        let production_source = source
+            .split_once("#[cfg(test)]")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or(source);
+        let direct_agent_control_count = production_source.matches(".agent_control()").count();
+
+        if file == "terminal.rs" {
+            assert_eq!(
+                direct_agent_control_count, 1,
+                "terminal.rs should keep exactly one direct AgentControl access for complete_turn \
+                 lifecycle finalization"
+            );
+            assert!(
+                production_source.contains(".complete_turn("),
+                "terminal.rs direct AgentControl access must be reserved for complete_turn"
+            );
+            return;
+        }
+
+        assert_eq!(
+            direct_agent_control_count, 0,
+            "{file} production code should use kernel.agent() stable surface instead of direct \
+             AgentControl access"
+        );
+    }
+
     #[test]
     fn root_execution_event_context_uses_explicit_agent_id() {
         let context = root_execution_event_context("root-agent", "planner");
@@ -899,6 +994,22 @@ mod tests {
             context.invocation_kind,
             Some(astrcode_core::InvocationKind::RootExecution)
         );
+    }
+
+    #[test]
+    fn agent_orchestration_sources_use_kernel_agent_surface() {
+        let sources = [
+            ("mod.rs", include_str!("mod.rs")),
+            ("observe.rs", include_str!("observe.rs")),
+            ("routing.rs", include_str!("routing.rs")),
+            ("terminal.rs", include_str!("terminal.rs")),
+            ("wake.rs", include_str!("wake.rs")),
+        ];
+
+        for (file, source) in sources {
+            assert_no_legacy_kernel_agent_methods(source, file);
+            assert_agent_control_boundary(source, file);
+        }
     }
 
     #[test]
@@ -983,7 +1094,8 @@ mod tests {
 
         let root_status = harness
             .kernel
-            .query_root_agent_status(&parent.session_id)
+            .agent()
+            .query_root_status(&parent.session_id)
             .await
             .expect("implicit root agent should be registered");
         assert_eq!(root_status.agent_id, expected_parent_agent_id);
@@ -1050,7 +1162,8 @@ mod tests {
 
         let child_handle = harness
             .kernel
-            .get_agent_handle(&child_agent_id)
+            .agent()
+            .get_handle(&child_agent_id)
             .await
             .expect("child handle should exist");
         assert_eq!(

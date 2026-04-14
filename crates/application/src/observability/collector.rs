@@ -22,6 +22,8 @@ use crate::{
 
 /// scorecard 中的比例统一使用 basis points，避免浮点数在跨层传输时失真。
 const BASIS_POINTS_SCALE: u64 = 10_000;
+/// 这些诊断字段对应的埋点尚未接入当前运行时，快照层先显式保留 0 占位。
+const UNTRACKED_DIAGNOSTIC_COUNTER: u64 = 0;
 
 #[derive(Default)]
 struct OperationMetrics {
@@ -189,8 +191,8 @@ impl ExecutionDiagnostics {
     fn snapshot(&self) -> ExecutionDiagnosticsSnapshot {
         ExecutionDiagnosticsSnapshot {
             child_spawned: self.child_spawned.load(Ordering::Relaxed),
-            child_started_persisted: 0,
-            child_terminal_persisted: 0,
+            child_started_persisted: UNTRACKED_DIAGNOSTIC_COUNTER,
+            child_terminal_persisted: UNTRACKED_DIAGNOSTIC_COUNTER,
             parent_reactivation_requested: self
                 .parent_reactivation_requested
                 .load(Ordering::Relaxed),
@@ -198,10 +200,10 @@ impl ExecutionDiagnostics {
                 .parent_reactivation_succeeded
                 .load(Ordering::Relaxed),
             parent_reactivation_failed: self.parent_reactivation_failed.load(Ordering::Relaxed),
-            lineage_mismatch_parent_agent: 0,
-            lineage_mismatch_parent_session: 0,
-            lineage_mismatch_child_session: 0,
-            lineage_mismatch_descriptor_missing: 0,
+            lineage_mismatch_parent_agent: UNTRACKED_DIAGNOSTIC_COUNTER,
+            lineage_mismatch_parent_session: UNTRACKED_DIAGNOSTIC_COUNTER,
+            lineage_mismatch_child_session: UNTRACKED_DIAGNOSTIC_COUNTER,
+            lineage_mismatch_descriptor_missing: UNTRACKED_DIAGNOSTIC_COUNTER,
             cache_reuse_hits: self.cache_reuse_hits.load(Ordering::Relaxed),
             cache_reuse_misses: self.cache_reuse_misses.load(Ordering::Relaxed),
             delivery_buffer_queued: self.delivery_buffer_queued.load(Ordering::Relaxed),
@@ -255,32 +257,52 @@ struct CollaborationMetricsState {
 impl CollaborationMetricsState {
     fn record(&mut self, fact: &AgentCollaborationFact) {
         self.total_facts = self.total_facts.saturating_add(1);
-        match (fact.action, fact.outcome) {
-            (AgentCollaborationActionKind::Spawn, AgentCollaborationOutcomeKind::Accepted) => {
+        match fact.action {
+            AgentCollaborationActionKind::Spawn => self.record_spawn(fact),
+            AgentCollaborationActionKind::Send => self.record_send(fact),
+            AgentCollaborationActionKind::Observe => self.record_observe(fact),
+            AgentCollaborationActionKind::Close => self.record_close(fact),
+            AgentCollaborationActionKind::Delivery => self.record_delivery(fact),
+        }
+    }
+
+    fn record_spawn(&mut self, fact: &AgentCollaborationFact) {
+        match fact.outcome {
+            AgentCollaborationOutcomeKind::Accepted => {
                 self.spawn_accepted = self.spawn_accepted.saturating_add(1);
                 if let Some(child_id) = fact.child_agent_id.as_deref() {
                     self.child_states.entry(child_id.to_string()).or_default();
                 }
             },
-            (AgentCollaborationActionKind::Spawn, AgentCollaborationOutcomeKind::Rejected)
-            | (AgentCollaborationActionKind::Spawn, AgentCollaborationOutcomeKind::Failed) => {
+            AgentCollaborationOutcomeKind::Rejected | AgentCollaborationOutcomeKind::Failed => {
                 self.spawn_rejected = self.spawn_rejected.saturating_add(1);
             },
-            (AgentCollaborationActionKind::Send, AgentCollaborationOutcomeKind::Reused) => {
+            _ => {},
+        }
+    }
+
+    fn record_send(&mut self, fact: &AgentCollaborationFact) {
+        match fact.outcome {
+            AgentCollaborationOutcomeKind::Reused => {
                 self.send_reused = self.send_reused.saturating_add(1);
                 self.mark_child_reused(fact.child_agent_id.as_deref());
                 self.satisfy_pending_observe(fact.child_agent_id.as_deref());
             },
-            (AgentCollaborationActionKind::Send, AgentCollaborationOutcomeKind::Queued) => {
+            AgentCollaborationOutcomeKind::Queued => {
                 self.send_queued = self.send_queued.saturating_add(1);
                 self.mark_child_reused(fact.child_agent_id.as_deref());
                 self.satisfy_pending_observe(fact.child_agent_id.as_deref());
             },
-            (AgentCollaborationActionKind::Send, AgentCollaborationOutcomeKind::Rejected)
-            | (AgentCollaborationActionKind::Send, AgentCollaborationOutcomeKind::Failed) => {
+            AgentCollaborationOutcomeKind::Rejected | AgentCollaborationOutcomeKind::Failed => {
                 self.send_rejected = self.send_rejected.saturating_add(1);
             },
-            (AgentCollaborationActionKind::Observe, AgentCollaborationOutcomeKind::Accepted) => {
+            _ => {},
+        }
+    }
+
+    fn record_observe(&mut self, fact: &AgentCollaborationFact) {
+        match fact.outcome {
+            AgentCollaborationOutcomeKind::Accepted => {
                 self.observe_calls = self.observe_calls.saturating_add(1);
                 if let Some(child_id) = fact.child_agent_id.as_deref() {
                     self.pending_observes
@@ -288,11 +310,16 @@ impl CollaborationMetricsState {
                         .or_default();
                 }
             },
-            (AgentCollaborationActionKind::Observe, AgentCollaborationOutcomeKind::Rejected)
-            | (AgentCollaborationActionKind::Observe, AgentCollaborationOutcomeKind::Failed) => {
+            AgentCollaborationOutcomeKind::Rejected | AgentCollaborationOutcomeKind::Failed => {
                 self.observe_rejected = self.observe_rejected.saturating_add(1);
             },
-            (AgentCollaborationActionKind::Close, AgentCollaborationOutcomeKind::Closed) => {
+            _ => {},
+        }
+    }
+
+    fn record_close(&mut self, fact: &AgentCollaborationFact) {
+        match fact.outcome {
+            AgentCollaborationOutcomeKind::Closed => {
                 self.close_calls = self.close_calls.saturating_add(1);
                 if let Some(child_id) = fact.child_agent_id.as_deref() {
                     self.child_states
@@ -302,11 +329,16 @@ impl CollaborationMetricsState {
                     self.satisfy_pending_observe(Some(child_id));
                 }
             },
-            (AgentCollaborationActionKind::Close, AgentCollaborationOutcomeKind::Rejected)
-            | (AgentCollaborationActionKind::Close, AgentCollaborationOutcomeKind::Failed) => {
+            AgentCollaborationOutcomeKind::Rejected | AgentCollaborationOutcomeKind::Failed => {
                 self.close_rejected = self.close_rejected.saturating_add(1);
             },
-            (AgentCollaborationActionKind::Delivery, AgentCollaborationOutcomeKind::Delivered) => {
+            _ => {},
+        }
+    }
+
+    fn record_delivery(&mut self, fact: &AgentCollaborationFact) {
+        match fact.outcome {
+            AgentCollaborationOutcomeKind::Delivered => {
                 self.delivery_delivered = self.delivery_delivered.saturating_add(1);
                 if let Some(child_id) = fact.child_agent_id.as_deref() {
                     self.child_states
@@ -315,20 +347,24 @@ impl CollaborationMetricsState {
                         .had_delivery = true;
                 }
             },
-            (AgentCollaborationActionKind::Delivery, AgentCollaborationOutcomeKind::Consumed) => {
+            AgentCollaborationOutcomeKind::Consumed => {
                 self.delivery_consumed = self.delivery_consumed.saturating_add(1);
-                if let Some(latency_ms) = fact.latency_ms {
-                    self.delivery_latency_total_ms =
-                        self.delivery_latency_total_ms.saturating_add(latency_ms);
-                    self.delivery_latency_samples = self.delivery_latency_samples.saturating_add(1);
-                    self.max_delivery_latency_ms = self.max_delivery_latency_ms.max(latency_ms);
-                }
+                self.record_delivery_latency(fact.latency_ms);
             },
-            (AgentCollaborationActionKind::Delivery, AgentCollaborationOutcomeKind::Replayed) => {
+            AgentCollaborationOutcomeKind::Replayed => {
                 self.delivery_replayed = self.delivery_replayed.saturating_add(1);
             },
             _ => {},
         }
+    }
+
+    fn record_delivery_latency(&mut self, latency_ms: Option<u64>) {
+        let Some(latency_ms) = latency_ms else {
+            return;
+        };
+        self.delivery_latency_total_ms = self.delivery_latency_total_ms.saturating_add(latency_ms);
+        self.delivery_latency_samples = self.delivery_latency_samples.saturating_add(1);
+        self.max_delivery_latency_ms = self.max_delivery_latency_ms.max(latency_ms);
     }
 
     fn mark_child_reused(&mut self, child_id: Option<&str>) {

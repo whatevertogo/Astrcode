@@ -14,24 +14,9 @@
 
 use std::{borrow::Cow, collections::HashMap};
 
-use serde::{Deserialize, Serialize};
+pub use astrcode_core::SystemPromptLayer as PromptLayer;
 
 use super::template::PromptTemplate;
-
-/// Prompt 块所属的缓存层级。
-///
-/// 分层构建器会在最终 `PromptPlan` 中标记 system block 的层级，
-/// 让 provider 在序列化时可以把稳定前缀拆成多个 cache breakpoint。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptLayer {
-    Stable,
-    SemiStable,
-    Inherited,
-    Dynamic,
-    #[default]
-    Unspecified,
-}
 
 /// Prompt 块的语义分类。
 ///

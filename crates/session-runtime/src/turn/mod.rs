@@ -5,12 +5,15 @@
 
 mod branch;
 mod compaction_cycle;
+mod events;
 mod interrupt;
 pub mod llm_cycle;
 mod replay;
 mod request;
 mod runner;
 mod submit;
+#[cfg(test)]
+pub(crate) mod test_support;
 // pub mod subagent;
 pub mod summary;
 pub mod tool_cycle;

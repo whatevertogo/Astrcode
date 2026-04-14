@@ -27,7 +27,7 @@ use std::{
 };
 
 use astrcode_core::{
-    DeleteProjectResult, Phase, SessionMeta, StorageEvent, StorageEventPayload, StoredEventLine,
+    DeleteProjectResult, Phase, SessionMeta, StorageEvent, StorageEventPayload, StoredEvent,
     normalize_recovered_phase,
 };
 use chrono::{DateTime, Utc};
@@ -343,20 +343,26 @@ impl EventLog {
                 continue;
             }
 
-            let event = serde_json::from_str::<StoredEventLine>(trimmed)
-                .map_err(|error| {
-                    parse_error(
-                        format!(
-                            "failed to parse head event at {}:{}: {}",
-                            path.display(),
-                            i + 1,
-                            trimmed
-                        ),
-                        error,
-                    )
-                })?
-                .into_stored((i + 1) as u64)
-                .event;
+            let event = serde_json::from_str::<StoredEvent>(trimmed).map_err(|error| {
+                parse_error(
+                    format!(
+                        "failed to parse head event at {}:{}: {}",
+                        path.display(),
+                        i + 1,
+                        trimmed
+                    ),
+                    error,
+                )
+            })?;
+            event.event.validate().map_err(|error| {
+                internal_io_error(format!(
+                    "invalid head event at {}:{}: {}",
+                    path.display(),
+                    i + 1,
+                    error
+                ))
+            })?;
+            let event = event.event;
 
             match event.payload {
                 StorageEventPayload::SessionStart {
@@ -486,19 +492,24 @@ impl EventLog {
                     continue;
                 }
 
-                let event = serde_json::from_str::<StoredEventLine>(trimmed)
-                    .map_err(|error| {
-                        parse_error(
-                            format!(
-                                "failed to parse tail event at {}: {}",
-                                path.display(),
-                                trimmed
-                            ),
-                            error,
-                        )
-                    })?
-                    .into_stored(0)
-                    .event;
+                let event = serde_json::from_str::<StoredEvent>(trimmed).map_err(|error| {
+                    parse_error(
+                        format!(
+                            "failed to parse tail event at {}: {}",
+                            path.display(),
+                            trimmed
+                        ),
+                        error,
+                    )
+                })?;
+                event.event.validate().map_err(|error| {
+                    internal_io_error(format!(
+                        "invalid tail event at {}: {}",
+                        path.display(),
+                        error
+                    ))
+                })?;
+                let event = event.event;
                 if let Some(value) = mapper(&event) {
                     return Ok(Some(value));
                 }

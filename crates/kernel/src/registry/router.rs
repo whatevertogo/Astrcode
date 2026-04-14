@@ -13,6 +13,73 @@ use astrcode_core::{
 
 use super::tool::capability_context_from_tool_context;
 
+fn validate_capability_spec(capability_spec: &CapabilitySpec) -> Result<()> {
+    capability_spec.validate().map_err(|error| {
+        AstrError::Validation(format!(
+            "invalid capability spec '{}': {}",
+            capability_spec.name, error
+        ))
+    })
+}
+
+fn build_registry_snapshot(
+    invokers: impl IntoIterator<Item = Arc<dyn CapabilityInvoker>>,
+) -> Result<CapabilityRouterInner> {
+    let mut invokers_by_name = HashMap::new();
+    let mut order = Vec::new();
+    let mut tool_order = Vec::new();
+
+    for invoker in invokers {
+        let capability_spec = invoker.capability_spec();
+        validate_capability_spec(&capability_spec)?;
+        if invokers_by_name
+            .insert(capability_spec.name.to_string(), Arc::clone(&invoker))
+            .is_some()
+        {
+            return Err(AstrError::Validation(format!(
+                "duplicate capability '{}' registered",
+                capability_spec.name
+            )));
+        }
+        if capability_spec.kind.is_tool() {
+            tool_order.push(capability_spec.name.to_string());
+        }
+        order.push(capability_spec.name.to_string());
+    }
+
+    Ok(CapabilityRouterInner {
+        invokers_by_name,
+        order,
+        tool_order,
+    })
+}
+
+fn append_invoker(
+    inner: &mut CapabilityRouterInner,
+    invoker: Arc<dyn CapabilityInvoker>,
+) -> Result<()> {
+    let capability_spec = invoker.capability_spec();
+    validate_capability_spec(&capability_spec)?;
+    if inner
+        .invokers_by_name
+        .contains_key(capability_spec.name.as_str())
+    {
+        return Err(AstrError::Validation(format!(
+            "duplicate capability '{}' registered",
+            capability_spec.name
+        )));
+    }
+
+    if capability_spec.kind.is_tool() {
+        inner.tool_order.push(capability_spec.name.to_string());
+    }
+    inner.order.push(capability_spec.name.to_string());
+    inner
+        .invokers_by_name
+        .insert(capability_spec.name.to_string(), invoker);
+    Ok(())
+}
+
 pub struct CapabilityRouterBuilder {
     invokers: Vec<Arc<dyn CapabilityInvoker>>,
 }
@@ -36,39 +103,10 @@ impl CapabilityRouterBuilder {
     }
 
     pub fn build(self) -> Result<CapabilityRouter> {
-        let mut invokers_by_name = HashMap::new();
-        let mut order = Vec::new();
-        let mut tool_order = Vec::new();
-
-        for invoker in self.invokers {
-            let capability_spec = invoker.capability_spec();
-            capability_spec.validate().map_err(|error| {
-                AstrError::Validation(format!(
-                    "invalid capability spec '{}': {}",
-                    capability_spec.name, error
-                ))
-            })?;
-            if invokers_by_name
-                .insert(capability_spec.name.to_string(), Arc::clone(&invoker))
-                .is_some()
-            {
-                return Err(AstrError::Validation(format!(
-                    "duplicate capability '{}' registered",
-                    capability_spec.name
-                )));
-            }
-            if capability_spec.kind.is_tool() {
-                tool_order.push(capability_spec.name.to_string());
-            }
-            order.push(capability_spec.name.to_string());
-        }
+        let snapshot = build_registry_snapshot(self.invokers)?;
 
         Ok(CapabilityRouter {
-            inner: Arc::new(RwLock::new(CapabilityRouterInner {
-                invokers_by_name,
-                order,
-                tool_order,
-            })),
+            inner: Arc::new(RwLock::new(snapshot)),
         })
     }
 }
@@ -106,67 +144,20 @@ impl CapabilityRouter {
     }
 
     pub fn register_invoker(&self, invoker: Arc<dyn CapabilityInvoker>) -> Result<()> {
-        let capability_spec = invoker.capability_spec();
-        capability_spec.validate().map_err(|error| {
-            AstrError::Validation(format!(
-                "invalid capability spec '{}': {}",
-                capability_spec.name, error
-            ))
-        })?;
-
         support::with_write_lock_recovery(&self.inner, "capability_router", |inner| {
-            if inner
-                .invokers_by_name
-                .contains_key(capability_spec.name.as_str())
-            {
-                return Err(AstrError::Validation(format!(
-                    "duplicate capability '{}' registered",
-                    capability_spec.name
-                )));
-            }
-
-            if capability_spec.kind.is_tool() {
-                inner.tool_order.push(capability_spec.name.to_string());
-            }
-            inner.order.push(capability_spec.name.to_string());
-            inner
-                .invokers_by_name
-                .insert(capability_spec.name.to_string(), invoker);
-            Ok(())
+            append_invoker(inner, invoker)
         })
     }
 
     pub fn register_invokers(&self, invokers: Vec<Arc<dyn CapabilityInvoker>>) -> Result<()> {
         support::with_write_lock_recovery(&self.inner, "capability_router", |inner| {
-            for invoker in &invokers {
-                let capability_spec = invoker.capability_spec();
-                capability_spec.validate().map_err(|error| {
-                    AstrError::Validation(format!(
-                        "invalid capability spec '{}': {}",
-                        capability_spec.name, error
-                    ))
-                })?;
-                if inner
-                    .invokers_by_name
-                    .contains_key(capability_spec.name.as_str())
-                {
-                    return Err(AstrError::Validation(format!(
-                        "duplicate capability '{}' registered",
-                        capability_spec.name
-                    )));
-                }
-            }
-
-            for invoker in invokers {
-                let capability_spec = invoker.capability_spec();
-                if capability_spec.kind.is_tool() {
-                    inner.tool_order.push(capability_spec.name.to_string());
-                }
-                inner.order.push(capability_spec.name.to_string());
-                inner
-                    .invokers_by_name
-                    .insert(capability_spec.name.to_string(), invoker);
-            }
+            let mut merged = inner
+                .order
+                .iter()
+                .filter_map(|name| inner.invokers_by_name.get(name).cloned())
+                .collect::<Vec<_>>();
+            merged.extend(invokers);
+            *inner = build_registry_snapshot(merged)?;
             Ok(())
         })
     }
@@ -176,37 +167,10 @@ impl CapabilityRouter {
     /// 外部 surface（如 MCP）发生变化时，组合根需要同步刷新 kernel 能力面。
     /// 这里直接替换整份注册表，避免旧能力只增不减地残留。
     pub fn replace_invokers(&self, invokers: Vec<Arc<dyn CapabilityInvoker>>) -> Result<()> {
-        let mut invokers_by_name = HashMap::new();
-        let mut order = Vec::new();
-        let mut tool_order = Vec::new();
-
-        for invoker in invokers {
-            let capability_spec = invoker.capability_spec();
-            capability_spec.validate().map_err(|error| {
-                AstrError::Validation(format!(
-                    "invalid capability spec '{}': {}",
-                    capability_spec.name, error
-                ))
-            })?;
-            if invokers_by_name
-                .insert(capability_spec.name.to_string(), Arc::clone(&invoker))
-                .is_some()
-            {
-                return Err(AstrError::Validation(format!(
-                    "duplicate capability '{}' registered",
-                    capability_spec.name
-                )));
-            }
-            if capability_spec.kind.is_tool() {
-                tool_order.push(capability_spec.name.to_string());
-            }
-            order.push(capability_spec.name.to_string());
-        }
+        let snapshot = build_registry_snapshot(invokers)?;
 
         support::with_write_lock_recovery(&self.inner, "capability_router", |inner| {
-            inner.invokers_by_name = invokers_by_name;
-            inner.order = order;
-            inner.tool_order = tool_order;
+            *inner = snapshot;
             Ok(())
         })
     }

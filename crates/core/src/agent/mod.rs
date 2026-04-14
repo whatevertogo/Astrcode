@@ -249,7 +249,7 @@ pub struct ResolvedSubagentContextOverrides {
 impl Default for ResolvedSubagentContextOverrides {
     fn default() -> Self {
         Self {
-            // 默认使用独立子会话模式，旧共享写入模式仅保留读取兼容。
+            // 默认始终使用独立子会话模式。
             storage_mode: SubRunStorageMode::IndependentSession,
             inherit_system_instructions: true,
             inherit_project_instructions: true,
@@ -719,6 +719,20 @@ impl AgentEventContext {
         storage_mode: SubRunStorageMode,
         child_session_id: Option<String>,
     ) -> Self {
+        let child_session_id = match storage_mode {
+            SubRunStorageMode::IndependentSession => {
+                let session_id = child_session_id.unwrap_or_else(|| {
+                    panic!("IndependentSession sub-run event context requires child_session_id")
+                });
+                if session_id.trim().is_empty() {
+                    panic!(
+                        "IndependentSession sub-run event context requires non-empty \
+                         child_session_id"
+                    );
+                }
+                Some(session_id)
+            },
+        };
         Self {
             agent_id: Some(agent_id.into()),
             parent_turn_id: Some(parent_turn_id.into()),
@@ -756,6 +770,85 @@ impl AgentEventContext {
             && self.storage_mode.is_none()
             && self.child_session_id.is_none()
     }
+
+    /// 判断是否为一个语义完整的独立子会话事件。
+    pub fn is_independent_sub_run(&self) -> bool {
+        self.invocation_kind == Some(InvocationKind::SubRun)
+            && self.storage_mode == Some(SubRunStorageMode::IndependentSession)
+            && self
+                .child_session_id
+                .as_ref()
+                .is_some_and(|session_id| !session_id.trim().is_empty())
+    }
+
+    /// 判断该事件是否属于指定独立子会话。
+    pub fn belongs_to_child_session(&self, session_id: &str) -> bool {
+        self.is_independent_sub_run() && self.child_session_id.as_deref() == Some(session_id)
+    }
+
+    /// 校验该上下文是否适合作为 durable StorageEvent 的 agent 头部。
+    pub fn validate_for_storage_event(&self) -> Result<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+
+        match self.invocation_kind {
+            Some(InvocationKind::RootExecution) => {
+                if self.agent_id.as_deref().is_none_or(str::is_empty) {
+                    return Err(AstrError::Validation(
+                        "RootExecution 事件缺少 agent_id".to_string(),
+                    ));
+                }
+                if self.agent_profile.as_deref().is_none_or(str::is_empty) {
+                    return Err(AstrError::Validation(
+                        "RootExecution 事件缺少 agent_profile".to_string(),
+                    ));
+                }
+                if self.parent_turn_id.is_some()
+                    || self.sub_run_id.is_some()
+                    || self.parent_sub_run_id.is_some()
+                    || self.storage_mode.is_some()
+                    || self.child_session_id.is_some()
+                {
+                    return Err(AstrError::Validation(
+                        "RootExecution 事件不允许携带 sub-run 字段".to_string(),
+                    ));
+                }
+                Ok(())
+            },
+            Some(InvocationKind::SubRun) => {
+                if self.agent_id.as_deref().is_none_or(str::is_empty) {
+                    return Err(AstrError::Validation(
+                        "SubRun 事件缺少 agent_id".to_string(),
+                    ));
+                }
+                if self.parent_turn_id.as_deref().is_none_or(str::is_empty) {
+                    return Err(AstrError::Validation(
+                        "SubRun 事件缺少 parent_turn_id".to_string(),
+                    ));
+                }
+                if self.agent_profile.as_deref().is_none_or(str::is_empty) {
+                    return Err(AstrError::Validation(
+                        "SubRun 事件缺少 agent_profile".to_string(),
+                    ));
+                }
+                if self.sub_run_id.as_deref().is_none_or(str::is_empty) {
+                    return Err(AstrError::Validation(
+                        "SubRun 事件缺少 sub_run_id".to_string(),
+                    ));
+                }
+                if !self.is_independent_sub_run() {
+                    return Err(AstrError::Validation(
+                        "SubRun 事件必须是带 child_session_id 的 IndependentSession".to_string(),
+                    ));
+                }
+                Ok(())
+            },
+            None => Err(AstrError::Validation(
+                "非空 AgentEventContext 必须声明 invocation_kind".to_string(),
+            )),
+        }
+    }
 }
 
 /// 从 SubRunHandle 直接构造事件上下文，替代手工字段拼装。
@@ -778,7 +871,7 @@ impl From<&SubRunHandle> for AgentEventContext {
 mod tests {
     use super::{
         AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource,
-        SpawnAgentParams,
+        SpawnAgentParams, SubRunStorageMode,
     };
 
     #[test]
@@ -833,5 +926,19 @@ mod tests {
         assert_eq!(child_ref.sub_run_id, "subrun-1");
         assert_eq!(child_ref.open_session_id, "session-child");
         assert_eq!(child_ref.parent_agent_id.as_deref(), Some("agent-parent"));
+    }
+
+    #[test]
+    #[should_panic(expected = "IndependentSession sub-run event context requires child_session_id")]
+    fn sub_run_context_requires_child_session_id_for_independent_session() {
+        let _ = super::AgentEventContext::sub_run(
+            "agent-child",
+            "turn-parent",
+            "explore",
+            "subrun-1",
+            None,
+            SubRunStorageMode::IndependentSession,
+            None,
+        );
     }
 }

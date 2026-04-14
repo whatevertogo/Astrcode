@@ -22,21 +22,20 @@
 //! - 不可恢复错误
 //! - Step 上限
 
+mod step;
+
 use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, CancelToken, LlmMessage, PromptFactsProvider, ResolvedRuntimeConfig, Result,
-    StorageEvent, StorageEventPayload,
+    StorageEvent, StorageEventPayload, ToolDefinition,
 };
 use astrcode_kernel::Kernel;
-use chrono::Utc;
+use step::{StepOutcome, run_single_step};
 
 use super::{
     TurnOutcome,
-    compaction_cycle::{self, ReactiveCompactContext},
-    llm_cycle,
     summary::{TurnCollaborationSummary, TurnFinishReason, TurnSummary},
-    tool_cycle::{self, ToolCycleContext, ToolCycleOutcome},
 };
 use crate::{
     SessionState,
@@ -44,10 +43,11 @@ use crate::{
         ContextWindowSettings, file_access::FileAccessTracker, micro_compact::MicroCompactState,
         token_usage::TokenUsageTracker,
     },
-    turn::request::{AssemblePromptRequest, assemble_prompt_request},
 };
 
 /// 可清除的工具名称（这些工具的旧结果可以被 prune pass 替换为占位文本）。
+/// 工具结果可被 prune pass 替换为占位文本的工具名称。
+/// 这些工具的输出是文件内容，prune 时可以安全替换（需要时重新读取即可）。
 const CLEARABLE_TOOLS: &[&str] = &["readFile", "listDir", "grep", "findFiles"];
 
 /// Turn 执行请求。
@@ -74,272 +74,197 @@ pub struct TurnRunResult {
     pub summary: TurnSummary,
 }
 
+struct TurnExecutionResources<'a> {
+    gateway: &'a astrcode_kernel::KernelGateway,
+    prompt_facts_provider: &'a dyn PromptFactsProvider,
+    session_id: &'a str,
+    working_dir: &'a str,
+    turn_id: &'a str,
+    session_state: &'a Arc<SessionState>,
+    runtime: &'a ResolvedRuntimeConfig,
+    cancel: &'a CancelToken,
+    agent: &'a AgentEventContext,
+    tools: Vec<ToolDefinition>,
+    settings: ContextWindowSettings,
+    clearable_tools: HashSet<String>,
+    max_steps: usize,
+}
+
+struct TurnExecutionRequestView<'a> {
+    prompt_facts_provider: &'a dyn PromptFactsProvider,
+    session_id: &'a str,
+    working_dir: &'a str,
+    turn_id: &'a str,
+    session_state: &'a Arc<SessionState>,
+    runtime: &'a ResolvedRuntimeConfig,
+    cancel: &'a CancelToken,
+    agent: &'a AgentEventContext,
+}
+
+struct TurnExecutionContext {
+    turn_started_at: Instant,
+    messages: Vec<LlmMessage>,
+    events: Vec<StorageEvent>,
+    token_tracker: TokenUsageTracker,
+    total_cache_read_tokens: u64,
+    total_cache_creation_tokens: u64,
+    micro_compact_state: MicroCompactState,
+    file_access_tracker: FileAccessTracker,
+    step_index: usize,
+    reactive_compact_attempts: usize,
+}
+
+impl<'a> TurnExecutionResources<'a> {
+    fn new(
+        gateway: &'a astrcode_kernel::KernelGateway,
+        request: TurnExecutionRequestView<'a>,
+    ) -> Self {
+        let settings = ContextWindowSettings::from(request.runtime);
+        Self {
+            gateway,
+            prompt_facts_provider: request.prompt_facts_provider,
+            session_id: request.session_id,
+            working_dir: request.working_dir,
+            turn_id: request.turn_id,
+            session_state: request.session_state,
+            runtime: request.runtime,
+            cancel: request.cancel,
+            agent: request.agent,
+            tools: gateway.capabilities().tool_definitions(),
+            settings,
+            clearable_tools: CLEARABLE_TOOLS
+                .iter()
+                .map(|tool| (*tool).to_string())
+                .collect(),
+            max_steps: request.runtime.max_steps.max(1),
+        }
+    }
+}
+
+impl TurnExecutionContext {
+    fn new(resources: &TurnExecutionResources<'_>, messages: Vec<LlmMessage>) -> Self {
+        Self {
+            turn_started_at: Instant::now(),
+            micro_compact_state: MicroCompactState::seed_from_messages(
+                &messages,
+                resources.settings.micro_compact_config(),
+                Instant::now(),
+            ),
+            file_access_tracker: FileAccessTracker::seed_from_messages(
+                &messages,
+                resources.settings.max_tracked_files,
+                Path::new(resources.working_dir),
+            ),
+            messages,
+            events: Vec::new(),
+            token_tracker: TokenUsageTracker::default(),
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            step_index: 0,
+            reactive_compact_attempts: 0,
+        }
+    }
+
+    fn finish(
+        self,
+        resources: &TurnExecutionResources<'_>,
+        outcome: TurnOutcome,
+        reason: TurnFinishReason,
+    ) -> TurnRunResult {
+        TurnRunResult {
+            outcome,
+            messages: self.messages,
+            events: self.events,
+            summary: TurnSummary {
+                finish_reason: reason,
+                wall_duration: self.turn_started_at.elapsed(),
+                step_count: self.step_index + 1,
+                total_tokens_used: self.token_tracker.budget_tokens(0) as u64,
+                cache_read_input_tokens: self.total_cache_read_tokens,
+                cache_creation_input_tokens: self.total_cache_creation_tokens,
+                auto_compaction_count: 0,
+                reactive_compact_count: self.reactive_compact_attempts,
+                collaboration: turn_collaboration_summary(
+                    resources.session_state,
+                    resources.turn_id,
+                ),
+            },
+        }
+    }
+}
+
 /// 执行一个完整的 Agent Turn。
 ///
 /// 通过 `kernel` gateway 调用 LLM 和工具，不直接持有 provider。
 /// 每个重要步骤通过事件回调发出。
 pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<TurnRunResult> {
-    let turn_started_at = Instant::now();
-    let mut messages = request.messages;
-    let mut events = Vec::new();
-    let mut token_tracker = TokenUsageTracker::default();
-    let settings = ContextWindowSettings::from(&request.runtime);
-    let mut total_cache_read_tokens: u64 = 0;
-    let mut total_cache_creation_tokens: u64 = 0;
-
-    let max_steps = request.runtime.max_steps.max(1);
-
+    let TurnRunRequest {
+        session_id,
+        working_dir,
+        turn_id,
+        messages,
+        session_state,
+        runtime,
+        cancel,
+        agent,
+        prompt_facts_provider,
+    } = request;
     let gateway = kernel.gateway();
-
-    // 获取可用工具定义
-    let tools = gateway.capabilities().tool_definitions();
-
-    // 构建可清除工具名称集合
-    let clearable_tools: HashSet<String> = CLEARABLE_TOOLS.iter().map(|s| s.to_string()).collect();
-
-    let mut micro_compact_state = MicroCompactState::seed_from_messages(
-        &messages,
-        settings.micro_compact_config(),
-        Instant::now(),
+    let resources = TurnExecutionResources::new(
+        gateway,
+        TurnExecutionRequestView {
+            prompt_facts_provider: prompt_facts_provider.as_ref(),
+            session_id: &session_id,
+            working_dir: &working_dir,
+            turn_id: &turn_id,
+            session_state: &session_state,
+            runtime: &runtime,
+            cancel: &cancel,
+            agent: &agent,
+        },
     );
-    let mut file_access_tracker = FileAccessTracker::seed_from_messages(
-        &messages,
-        settings.max_tracked_files,
-        Path::new(&request.working_dir),
-    );
-
-    let mut step_index: usize = 0;
-    let mut reactive_compact_attempts: usize = 0;
-
-    /// 构建当前 TurnSummary 的辅助宏，避免闭包借用冲突。
-    macro_rules! make_summary {
-        ($reason:expr) => {
-            TurnSummary {
-                finish_reason: $reason,
-                wall_duration: turn_started_at.elapsed(),
-                step_count: step_index + 1,
-                total_tokens_used: token_tracker.budget_tokens(0) as u64,
-                cache_read_input_tokens: total_cache_read_tokens,
-                cache_creation_input_tokens: total_cache_creation_tokens,
-                auto_compaction_count: 0,
-                reactive_compact_count: reactive_compact_attempts,
-                collaboration: turn_collaboration_summary(
-                    request.session_state.as_ref(),
-                    &request.turn_id,
-                ),
-            }
-        };
-    }
+    let mut execution = TurnExecutionContext::new(&resources, messages);
 
     loop {
-        // —— 取消检查 ——
-        if request.cancel.is_cancelled() {
-            return Ok(TurnRunResult {
-                outcome: TurnOutcome::Cancelled,
-                messages,
-                events,
-                summary: make_summary!(TurnFinishReason::Cancelled),
-            });
+        if resources.cancel.is_cancelled() {
+            return Ok(execution.finish(
+                &resources,
+                TurnOutcome::Cancelled,
+                TurnFinishReason::Cancelled,
+            ));
         }
 
-        // —— Step 上限检查 ——
-        if step_index >= max_steps {
-            return Ok(TurnRunResult {
-                outcome: TurnOutcome::Error {
-                    message: format!("turn exceeded maximum steps ({max_steps})"),
+        if execution.step_index >= resources.max_steps {
+            return Ok(execution.finish(
+                &resources,
+                TurnOutcome::Error {
+                    message: format!("turn exceeded maximum steps ({})", resources.max_steps),
                 },
-                messages,
-                events,
-                summary: make_summary!(TurnFinishReason::StepLimitExceeded),
-            });
+                TurnFinishReason::StepLimitExceeded,
+            ));
         }
 
-        // —— 上下文优化管线（微压缩 → 裁剪 → 自动压缩）——
-        let assembled = assemble_prompt_request(AssemblePromptRequest {
-            gateway,
-            prompt_facts_provider: request.prompt_facts_provider.as_ref(),
-            session_id: &request.session_id,
-            turn_id: &request.turn_id,
-            working_dir: Path::new(&request.working_dir),
-            messages,
-            cancel: request.cancel.clone(),
-            agent: &request.agent,
-            step_index,
-            token_tracker: &token_tracker,
-            tools: tools.clone(),
-            settings: &settings,
-            clearable_tools: &clearable_tools,
-            micro_compact_state: &mut micro_compact_state,
-            file_access_tracker: &file_access_tracker,
-        })
-        .await?;
-        messages = assembled.messages;
-        events.extend(assembled.events);
-
-        // —— LLM 调用（委托 llm_cycle）——
-        let output = match llm_cycle::call_llm_streaming(
-            gateway,
-            assembled.llm_request,
-            &request.turn_id,
-            &request.agent,
-            &request.session_state,
-            &request.cancel,
-        )
-        .await
-        {
-            Ok(output) => output,
-            Err(e) => {
-                if e.is_cancelled() {
-                    return Ok(TurnRunResult {
-                        outcome: TurnOutcome::Cancelled,
-                        messages,
-                        events,
-                        summary: make_summary!(TurnFinishReason::Cancelled),
-                    });
-                }
-                // —— Reactive compact 错误恢复（委托 compaction_cycle）——
-                if llm_cycle::is_prompt_too_long(&e)
-                    && reactive_compact_attempts < compaction_cycle::MAX_REACTIVE_COMPACT_ATTEMPTS
-                {
-                    reactive_compact_attempts += 1;
-                    log::warn!(
-                        "turn {} step {}: prompt too long, reactive compact ({}/{})",
-                        request.turn_id,
-                        step_index,
-                        reactive_compact_attempts,
-                        compaction_cycle::MAX_REACTIVE_COMPACT_ATTEMPTS,
-                    );
-
-                    let recovery =
-                        compaction_cycle::try_reactive_compact(&ReactiveCompactContext {
-                            gateway,
-                            prompt_facts_provider: request.prompt_facts_provider.as_ref(),
-                            messages: &messages,
-                            session_id: &request.session_id,
-                            working_dir: &request.working_dir,
-                            turn_id: &request.turn_id,
-                            step_index,
-                            agent: &request.agent,
-                            cancel: request.cancel.clone(),
-                            settings: &settings,
-                            file_access_tracker: &file_access_tracker,
-                        })
-                        .await?;
-
-                    match recovery {
-                        Some(result) => {
-                            events.extend(result.events);
-                            messages = result.messages;
-                            continue;
-                        },
-                        None => return Err(e),
-                    }
-                }
-                return Err(e);
+        match run_single_step(&mut execution, &resources).await? {
+            StepOutcome::Continue => {},
+            StepOutcome::Completed => {
+                return Ok(execution.finish(
+                    &resources,
+                    TurnOutcome::Completed,
+                    TurnFinishReason::NaturalEnd,
+                ));
             },
-        };
-
-        // —— 记录 token 使用量 ——
-        token_tracker.record_usage(output.usage);
-        if let Some(usage) = &output.usage {
-            total_cache_read_tokens =
-                total_cache_read_tokens.saturating_add(usage.cache_read_input_tokens as u64);
-            total_cache_creation_tokens = total_cache_creation_tokens
-                .saturating_add(usage.cache_creation_input_tokens as u64);
-        }
-
-        let content = output.content.trim().to_string();
-        let has_tool_calls = !output.tool_calls.is_empty();
-
-        // 追加 assistant 消息到历史
-        messages.push(LlmMessage::Assistant {
-            content: content.clone(),
-            tool_calls: output.tool_calls.clone(),
-            reasoning: output.reasoning.clone(),
-        });
-
-        // 发出 AssistantFinal 事件
-        events.push(StorageEvent {
-            turn_id: Some(request.turn_id.clone()),
-            agent: request.agent.clone(),
-            payload: StorageEventPayload::AssistantFinal {
-                content,
-                reasoning_content: output.reasoning.as_ref().map(|r| r.content.clone()),
-                reasoning_signature: output.reasoning.as_ref().and_then(|r| r.signature.clone()),
-                timestamp: Some(Utc::now()),
+            StepOutcome::Cancelled => {
+                return Ok(execution.finish(
+                    &resources,
+                    TurnOutcome::Cancelled,
+                    TurnFinishReason::Cancelled,
+                ));
             },
-        });
-
-        // 检查 max_tokens 截断
-        if matches!(
-            output.finish_reason,
-            astrcode_core::LlmFinishReason::MaxTokens
-        ) {
-            log::warn!(
-                "turn {} step {}: LLM output truncated by max_tokens",
-                request.turn_id,
-                step_index
-            );
         }
-
-        // —— 无工具调用时，Turn 自然结束 ——
-        if !has_tool_calls {
-            events.push(StorageEvent {
-                turn_id: Some(request.turn_id.clone()),
-                agent: request.agent.clone(),
-                payload: StorageEventPayload::TurnDone {
-                    timestamp: Utc::now(),
-                    reason: None,
-                },
-            });
-            return Ok(TurnRunResult {
-                outcome: TurnOutcome::Completed,
-                messages,
-                events,
-                summary: make_summary!(TurnFinishReason::NaturalEnd),
-            });
-        }
-
-        // —— 工具执行（委托 tool_cycle）——
-        let tool_result = tool_cycle::execute_tool_calls(
-            &mut ToolCycleContext {
-                gateway,
-                session_state: &request.session_state,
-                session_id: &request.session_id,
-                working_dir: &request.working_dir,
-                turn_id: &request.turn_id,
-                agent: &request.agent,
-                cancel: &request.cancel,
-                events: &mut events,
-                max_concurrency: request.runtime.max_tool_concurrency,
-                tool_result_inline_limit: request.runtime.tool_result_inline_limit,
-            },
-            output.tool_calls,
-        )
-        .await?;
-
-        // 更新追踪器
-        for (call, result) in &tool_result.raw_results {
-            file_access_tracker.record_tool_result(call, result, Path::new(&request.working_dir));
-            micro_compact_state.record_tool_result(result.tool_call_id.clone(), Instant::now());
-        }
-
-        // 追加工具结果消息到历史
-        messages.extend(tool_result.tool_messages);
-
-        if matches!(tool_result.outcome, ToolCycleOutcome::Interrupted) {
-            return Ok(TurnRunResult {
-                outcome: TurnOutcome::Cancelled,
-                messages,
-                events,
-                summary: make_summary!(TurnFinishReason::Cancelled),
-            });
-        }
-
-        step_index += 1;
     }
 }
 
+/// 从 session 事件流中聚合当前 turn 的 collaboration facts，生成 turn 级摘要。
 fn turn_collaboration_summary(
     session_state: &SessionState,
     turn_id: &str,

@@ -22,8 +22,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 
 use crate::{
-    InvocationKind, LlmMessage, Phase, ReasoningContent, SubRunStorageMode, ToolCallRequest,
-    UserMessageOrigin,
+    InvocationKind, LlmMessage, Phase, ReasoningContent, ToolCallRequest, UserMessageOrigin,
     event::{StorageEvent, StorageEventPayload},
     format_compact_summary, split_assistant_content,
 };
@@ -266,32 +265,20 @@ impl AgentStateProjector {
     /// 判断事件是否应投影到当前会话状态。
     ///
     /// - 非 SubRun 事件：始终投影
-    /// - SubRun + IndependentSession：仅在投影子会话自身（child_session_id == 当前
-    ///   session_id）时投影
-    /// - SubRun + 其他模式（Inline）：始终投影到父会话
+    /// - SubRun：仅在事件明确属于当前独立子会话时投影
     fn should_project(&self, event: &StorageEvent) -> bool {
         match event.agent_context() {
             None => true,
             Some(agent) => {
-                if agent.invocation_kind != Some(InvocationKind::SubRun) {
-                    return true;
-                }
-
-                match agent.storage_mode {
-                    Some(SubRunStorageMode::IndependentSession) => {
-                        // 独立子会话：只有投影子会话自身状态时才包含
-                        match &agent.child_session_id {
-                            Some(sid) => sid == &self.state.session_id,
-                            None => false,
-                        }
-                    },
-                    _ => true,
-                }
+                agent.invocation_kind != Some(InvocationKind::SubRun)
+                    || agent.belongs_to_child_session(&self.state.session_id)
             },
         }
     }
 }
 
+/// 从消息列表末尾向前扫描，找到第 N 个 User-origin 消息的位置。
+/// 用途：定义"保留最近 N 轮"的裁剪边界，User-origin 消息视为 turn 起点。
 fn recent_turn_start_index(
     messages: &[LlmMessage],
     preserved_recent_turns: usize,
@@ -329,7 +316,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{AgentEventContext, StorageEvent, StorageEventPayload};
+    use crate::{
+        AgentEventContext, CompactTrigger, StorageEvent, StorageEventPayload, SubRunStorageMode,
+    };
 
     fn ts() -> chrono::DateTime<chrono::Utc> {
         chrono::Utc::now()
@@ -339,15 +328,15 @@ mod tests {
         AgentEventContext::default()
     }
 
-    fn sub_run_agent() -> AgentEventContext {
+    fn child_agent(session_id: &str) -> AgentEventContext {
         AgentEventContext::sub_run(
             "agent-child",
             "turn-parent",
             "explore",
             "subrun-1",
             None,
-            crate::SubRunStorageMode::IndependentSession,
-            Some("session-child".to_string()),
+            SubRunStorageMode::IndependentSession,
+            Some(session_id.to_string()),
         )
     }
 
@@ -377,6 +366,25 @@ mod tests {
         )
     }
 
+    fn child_session_start(
+        session_id: &str,
+        parent_session_id: &str,
+        parent_storage_seq: u64,
+        working_dir: &str,
+    ) -> StorageEvent {
+        event(
+            None,
+            root_agent(),
+            StorageEventPayload::SessionStart {
+                session_id: session_id.into(),
+                timestamp: ts(),
+                working_dir: working_dir.into(),
+                parent_session_id: Some(parent_session_id.into()),
+                parent_storage_seq: Some(parent_storage_seq),
+            },
+        )
+    }
+
     fn user_message(
         turn_id: Option<&str>,
         agent: AgentEventContext,
@@ -390,6 +398,47 @@ mod tests {
                 content: content.into(),
                 origin,
                 timestamp: ts(),
+            },
+        )
+    }
+
+    fn tool_call(
+        turn_id: Option<&str>,
+        agent: AgentEventContext,
+        tool_call_id: &str,
+        tool_name: &str,
+        args: serde_json::Value,
+    ) -> StorageEvent {
+        event(
+            turn_id,
+            agent,
+            StorageEventPayload::ToolCall {
+                tool_call_id: tool_call_id.into(),
+                tool_name: tool_name.into(),
+                args,
+            },
+        )
+    }
+
+    fn tool_result(
+        turn_id: Option<&str>,
+        agent: AgentEventContext,
+        tool_call_id: &str,
+        tool_name: &str,
+        output: &str,
+        duration_ms: u64,
+    ) -> StorageEvent {
+        event(
+            turn_id,
+            agent,
+            StorageEventPayload::ToolResult {
+                tool_call_id: tool_call_id.into(),
+                tool_name: tool_name.into(),
+                output: output.into(),
+                success: true,
+                error: None,
+                metadata: None,
+                duration_ms,
             },
         )
     }
@@ -423,6 +472,67 @@ mod tests {
         )
     }
 
+    fn compact_applied(
+        summary: &str,
+        preserved_recent_turns: u32,
+        messages_removed: u32,
+    ) -> StorageEvent {
+        event(
+            None,
+            root_agent(),
+            StorageEventPayload::CompactApplied {
+                trigger: CompactTrigger::Manual,
+                summary: summary.into(),
+                preserved_recent_turns,
+                pre_tokens: 400,
+                post_tokens_estimate: 120,
+                messages_removed,
+                tokens_freed: 280,
+                timestamp: ts(),
+            },
+        )
+    }
+
+    fn assert_user_message(
+        message: &LlmMessage,
+        expected_content: &str,
+        origin: UserMessageOrigin,
+    ) {
+        assert!(
+            matches!(
+                message,
+                LlmMessage::User {
+                    content,
+                    origin: actual_origin,
+                } if content == expected_content && *actual_origin == origin
+            ),
+            "expected user message `{expected_content}` with origin {origin:?}, got {message:?}"
+        );
+    }
+
+    fn assert_assistant_message(message: &LlmMessage, expected_content: &str) {
+        assert!(
+            matches!(
+                message,
+                LlmMessage::Assistant { content, .. } if content == expected_content
+            ),
+            "expected assistant message `{expected_content}`, got {message:?}"
+        );
+    }
+
+    fn assert_compact_summary_message(message: &LlmMessage, expected_summary: &str) {
+        assert!(
+            matches!(
+                message,
+                LlmMessage::User {
+                    content,
+                    origin: UserMessageOrigin::CompactSummary,
+                } if content.contains(expected_summary)
+            ),
+            "expected compact summary containing `{expected_summary}`, got {message:?}"
+        );
+    }
+
     #[test]
     fn empty_events_produce_default_state() {
         let state = project(&[]);
@@ -442,9 +552,7 @@ mod tests {
         assert_eq!(state.session_id, "s1");
         assert_eq!(state.working_dir, PathBuf::from("/tmp"));
         assert_eq!(state.messages.len(), 1);
-        assert!(
-            matches!(&state.messages[0], LlmMessage::User { content, .. } if content == "hello")
-        );
+        assert_user_message(&state.messages[0], "hello", UserMessageOrigin::User);
         assert_eq!(state.phase, Phase::Thinking);
     }
 
@@ -492,12 +600,21 @@ mod tests {
             turn_done(Some("turn-root"), root_agent(), "completed"),
             user_message(
                 Some("turn-child"),
-                sub_run_agent(),
+                child_agent("session-child"),
                 "child task",
                 UserMessageOrigin::User,
             ),
-            assistant_final(Some("turn-child"), sub_run_agent(), "child answer", None),
-            turn_done(Some("turn-child"), sub_run_agent(), "completed"),
+            assistant_final(
+                Some("turn-child"),
+                child_agent("session-child"),
+                "child answer",
+                None,
+            ),
+            turn_done(
+                Some("turn-child"),
+                child_agent("session-child"),
+                "completed",
+            ),
         ];
 
         let state = project(&events);
@@ -512,39 +629,15 @@ mod tests {
             2,
             "sub-run messages must stay out of parent context"
         );
-        assert!(matches!(
-            &state.messages[0],
-            LlmMessage::User { content, .. } if content == "root task"
-        ));
-        assert!(matches!(
-            &state.messages[1],
-            LlmMessage::Assistant { content, .. } if content == "root answer"
-        ));
+        assert_user_message(&state.messages[0], "root task", UserMessageOrigin::User);
+        assert_assistant_message(&state.messages[1], "root answer");
     }
 
     #[test]
     fn independent_sub_run_events_still_project_into_child_session_state() {
-        let child_agent = AgentEventContext::sub_run(
-            "agent-child",
-            "turn-parent",
-            "explore",
-            "subrun-independent",
-            None,
-            crate::SubRunStorageMode::IndependentSession,
-            Some("session-child".to_string()),
-        );
+        let child_agent = child_agent("session-child");
         let events = vec![
-            event(
-                None,
-                root_agent(),
-                StorageEventPayload::SessionStart {
-                    session_id: "session-child".into(),
-                    timestamp: ts(),
-                    working_dir: "/tmp".into(),
-                    parent_session_id: Some("session-parent".into()),
-                    parent_storage_seq: Some(12),
-                },
-            ),
+            child_session_start("session-child", "session-parent", 12, "/tmp"),
             user_message(
                 Some("turn-child"),
                 child_agent.clone(),
@@ -564,14 +657,8 @@ mod tests {
 
         assert_eq!(state.turn_count, 1);
         assert_eq!(state.messages.len(), 2);
-        assert!(matches!(
-            &state.messages[0],
-            LlmMessage::User { content, .. } if content == "child task"
-        ));
-        assert!(matches!(
-            &state.messages[1],
-            LlmMessage::Assistant { content, .. } if content == "child answer"
-        ));
+        assert_user_message(&state.messages[0], "child task", UserMessageOrigin::User);
+        assert_assistant_message(&state.messages[1], "child answer");
     }
 
     #[test]
@@ -581,27 +668,14 @@ mod tests {
             // Turn 1: user → assistant with tool call → tool result → final answer
             user_message(None, root_agent(), "list files", UserMessageOrigin::User),
             assistant_final(None, root_agent(), "", None),
-            event(
+            tool_call(None, root_agent(), "tc1", "listDir", json!({"path": "."})),
+            tool_result(
                 None,
                 root_agent(),
-                StorageEventPayload::ToolCall {
-                    tool_call_id: "tc1".into(),
-                    tool_name: "listDir".into(),
-                    args: json!({"path": "."}),
-                },
-            ),
-            event(
-                None,
-                root_agent(),
-                StorageEventPayload::ToolResult {
-                    tool_call_id: "tc1".into(),
-                    tool_name: "listDir".into(),
-                    output: "file1.txt\nfile2.txt".into(),
-                    success: true,
-                    error: None,
-                    metadata: None,
-                    duration_ms: 10,
-                },
+                "tc1",
+                "listDir",
+                "file1.txt\nfile2.txt",
+                10,
             ),
             assistant_final(None, root_agent(), "Here are the files", None),
             turn_done(None, root_agent(), "completed"),
@@ -685,28 +759,8 @@ mod tests {
         let events = vec![
             session_start("s1", "/tmp"),
             user_message(None, root_agent(), "run tool", UserMessageOrigin::User),
-            event(
-                None,
-                root_agent(),
-                StorageEventPayload::ToolCall {
-                    tool_call_id: "tc1".into(),
-                    tool_name: "listDir".into(),
-                    args: json!({"path": "."}),
-                },
-            ),
-            event(
-                None,
-                root_agent(),
-                StorageEventPayload::ToolResult {
-                    tool_call_id: "tc1".into(),
-                    tool_name: "listDir".into(),
-                    output: "[]".into(),
-                    success: true,
-                    error: None,
-                    metadata: None,
-                    duration_ms: 2,
-                },
-            ),
+            tool_call(None, root_agent(), "tc1", "listDir", json!({"path": "."})),
+            tool_result(None, root_agent(), "tc1", "listDir", "[]", 2),
             turn_done(None, root_agent(), "completed"),
         ];
 
@@ -783,42 +837,14 @@ mod tests {
             ),
             assistant_final(Some("turn-2"), root_agent(), "second-answer", None),
             turn_done(Some("turn-2"), root_agent(), "completed"),
-            event(
-                None,
-                root_agent(),
-                StorageEventPayload::CompactApplied {
-                    trigger: crate::event::CompactTrigger::Manual,
-                    summary: "condensed work".into(),
-                    preserved_recent_turns: 1,
-                    pre_tokens: 400,
-                    post_tokens_estimate: 120,
-                    messages_removed: 2,
-                    tokens_freed: 280,
-                    timestamp: ts(),
-                },
-            ),
+            compact_applied("condensed work", 1, 2),
         ];
 
         let state = project(&events);
 
         assert_eq!(state.messages.len(), 3);
-        assert!(matches!(
-            &state.messages[0],
-            LlmMessage::User {
-                content,
-                origin: UserMessageOrigin::CompactSummary,
-            } if content.contains("condensed work")
-        ));
-        assert!(matches!(
-            &state.messages[1],
-            LlmMessage::User {
-                content,
-                origin: UserMessageOrigin::User,
-            } if content == "second"
-        ));
-        assert!(matches!(
-            &state.messages[2],
-            LlmMessage::Assistant { content, .. } if content == "second-answer"
-        ));
+        assert_compact_summary_message(&state.messages[0], "condensed work");
+        assert_user_message(&state.messages[1], "second", UserMessageOrigin::User);
+        assert_assistant_message(&state.messages[2], "second-answer");
     }
 }

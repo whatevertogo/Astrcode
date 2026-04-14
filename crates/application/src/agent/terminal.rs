@@ -11,6 +11,10 @@ use super::{
     child_open_session_id, subrun_event_context_for_parent_turn,
 };
 
+/// child turn 终态投递到父侧的内部投影层。
+///
+/// 从 `SubRunResult` 提取出父侧 `ChildSessionNotification` 所需的三个维度：
+/// notification kind（Delivered/Failed/Closed）、lifecycle status、摘要 + 摘录。
 struct ChildTerminalDeliveryProjection {
     kind: ChildSessionNotificationKind,
     status: AgentLifecycleStatus,
@@ -103,6 +107,10 @@ impl AgentOrchestrationService {
         let result = build_child_subrun_result(&watch.child, &watch.parent_session_id, &outcome);
         let _ = self
             .kernel
+            // 为什么这里仍然直连 AgentControl：
+            // child turn terminal finalizer 需要推进内部生命周期状态机，
+            // `complete_turn` 会同时更新 live tree、并发槽位和最后一轮 outcome，
+            // 这是控制面内部收口，不适合挂到面向编排方的稳定 surface。
             .agent_control()
             .complete_turn(&watch.child.agent_id, outcome.outcome)
             .await;
@@ -195,6 +203,11 @@ impl AgentOrchestrationService {
     }
 }
 
+/// 将 Anthropic turn 终态映射为 `SubRunResult`。
+///
+/// 关键设计决策：`TokenExceeded` 被视为"完成"（带 handoff），而非"失败"。
+/// 原因是 token 超限时 LLM 通常已输出了有价值的部分结果，
+/// 父级应该能通过 handoff summary 获取这些内容。
 fn build_child_subrun_result(
     child: &astrcode_core::SubRunHandle,
     parent_session_id: &str,
@@ -249,6 +262,11 @@ fn child_terminal_notification_id(
     )
 }
 
+/// 从 `SubRunResult` 投影出 `ChildTerminalDeliveryProjection`。
+///
+/// `final_reply_excerpt` 仅在 Completed/TokenExceeded 时填充，
+/// 优先使用 handoff summary 作为摘录；父侧 wake prompt 通过 excerpt 复用同一文本。
+/// Failed/Cancelled 不填充 excerpt，父侧只能看到 summary 级别的错误描述。
 fn project_child_terminal_delivery(result: &SubRunResult) -> ChildTerminalDeliveryProjection {
     let (kind, status) = match result.last_turn_outcome {
         Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded) => (
@@ -745,7 +763,8 @@ mod tests {
         );
         let leaf_status = harness
             .kernel
-            .get_agent_lifecycle(&leaf.agent_id)
+            .agent()
+            .get_lifecycle(&leaf.agent_id)
             .await
             .expect("leaf should still exist");
         assert_eq!(

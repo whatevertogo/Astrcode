@@ -222,6 +222,31 @@ impl AstrError {
     pub fn is_cancelled(&self) -> bool {
         matches!(self, AstrError::Cancelled | AstrError::LlmInterrupted)
     }
+
+    /// 检查是否为上下文窗口超限错误。
+    ///
+    /// 为什么不再依赖 `Display` 文本：
+    /// prompt-too-long 的恢复决策只应依赖 LLM 错误负载本身，
+    /// 不应被外围包装前缀或日志措辞变化影响。
+    pub fn is_prompt_too_long(&self) -> bool {
+        match self {
+            AstrError::LlmRequestFailed { status, body } => {
+                matches!(*status, 400 | 413) && is_prompt_too_long_message(body)
+            },
+            AstrError::LlmStreamError(message)
+            | AstrError::Validation(message)
+            | AstrError::Internal(message) => is_prompt_too_long_message(message),
+            _ => false,
+        }
+    }
+}
+
+fn is_prompt_too_long_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("prompt too long")
+        || lower.contains("context length")
+        || lower.contains("maximum context")
+        || lower.contains("too many tokens")
 }
 
 /// 用于链式添加错误上下文的 trait

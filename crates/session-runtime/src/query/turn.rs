@@ -46,6 +46,18 @@ pub fn project_turn_outcome(phase: Phase, events: &[StoredEvent]) -> ProjectedTu
             },
             _ => None,
         });
+    let last_turn_done_reason =
+        events
+            .iter()
+            .rev()
+            .find_map(|stored| match &stored.event.payload {
+                StorageEventPayload::TurnDone { reason, .. } => reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty())
+                    .map(ToString::to_string),
+                _ => None,
+            });
     let outcome = if matches!(phase, Phase::Interrupted) {
         match last_error.as_deref() {
             Some("interrupted") | None => AgentTurnOutcome::Cancelled,
@@ -53,6 +65,10 @@ pub fn project_turn_outcome(phase: Phase, events: &[StoredEvent]) -> ProjectedTu
         }
     } else if last_error.is_some() {
         AgentTurnOutcome::Failed
+    } else if matches!(last_turn_done_reason.as_deref(), Some("token_exceeded")) {
+        // Why: `TurnDone.reason` 是 durable 终态语义，明确标注 token_exceeded 时，
+        // 不应再把这轮 turn 当作普通 completed。
+        AgentTurnOutcome::TokenExceeded
     } else {
         AgentTurnOutcome::Completed
     };
@@ -129,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn project_turn_outcome_ignores_legacy_budget_reason() {
+    fn project_turn_outcome_marks_token_exceeded_when_turn_done_reason_matches() {
         let outcome = project_turn_outcome(
             Phase::Idle,
             &[
@@ -140,7 +156,7 @@ mod tests {
                         agent: AgentEventContext::default(),
                         payload: StorageEventPayload::TurnDone {
                             timestamp: chrono::Utc::now(),
-                            reason: Some("budget_exhausted".to_string()),
+                            reason: Some("token_exceeded".to_string()),
                         },
                     },
                 },
@@ -160,7 +176,43 @@ mod tests {
             ],
         );
 
-        assert_eq!(outcome.outcome, AgentTurnOutcome::Completed);
+        assert_eq!(outcome.outcome, AgentTurnOutcome::TokenExceeded);
         assert_eq!(outcome.summary, "仍然视为完成");
+    }
+
+    #[test]
+    fn project_turn_outcome_treats_unknown_turn_done_reason_as_completed() {
+        let outcome = project_turn_outcome(
+            Phase::Idle,
+            &[
+                StoredEvent {
+                    storage_seq: 1,
+                    event: StorageEvent {
+                        turn_id: Some("turn-1".to_string()),
+                        agent: AgentEventContext::default(),
+                        payload: StorageEventPayload::TurnDone {
+                            timestamp: chrono::Utc::now(),
+                            reason: Some("completed".to_string()),
+                        },
+                    },
+                },
+                StoredEvent {
+                    storage_seq: 2,
+                    event: StorageEvent {
+                        turn_id: Some("turn-1".to_string()),
+                        agent: AgentEventContext::default(),
+                        payload: StorageEventPayload::AssistantFinal {
+                            content: "普通完成".to_string(),
+                            reasoning_content: None,
+                            reasoning_signature: None,
+                            timestamp: Some(chrono::Utc::now()),
+                        },
+                    },
+                },
+            ],
+        );
+
+        assert_eq!(outcome.outcome, AgentTurnOutcome::Completed);
+        assert_eq!(outcome.summary, "普通完成");
     }
 }

@@ -40,6 +40,44 @@ impl McpEditTarget {
     }
 }
 
+fn sidecar_edit_target(scope: McpConfigFileScope, current: Option<Value>) -> McpEditTarget {
+    McpEditTarget::Sidecar { scope, current }
+}
+
+fn resolve_sidecar_backed_edit_target<F>(
+    sidecar_scope: McpConfigFileScope,
+    sidecar: Option<Value>,
+    name: &str,
+    mode: McpTargetResolutionMode,
+    load_embedded: F,
+) -> std::result::Result<McpEditTarget, ApplicationError>
+where
+    F: FnOnce() -> std::result::Result<(Option<Value>, McpEditTarget), ApplicationError>,
+{
+    match mode {
+        McpTargetResolutionMode::PreferSidecarIfPresent => {
+            if sidecar.is_some() {
+                return Ok(sidecar_edit_target(sidecar_scope, sidecar));
+            }
+
+            let (embedded_current, embedded_target) = load_embedded()?;
+            if mcp_document_contains_server(embedded_current.as_ref(), name)? {
+                return Ok(embedded_target);
+            }
+
+            Ok(sidecar_edit_target(sidecar_scope, None))
+        },
+        McpTargetResolutionMode::PreferContainingServer => {
+            if mcp_document_contains_server(sidecar.as_ref(), name)? {
+                return Ok(sidecar_edit_target(sidecar_scope, sidecar));
+            }
+
+            let (_, embedded_target) = load_embedded()?;
+            Ok(embedded_target)
+        },
+    }
+}
+
 impl ConfigService {
     /// 读取指定作用域的独立 `mcp.json`。
     pub fn load_mcp(
@@ -75,37 +113,13 @@ impl ConfigService {
         mode: McpTargetResolutionMode,
     ) -> std::result::Result<McpEditTarget, ApplicationError> {
         let sidecar = self.store.load_mcp(McpConfigFileScope::User, None)?;
-        match mode {
-            McpTargetResolutionMode::PreferSidecarIfPresent => {
-                if sidecar.is_some() {
-                    return Ok(McpEditTarget::Sidecar {
-                        scope: McpConfigFileScope::User,
-                        current: sidecar,
-                    });
-                }
-
-                let config = validation::normalize_config(self.store.load()?)?;
-                if mcp_document_contains_server(config.mcp.as_ref(), name)? {
-                    return Ok(McpEditTarget::UserConfig(Box::new(config)));
-                }
-
-                Ok(McpEditTarget::Sidecar {
-                    scope: McpConfigFileScope::User,
-                    current: None,
-                })
-            },
-            McpTargetResolutionMode::PreferContainingServer => {
-                if mcp_document_contains_server(sidecar.as_ref(), name)? {
-                    return Ok(McpEditTarget::Sidecar {
-                        scope: McpConfigFileScope::User,
-                        current: sidecar,
-                    });
-                }
-                Ok(McpEditTarget::UserConfig(Box::new(
-                    validation::normalize_config(self.store.load()?)?,
-                )))
-            },
-        }
+        resolve_sidecar_backed_edit_target(McpConfigFileScope::User, sidecar, name, mode, || {
+            let config = validation::normalize_config(self.store.load()?)?;
+            Ok((
+                config.mcp.clone(),
+                McpEditTarget::UserConfig(Box::new(config)),
+            ))
+        })
     }
 
     fn resolve_local_mcp_edit_target(
@@ -117,37 +131,13 @@ impl ConfigService {
         let sidecar = self
             .store
             .load_mcp(McpConfigFileScope::Local, Some(working_dir))?;
-        match mode {
-            McpTargetResolutionMode::PreferSidecarIfPresent => {
-                if sidecar.is_some() {
-                    return Ok(McpEditTarget::Sidecar {
-                        scope: McpConfigFileScope::Local,
-                        current: sidecar,
-                    });
-                }
-
-                let overlay = self.store.load_overlay(working_dir)?.unwrap_or_default();
-                if mcp_document_contains_server(overlay.mcp.as_ref(), name)? {
-                    return Ok(McpEditTarget::LocalOverlay(Box::new(overlay)));
-                }
-
-                Ok(McpEditTarget::Sidecar {
-                    scope: McpConfigFileScope::Local,
-                    current: None,
-                })
-            },
-            McpTargetResolutionMode::PreferContainingServer => {
-                if mcp_document_contains_server(sidecar.as_ref(), name)? {
-                    return Ok(McpEditTarget::Sidecar {
-                        scope: McpConfigFileScope::Local,
-                        current: sidecar,
-                    });
-                }
-                Ok(McpEditTarget::LocalOverlay(Box::new(
-                    self.store.load_overlay(working_dir)?.unwrap_or_default(),
-                )))
-            },
-        }
+        resolve_sidecar_backed_edit_target(McpConfigFileScope::Local, sidecar, name, mode, || {
+            let overlay = self.store.load_overlay(working_dir)?.unwrap_or_default();
+            Ok((
+                overlay.mcp.clone(),
+                McpEditTarget::LocalOverlay(Box::new(overlay)),
+            ))
+        })
     }
 
     async fn save_mcp_edit_target(

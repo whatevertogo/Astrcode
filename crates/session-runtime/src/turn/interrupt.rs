@@ -1,9 +1,7 @@
-use astrcode_core::{
-    AgentEventContext, EventTranslator, Phase, Result, SessionId, StorageEvent, StorageEventPayload,
-};
+use astrcode_core::{AgentEventContext, EventTranslator, Phase, Result, SessionId};
 use chrono::Utc;
 
-use crate::{SessionRuntime, state::append_and_broadcast};
+use crate::{SessionRuntime, state::append_and_broadcast, turn::events::error_event};
 
 impl SessionRuntime {
     pub async fn interrupt_session(&self, session_id: &str) -> Result<()> {
@@ -33,7 +31,11 @@ impl SessionRuntime {
         cancel.cancel();
 
         if let Some(active_turn_id) = active_turn_id.as_deref() {
-            let cancelled = self.kernel.cancel_subruns_for_turn(active_turn_id).await;
+            let cancelled = self
+                .kernel
+                .agent()
+                .cancel_subruns_for_turn(active_turn_id)
+                .await;
             if !cancelled.is_empty() {
                 log::info!(
                     "cancelled {} subruns for interrupted turn '{}'",
@@ -44,14 +46,12 @@ impl SessionRuntime {
         }
 
         let mut translator = EventTranslator::new(actor.state().current_phase()?);
-        let event = StorageEvent {
-            turn_id: active_turn_id,
-            agent: AgentEventContext::default(),
-            payload: StorageEventPayload::Error {
-                message: "interrupted".to_string(),
-                timestamp: Some(Utc::now()),
-            },
-        };
+        let event = error_event(
+            active_turn_id.as_deref(),
+            &AgentEventContext::default(),
+            "interrupted".to_string(),
+            Some(Utc::now()),
+        );
         append_and_broadcast(actor.state(), &event, &mut translator).await?;
         crate::state::complete_session_execution(actor.state(), Phase::Interrupted);
         Ok(())

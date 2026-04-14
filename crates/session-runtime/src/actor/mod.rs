@@ -195,6 +195,12 @@ impl SessionActor {
         ))));
         let mut projector = AgentStateProjector::default();
         for stored in &stored_events {
+            stored.event.validate().map_err(|error| {
+                astrcode_core::AstrError::Validation(format!(
+                    "session '{}' contains invalid stored event at storage_seq {}: {}",
+                    session_id, stored.storage_seq, error
+                ))
+            })?;
             projector.apply(&stored.event);
         }
         let phase = normalize_recovered_phase(projector.snapshot().phase);
@@ -282,8 +288,9 @@ impl SessionActor {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, EventStore, Result, SessionMeta, SessionTurnAcquireResult, StorageEvent,
-        StorageEventPayload, StoredEvent, SubRunStorageMode, UserMessageOrigin,
+        AgentEventContext, EventStore, InvocationKind, Result, SessionMeta,
+        SessionTurnAcquireResult, StorageEvent, StorageEventPayload, StoredEvent,
+        SubRunStorageMode, UserMessageOrigin,
     };
     use async_trait::async_trait;
 
@@ -395,5 +402,41 @@ mod tests {
             projected.messages.as_slice(),
             [astrcode_core::LlmMessage::User { content, .. }] if content == "child task"
         ));
+    }
+
+    #[test]
+    fn from_replay_rejects_invalid_stored_events() {
+        let malformed = StoredEvent {
+            storage_seq: 7,
+            event: StorageEvent {
+                turn_id: Some("turn-child".to_string()),
+                agent: AgentEventContext {
+                    agent_id: Some("agent-child".to_string()),
+                    parent_turn_id: Some("turn-root".to_string()),
+                    agent_profile: Some("explore".to_string()),
+                    sub_run_id: Some("subrun-1".to_string()),
+                    parent_sub_run_id: None,
+                    invocation_kind: Some(InvocationKind::SubRun),
+                    storage_mode: Some(SubRunStorageMode::IndependentSession),
+                    child_session_id: None,
+                },
+                payload: StorageEventPayload::TurnDone {
+                    timestamp: chrono::Utc::now(),
+                    reason: Some("completed".to_string()),
+                },
+            },
+        };
+
+        let error = SessionActor::from_replay(
+            SessionId::from("session-parent".to_string()),
+            "/tmp/project",
+            AgentId::from("root-agent".to_string()),
+            Arc::new(StubEventStore),
+            vec![malformed],
+        )
+        .expect_err("replay should reject malformed stored events");
+
+        assert!(error.to_string().contains("storage_seq 7"));
+        assert!(error.to_string().contains("child_session_id"));
     }
 }

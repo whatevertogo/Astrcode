@@ -672,7 +672,8 @@ async fn close_agent_rejects_cross_session_requests() {
         state
             .app
             .kernel()
-            .get_agent_handle("root-agent")
+            .agent()
+            .get_handle("root-agent")
             .await
             .is_some(),
         "跨 session 请求不得关闭目标 agent"

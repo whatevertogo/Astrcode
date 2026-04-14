@@ -72,11 +72,7 @@ pub async fn call_llm_streaming(
 /// 不同 provider 使用不同的错误消息描述上下文长度溢出，
 /// 此函数覆盖常见的几种表述方式。
 pub fn is_prompt_too_long(error: &astrcode_core::AstrError) -> bool {
-    let message = error.to_string();
-    contains_ascii_case_insensitive(&message, "prompt too long")
-        || contains_ascii_case_insensitive(&message, "context length")
-        || contains_ascii_case_insensitive(&message, "maximum context")
-        || contains_ascii_case_insensitive(&message, "too many tokens")
+    error.is_prompt_too_long()
 }
 
 /// 将 LLM 流式增量直接发到 live-only 广播通道。
@@ -118,6 +114,10 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
         .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
+/// 将 kernel 层的 `KernelError` 映射回 `AstrError`。
+///
+/// kernel 通过字符串前缀区分 LLM 错误类型（"LLM request failed"、"LLM stream error" 等），
+/// 这里重建类型化的 `AstrError` 变体，让上层能精确匹配。
 fn map_kernel_error(error: KernelError) -> AstrError {
     match error {
         KernelError::Validation(message) => AstrError::Validation(message),

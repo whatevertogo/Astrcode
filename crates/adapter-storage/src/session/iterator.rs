@@ -16,14 +16,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_core::{StoredEvent, StoredEventLine};
+use astrcode_core::StoredEvent;
 
 use crate::Result;
 
 /// 逐行流式读取 JSONL 会话事件的迭代器。
 ///
-/// 每次 `next()` 调用读取一行 JSON，反序列化为 `StoredEventLine`，
-/// 并通过 `into_stored(line_number)` 附加物理行号生成 `StoredEvent`。
+/// 每次 `next()` 调用读取一行 JSON，反序列化为 `StoredEvent`。
 /// 空行会被自动跳过，解析错误会作为 `Err` 返回而非 panic。
 pub struct EventLogIterator {
     /// 底层缓冲读取器的行迭代器。
@@ -86,7 +85,7 @@ impl Iterator for EventLogIterator {
             if trimmed.is_empty() {
                 continue;
             }
-            let event = match serde_json::from_str::<StoredEventLine>(trimmed) {
+            let event = match serde_json::from_str::<StoredEvent>(trimmed) {
                 Ok(event) => event,
                 Err(error) => {
                     return Some(Err(Self::enhance_parse_error(
@@ -97,7 +96,15 @@ impl Iterator for EventLogIterator {
                     )));
                 },
             };
-            return Some(Ok(event.into_stored(self.line_number)));
+            if let Err(error) = event.event.validate() {
+                return Some(Err(crate::internal_io_error(format!(
+                    "invalid event at {}:{}: {}",
+                    self.path.display(),
+                    self.line_number,
+                    error
+                ))));
+            }
+            return Some(Ok(event));
         }
     }
 }
@@ -149,5 +156,57 @@ impl EventLogIterator {
             ),
             e,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use astrcode_core::{
+        AgentEventContext, InvocationKind, StorageEvent, StorageEventPayload, SubRunStorageMode,
+    };
+
+    use super::EventLogIterator;
+
+    fn write_jsonl(path: &Path, lines: &[String]) {
+        fs::write(path, lines.join("\n")).expect("jsonl should be written");
+    }
+
+    #[test]
+    fn iterator_rejects_malformed_independent_subrun_event() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp_dir.path().join("session.jsonl");
+        let malformed = serde_json::to_string(&astrcode_core::StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent {
+                turn_id: Some("turn-parent".to_string()),
+                agent: AgentEventContext {
+                    agent_id: Some("agent-child".to_string()),
+                    parent_turn_id: Some("turn-parent".to_string()),
+                    agent_profile: Some("review".to_string()),
+                    sub_run_id: Some("subrun-1".to_string()),
+                    parent_sub_run_id: None,
+                    invocation_kind: Some(InvocationKind::SubRun),
+                    storage_mode: Some(SubRunStorageMode::IndependentSession),
+                    child_session_id: None,
+                },
+                payload: StorageEventPayload::TurnDone {
+                    timestamp: chrono::Utc::now(),
+                    reason: Some("completed".to_string()),
+                },
+            },
+        })
+        .expect("malformed event should serialize");
+        write_jsonl(&path, &[malformed]);
+
+        let mut iterator = EventLogIterator::from_path(&path).expect("iterator should open");
+        let error = iterator
+            .next()
+            .expect("first line should exist")
+            .expect_err("malformed event should be rejected");
+
+        assert!(error.to_string().contains("invalid event"));
+        assert!(error.to_string().contains("child_session_id"));
     }
 }

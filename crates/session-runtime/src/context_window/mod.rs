@@ -17,5 +17,6 @@ pub mod micro_compact;
 pub mod prune_pass;
 pub mod settings;
 pub mod token_usage;
+pub(crate) mod tool_results;
 
 pub use settings::ContextWindowSettings;

@@ -22,6 +22,7 @@ pub mod catalog;
 pub mod context;
 pub mod context_window;
 pub mod factory;
+mod heuristics;
 pub mod observe;
 pub mod query;
 pub mod state;
@@ -335,10 +336,13 @@ impl SessionRuntime {
         agent: AgentEventContext,
         payload: MailboxQueuedPayload,
     ) -> Result<StoredEvent> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let session_state = self.get_session_state(&session_id).await?;
-        let mut translator = EventTranslator::new(session_state.current_phase()?);
-        append_mailbox_queued(&session_state, turn_id, agent, payload, &mut translator).await
+        self.append_agent_mailbox_event(
+            session_id,
+            turn_id,
+            agent,
+            MailboxEventAppend::Queued(payload),
+        )
+        .await
     }
 
     pub async fn append_agent_mailbox_discarded(
@@ -348,10 +352,13 @@ impl SessionRuntime {
         agent: AgentEventContext,
         payload: MailboxDiscardedPayload,
     ) -> Result<StoredEvent> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let session_state = self.get_session_state(&session_id).await?;
-        let mut translator = EventTranslator::new(session_state.current_phase()?);
-        append_mailbox_discarded(&session_state, turn_id, agent, payload, &mut translator).await
+        self.append_agent_mailbox_event(
+            session_id,
+            turn_id,
+            agent,
+            MailboxEventAppend::Discarded(payload),
+        )
+        .await
     }
 
     pub async fn append_agent_mailbox_batch_started(
@@ -361,10 +368,13 @@ impl SessionRuntime {
         agent: AgentEventContext,
         payload: MailboxBatchStartedPayload,
     ) -> Result<StoredEvent> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let session_state = self.get_session_state(&session_id).await?;
-        let mut translator = EventTranslator::new(session_state.current_phase()?);
-        append_batch_started(&session_state, turn_id, agent, payload, &mut translator).await
+        self.append_agent_mailbox_event(
+            session_id,
+            turn_id,
+            agent,
+            MailboxEventAppend::BatchStarted(payload),
+        )
+        .await
     }
 
     pub async fn append_agent_mailbox_batch_acked(
@@ -374,10 +384,26 @@ impl SessionRuntime {
         agent: AgentEventContext,
         payload: MailboxBatchAckedPayload,
     ) -> Result<StoredEvent> {
+        self.append_agent_mailbox_event(
+            session_id,
+            turn_id,
+            agent,
+            MailboxEventAppend::BatchAcked(payload),
+        )
+        .await
+    }
+
+    async fn append_agent_mailbox_event(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        agent: AgentEventContext,
+        event: MailboxEventAppend,
+    ) -> Result<StoredEvent> {
         let session_id = SessionId::from(normalize_session_id(session_id));
         let session_state = self.get_session_state(&session_id).await?;
         let mut translator = EventTranslator::new(session_state.current_phase()?);
-        append_batch_acked(&session_state, turn_id, agent, payload, &mut translator).await
+        append_mailbox_event(&session_state, turn_id, agent, event, &mut translator).await
     }
 
     /// 向指定父 session 追加 `ChildSessionNotification` durable 事件。

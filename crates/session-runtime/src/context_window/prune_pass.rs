@@ -13,9 +13,11 @@
 //! | 操作 | 截断/清除 | 摘要替换 |
 //! | 速度 | 即时 | 需要 LLM 调用 |
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use astrcode_core::{LlmMessage, UserMessageOrigin};
+
+use super::tool_results::tool_call_name_map;
 
 /// Prune pass 执行统计。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -86,19 +88,6 @@ pub fn apply_prune_pass(
             cleared_tool_results,
         },
     }
-}
-
-fn tool_call_name_map(messages: &[LlmMessage]) -> HashMap<String, String> {
-    let mut names = HashMap::new();
-    for message in messages {
-        let LlmMessage::Assistant { tool_calls, .. } = message else {
-            continue;
-        };
-        for call in tool_calls {
-            names.insert(call.id.clone(), call.name.clone());
-        }
-    }
-    names
 }
 
 fn truncate_tool_content(content: &str, max_bytes: usize) -> String {

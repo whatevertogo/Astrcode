@@ -19,9 +19,8 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, LlmMessage, Result, StorageEvent, StorageEventPayload,
-    ToolCallRequest, ToolContext, ToolExecutionResult, ToolOutputDelta,
-    tool_result_persist::resolve_inline_limit,
+    AgentEventContext, CancelToken, LlmMessage, Result, StorageEvent, ToolCallRequest, ToolContext,
+    ToolExecutionResult, ToolOutputDelta, tool_result_persist::resolve_inline_limit,
 };
 use astrcode_kernel::KernelGateway;
 use futures_util::stream::{self, StreamExt};
@@ -30,7 +29,10 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::{SessionState, SessionStateEventSink};
+use crate::{
+    SessionState, SessionStateEventSink,
+    turn::events::{tool_call_event, tool_result_event},
+};
 
 /// 工具执行周期的最终结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +64,66 @@ pub struct ToolCycleContext<'a> {
     pub events: &'a mut Vec<StorageEvent>,
     pub max_concurrency: usize,
     pub tool_result_inline_limit: usize,
+}
+
+struct SingleToolInvocation<'a> {
+    gateway: &'a KernelGateway,
+    session_state: Arc<SessionState>,
+    tool_call: &'a ToolCallRequest,
+    session_id: &'a str,
+    working_dir: &'a str,
+    turn_id: &'a str,
+    agent: &'a AgentEventContext,
+    cancel: &'a CancelToken,
+    tool_result_inline_limit: usize,
+}
+
+struct ToolOutputForwarder {
+    shutdown_tx: oneshot::Sender<()>,
+    join_handle: JoinHandle<()>,
+}
+
+impl ToolOutputForwarder {
+    fn spawn(
+        session_state: Arc<SessionState>,
+        turn_id: &str,
+        agent: &AgentEventContext,
+        mut tool_output_rx: mpsc::UnboundedReceiver<ToolOutputDelta>,
+    ) -> Self {
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let turn_id = turn_id.to_string();
+        let agent = agent.clone();
+        let join_handle = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut shutdown_rx => {
+                        while let Ok(delta) = tool_output_rx.try_recv() {
+                            broadcast_tool_output_delta(&session_state, &turn_id, &agent, delta);
+                        }
+                        break;
+                    }
+                    maybe_delta = tool_output_rx.recv() => {
+                        let Some(delta) = maybe_delta else {
+                            break;
+                        };
+                        broadcast_tool_output_delta(&session_state, &turn_id, &agent, delta);
+                    }
+                }
+            }
+        });
+        Self {
+            shutdown_tx,
+            join_handle,
+        }
+    }
+
+    async fn shutdown(self) {
+        let _ = self.shutdown_tx.send(());
+        if let Err(error) = self.join_handle.await {
+            log::warn!("tool output forwarder join failed: {error}");
+        }
+    }
 }
 
 /// 执行一组工具调用，支持并发安全工具并行。
@@ -120,17 +182,17 @@ pub async fn execute_tool_calls(
             ctx.events.extend(collected_events);
             return Ok(interrupted_result());
         }
-        let (result, local_events) = invoke_single_tool(
-            ctx.gateway,
-            Arc::clone(ctx.session_state),
-            &call,
-            ctx.session_id,
-            ctx.working_dir,
-            ctx.turn_id,
-            ctx.agent,
-            ctx.cancel,
-            ctx.tool_result_inline_limit,
-        )
+        let (result, local_events) = invoke_single_tool(SingleToolInvocation {
+            gateway: ctx.gateway,
+            session_state: Arc::clone(ctx.session_state),
+            tool_call: &call,
+            session_id: ctx.session_id,
+            working_dir: ctx.working_dir,
+            turn_id: ctx.turn_id,
+            agent: ctx.agent,
+            cancel: ctx.cancel,
+            tool_result_inline_limit: ctx.tool_result_inline_limit,
+        })
         .await;
         collected_events.extend(local_events);
         raw_results.push((call, result));
@@ -175,17 +237,17 @@ async fn execute_concurrent_safe(
             let session_state = Arc::clone(ctx.session_state);
 
             async move {
-                let (result, events) = invoke_single_tool(
-                    &gateway,
+                let (result, events) = invoke_single_tool(SingleToolInvocation {
+                    gateway: &gateway,
                     session_state,
-                    &call,
-                    &session_id,
-                    &working_dir,
-                    &turn_id,
-                    &agent,
-                    &cancel,
+                    tool_call: &call,
+                    session_id: &session_id,
+                    working_dir: &working_dir,
+                    turn_id: &turn_id,
+                    agent: &agent,
+                    cancel: &cancel,
                     tool_result_inline_limit,
-                )
+                })
                 .await;
                 (call, result, events)
             }
@@ -201,76 +263,31 @@ async fn execute_concurrent_safe(
 ///
 /// 返回 `(ToolExecutionResult, Vec<StorageEvent>)`，
 /// 返回值中的事件仅用于“即时 durable 发射失败”时的兜底补写。
-#[allow(clippy::too_many_arguments)]
 async fn invoke_single_tool(
-    gateway: &KernelGateway,
-    session_state: Arc<SessionState>,
-    tool_call: &ToolCallRequest,
-    session_id: &str,
-    working_dir: &str,
-    turn_id: &str,
-    agent: &AgentEventContext,
-    cancel: &CancelToken,
-    tool_result_inline_limit: usize,
+    invocation: SingleToolInvocation<'_>,
 ) -> (ToolExecutionResult, Vec<StorageEvent>) {
+    let SingleToolInvocation {
+        gateway,
+        session_state,
+        tool_call,
+        session_id,
+        working_dir,
+        turn_id,
+        agent,
+        cancel,
+        tool_result_inline_limit,
+    } = invocation;
     let mut events = Vec::new();
     let start = Instant::now();
     let event_sink = SessionStateEventSink::new(Arc::clone(&session_state))
         .map(|sink| Arc::new(sink) as Arc<dyn astrcode_core::ToolEventSink>)
         .ok();
-    let (tool_output_tx, mut tool_output_rx) = mpsc::unbounded_channel::<ToolOutputDelta>();
-    let (forwarder_shutdown_tx, mut forwarder_shutdown_rx) = oneshot::channel::<()>();
-    let session_state_for_forwarder = Arc::clone(&session_state);
-    let agent_for_forwarder = agent.clone();
-    let turn_id_for_forwarder = turn_id.to_string();
-    let tool_output_forwarder: JoinHandle<()> = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-                _ = &mut forwarder_shutdown_rx => {
-                    while let Ok(delta) = tool_output_rx.try_recv() {
-                        session_state_for_forwarder.broadcast_live_event(
-                            astrcode_core::AgentEvent::ToolCallDelta {
-                                turn_id: turn_id_for_forwarder.clone(),
-                                agent: agent_for_forwarder.clone(),
-                                tool_call_id: delta.tool_call_id,
-                                tool_name: delta.tool_name,
-                                stream: delta.stream,
-                                delta: delta.delta,
-                            },
-                        );
-                    }
-                    break;
-                }
-                maybe_delta = tool_output_rx.recv() => {
-                    let Some(delta) = maybe_delta else {
-                        break;
-                    };
-                    session_state_for_forwarder.broadcast_live_event(
-                        astrcode_core::AgentEvent::ToolCallDelta {
-                            turn_id: turn_id_for_forwarder.clone(),
-                            agent: agent_for_forwarder.clone(),
-                            tool_call_id: delta.tool_call_id,
-                            tool_name: delta.tool_name,
-                            stream: delta.stream,
-                            delta: delta.delta,
-                        },
-                    );
-                }
-            }
-        }
-    });
+    let (tool_output_tx, tool_output_rx) = mpsc::unbounded_channel::<ToolOutputDelta>();
+    let tool_output_forwarder =
+        ToolOutputForwarder::spawn(Arc::clone(&session_state), turn_id, agent, tool_output_rx);
 
     // 发出 ToolCall 开始事件
-    let tool_call_event = StorageEvent {
-        turn_id: Some(turn_id.to_string()),
-        agent: agent.clone(),
-        payload: StorageEventPayload::ToolCall {
-            tool_call_id: tool_call.id.clone(),
-            tool_name: tool_call.name.clone(),
-            args: tool_call.args.clone(),
-        },
-    };
+    let tool_call_event = tool_call_event(turn_id, agent, tool_call);
     emit_or_buffer_tool_event(&event_sink, &mut events, tool_call_event, "tool start");
 
     // 构建工具上下文
@@ -304,28 +321,36 @@ async fn invoke_single_tool(
     // 不能把“所有 sender 都 drop”当成工具结束条件，因为 sender 会被多层上下文 clone。
     drop(tool_ctx);
     drop(tool_output_tx);
-    let _ = forwarder_shutdown_tx.send(());
-    if let Err(error) = tool_output_forwarder.await {
-        log::warn!("tool output forwarder join failed: {error}");
-    }
+    tool_output_forwarder.shutdown().await;
 
     // 发出 ToolResult 结束事件
-    let tool_result_event = StorageEvent {
-        turn_id: Some(turn_id.to_string()),
-        agent: agent.clone(),
-        payload: StorageEventPayload::ToolResult {
-            tool_call_id: result.tool_call_id.clone(),
-            tool_name: result.tool_name.clone(),
-            output: result.output.clone(),
-            success: result.ok,
-            error: result.error.clone(),
-            metadata: result.metadata.clone(),
+    let tool_result_event = tool_result_event(
+        turn_id,
+        agent,
+        &ToolExecutionResult {
             duration_ms,
+            ..result.clone()
         },
-    };
+    );
     emit_or_buffer_tool_event(&event_sink, &mut events, tool_result_event, "tool result");
 
     (result, events)
+}
+
+fn broadcast_tool_output_delta(
+    session_state: &SessionState,
+    turn_id: &str,
+    agent: &AgentEventContext,
+    delta: ToolOutputDelta,
+) {
+    session_state.broadcast_live_event(astrcode_core::AgentEvent::ToolCallDelta {
+        turn_id: turn_id.to_string(),
+        agent: agent.clone(),
+        tool_call_id: delta.tool_call_id,
+        tool_name: delta.tool_name,
+        stream: delta.stream,
+        delta: delta.delta,
+    });
 }
 
 fn emit_or_buffer_tool_event(
@@ -357,18 +382,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use astrcode_core::{
-        AgentStateProjector, CapabilityKind, EventLogWriter, LlmProvider, LlmRequest, ModelLimits,
-        Phase, PromptBuildOutput, PromptBuildRequest, PromptProvider, ResourceProvider,
-        ResourceReadResult, ResourceRequestContext, StorageEventPayload, StoreResult, Tool,
-        ToolDefinition, ToolOutputStream,
+        CapabilityKind, StorageEventPayload, Tool, ToolDefinition, ToolOutputStream,
     };
-    use astrcode_kernel::{Kernel, ToolCapabilityInvoker};
     use async_trait::async_trait;
     use serde_json::{Value, json};
     use tokio::time::{Duration, timeout};
 
     use super::*;
-    use crate::SessionWriter;
+    use crate::turn::test_support::{test_kernel_with_tool, test_session_state};
 
     #[test]
     fn tool_cycle_outcome_equality() {
@@ -476,16 +497,14 @@ mod tests {
             let sink = ctx
                 .event_sink()
                 .expect("streaming probe should receive tool event sink");
-            sink.emit(StorageEvent {
-                turn_id: Some(turn_id),
-                agent: ctx.agent_context().clone(),
-                payload: StorageEventPayload::ToolCallDelta {
-                    tool_call_id: tool_call_id.clone(),
-                    tool_name: "streaming_probe".to_string(),
-                    stream: ToolOutputStream::Stdout,
-                    delta: "durable-delta".to_string(),
-                },
-            })?;
+            sink.emit(crate::turn::events::tool_call_delta_event(
+                &turn_id,
+                ctx.agent_context(),
+                tool_call_id.clone(),
+                "streaming_probe".to_string(),
+                ToolOutputStream::Stdout,
+                "durable-delta".to_string(),
+            ))?;
             assert!(
                 ctx.emit_stdout(tool_call_id.clone(), "streaming_probe", "live-stdout"),
                 "streaming probe should be able to emit live stdout"
@@ -503,108 +522,15 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct NoopLlmProvider;
-
-    #[async_trait]
-    impl LlmProvider for NoopLlmProvider {
-        async fn generate(
-            &self,
-            _request: LlmRequest,
-            _sink: Option<astrcode_core::LlmEventSink>,
-        ) -> Result<astrcode_core::LlmOutput> {
-            Err(astrcode_core::AstrError::Validation(
-                "noop llm provider should not execute in this test".to_string(),
-            ))
-        }
-
-        fn model_limits(&self) -> ModelLimits {
-            ModelLimits {
-                context_window: 8192,
-                max_output_tokens: 4096,
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    struct NoopPromptProvider;
-
-    #[async_trait]
-    impl PromptProvider for NoopPromptProvider {
-        async fn build_prompt(&self, _request: PromptBuildRequest) -> Result<PromptBuildOutput> {
-            Ok(PromptBuildOutput {
-                system_prompt: "noop".to_string(),
-                system_prompt_blocks: Vec::new(),
-                metadata: Value::Null,
-            })
-        }
-    }
-
-    #[derive(Debug)]
-    struct NoopResourceProvider;
-
-    #[async_trait]
-    impl ResourceProvider for NoopResourceProvider {
-        async fn read_resource(
-            &self,
-            _uri: &str,
-            _context: &ResourceRequestContext,
-        ) -> Result<ResourceReadResult> {
-            Ok(ResourceReadResult {
-                uri: "noop://resource".to_string(),
-                content: Value::Null,
-                metadata: Value::Null,
-            })
-        }
-    }
-
-    fn test_kernel_with_tool(tool: Arc<dyn Tool>) -> Kernel {
-        let router = astrcode_kernel::CapabilityRouter::builder()
-            .register_invoker(Arc::new(
-                ToolCapabilityInvoker::new(tool).expect("tool invoker should build"),
-            ))
-            .build()
-            .expect("router should build");
-        Kernel::builder()
-            .with_capabilities(router)
-            .with_llm_provider(Arc::new(NoopLlmProvider))
-            .with_prompt_provider(Arc::new(NoopPromptProvider))
-            .with_resource_provider(Arc::new(NoopResourceProvider))
-            .build()
-            .expect("kernel should build")
-    }
-
-    #[derive(Debug, Default)]
-    struct NoopEventLogWriter {
-        next_seq: u64,
-    }
-
-    impl EventLogWriter for NoopEventLogWriter {
-        fn append(&mut self, event: &StorageEvent) -> StoreResult<astrcode_core::StoredEvent> {
-            self.next_seq += 1;
-            Ok(astrcode_core::StoredEvent {
-                storage_seq: self.next_seq,
-                event: event.clone(),
-            })
-        }
-    }
-
-    fn test_session_state() -> Arc<SessionState> {
-        Arc::new(SessionState::new(
-            Phase::Idle,
-            Arc::new(SessionWriter::new(Box::new(NoopEventLogWriter::default()))),
-            AgentStateProjector::default(),
-            Vec::new(),
-            Vec::new(),
-        ))
-    }
-
     #[tokio::test]
     async fn invoke_single_tool_preserves_turn_and_agent_context() {
         let observed = Arc::new(Mutex::new(Vec::new()));
-        let kernel = test_kernel_with_tool(Arc::new(ContextProbeTool {
-            observed: Arc::clone(&observed),
-        }));
+        let kernel = test_kernel_with_tool(
+            Arc::new(ContextProbeTool {
+                observed: Arc::clone(&observed),
+            }),
+            8192,
+        );
         let tool_call = ToolCallRequest {
             id: "call-1".to_string(),
             name: "context_probe".to_string(),
@@ -613,17 +539,18 @@ mod tests {
         let agent = AgentEventContext::root_execution("root-agent:session-1", "default");
         let session_state = test_session_state();
 
-        let (result, _) = invoke_single_tool(
-            kernel.gateway(),
+        let cancel = CancelToken::new();
+        let (result, _) = invoke_single_tool(SingleToolInvocation {
+            gateway: kernel.gateway(),
             session_state,
-            &tool_call,
-            "session-1",
-            ".",
-            "turn-1",
-            &agent,
-            &CancelToken::new(),
-            32 * 1024,
-        )
+            tool_call: &tool_call,
+            session_id: "session-1",
+            working_dir: ".",
+            turn_id: "turn-1",
+            agent: &agent,
+            cancel: &cancel,
+            tool_result_inline_limit: 32 * 1024,
+        })
         .await;
 
         assert!(result.ok, "tool invocation should succeed: {result:?}");
@@ -640,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn invoke_single_tool_emits_structured_and_live_events_immediately() {
-        let kernel = test_kernel_with_tool(Arc::new(StreamingProbeTool));
+        let kernel = test_kernel_with_tool(Arc::new(StreamingProbeTool), 8192);
         let tool_call = ToolCallRequest {
             id: "call-live".to_string(),
             name: "streaming_probe".to_string(),
@@ -650,17 +577,18 @@ mod tests {
         let session_state = test_session_state();
         let mut live_receiver = session_state.subscribe_live();
 
-        let (result, fallback_events) = invoke_single_tool(
-            kernel.gateway(),
-            Arc::clone(&session_state),
-            &tool_call,
-            "session-1",
-            ".",
-            "turn-live",
-            &agent,
-            &CancelToken::new(),
-            32 * 1024,
-        )
+        let cancel = CancelToken::new();
+        let (result, fallback_events) = invoke_single_tool(SingleToolInvocation {
+            gateway: kernel.gateway(),
+            session_state: Arc::clone(&session_state),
+            tool_call: &tool_call,
+            session_id: "session-1",
+            working_dir: ".",
+            turn_id: "turn-live",
+            agent: &agent,
+            cancel: &cancel,
+            tool_result_inline_limit: 32 * 1024,
+        })
         .await;
 
         assert!(result.ok, "tool invocation should succeed: {result:?}");

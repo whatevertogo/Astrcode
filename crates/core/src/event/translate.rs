@@ -5,7 +5,7 @@
 //! ## 核心职责
 //!
 //! 1. **Phase 跟踪**: 维护当前会话阶段，在阶段变化时发出 `PhaseChanged` 事件
-//! 2. **Turn ID 管理**: 为旧事件（没有 turn_id）生成 legacy turn ID
+//! 2. **Turn ID 管理**: 复用当前 turn 上下文，不再为缺失 turn_id 的事件生成回退 ID
 //! 3. **工具名称缓存**: 存储 `tool_call_id -> tool_name` 映射，用于 ToolResult
 //! 4. **事件 ID 生成**: 为每个领域事件生成 `{storage_seq}.{subindex}` 格式的 ID
 //!
@@ -76,7 +76,6 @@ fn warn_missing_turn_id(storage_seq: u64, event_name: &str) {
 pub struct EventTranslator {
     phase_tracker: PhaseTracker,
     current_turn_id: Option<String>,
-    legacy_turn_index: u64,
     tool_call_names: HashMap<String, String>,
 }
 
@@ -85,7 +84,6 @@ impl EventTranslator {
         Self {
             phase_tracker: PhaseTracker::new(phase),
             current_turn_id: None,
-            legacy_turn_index: 0,
             tool_call_names: HashMap::new(),
         }
     }
@@ -442,12 +440,6 @@ impl EventTranslator {
         }
 
         match &event.payload {
-            StorageEventPayload::UserMessage { .. } => {
-                self.legacy_turn_index = self.legacy_turn_index.saturating_add(1);
-                let turn_id = format!("legacy-turn-{}", self.legacy_turn_index);
-                self.current_turn_id = Some(turn_id.clone());
-                Some(turn_id)
-            },
             StorageEventPayload::SessionStart { .. } => None,
             _ => self.current_turn_id.clone(),
         }

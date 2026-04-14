@@ -116,7 +116,6 @@ describe('SubRunBlock result rendering', () => {
 
     expect(html).toContain('查看子执行');
     expect(html).toContain('independent session');
-    expect(html).not.toContain('shared session');
     expect(html).not.toContain('调用参数');
   });
 

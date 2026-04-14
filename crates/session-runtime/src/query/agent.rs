@@ -10,6 +10,8 @@ use astrcode_core::{
     StorageEventPayload, StoredEvent, UserMessageOrigin,
 };
 
+use crate::heuristics::{MAX_RECENT_MAILBOX_MESSAGES, MAX_TASK_SUMMARY_CHARS};
+
 #[derive(Debug, Clone)]
 pub struct AgentObserveSnapshot {
     pub phase: astrcode_core::Phase,
@@ -145,8 +147,6 @@ fn recent_mailbox_message_summaries(
     stored_events: &[StoredEvent],
     target_agent_id: &str,
 ) -> Vec<String> {
-    const MAX_RECENT_MAILBOX_MESSAGES: usize = 3;
-
     stored_events
         .iter()
         .filter_map(|stored| match &stored.event.payload {
@@ -172,7 +172,6 @@ fn summarize_task_text(text: &str) -> Option<String> {
         return None;
     }
 
-    const MAX_TASK_SUMMARY_CHARS: usize = 120;
     let char_count = trimmed.chars().count();
     if char_count <= MAX_TASK_SUMMARY_CHARS {
         return Some(trimmed.to_string());

@@ -8,7 +8,10 @@ use async_trait::async_trait;
 
 use crate::{
     BlockSpec, PromptContext, PromptContribution, PromptContributor, PromptDeclaration,
-    PromptDeclarationKind,
+    prompt_declaration::{
+        prompt_declaration_block_kind, prompt_declaration_category,
+        prompt_declaration_render_target, prompt_declaration_source_tag,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,17 +87,14 @@ impl PromptContributor for PromptDeclarationContributor {
 fn build_prompt_declaration_block(declaration: &PromptDeclaration) -> BlockSpec {
     let mut block = BlockSpec::message_text(
         declaration.block_id.clone(),
-        declaration.kind.as_block_kind(),
+        prompt_declaration_block_kind(&declaration.kind),
         declaration.title.clone(),
         declaration.content.clone(),
-        declaration.render_target.as_render_target(),
+        prompt_declaration_render_target(&declaration.render_target),
     )
     .with_layer(declaration.layer)
-    .with_category(match declaration.kind {
-        PromptDeclarationKind::ToolGuide => "capabilities",
-        PromptDeclarationKind::ExtensionInstruction => "extensions",
-    })
-    .with_tag(declaration.source.as_tag());
+    .with_category(prompt_declaration_category(&declaration.kind))
+    .with_tag(prompt_declaration_source_tag(&declaration.source));
 
     if let Some(priority_hint) = declaration.priority_hint {
         block = block.with_priority(priority_hint);

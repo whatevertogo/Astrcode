@@ -8,8 +8,7 @@
 use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
-    AgentMode, ExecutionAccepted, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
-    SubagentContextOverrides,
+    AgentMode, ExecutionAccepted, ResolvedRuntimeConfig, SubagentContextOverrides,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -50,7 +49,7 @@ pub async fn execute_root_agent(
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_root_request(&request)?;
     apply_execution_control(&mut runtime_config, request.control.as_ref());
-    resolve_root_context_overrides(request.context_overrides.as_ref())?;
+    validate_root_context_overrides_supported(request.context_overrides.as_ref())?;
 
     let profile = profiles.find_profile(Path::new(&request.working_dir), &request.agent_id)?;
     ensure_root_profile_mode(&profile)?;
@@ -62,7 +61,7 @@ pub async fn execute_root_agent(
         .map_err(ApplicationError::from)?;
 
     kernel
-        .agent_control()
+        .agent()
         .register_root_agent(
             request.agent_id.clone(),
             session.session_id.clone(),
@@ -113,12 +112,11 @@ fn validate_root_request(request: &RootExecutionRequest) -> Result<(), Applicati
     Ok(())
 }
 
-fn resolve_root_context_overrides(
+fn validate_root_context_overrides_supported(
     overrides: Option<&SubagentContextOverrides>,
-) -> Result<ResolvedSubagentContextOverrides, ApplicationError> {
-    let resolved = ResolvedSubagentContextOverrides::default();
+) -> Result<(), ApplicationError> {
     let Some(overrides) = overrides else {
-        return Ok(resolved);
+        return Ok(());
     };
 
     // 根执行当前没有“父上下文”可继承，任何显式 overrides 都不会真正改变执行输入。
@@ -129,7 +127,7 @@ fn resolve_root_context_overrides(
         ));
     }
 
-    Ok(resolved)
+    Ok(())
 }
 
 fn ensure_root_profile_mode(profile: &astrcode_core::AgentProfile) -> Result<(), ApplicationError> {
@@ -257,16 +255,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_root_context_overrides_accepts_empty_overrides() {
-        let resolved = resolve_root_context_overrides(Some(&SubagentContextOverrides::default()))
+    fn validate_root_context_overrides_accepts_empty_overrides() {
+        validate_root_context_overrides_supported(Some(&SubagentContextOverrides::default()))
             .expect("empty overrides should pass");
-
-        assert_eq!(resolved, ResolvedSubagentContextOverrides::default());
     }
 
     #[test]
-    fn resolve_root_context_overrides_rejects_non_empty_override() {
-        let error = resolve_root_context_overrides(Some(&SubagentContextOverrides {
+    fn validate_root_context_overrides_rejects_non_empty_override() {
+        let error = validate_root_context_overrides_supported(Some(&SubagentContextOverrides {
             include_compact_summary: Some(true),
             ..SubagentContextOverrides::default()
         }))

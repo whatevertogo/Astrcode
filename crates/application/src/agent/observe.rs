@@ -26,53 +26,23 @@ impl AgentOrchestrationService {
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;
 
-        let child = match self.kernel.get_agent_handle(&params.agent_id).await {
-            Some(child) => child,
-            None => {
-                let error = super::AgentOrchestrationError::NotFound(format!(
-                    "agent '{}' not found",
-                    params.agent_id
-                ));
-                return self
-                    .reject_with_fact(
-                        collaboration.runtime(),
-                        collaboration
-                            .fact(
-                                AgentCollaborationActionKind::Observe,
-                                AgentCollaborationOutcomeKind::Rejected,
-                            )
-                            .reason_code("child_not_found")
-                            .summary(error.to_string()),
-                        error,
-                    )
-                    .await;
-            },
-        };
-
-        if let Err(error) = self.verify_caller_owns_child(ctx, &child) {
-            return self
-                .reject_with_fact(
-                    collaboration.runtime(),
-                    collaboration
-                        .fact(
-                            AgentCollaborationActionKind::Observe,
-                            AgentCollaborationOutcomeKind::Rejected,
-                        )
-                        .child(&child)
-                        .reason_code("ownership_mismatch")
-                        .summary(error.to_string()),
-                    error,
-                )
-                .await;
-        }
+        let child = self
+            .require_direct_child_handle(
+                &params.agent_id,
+                AgentCollaborationActionKind::Observe,
+                ctx,
+                &collaboration,
+            )
+            .await?;
 
         let lifecycle_status = self
             .kernel
-            .get_agent_lifecycle(&params.agent_id)
+            .agent()
+            .get_lifecycle(&params.agent_id)
             .await
             .unwrap_or(AgentLifecycleStatus::Pending);
 
-        let last_turn_outcome = self.kernel.get_agent_turn_outcome(&params.agent_id).await;
+        let last_turn_outcome = self.kernel.agent().get_turn_outcome(&params.agent_id).await;
 
         let open_session_id = child
             .child_session_id
@@ -411,7 +381,8 @@ mod tests {
         for _ in 0..20 {
             if harness
                 .kernel
-                .get_agent_lifecycle(&child_agent_id)
+                .agent()
+                .get_lifecycle(&child_agent_id)
                 .await
                 .is_some_and(|lifecycle| lifecycle == astrcode_core::AgentLifecycleStatus::Idle)
             {

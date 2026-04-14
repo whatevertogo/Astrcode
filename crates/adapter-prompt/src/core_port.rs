@@ -4,28 +4,16 @@
 //! 本模块将其适配到 `LayeredPromptBuilder` 的完整 prompt 构建能力上。
 
 use astrcode_core::{
-    Result, SystemPromptBlock, SystemPromptLayer,
+    Result, SystemPromptBlock,
     ports::{PromptBuildOutput, PromptBuildRequest, PromptProvider},
 };
 use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
-    PromptAgentProfileSummary, PromptContext, PromptDeclaration, PromptDeclarationKind,
-    PromptDeclarationRenderTarget, PromptDeclarationSource, PromptSkillSummary,
+    PromptAgentProfileSummary, PromptContext, PromptDeclaration, PromptSkillSummary,
     layered_builder::{LayeredPromptBuilder, default_layered_prompt_builder},
 };
-
-/// adapter-prompt 的 PromptLayer → core 的 SystemPromptLayer
-fn convert_layer(layer: crate::PromptLayer) -> SystemPromptLayer {
-    match layer {
-        crate::PromptLayer::Stable => SystemPromptLayer::Stable,
-        crate::PromptLayer::SemiStable => SystemPromptLayer::SemiStable,
-        crate::PromptLayer::Inherited => SystemPromptLayer::Inherited,
-        crate::PromptLayer::Dynamic => SystemPromptLayer::Dynamic,
-        crate::PromptLayer::Unspecified => SystemPromptLayer::Unspecified,
-    }
-}
 
 /// 基于 `LayeredPromptBuilder` 的 `PromptProvider` 实现。
 ///
@@ -70,7 +58,7 @@ impl PromptProvider for ComposerPromptProvider {
             prompt_declarations: request
                 .prompt_declarations
                 .into_iter()
-                .map(convert_prompt_declaration)
+                .map(PromptDeclaration::from)
                 .collect(),
             agent_profiles: request
                 .agent_profiles
@@ -100,7 +88,7 @@ impl PromptProvider for ComposerPromptProvider {
                 title: block.title.clone(),
                 content: block.content.clone(),
                 cache_boundary: false,
-                layer: convert_layer(block.layer),
+                layer: block.layer,
             })
             .collect();
 
@@ -115,53 +103,6 @@ impl PromptProvider for ComposerPromptProvider {
                 "turn_index": request.turn_index,
             }),
         })
-    }
-}
-
-fn convert_prompt_declaration(declaration: astrcode_core::PromptDeclaration) -> PromptDeclaration {
-    PromptDeclaration {
-        block_id: declaration.block_id,
-        title: declaration.title,
-        content: declaration.content,
-        render_target: match declaration.render_target {
-            astrcode_core::PromptDeclarationRenderTarget::System => {
-                PromptDeclarationRenderTarget::System
-            },
-            astrcode_core::PromptDeclarationRenderTarget::PrependUser => {
-                PromptDeclarationRenderTarget::PrependUser
-            },
-            astrcode_core::PromptDeclarationRenderTarget::PrependAssistant => {
-                PromptDeclarationRenderTarget::PrependAssistant
-            },
-            astrcode_core::PromptDeclarationRenderTarget::AppendUser => {
-                PromptDeclarationRenderTarget::AppendUser
-            },
-            astrcode_core::PromptDeclarationRenderTarget::AppendAssistant => {
-                PromptDeclarationRenderTarget::AppendAssistant
-            },
-        },
-        layer: match declaration.layer {
-            astrcode_core::SystemPromptLayer::Stable => crate::PromptLayer::Stable,
-            astrcode_core::SystemPromptLayer::SemiStable => crate::PromptLayer::SemiStable,
-            astrcode_core::SystemPromptLayer::Inherited => crate::PromptLayer::Inherited,
-            astrcode_core::SystemPromptLayer::Dynamic => crate::PromptLayer::Dynamic,
-            astrcode_core::SystemPromptLayer::Unspecified => crate::PromptLayer::Unspecified,
-        },
-        kind: match declaration.kind {
-            astrcode_core::PromptDeclarationKind::ToolGuide => PromptDeclarationKind::ToolGuide,
-            astrcode_core::PromptDeclarationKind::ExtensionInstruction => {
-                PromptDeclarationKind::ExtensionInstruction
-            },
-        },
-        priority_hint: declaration.priority_hint,
-        always_include: declaration.always_include,
-        source: match declaration.source {
-            astrcode_core::PromptDeclarationSource::Builtin => PromptDeclarationSource::Builtin,
-            astrcode_core::PromptDeclarationSource::Plugin => PromptDeclarationSource::Plugin,
-            astrcode_core::PromptDeclarationSource::Mcp => PromptDeclarationSource::Mcp,
-        },
-        capability_name: declaration.capability_name,
-        origin: declaration.origin,
     }
 }
 

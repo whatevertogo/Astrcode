@@ -6,11 +6,14 @@ use astrcode_core::{
     LiveSubRunControlBoundary, SessionId, SubRunHandle,
 };
 
-// 直接内联默认值，避免 kernel 依赖 runtime-config
-const DEFAULT_AGENT_TREE_DEPTH_LIMIT: usize = 3;
-const DEFAULT_MAX_CONCURRENT_AGENTS: usize = 8;
+use super::{
+    AgentControl, AgentControlError, AgentControlLimits, LiveSubRunControl,
+    StaticAgentProfileSource,
+};
 
-use super::{AgentControl, AgentControlError, LiveSubRunControl, StaticAgentProfileSource};
+fn default_limits() -> AgentControlLimits {
+    AgentControlLimits::default()
+}
 
 fn explore_profile() -> AgentProfile {
     AgentProfile {
@@ -315,11 +318,8 @@ async fn mark_failed_transitions_agent_to_final_failed_state() {
 
 #[tokio::test]
 async fn gc_prunes_old_finalized_leaf_agents_but_keeps_recent_and_live_nodes() {
-    let control = AgentControl::with_limits(
-        DEFAULT_AGENT_TREE_DEPTH_LIMIT,
-        DEFAULT_MAX_CONCURRENT_AGENTS,
-        1,
-    );
+    let limits = default_limits();
+    let control = AgentControl::with_limits(limits.max_depth, limits.max_concurrent, 1);
 
     let first = control
         .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
@@ -662,6 +662,54 @@ async fn close_cascades_to_entire_subtree_but_not_siblings() {
             .expect("should exist")
             .lifecycle,
         AgentLifecycleStatus::Running
+    );
+}
+
+#[tokio::test]
+async fn terminate_subtree_and_collect_handles_survives_pruning_closed_branch() {
+    let control = AgentControl::with_limits(4, 10, 0);
+    let parent = control
+        .spawn(&explore_profile(), "session-1", "turn-1".to_string(), None)
+        .await
+        .expect("parent spawn should succeed");
+    let child = control
+        .spawn(
+            &explore_profile(),
+            "session-1",
+            "turn-1".to_string(),
+            Some(parent.agent_id.clone()),
+        )
+        .await
+        .expect("child spawn should succeed");
+    let grandchild = control
+        .spawn(
+            &explore_profile(),
+            "session-1",
+            "turn-1".to_string(),
+            Some(child.agent_id.clone()),
+        )
+        .await
+        .expect("grandchild spawn should succeed");
+
+    let closed = control
+        .terminate_subtree_and_collect_handles(&parent.agent_id)
+        .await
+        .expect("terminate should succeed");
+
+    assert_eq!(
+        closed
+            .iter()
+            .map(|handle| handle.agent_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            parent.agent_id.as_str(),
+            child.agent_id.as_str(),
+            grandchild.agent_id.as_str()
+        ]
+    );
+    assert!(
+        control.get(&parent.agent_id).await.is_none(),
+        "retain limit 0 should prune the terminated branch from registry"
     );
 }
 

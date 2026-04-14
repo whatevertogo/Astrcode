@@ -8,17 +8,20 @@ use std::{collections::HashSet, path::Path, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, CompactTrigger, LlmMessage, LlmRequest, PromptBuildOutput,
-    PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptMetricsPayload,
-    Result, StorageEvent, StorageEventPayload, UserMessageOrigin,
+    PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, Result, StorageEvent,
+    UserMessageOrigin,
 };
 use astrcode_kernel::KernelGateway;
 
-use crate::context_window::{
-    ContextWindowSettings,
-    compaction::{CompactConfig, auto_compact},
-    file_access::{FileAccessTracker, FileRecoveryConfig},
-    micro_compact::MicroCompactState,
-    token_usage::{PromptTokenSnapshot, TokenUsageTracker, build_prompt_snapshot, should_compact},
+use crate::{
+    context_window::{
+        ContextWindowSettings,
+        compaction::{CompactConfig, auto_compact},
+        file_access::{FileAccessTracker, FileRecoveryConfig},
+        micro_compact::MicroCompactState,
+        token_usage::{TokenUsageTracker, build_prompt_snapshot, should_compact},
+    },
+    turn::events::{CompactAppliedStats, compact_applied_event, prompt_metrics_event},
 };
 
 pub struct AssemblePromptRequest<'a> {
@@ -110,20 +113,20 @@ pub async fn assemble_prompt_request(
                     },
                 ));
 
-                events.push(StorageEvent {
-                    turn_id: Some(request.turn_id.to_string()),
-                    agent: request.agent.clone(),
-                    payload: StorageEventPayload::CompactApplied {
-                        trigger: CompactTrigger::Auto,
-                        summary: compaction.summary,
-                        preserved_recent_turns: saturating_u32(compaction.preserved_recent_turns),
-                        pre_tokens: saturating_u32(compaction.pre_tokens),
-                        post_tokens_estimate: saturating_u32(compaction.post_tokens_estimate),
-                        messages_removed: saturating_u32(compaction.messages_removed),
-                        tokens_freed: saturating_u32(compaction.tokens_freed),
-                        timestamp: compaction.timestamp,
+                events.push(compact_applied_event(
+                    Some(request.turn_id),
+                    request.agent,
+                    CompactTrigger::Auto,
+                    compaction.summary,
+                    CompactAppliedStats {
+                        preserved_recent_turns: compaction.preserved_recent_turns,
+                        pre_tokens: compaction.pre_tokens,
+                        post_tokens_estimate: compaction.post_tokens_estimate,
+                        messages_removed: compaction.messages_removed,
+                        tokens_freed: compaction.tokens_freed,
                     },
-                });
+                    compaction.timestamp,
+                ));
 
                 prompt_output = build_prompt_output(
                     request.gateway,
@@ -281,126 +284,16 @@ pub(crate) fn count_user_turns(messages: &[LlmMessage]) -> usize {
         .count()
 }
 
-fn prompt_metrics_event(
-    turn_id: &str,
-    agent: &AgentEventContext,
-    step_index: usize,
-    snapshot: PromptTokenSnapshot,
-    truncated_tool_results: usize,
-) -> StorageEvent {
-    StorageEvent {
-        turn_id: Some(turn_id.to_string()),
-        agent: agent.clone(),
-        payload: StorageEventPayload::PromptMetrics {
-            metrics: PromptMetricsPayload {
-                step_index: saturating_u32(step_index),
-                estimated_tokens: saturating_u32(snapshot.context_tokens),
-                context_window: saturating_u32(snapshot.context_window),
-                effective_window: saturating_u32(snapshot.effective_window),
-                threshold_tokens: saturating_u32(snapshot.threshold_tokens),
-                truncated_tool_results: saturating_u32(truncated_tool_results),
-                provider_input_tokens: None,
-                provider_output_tokens: None,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                provider_cache_metrics_supported: false,
-                prompt_cache_reuse_hits: 0,
-                prompt_cache_reuse_misses: 0,
-            },
-        },
-    }
-}
-
-fn saturating_u32(value: usize) -> u32 {
-    value.min(u32::MAX as usize) as u32
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use astrcode_core::{
-        LlmProvider, LlmRequest, PromptBuildRequest, PromptFactsRequest, PromptProvider,
-        ResolvedRuntimeConfig, ResourceProvider, ResourceReadResult, ResourceRequestContext,
-        ToolDefinition,
-    };
-    use astrcode_kernel::CapabilityRouter;
+    use astrcode_core::{ResolvedRuntimeConfig, StorageEventPayload, ToolDefinition};
     use serde_json::json;
 
     use super::*;
-    use crate::context_window::token_usage::TokenUsageTracker;
-
-    struct TestPromptProvider;
-
-    #[async_trait::async_trait]
-    impl PromptProvider for TestPromptProvider {
-        async fn build_prompt(&self, _request: PromptBuildRequest) -> Result<PromptBuildOutput> {
-            Ok(PromptBuildOutput {
-                system_prompt: "system".to_string(),
-                system_prompt_blocks: Vec::new(),
-                metadata: json!(null),
-            })
-        }
-    }
-
-    struct TestPromptFactsProvider;
-
-    #[async_trait::async_trait]
-    impl PromptFactsProvider for TestPromptFactsProvider {
-        async fn resolve_prompt_facts(&self, _request: &PromptFactsRequest) -> Result<PromptFacts> {
-            Ok(PromptFacts::default())
-        }
-    }
-
-    struct TestResourceProvider;
-
-    #[async_trait::async_trait]
-    impl ResourceProvider for TestResourceProvider {
-        async fn read_resource(
-            &self,
-            uri: &str,
-            _context: &ResourceRequestContext,
-        ) -> Result<ResourceReadResult> {
-            Ok(ResourceReadResult {
-                uri: uri.to_string(),
-                content: json!(null),
-                metadata: json!(null),
-            })
-        }
-    }
-
-    struct TestLlmProvider {
-        limits: astrcode_core::ModelLimits,
-    }
-
-    #[async_trait::async_trait]
-    impl LlmProvider for TestLlmProvider {
-        async fn generate(
-            &self,
-            _request: LlmRequest,
-            _sink: Option<astrcode_core::LlmEventSink>,
-        ) -> Result<astrcode_core::LlmOutput> {
-            Ok(astrcode_core::LlmOutput::default())
-        }
-
-        fn model_limits(&self) -> astrcode_core::ModelLimits {
-            self.limits
-        }
-    }
-
-    fn test_gateway(context_window: usize) -> KernelGateway {
-        KernelGateway::new(
-            CapabilityRouter::empty(),
-            Arc::new(TestLlmProvider {
-                limits: astrcode_core::ModelLimits {
-                    context_window,
-                    max_output_tokens: 4096,
-                },
-            }),
-            Arc::new(TestPromptProvider),
-            Arc::new(TestResourceProvider),
-        )
-    }
+    use crate::{
+        context_window::token_usage::TokenUsageTracker,
+        turn::test_support::{NoopPromptFactsProvider, test_gateway},
+    };
 
     #[tokio::test]
     async fn assemble_prompt_request_emits_prompt_metrics_for_final_prompt() {
@@ -411,7 +304,7 @@ mod tests {
 
         let result = assemble_prompt_request(AssemblePromptRequest {
             gateway: &gateway,
-            prompt_facts_provider: &TestPromptFactsProvider,
+            prompt_facts_provider: &NoopPromptFactsProvider,
             session_id: "session-1",
             turn_id: "turn-1",
             working_dir: Path::new("."),

@@ -1,12 +1,12 @@
 use std::{path::Path, sync::Arc};
 
-use astrcode_core::{
-    AgentEventContext, AgentProfile, ChildSessionNode, DeleteProjectResult, ExecutionAccepted,
-    SessionMeta, StoredEvent, config::Config,
-};
+use astrcode_core::{AgentProfile, ExecutionAccepted, config::Config};
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
 use tokio::sync::broadcast;
+
+mod app_agent;
+mod app_session;
 
 pub mod agent;
 pub mod composer;
@@ -19,9 +19,6 @@ pub mod observability;
 pub mod watch;
 
 pub use agent::AgentOrchestrationService;
-use agent::{
-    IMPLICIT_ROOT_PROFILE_ID, implicit_session_root_agent_id, root_execution_event_context,
-};
 pub use astrcode_session_runtime::{
     SessionCatalogEvent, SessionHistorySnapshot, SessionReplay, SessionViewSnapshot,
     TurnCollaborationSummary, TurnSummary,
@@ -125,8 +122,10 @@ pub struct App {
     agent_service: Arc<AgentOrchestrationService>,
 }
 
+/// 手动压缩请求的返回结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactSessionAccepted {
+    /// true 表示压缩被推迟（当前有 turn 正在执行），待 turn 结束后自动执行。
     pub deferred: bool,
 }
 
@@ -182,25 +181,6 @@ impl App {
         self.session_runtime.subscribe_catalog_events()
     }
 
-    pub async fn list_sessions(&self) -> Result<Vec<SessionMeta>, ApplicationError> {
-        self.session_runtime
-            .list_session_metas()
-            .await
-            .map_err(ApplicationError::from)
-    }
-
-    pub async fn create_session(
-        &self,
-        working_dir: impl Into<String>,
-    ) -> Result<SessionMeta, ApplicationError> {
-        let working_dir = working_dir.into();
-        self.validate_non_empty("workingDir", &working_dir)?;
-        self.session_runtime
-            .create_session(working_dir)
-            .await
-            .map_err(ApplicationError::from)
-    }
-
     pub async fn execute_root_agent(
         &self,
         request: RootExecutionRequest,
@@ -227,169 +207,6 @@ impl App {
         working_dir: &Path,
     ) -> Result<Vec<AgentProfile>, ApplicationError> {
         Ok(self.profiles.resolve(working_dir)?.as_ref().clone())
-    }
-
-    pub async fn delete_session(&self, session_id: &str) -> Result<(), ApplicationError> {
-        self.session_runtime
-            .delete_session(session_id)
-            .await
-            .map_err(ApplicationError::from)
-    }
-
-    pub async fn delete_project(
-        &self,
-        working_dir: &str,
-    ) -> Result<DeleteProjectResult, ApplicationError> {
-        self.session_runtime
-            .delete_project(working_dir)
-            .await
-            .map_err(ApplicationError::from)
-    }
-
-    pub async fn submit_prompt(
-        &self,
-        session_id: &str,
-        text: String,
-    ) -> Result<ExecutionAccepted, ApplicationError> {
-        self.submit_prompt_with_control(session_id, text, None)
-            .await
-    }
-
-    pub async fn submit_prompt_with_control(
-        &self,
-        session_id: &str,
-        text: String,
-        control: Option<ExecutionControl>,
-    ) -> Result<ExecutionAccepted, ApplicationError> {
-        self.validate_non_empty("prompt", &text)?;
-        if let Some(control) = &control {
-            control.validate()?;
-        }
-        let working_dir = self
-            .session_runtime
-            .get_session_working_dir(session_id)
-            .await?;
-        let mut runtime = self
-            .config_service
-            .load_resolved_runtime_config(Some(Path::new(&working_dir)))?;
-        if let Some(control) = control {
-            if control.manual_compact.is_some() {
-                return Err(ApplicationError::InvalidArgument(
-                    "manualCompact is not valid for prompt submission".to_string(),
-                ));
-            }
-            if let Some(max_steps) = control.max_steps {
-                runtime.max_steps = max_steps as usize;
-            }
-        }
-        let root_agent = self.ensure_session_root_agent_context(session_id).await?;
-        self.session_runtime
-            .submit_prompt_for_agent(session_id, text, runtime, root_agent)
-            .await
-            .map_err(ApplicationError::from)
-    }
-
-    pub async fn interrupt_session(&self, session_id: &str) -> Result<(), ApplicationError> {
-        self.session_runtime
-            .interrupt_session(session_id)
-            .await
-            .map_err(ApplicationError::from)
-    }
-
-    pub async fn compact_session(
-        &self,
-        session_id: &str,
-    ) -> Result<CompactSessionAccepted, ApplicationError> {
-        self.compact_session_with_control(session_id, None).await
-    }
-
-    pub async fn compact_session_with_control(
-        &self,
-        session_id: &str,
-        control: Option<ExecutionControl>,
-    ) -> Result<CompactSessionAccepted, ApplicationError> {
-        if let Some(control) = &control {
-            control.validate()?;
-            if control.max_steps.is_some() {
-                return Err(ApplicationError::InvalidArgument(
-                    "maxSteps is not valid for manual compact".to_string(),
-                ));
-            }
-        }
-        let deferred = self
-            .session_runtime
-            .compact_session(session_id)
-            .await
-            .map_err(ApplicationError::from)?;
-        Ok(CompactSessionAccepted { deferred })
-    }
-
-    pub async fn session_history(
-        &self,
-        session_id: &str,
-    ) -> Result<SessionHistorySnapshot, ApplicationError> {
-        self.session_runtime
-            .session_history(session_id)
-            .await
-            .map_err(ApplicationError::from)
-    }
-
-    pub async fn session_view(
-        &self,
-        session_id: &str,
-    ) -> Result<SessionViewSnapshot, ApplicationError> {
-        self.session_runtime
-            .session_view(session_id)
-            .await
-            .map_err(ApplicationError::from)
-    }
-
-    /// 返回指定 session 的 durable 存储事件。
-    ///
-    /// Debug Workbench 需要基于服务端真相构造 trace，
-    /// 这里显式暴露只读查询入口，避免上层直接穿透到 event store。
-    pub async fn session_stored_events(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<StoredEvent>, ApplicationError> {
-        let session_id = astrcode_core::SessionId::from(
-            astrcode_session_runtime::normalize_session_id(session_id),
-        );
-        self.session_runtime
-            .replay_stored_events(&session_id)
-            .await
-            .map_err(ApplicationError::from)
-    }
-
-    /// 返回指定 session 当前投影出的 child lineage 节点。
-    ///
-    /// Debug Workbench 的 agent tree 依赖这个稳定投影，不能在前端根据事件流二次猜测。
-    pub async fn session_child_nodes(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<ChildSessionNode>, ApplicationError> {
-        let session_id = astrcode_core::SessionId::from(
-            astrcode_session_runtime::normalize_session_id(session_id),
-        );
-        let state = self
-            .session_runtime
-            .get_session_state(&session_id)
-            .await
-            .map_err(ApplicationError::from)?;
-        state
-            .list_child_session_nodes()
-            .map_err(ApplicationError::from)
-    }
-
-    pub async fn session_replay(
-        &self,
-        session_id: &str,
-        last_event_id: Option<&str>,
-    ) -> Result<SessionReplay, ApplicationError> {
-        self.session_runtime
-            .session_replay(session_id, last_event_id)
-            .await
-            .map_err(ApplicationError::from)
     }
 
     pub async fn list_composer_options(
@@ -427,96 +244,5 @@ impl App {
             return Ok(());
         }
         Err(ApplicationError::PermissionDenied(reason.into()))
-    }
-
-    // ── Agent 控制用例（通过 kernel 稳定控制合同） ──────────
-
-    /// 查询子运行状态。
-    pub async fn get_subrun_status(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<astrcode_kernel::SubRunStatusView>, ApplicationError> {
-        self.validate_non_empty("agentId", agent_id)?;
-        Ok(self.kernel.query_subrun_status(agent_id).await)
-    }
-
-    /// 查询指定 session 的根 agent 状态。
-    pub async fn get_root_agent_status(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<astrcode_kernel::SubRunStatusView>, ApplicationError> {
-        self.validate_non_empty("sessionId", session_id)?;
-        Ok(self.kernel.query_root_agent_status(session_id).await)
-    }
-
-    /// 列出所有 agent 状态。
-    pub async fn list_agent_statuses(&self) -> Vec<astrcode_kernel::SubRunStatusView> {
-        self.kernel.list_all_agent_statuses().await
-    }
-
-    /// 关闭 agent 及其子树。
-    pub async fn close_agent(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<astrcode_kernel::CloseSubtreeResult, ApplicationError> {
-        self.validate_non_empty("sessionId", session_id)?;
-        self.validate_non_empty("agentId", agent_id)?;
-        let Some(handle) = self.kernel.get_agent_handle(agent_id).await else {
-            return Err(ApplicationError::NotFound(format!(
-                "agent '{}' not found",
-                agent_id
-            )));
-        };
-        if handle.session_id != session_id {
-            // 显式校验归属，避免仅凭 agent_id 跨 session 关闭不相关子树。
-            return Err(ApplicationError::NotFound(format!(
-                "agent '{}' not found in session '{}'",
-                agent_id, session_id
-            )));
-        }
-        self.kernel
-            .close_agent_subtree(agent_id)
-            .await
-            .map_err(|e| ApplicationError::Internal(e.to_string()))
-    }
-
-    async fn ensure_session_root_agent_context(
-        &self,
-        session_id: &str,
-    ) -> Result<AgentEventContext, ApplicationError> {
-        self.validate_non_empty("sessionId", session_id)?;
-        let normalized_session_id = astrcode_session_runtime::normalize_session_id(session_id);
-
-        if let Some(handle) = self
-            .kernel
-            .agent_control()
-            .find_root_agent_for_session(&normalized_session_id)
-            .await
-        {
-            return Ok(root_execution_event_context(
-                handle.agent_id,
-                handle.agent_profile,
-            ));
-        }
-
-        let handle = self
-            .kernel
-            .agent_control()
-            .register_root_agent(
-                implicit_session_root_agent_id(&normalized_session_id),
-                normalized_session_id,
-                IMPLICIT_ROOT_PROFILE_ID.to_string(),
-            )
-            .await
-            .map_err(|error| {
-                ApplicationError::Internal(format!(
-                    "failed to register implicit root agent for session prompt: {error}"
-                ))
-            })?;
-        Ok(root_execution_event_context(
-            handle.agent_id,
-            handle.agent_profile,
-        ))
     }
 }

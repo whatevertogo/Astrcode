@@ -10,6 +10,13 @@ use astrcode_core::{AstrError, Config, ModelConfig, Result};
 
 use super::constants::{PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
 
+macro_rules! validate_positive_fields {
+    ($($value:expr => $field:expr),* $(,)?) => {{
+        $(validate_positive($value, $field)?;)*
+        Ok::<(), astrcode_core::AstrError>(())
+    }};
+}
+
 /// 规范化并验证配置。
 ///
 /// 依次执行迁移和验证，确保配置合法且处于最新状态。
@@ -57,89 +64,38 @@ pub fn validate_config(config: &Config) -> Result<()> {
 }
 
 fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()> {
-    for (value, field) in [
-        (runtime.max_tool_concurrency, "runtime.maxToolConcurrency"),
-        (runtime.tool_result_max_bytes, "runtime.toolResultMaxBytes"),
-        (runtime.max_steps, "runtime.maxSteps"),
-        (runtime.max_tracked_files, "runtime.maxTrackedFiles"),
-        (runtime.max_recovered_files, "runtime.maxRecoveredFiles"),
-        (runtime.recovery_token_budget, "runtime.recoveryTokenBudget"),
-        (
-            runtime.tool_result_inline_limit,
-            "runtime.toolResultInlineLimit",
-        ),
-        (
-            runtime.tool_result_preview_limit,
-            "runtime.toolResultPreviewLimit",
-        ),
-        (runtime.max_image_size, "runtime.maxImageSize"),
-        (runtime.max_grep_lines, "runtime.maxGrepLines"),
-        (
-            runtime.session_broadcast_capacity,
-            "runtime.sessionBroadcastCapacity",
-        ),
-        (
-            runtime.session_recent_record_limit,
-            "runtime.sessionRecentRecordLimit",
-        ),
-        (
-            runtime.max_concurrent_branch_depth,
-            "runtime.maxConcurrentBranchDepth",
-        ),
-        (
-            runtime.aggregate_result_bytes_budget,
-            "runtime.aggregateResultBytesBudget",
-        ),
-        (
-            runtime.micro_compact_keep_recent_results,
-            "runtime.microCompactKeepRecentResults",
-        ),
-        (
-            runtime.max_consecutive_failures,
-            "runtime.maxConsecutiveFailures",
-        ),
-        (
-            runtime.recovery_truncate_bytes,
-            "runtime.recoveryTruncateBytes",
-        ),
-    ] {
-        validate_positive(value, field)?;
-    }
+    validate_positive_fields!(
+        runtime.max_tool_concurrency => "runtime.maxToolConcurrency",
+        runtime.tool_result_max_bytes => "runtime.toolResultMaxBytes",
+        runtime.max_steps => "runtime.maxSteps",
+        runtime.max_tracked_files => "runtime.maxTrackedFiles",
+        runtime.max_recovered_files => "runtime.maxRecoveredFiles",
+        runtime.recovery_token_budget => "runtime.recoveryTokenBudget",
+        runtime.tool_result_inline_limit => "runtime.toolResultInlineLimit",
+        runtime.tool_result_preview_limit => "runtime.toolResultPreviewLimit",
+        runtime.max_image_size => "runtime.maxImageSize",
+        runtime.max_grep_lines => "runtime.maxGrepLines",
+        runtime.session_broadcast_capacity => "runtime.sessionBroadcastCapacity",
+        runtime.session_recent_record_limit => "runtime.sessionRecentRecordLimit",
+        runtime.max_concurrent_branch_depth => "runtime.maxConcurrentBranchDepth",
+        runtime.aggregate_result_bytes_budget => "runtime.aggregateResultBytesBudget",
+        runtime.micro_compact_keep_recent_results => "runtime.microCompactKeepRecentResults",
+        runtime.max_consecutive_failures => "runtime.maxConsecutiveFailures",
+        runtime.recovery_truncate_bytes => "runtime.recoveryTruncateBytes",
+    )?;
 
-    for (value, field) in [
-        (
-            runtime.compact_keep_recent_turns,
-            "runtime.compactKeepRecentTurns",
-        ),
-        (
-            runtime.max_reactive_compact_attempts,
-            "runtime.maxReactiveCompactAttempts",
-        ),
-        (
-            runtime.max_output_continuation_attempts,
-            "runtime.maxOutputContinuationAttempts",
-        ),
-    ] {
-        validate_positive(value, field)?;
-    }
+    validate_positive_fields!(
+        runtime.compact_keep_recent_turns => "runtime.compactKeepRecentTurns",
+        runtime.max_reactive_compact_attempts => "runtime.maxReactiveCompactAttempts",
+        runtime.max_output_continuation_attempts => "runtime.maxOutputContinuationAttempts",
+    )?;
 
-    for (value, field) in [
-        (
-            runtime.llm_connect_timeout_secs,
-            "runtime.llmConnectTimeoutSecs",
-        ),
-        (runtime.llm_read_timeout_secs, "runtime.llmReadTimeoutSecs"),
-        (
-            runtime.llm_retry_base_delay_ms,
-            "runtime.llmRetryBaseDelayMs",
-        ),
-        (
-            runtime.micro_compact_gap_threshold_secs,
-            "runtime.microCompactGapThresholdSecs",
-        ),
-    ] {
-        validate_positive(value, field)?;
-    }
+    validate_positive_fields!(
+        runtime.llm_connect_timeout_secs => "runtime.llmConnectTimeoutSecs",
+        runtime.llm_read_timeout_secs => "runtime.llmReadTimeoutSecs",
+        runtime.llm_retry_base_delay_ms => "runtime.llmRetryBaseDelayMs",
+        runtime.micro_compact_gap_threshold_secs => "runtime.microCompactGapThresholdSecs",
+    )?;
 
     if let Some(percent) = runtime.compact_threshold_percent {
         if !(1..=100).contains(&percent) {
@@ -151,22 +107,14 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
     validate_positive(runtime.api_session_ttl_hours, "runtime.apiSessionTtlHours")?;
 
     if let Some(agent) = runtime.agent.as_ref() {
-        for (value, field) in [
-            (agent.max_subrun_depth, "runtime.agent.maxSubrunDepth"),
-            (agent.max_spawn_per_turn, "runtime.agent.maxSpawnPerTurn"),
-            (agent.max_concurrent, "runtime.agent.maxConcurrent"),
-            (
-                agent.finalized_retain_limit,
-                "runtime.agent.finalizedRetainLimit",
-            ),
-            (agent.inbox_capacity, "runtime.agent.inboxCapacity"),
-            (
-                agent.parent_delivery_capacity,
-                "runtime.agent.parentDeliveryCapacity",
-            ),
-        ] {
-            validate_positive(value, field)?;
-        }
+        validate_positive_fields!(
+            agent.max_subrun_depth => "runtime.agent.maxSubrunDepth",
+            agent.max_spawn_per_turn => "runtime.agent.maxSpawnPerTurn",
+            agent.max_concurrent => "runtime.agent.maxConcurrent",
+            agent.finalized_retain_limit => "runtime.agent.finalizedRetainLimit",
+            agent.inbox_capacity => "runtime.agent.inboxCapacity",
+            agent.parent_delivery_capacity => "runtime.agent.parentDeliveryCapacity",
+        )?;
     }
     Ok(())
 }

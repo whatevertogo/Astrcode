@@ -88,8 +88,8 @@ pub use config::{
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
     AgentEvent, CompactTrigger, EventTranslator, Phase, PromptMetricsPayload, StorageEvent,
-    StorageEventPayload, StoredEvent, StoredEventLine, generate_session_id,
-    normalize_recovered_phase, phase_of_storage_event, replay_records,
+    StorageEventPayload, StoredEvent, generate_session_id, normalize_recovered_phase,
+    phase_of_storage_event, replay_records,
 };
 pub use hook::{
     CompactionHookContext, CompactionHookResultContext, HookCompactionReason, HookEvent,

@@ -3,141 +3,43 @@
 //! 从 `runtime-session/session_state.rs` 迁入，去掉了 `anyhow` 依赖，
 //! 所有 `Result` 统一使用 `astrcode_core::Result`。
 
+mod cache;
+mod child_sessions;
+mod compaction;
+mod execution;
+mod mailbox;
 mod paths;
+#[cfg(test)]
+mod test_support;
+mod writer;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::{Arc, Mutex as StdMutex, atomic::AtomicBool},
 };
 
 use astrcode_core::{
-    AgentEvent, AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventLogWriter,
-    EventTranslator, MailboxProjection, Phase, Result, SessionEventRecord, SessionTurnLease,
-    StorageEvent, StorageEventPayload, StoredEvent, ToolEventSink,
+    AgentEvent, AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventTranslator,
+    MailboxProjection, Phase, Result, SessionEventRecord, SessionTurnLease, StoredEvent,
     support::{self},
+};
+use cache::{RecentSessionEvents, RecentStoredEvents};
+use child_sessions::{child_node_from_stored_event, rebuild_child_nodes};
+pub use compaction::{recent_turn_event_tail, should_record_compaction_tail_event};
+pub use execution::{
+    SessionStateEventSink, append_and_broadcast, append_and_broadcast_from_turn_callback,
+    complete_session_execution, prepare_session_execution,
+};
+pub use mailbox::{
+    MailboxEventAppend, append_batch_acked, append_batch_started, append_mailbox_discarded,
+    append_mailbox_event, append_mailbox_queued,
 };
 pub use paths::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
 use tokio::sync::broadcast;
+pub use writer::SessionWriter;
 
 const SESSION_BROADCAST_CAPACITY: usize = 2048;
 const SESSION_LIVE_BROADCAST_CAPACITY: usize = 2048;
-const SESSION_RECENT_RECORD_LIMIT: usize = 16_384;
-const SESSION_RECENT_STORED_LIMIT: usize = 16_384;
-
-// ── 会话事件缓存 ──────────────────────────────────────────
-
-#[derive(Default)]
-struct RecentSessionEvents {
-    records: VecDeque<SessionEventRecord>,
-    truncated: bool,
-}
-
-#[derive(Default)]
-struct RecentStoredEvents {
-    events: VecDeque<StoredEvent>,
-}
-
-impl RecentStoredEvents {
-    fn replace(&mut self, events: Vec<StoredEvent>) {
-        self.events = VecDeque::from(events);
-        while self.events.len() > SESSION_RECENT_STORED_LIMIT {
-            self.events.pop_front();
-        }
-    }
-
-    fn push(&mut self, stored: StoredEvent) {
-        self.events.push_back(stored);
-        while self.events.len() > SESSION_RECENT_STORED_LIMIT {
-            self.events.pop_front();
-        }
-    }
-
-    fn snapshot(&self) -> Vec<StoredEvent> {
-        self.events.iter().cloned().collect()
-    }
-}
-
-impl RecentSessionEvents {
-    fn replace(&mut self, records: Vec<SessionEventRecord>) {
-        self.records = VecDeque::from(records);
-        self.truncated = self.records.len() > SESSION_RECENT_RECORD_LIMIT;
-        while self.records.len() > SESSION_RECENT_RECORD_LIMIT {
-            self.records.pop_front();
-        }
-    }
-
-    fn push_batch(&mut self, records: &[SessionEventRecord]) {
-        for record in records {
-            self.records.push_back(record.clone());
-            while self.records.len() > SESSION_RECENT_RECORD_LIMIT {
-                self.records.pop_front();
-                self.truncated = true;
-            }
-        }
-    }
-
-    fn records_after(&self, last_event_id: Option<&str>) -> Option<Vec<SessionEventRecord>> {
-        let Some(last_event_id) = last_event_id else {
-            return (!self.truncated).then_some(self.records.iter().cloned().collect());
-        };
-
-        let last_seen = parse_event_id(last_event_id)?;
-        let first_cached = self
-            .records
-            .front()
-            .and_then(|record| parse_event_id(&record.event_id));
-        if self.truncated && first_cached.is_some_and(|first_cached| last_seen < first_cached) {
-            return None;
-        }
-
-        Some(
-            self.records
-                .iter()
-                .filter_map(|record| {
-                    parse_event_id(&record.event_id)
-                        .filter(|event_id| *event_id > last_seen)
-                        .map(|_| record.clone())
-                })
-                .collect(),
-        )
-    }
-}
-
-// ── SessionWriter ─────────────────────────────────────────
-
-pub struct SessionWriter {
-    inner: StdMutex<Box<dyn EventLogWriter>>,
-}
-
-impl SessionWriter {
-    pub fn new(writer: Box<dyn EventLogWriter>) -> Self {
-        Self {
-            inner: StdMutex::new(writer),
-        }
-    }
-
-    pub fn append_blocking(&self, event: &StorageEvent) -> Result<StoredEvent> {
-        let mut guard = support::lock_anyhow(&self.inner, "session writer")?;
-        guard.append(event).map_err(|error| {
-            astrcode_core::AstrError::Internal(format!("session write failed: {error}"))
-        })
-    }
-
-    pub async fn append(self: Arc<Self>, event: StorageEvent) -> Result<StoredEvent> {
-        spawn_blocking_result("append session event", move || self.append_blocking(&event)).await
-    }
-}
-
-async fn spawn_blocking_result<T, F>(label: &'static str, work: F) -> Result<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T> + Send + 'static,
-{
-    tokio::task::spawn_blocking(work).await.map_err(|error| {
-        log::error!("blocking task '{label}' failed: {error}");
-        astrcode_core::AstrError::Internal(format!("blocking task '{label}' failed: {error}"))
-    })?
-}
 
 // ── SessionState ──────────────────────────────────────────
 
@@ -284,6 +186,7 @@ impl SessionState {
         stored: &StoredEvent,
         translator: &mut EventTranslator,
     ) -> Result<Vec<SessionEventRecord>> {
+        stored.event.validate()?;
         {
             let mut projector = support::lock_anyhow(&self.projector, "session projector")?;
             projector.apply(&stored.event);
@@ -312,553 +215,24 @@ impl SessionState {
     pub fn snapshot_recent_stored_events(&self) -> Result<Vec<StoredEvent>> {
         Ok(support::lock_anyhow(&self.recent_stored, "session recent stored events")?.snapshot())
     }
-
-    /// 写入或覆盖一个 child-session durable 节点（按 sub_run_id 去重）。
-    pub fn upsert_child_session_node(&self, node: ChildSessionNode) -> Result<()> {
-        support::lock_anyhow(&self.child_nodes, "session child nodes")?
-            .insert(node.sub_run_id.clone(), node);
-        Ok(())
-    }
-
-    /// 查询某个 sub-run 对应的 child-session 节点快照。
-    pub fn child_session_node(&self, sub_run_id: &str) -> Result<Option<ChildSessionNode>> {
-        Ok(
-            support::lock_anyhow(&self.child_nodes, "session child nodes")?
-                .get(sub_run_id)
-                .cloned(),
-        )
-    }
-
-    /// 列出当前 session 所有 child-session 节点快照（按 sub_run_id 排序）。
-    pub fn list_child_session_nodes(&self) -> Result<Vec<ChildSessionNode>> {
-        let nodes = support::lock_anyhow(&self.child_nodes, "session child nodes")?;
-        let mut result: Vec<_> = nodes.values().cloned().collect();
-        result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
-        Ok(result)
-    }
-
-    /// 查找某个 agent 的直接子节点。
-    pub fn child_nodes_for_parent(&self, parent_agent_id: &str) -> Result<Vec<ChildSessionNode>> {
-        let nodes = support::lock_anyhow(&self.child_nodes, "session child nodes")?;
-        let mut result: Vec<_> = nodes
-            .values()
-            .filter(|node| node.parent_agent_id.as_deref() == Some(parent_agent_id))
-            .cloned()
-            .collect();
-        result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
-        Ok(result)
-    }
-
-    /// 收集指定 agent 子树的所有后代节点（不含自身）。
-    pub fn subtree_nodes(&self, root_agent_id: &str) -> Result<Vec<ChildSessionNode>> {
-        let nodes = support::lock_anyhow(&self.child_nodes, "session child nodes")?;
-        let mut result = Vec::new();
-        let mut queue = std::collections::VecDeque::new();
-        queue.push_back(root_agent_id.to_string());
-        while let Some(agent_id) = queue.pop_front() {
-            for node in nodes.values() {
-                if node.parent_agent_id.as_deref() == Some(&agent_id) {
-                    queue.push_back(node.agent_id.clone());
-                    result.push(node.clone());
-                }
-            }
-        }
-        result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
-        Ok(result)
-    }
-
-    /// 读取指定 agent 的 mailbox durable 投影。
-    pub fn mailbox_projection_for_agent(&self, agent_id: &str) -> Result<MailboxProjection> {
-        Ok(
-            support::lock_anyhow(&self.mailbox_projection_index, "mailbox projection index")?
-                .get(agent_id)
-                .cloned()
-                .unwrap_or_default(),
-        )
-    }
-
-    /// 增量应用一条 mailbox durable 事件到投影索引。
-    fn apply_mailbox_event(&self, stored: &StoredEvent) {
-        let mut index = match support::lock_anyhow(
-            &self.mailbox_projection_index,
-            "mailbox projection index",
-        ) {
-            Ok(index) => index,
-            Err(_) => return,
-        };
-        match &stored.event.payload {
-            StorageEventPayload::AgentMailboxQueued { payload } => {
-                let projection = index
-                    .entry(payload.envelope.to_agent_id.clone())
-                    .or_insert_with(MailboxProjection::default);
-                MailboxProjection::apply_event_for_agent(
-                    projection,
-                    stored,
-                    &payload.envelope.to_agent_id,
-                );
-            },
-            StorageEventPayload::AgentMailboxBatchStarted { payload } => {
-                let projection = index
-                    .entry(payload.target_agent_id.clone())
-                    .or_insert_with(MailboxProjection::default);
-                MailboxProjection::apply_event_for_agent(
-                    projection,
-                    stored,
-                    &payload.target_agent_id,
-                );
-            },
-            StorageEventPayload::AgentMailboxBatchAcked { payload } => {
-                let projection = index
-                    .entry(payload.target_agent_id.clone())
-                    .or_insert_with(MailboxProjection::default);
-                MailboxProjection::apply_event_for_agent(
-                    projection,
-                    stored,
-                    &payload.target_agent_id,
-                );
-            },
-            StorageEventPayload::AgentMailboxDiscarded { payload } => {
-                let projection = index
-                    .entry(payload.target_agent_id.clone())
-                    .or_insert_with(MailboxProjection::default);
-                MailboxProjection::apply_event_for_agent(
-                    projection,
-                    stored,
-                    &payload.target_agent_id,
-                );
-            },
-            _ => {},
-        }
-    }
-}
-
-// ── SessionStateEventSink ─────────────────────────────────
-
-pub struct SessionStateEventSink {
-    session: Arc<SessionState>,
-    translator: StdMutex<EventTranslator>,
-}
-
-impl SessionStateEventSink {
-    pub fn new(session: Arc<SessionState>) -> Result<Self> {
-        let phase = session.current_phase()?;
-        Ok(Self {
-            session,
-            translator: StdMutex::new(EventTranslator::new(phase)),
-        })
-    }
-}
-
-impl ToolEventSink for SessionStateEventSink {
-    fn emit(&self, event: StorageEvent) -> astrcode_core::Result<()> {
-        let mut translator = self
-            .translator
-            .lock()
-            .expect("session translator lock should not be poisoned");
-        append_and_broadcast_from_turn_callback(&self.session, &event, &mut translator)
-            .map(|_| ())
-            .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))
-    }
 }
 
 // ── 辅助函数 ──────────────────────────────────────────────
 
-fn rebuild_child_nodes(events: &[StoredEvent]) -> HashMap<String, ChildSessionNode> {
-    let mut nodes = HashMap::new();
-    for stored in events {
-        if let Some(node) = child_node_from_stored_event(stored) {
-            nodes.insert(node.sub_run_id.clone(), node);
-        }
-    }
-    nodes
-}
-
-fn child_node_from_stored_event(stored: &StoredEvent) -> Option<ChildSessionNode> {
-    match &stored.event.payload {
-        StorageEventPayload::ChildSessionNotification { notification, .. } => {
-            Some(ChildSessionNode {
-                agent_id: notification.child_ref.agent_id.clone(),
-                session_id: notification.child_ref.session_id.clone(),
-                child_session_id: notification.child_ref.open_session_id.clone(),
-                sub_run_id: notification.child_ref.sub_run_id.clone(),
-                parent_session_id: notification.child_ref.session_id.clone(),
-                parent_agent_id: notification.child_ref.parent_agent_id.clone(),
-                parent_sub_run_id: notification.child_ref.parent_sub_run_id.clone(),
-                parent_turn_id: stored.event.turn_id.clone().unwrap_or_default(),
-                lineage_kind: notification.child_ref.lineage_kind,
-                status: notification.status,
-                status_source: astrcode_core::ChildSessionStatusSource::Durable,
-                created_by_tool_call_id: notification.source_tool_call_id.clone(),
-                lineage_snapshot: None,
-            })
-        },
-        _ => None,
-    }
-}
-
-fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
-    let (storage_seq, subindex) = raw.split_once('.')?;
-    Some((storage_seq.parse().ok()?, subindex.parse().ok()?))
-}
-
-// ── Turn 生命周期辅助 ─────────────────────────────────────
-
-/// 广播并缓存一条事件到 session 的 durable event log。
-pub async fn append_and_broadcast(
-    session: &SessionState,
-    event: &StorageEvent,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    let stored = session.writer.clone().append(event.clone()).await?;
-    let records = session.translate_store_and_cache(&stored, translator)?;
-    for record in records {
-        let _ = session.broadcaster.send(record);
-    }
-    Ok(stored)
-}
-
-fn append_and_broadcast_blocking(
-    session: &SessionState,
-    event: &StorageEvent,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    let stored = session.writer.append_blocking(event)?;
-    let records = session.translate_store_and_cache(&stored, translator)?;
-    for record in records {
-        let _ = session.broadcaster.send(record);
-    }
-    Ok(stored)
-}
-
-/// 从 turn callback 上下文（可能不在 tokio reactor 上）安全地 append 事件。
-pub fn append_and_broadcast_from_turn_callback(
-    session: &SessionState,
-    event: &StorageEvent,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    match tokio::runtime::Handle::current().runtime_flavor() {
-        tokio::runtime::RuntimeFlavor::CurrentThread => {
-            append_and_broadcast_blocking(session, event, translator)
-        },
-        _ => tokio::task::block_in_place(|| {
-            append_and_broadcast_blocking(session, event, translator)
-        }),
-    }
-}
-
-/// 准备 session 进入执行状态。
-pub fn prepare_session_execution(
-    session: &SessionState,
-    session_id: &str,
-    turn_id: &str,
-    cancel: CancelToken,
-    turn_lease: Box<dyn SessionTurnLease>,
-) -> Result<()> {
-    let mut cancel_guard = support::lock_anyhow(&session.cancel, "session cancel")?;
-    let mut active_turn_guard =
-        support::lock_anyhow(&session.active_turn_id, "session active turn")?;
-    let mut lease_guard = support::lock_anyhow(&session.turn_lease, "session turn lease")?;
-    if session
-        .running
-        .swap(true, std::sync::atomic::Ordering::SeqCst)
-    {
-        return Err(astrcode_core::AstrError::Validation(format!(
-            "session '{}' entered an inconsistent running state",
-            session_id
-        )));
-    }
-    *cancel_guard = cancel;
-    *active_turn_guard = Some(turn_id.to_string());
-    *lease_guard = Some(turn_lease);
-    Ok(())
-}
-
-/// 完成 session 执行状态。
-pub fn complete_session_execution(session: &SessionState, phase: Phase) {
-    session.complete_execution_state(phase);
-}
-
-// ── Mailbox 事件 append 辅助 ──────────────────────────────
-
-use astrcode_core::{
-    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
-    MailboxQueuedPayload,
-};
-
-/// mailbox durable 事件追加命令。
-///
-/// 为什么放在 `session-runtime`：mailbox 事件最终都是单 session event log 的追加动作，
-/// 由真相层统一决定如何落成 `StorageEventPayload`，可以避免写侧在多处散落拼装。
-#[derive(Debug, Clone)]
-pub enum MailboxEventAppend {
-    Queued(MailboxQueuedPayload),
-    BatchStarted(MailboxBatchStartedPayload),
-    BatchAcked(MailboxBatchAckedPayload),
-    Discarded(MailboxDiscardedPayload),
-}
-
-impl MailboxEventAppend {
-    fn into_storage_payload(self) -> StorageEventPayload {
-        match self {
-            Self::Queued(payload) => StorageEventPayload::AgentMailboxQueued { payload },
-            Self::BatchStarted(payload) => {
-                StorageEventPayload::AgentMailboxBatchStarted { payload }
-            },
-            Self::BatchAcked(payload) => StorageEventPayload::AgentMailboxBatchAcked { payload },
-            Self::Discarded(payload) => StorageEventPayload::AgentMailboxDiscarded { payload },
-        }
-    }
-}
-
-/// 追加一条 mailbox durable 事件。
-pub async fn append_mailbox_event(
-    session: &SessionState,
-    turn_id: &str,
-    agent: astrcode_core::AgentEventContext,
-    event: MailboxEventAppend,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    append_and_broadcast(
-        session,
-        &StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent,
-            payload: event.into_storage_payload(),
-        },
-        translator,
-    )
-    .await
-}
-
-/// 追加一条 `AgentMailboxQueued` 事件到 session event log。
-pub async fn append_mailbox_queued(
-    session: &SessionState,
-    turn_id: &str,
-    agent: astrcode_core::AgentEventContext,
-    payload: MailboxQueuedPayload,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    append_mailbox_event(
-        session,
-        turn_id,
-        agent,
-        MailboxEventAppend::Queued(payload),
-        translator,
-    )
-    .await
-}
-
-/// 追加一条 `AgentMailboxBatchStarted` 事件。
-pub async fn append_batch_started(
-    session: &SessionState,
-    turn_id: &str,
-    agent: astrcode_core::AgentEventContext,
-    payload: MailboxBatchStartedPayload,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    append_mailbox_event(
-        session,
-        turn_id,
-        agent,
-        MailboxEventAppend::BatchStarted(payload),
-        translator,
-    )
-    .await
-}
-
-/// 追加一条 `AgentMailboxBatchAcked` 事件。
-pub async fn append_batch_acked(
-    session: &SessionState,
-    turn_id: &str,
-    agent: astrcode_core::AgentEventContext,
-    payload: MailboxBatchAckedPayload,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    append_mailbox_event(
-        session,
-        turn_id,
-        agent,
-        MailboxEventAppend::BatchAcked(payload),
-        translator,
-    )
-    .await
-}
-
-/// 追加一条 `AgentMailboxDiscarded` 事件。
-pub async fn append_mailbox_discarded(
-    session: &SessionState,
-    turn_id: &str,
-    agent: astrcode_core::AgentEventContext,
-    payload: MailboxDiscardedPayload,
-    translator: &mut EventTranslator,
-) -> Result<StoredEvent> {
-    append_mailbox_event(
-        session,
-        turn_id,
-        agent,
-        MailboxEventAppend::Discarded(payload),
-        translator,
-    )
-    .await
-}
-
-// ── Compaction tail 辅助 ──────────────────────────────────
-
-use astrcode_core::{InvocationKind, SubRunStorageMode, UserMessageOrigin};
-
-/// Manual / auto compact 都应该基于 durable tail，而不是投影后的消息列表。
-pub fn recent_turn_event_tail(
-    events: &[StoredEvent],
-    keep_recent_turns: usize,
-) -> Vec<StoredEvent> {
-    let keep_recent_turns = keep_recent_turns.max(1);
-    let mut tail_refs = Vec::new();
-    let mut kept_turn_starts = VecDeque::with_capacity(keep_recent_turns);
-
-    for stored in events {
-        if !should_record_compaction_tail_event(&stored.event) {
-            continue;
-        }
-        if matches!(
-            &stored.event.payload,
-            StorageEventPayload::UserMessage {
-                origin: UserMessageOrigin::User,
-                ..
-            }
-        ) {
-            kept_turn_starts.push_back(tail_refs.len());
-            if kept_turn_starts.len() > keep_recent_turns {
-                kept_turn_starts.pop_front();
-            }
-        }
-        tail_refs.push(stored);
-    }
-
-    let keep_start = kept_turn_starts.front().copied().unwrap_or(0);
-    tail_refs.into_iter().skip(keep_start).cloned().collect()
-}
-
-/// 判断事件是否应纳入 compaction tail 记录。
-pub fn should_record_compaction_tail_event(event: &StorageEvent) -> bool {
-    matches!(
-        &event.payload,
-        StorageEventPayload::UserMessage { .. }
-            | StorageEventPayload::AssistantFinal { .. }
-            | StorageEventPayload::ToolCall { .. }
-            | StorageEventPayload::ToolResult { .. }
-    ) && should_include_in_compaction_tail(event)
-}
-
-fn should_include_in_compaction_tail(event: &StorageEvent) -> bool {
-    let Some(agent) = event.agent_context() else {
-        return true;
-    };
-
-    if agent.invocation_kind != Some(InvocationKind::SubRun) {
-        return true;
-    }
-
-    // 只有带 child_session_id 的 IndependentSession 事件才属于子会话自身，
-    // 应纳入 compaction tail；legacy 无 child_session_id 的共享历史事件不纳入。
-    matches!(
-        agent.storage_mode,
-        Some(SubRunStorageMode::IndependentSession)
-    ) && agent.child_session_id.is_some()
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use astrcode_core::{
-        AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentStateProjector,
-        ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, EventLogWriter, Phase, StoreResult, StoredEvent,
+        AgentEventContext, InvocationKind, Phase, StorageEventPayload, SubRunStorageMode,
+        UserMessageOrigin,
     };
 
-    use super::*;
-
-    struct NoopEventLogWriter;
-
-    impl EventLogWriter for NoopEventLogWriter {
-        fn append(&mut self, _event: &StorageEvent) -> StoreResult<StoredEvent> {
-            unreachable!("session_state tests do not persist through the writer")
-        }
-    }
-
-    fn root_agent() -> AgentEventContext {
-        AgentEventContext::default()
-    }
-
-    fn legacy_shared_sub_run_agent() -> AgentEventContext {
-        AgentEventContext {
-            agent_id: Some("agent-child".to_string()),
-            parent_turn_id: Some("turn-root".to_string()),
-            parent_sub_run_id: None,
-            agent_profile: Some("explore".to_string()),
-            sub_run_id: Some("subrun-1".to_string()),
-            invocation_kind: Some(InvocationKind::SubRun),
-            storage_mode: Some(SubRunStorageMode::IndependentSession),
-            child_session_id: None,
-        }
-    }
-
-    fn event(
-        turn_id: Option<&str>,
-        agent: AgentEventContext,
-        payload: StorageEventPayload,
-    ) -> StorageEvent {
-        StorageEvent {
-            turn_id: turn_id.map(str::to_string),
-            agent,
-            payload,
-        }
-    }
-
-    fn stored(storage_seq: u64, event: StorageEvent) -> StoredEvent {
-        StoredEvent { storage_seq, event }
-    }
-
-    fn child_notification_event(
-        kind: ChildSessionNotificationKind,
-        status: AgentLifecycleStatus,
-    ) -> StorageEvent {
-        event(
-            Some("turn-root"),
-            legacy_shared_sub_run_agent(),
-            StorageEventPayload::ChildSessionNotification {
-                notification: ChildSessionNotification {
-                    notification_id: format!("child:{kind:?}"),
-                    child_ref: ChildAgentRef {
-                        agent_id: "agent-child".into(),
-                        session_id: "session-parent".into(),
-                        sub_run_id: "subrun-1".into(),
-                        parent_agent_id: Some("agent-parent".into()),
-                        parent_sub_run_id: Some("subrun-parent".into()),
-                        lineage_kind: ChildSessionLineageKind::Spawn,
-                        status,
-                        open_session_id: "session-child".into(),
-                    },
-                    kind,
-                    summary: "child summary".into(),
-                    status,
-                    source_tool_call_id: Some("call-1".into()),
-                    final_reply_excerpt: None,
-                },
-                timestamp: Some(chrono::Utc::now()),
-            },
-        )
-    }
+    use super::test_support::{
+        event, independent_session_sub_run_agent, root_agent, stored, test_session_state,
+    };
 
     #[test]
     fn translate_store_and_cache_keeps_sub_run_events_out_of_parent_snapshot() {
-        let session = SessionState::new(
-            Phase::Idle,
-            Arc::new(SessionWriter::new(Box::new(NoopEventLogWriter))),
-            AgentStateProjector::default(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let session = test_session_state();
         let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
 
         let events = vec![
@@ -916,7 +290,7 @@ mod tests {
                 5,
                 event(
                     Some("turn-child"),
-                    legacy_shared_sub_run_agent(),
+                    independent_session_sub_run_agent(),
                     StorageEventPayload::UserMessage {
                         content: "child task".into(),
                         origin: UserMessageOrigin::User,
@@ -928,7 +302,7 @@ mod tests {
                 6,
                 event(
                     Some("turn-child"),
-                    legacy_shared_sub_run_agent(),
+                    independent_session_sub_run_agent(),
                     StorageEventPayload::AssistantFinal {
                         content: "child answer".into(),
                         reasoning_content: None,
@@ -941,7 +315,7 @@ mod tests {
                 7,
                 event(
                     Some("turn-child"),
-                    legacy_shared_sub_run_agent(),
+                    independent_session_sub_run_agent(),
                     StorageEventPayload::TurnDone {
                         timestamp: chrono::Utc::now(),
                         reason: Some("completed".into()),
@@ -973,271 +347,35 @@ mod tests {
     }
 
     #[test]
-    fn session_state_rehydrates_child_nodes_from_stored_notifications() {
-        let session = SessionState::new(
-            Phase::Idle,
-            Arc::new(SessionWriter::new(Box::new(NoopEventLogWriter))),
-            AgentStateProjector::default(),
-            Vec::new(),
-            vec![
-                stored(
-                    1,
-                    child_notification_event(
-                        ChildSessionNotificationKind::Started,
-                        AgentLifecycleStatus::Running,
-                    ),
-                ),
-                stored(
-                    2,
-                    child_notification_event(
-                        ChildSessionNotificationKind::Delivered,
-                        AgentLifecycleStatus::Idle,
-                    ),
-                ),
-            ],
+    fn translate_store_and_cache_rejects_invalid_stored_event() {
+        let session = test_session_state();
+        let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
+        let malformed = stored(
+            1,
+            event(
+                Some("turn-child"),
+                AgentEventContext {
+                    agent_id: Some("agent-child".to_string()),
+                    parent_turn_id: Some("turn-root".to_string()),
+                    agent_profile: Some("explore".to_string()),
+                    sub_run_id: Some("subrun-1".to_string()),
+                    parent_sub_run_id: None,
+                    invocation_kind: Some(InvocationKind::SubRun),
+                    storage_mode: Some(SubRunStorageMode::IndependentSession),
+                    child_session_id: None,
+                },
+                StorageEventPayload::UserMessage {
+                    content: "child task".into(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: chrono::Utc::now(),
+                },
+            ),
         );
 
-        let node = session
-            .child_session_node("subrun-1")
-            .expect("child node lookup should succeed")
-            .expect("child node should exist");
+        let error = session
+            .translate_store_and_cache(&malformed, &mut translator)
+            .expect_err("invalid stored event should be rejected");
 
-        assert_eq!(node.child_session_id, "session-child");
-        assert_eq!(node.parent_session_id, "session-parent");
-        assert_eq!(node.status, AgentLifecycleStatus::Idle);
-        assert_eq!(node.created_by_tool_call_id.as_deref(), Some("call-1"));
-    }
-
-    #[test]
-    fn recent_turn_event_tail_keeps_latest_turn_when_keep_recent_turns_is_zero() {
-        let events = vec![
-            stored(
-                1,
-                event(
-                    Some("turn-1"),
-                    AgentEventContext::default(),
-                    StorageEventPayload::UserMessage {
-                        content: "first".to_string(),
-                        origin: UserMessageOrigin::User,
-                        timestamp: chrono::Utc::now(),
-                    },
-                ),
-            ),
-            stored(
-                2,
-                event(
-                    Some("turn-1"),
-                    AgentEventContext::default(),
-                    StorageEventPayload::AssistantFinal {
-                        content: "reply-1".to_string(),
-                        reasoning_content: None,
-                        reasoning_signature: None,
-                        timestamp: Some(chrono::Utc::now()),
-                    },
-                ),
-            ),
-            stored(
-                3,
-                event(
-                    Some("turn-2"),
-                    AgentEventContext::default(),
-                    StorageEventPayload::UserMessage {
-                        content: "second".to_string(),
-                        origin: UserMessageOrigin::User,
-                        timestamp: chrono::Utc::now(),
-                    },
-                ),
-            ),
-            stored(
-                4,
-                event(
-                    Some("turn-2"),
-                    AgentEventContext::default(),
-                    StorageEventPayload::AssistantFinal {
-                        content: "reply-2".to_string(),
-                        reasoning_content: None,
-                        reasoning_signature: None,
-                        timestamp: Some(chrono::Utc::now()),
-                    },
-                ),
-            ),
-        ];
-
-        let tail = recent_turn_event_tail(&events, 0);
-
-        assert_eq!(tail.len(), 2);
-        assert_eq!(tail[0].storage_seq, 3);
-        assert_eq!(tail[1].storage_seq, 4);
-    }
-
-    #[test]
-    fn recent_turn_event_tail_excludes_shared_session_subrun_events() {
-        let shared_child_agent = AgentEventContext::sub_run(
-            "agent-child",
-            "turn-root",
-            "explore",
-            "subrun-shared",
-            None,
-            SubRunStorageMode::IndependentSession,
-            None,
-        );
-        let events = vec![
-            stored(
-                1,
-                event(
-                    Some("turn-root"),
-                    AgentEventContext::default(),
-                    StorageEventPayload::UserMessage {
-                        content: "root".to_string(),
-                        origin: UserMessageOrigin::User,
-                        timestamp: chrono::Utc::now(),
-                    },
-                ),
-            ),
-            stored(
-                2,
-                event(
-                    Some("turn-root"),
-                    AgentEventContext::default(),
-                    StorageEventPayload::AssistantFinal {
-                        content: "root-answer".to_string(),
-                        reasoning_content: None,
-                        reasoning_signature: None,
-                        timestamp: Some(chrono::Utc::now()),
-                    },
-                ),
-            ),
-            stored(
-                3,
-                event(
-                    Some("turn-child"),
-                    shared_child_agent.clone(),
-                    StorageEventPayload::UserMessage {
-                        content: "child".to_string(),
-                        origin: UserMessageOrigin::User,
-                        timestamp: chrono::Utc::now(),
-                    },
-                ),
-            ),
-            stored(
-                4,
-                event(
-                    Some("turn-child"),
-                    shared_child_agent,
-                    StorageEventPayload::AssistantFinal {
-                        content: "child-answer".to_string(),
-                        reasoning_content: None,
-                        reasoning_signature: None,
-                        timestamp: Some(chrono::Utc::now()),
-                    },
-                ),
-            ),
-        ];
-
-        let tail = recent_turn_event_tail(&events, 1);
-
-        assert_eq!(tail.len(), 2);
-        assert_eq!(tail[0].storage_seq, 1);
-        assert_eq!(tail[1].storage_seq, 2);
-    }
-
-    #[test]
-    fn recent_turn_event_tail_keeps_independent_session_subrun_events() {
-        let child_agent = AgentEventContext::sub_run(
-            "agent-child",
-            "turn-root",
-            "explore",
-            "subrun-independent",
-            None,
-            SubRunStorageMode::IndependentSession,
-            Some("session-child".to_string()),
-        );
-        let events = vec![
-            stored(
-                1,
-                event(
-                    Some("turn-child"),
-                    child_agent.clone(),
-                    StorageEventPayload::UserMessage {
-                        content: "child".to_string(),
-                        origin: UserMessageOrigin::User,
-                        timestamp: chrono::Utc::now(),
-                    },
-                ),
-            ),
-            stored(
-                2,
-                event(
-                    Some("turn-child"),
-                    child_agent,
-                    StorageEventPayload::AssistantFinal {
-                        content: "child-answer".to_string(),
-                        reasoning_content: None,
-                        reasoning_signature: None,
-                        timestamp: Some(chrono::Utc::now()),
-                    },
-                ),
-            ),
-        ];
-
-        let tail = recent_turn_event_tail(&events, 1);
-
-        assert_eq!(tail.len(), 2);
-        assert_eq!(tail[0].storage_seq, 1);
-        assert_eq!(tail[1].storage_seq, 2);
-    }
-
-    #[test]
-    fn mailbox_event_append_maps_to_expected_storage_payload() {
-        let envelope = AgentMailboxEnvelope {
-            delivery_id: "delivery-1".to_string(),
-            from_agent_id: "agent-parent".to_string(),
-            to_agent_id: "agent-child".to_string(),
-            message: "hello".to_string(),
-            queued_at: chrono::Utc::now(),
-            sender_lifecycle_status: AgentLifecycleStatus::Idle,
-            sender_last_turn_outcome: None,
-            sender_open_session_id: "session-parent".to_string(),
-        };
-
-        assert!(matches!(
-            MailboxEventAppend::Queued(MailboxQueuedPayload {
-                envelope: envelope.clone(),
-            })
-            .into_storage_payload(),
-            StorageEventPayload::AgentMailboxQueued { payload }
-                if payload.envelope.delivery_id == "delivery-1"
-        ));
-        assert!(matches!(
-            MailboxEventAppend::BatchStarted(MailboxBatchStartedPayload {
-                target_agent_id: "agent-child".to_string(),
-                turn_id: "turn-1".to_string(),
-                batch_id: "batch-1".to_string(),
-                delivery_ids: vec!["delivery-1".to_string()],
-            })
-            .into_storage_payload(),
-            StorageEventPayload::AgentMailboxBatchStarted { payload }
-                if payload.batch_id == "batch-1"
-        ));
-        assert!(matches!(
-            MailboxEventAppend::BatchAcked(MailboxBatchAckedPayload {
-                target_agent_id: "agent-child".to_string(),
-                turn_id: "turn-1".to_string(),
-                batch_id: "batch-1".to_string(),
-                delivery_ids: vec!["delivery-1".to_string()],
-            })
-            .into_storage_payload(),
-            StorageEventPayload::AgentMailboxBatchAcked { payload }
-                if payload.delivery_ids == vec!["delivery-1".to_string()]
-        ));
-        assert!(matches!(
-            MailboxEventAppend::Discarded(MailboxDiscardedPayload {
-                target_agent_id: "agent-child".to_string(),
-                delivery_ids: vec!["delivery-1".to_string()],
-            })
-            .into_storage_payload(),
-            StorageEventPayload::AgentMailboxDiscarded { payload }
-                if payload.target_agent_id == "agent-child"
-        ));
+        assert!(error.to_string().contains("child_session_id"));
     }
 }

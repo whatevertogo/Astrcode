@@ -65,7 +65,7 @@ mod tests {
     use super::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
 
     #[test]
-    fn normalize_session_id_keeps_legacy_inner_prefix() {
+    fn normalize_session_id_only_removes_outer_prefix() {
         assert_eq!(
             normalize_session_id("session-session-2026-03-08T10-00-00-aaaaaaaa"),
             "session-2026-03-08T10-00-00-aaaaaaaa"

@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentCollaborationFact, AgentEventContext, ChildSessionNotification, MailboxBatchAckedPayload,
-    MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunResult,
-    ToolOutputStream, UserMessageOrigin,
+    AgentCollaborationFact, AgentEventContext, AstrError, ChildSessionNotification,
+    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
+    MailboxQueuedPayload, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    Result, SubRunResult, ToolOutputStream, UserMessageOrigin,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -295,6 +295,25 @@ impl StorageEvent {
     fn is_session_start(&self) -> bool {
         matches!(self.payload, StorageEventPayload::SessionStart { .. })
     }
+
+    /// 校验存储事件头部与 agent 上下文是否合法。
+    pub fn validate(&self) -> Result<()> {
+        if self.is_session_start() {
+            if self.turn_id.is_some() {
+                return Err(AstrError::Validation(
+                    "SessionStart 事件不允许携带 turn_id".to_string(),
+                ));
+            }
+            if !self.agent.is_empty() {
+                return Err(AstrError::Validation(
+                    "SessionStart 事件不允许携带 agent 上下文".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+
+        self.agent.validate_for_storage_event()
+    }
 }
 
 fn is_default_user_message_origin(origin: &UserMessageOrigin) -> bool {
@@ -315,41 +334,6 @@ pub struct StoredEvent {
     pub event: StorageEvent,
 }
 
-/// JSONL 日志行的反序列化包装。
-///
-/// 支持两种格式：
-/// - `Stored`: 新格式，包含 `storage_seq` 字段
-/// - `Legacy`: 旧格式，没有 `storage_seq`，需要回退分配
-///
-/// 注意：Legacy 变体仅用于解析已有旧格式文件，新写入的事件始终使用 Stored 格式。
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(untagged)]
-pub enum StoredEventLine {
-    /// 新格式（包含 storage_seq）
-    /// untagged 的匹配顺序是"先 Stored 后 Legacy"，依赖 storage_seq 字段是否存在来区分。
-    /// Fixme:这在目前是对的，但如果未来 StorageEvent 里某个变体恰好也有 storage_seq
-    /// 字段，会静默匹配错误
-    Stored(StoredEvent),
-    /// 旧格式（没有 storage_seq）、
-    /// TODO:需要去除旧兼容
-    Legacy(StorageEvent),
-}
-
-impl StoredEventLine {
-    /// 将日志行转换为 `StoredEvent`。
-    ///
-    /// 新格式直接使用；旧格式使用 `fallback_seq` 作为 `storage_seq`。
-    pub fn into_stored(self, fallback_seq: u64) -> StoredEvent {
-        match self {
-            Self::Stored(stored) => stored,
-            Self::Legacy(event) => StoredEvent {
-                storage_seq: fallback_seq,
-                event,
-            },
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
@@ -362,11 +346,11 @@ mod tests {
     };
 
     #[test]
-    fn tool_result_deserializes_legacy_lines_without_error_or_metadata() {
+    fn tool_result_deserializes_when_optional_fields_are_missing() {
         let event: StorageEvent = serde_json::from_str(
             r#"{"type":"toolResult","turn_id":"turn-1","tool_call_id":"call-1","tool_name":"readFile","output":"hello","success":true,"duration_ms":12}"#,
         )
-        .expect("legacy tool result should deserialize");
+        .expect("tool result should deserialize when optional fields are absent");
 
         match event {
             StorageEvent {
@@ -384,11 +368,11 @@ mod tests {
     }
 
     #[test]
-    fn turn_done_deserializes_legacy_lines_without_reason() {
+    fn turn_done_deserializes_when_reason_is_missing() {
         let event: StorageEvent = serde_json::from_str(
             r#"{"type":"turnDone","turn_id":"turn-1","timestamp":"2026-01-01T00:00:00Z"}"#,
         )
-        .expect("legacy turn done should deserialize");
+        .expect("turn done should deserialize when reason is absent");
 
         match event {
             StorageEvent {
@@ -635,6 +619,52 @@ mod tests {
 
             assert_eq!(encoded["tool_call_id"], Value::String("call-1".to_string()));
         }
+    }
+
+    #[test]
+    fn session_start_rejects_turn_id_and_agent_context() {
+        let error = StorageEvent {
+            turn_id: Some("turn-1".to_string()),
+            agent: AgentEventContext::root_execution("root-agent", "root"),
+            payload: StorageEventPayload::SessionStart {
+                session_id: "session-1".to_string(),
+                timestamp: Utc::now(),
+                working_dir: "/tmp/project".to_string(),
+                parent_session_id: None,
+                parent_storage_seq: None,
+            },
+        }
+        .validate()
+        .expect_err("session start with turn_id/agent should be rejected");
+
+        assert!(error.to_string().contains("SessionStart"));
+    }
+
+    #[test]
+    fn malformed_subrun_context_is_rejected_during_validation() {
+        let error = StorageEvent {
+            turn_id: Some("turn-parent".to_string()),
+            agent: AgentEventContext {
+                agent_id: Some("agent-child".to_string()),
+                parent_turn_id: Some("turn-parent".to_string()),
+                agent_profile: Some("review".to_string()),
+                sub_run_id: Some("subrun-1".to_string()),
+                parent_sub_run_id: None,
+                invocation_kind: Some(crate::InvocationKind::SubRun),
+                storage_mode: Some(crate::SubRunStorageMode::IndependentSession),
+                child_session_id: None,
+            },
+            payload: StorageEventPayload::SubRunStarted {
+                tool_call_id: None,
+                resolved_overrides: ResolvedSubagentContextOverrides::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                timestamp: None,
+            },
+        }
+        .validate()
+        .expect_err("malformed subrun context should be rejected");
+
+        assert!(error.to_string().contains("child_session_id"));
     }
 
     // ─── T041 谱系兼容性测试 ──────────────────────────────

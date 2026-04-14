@@ -8,77 +8,62 @@
 //! - Skill：system prompt 中仅暴露索引（名称+描述），正文通过 `Skill` tool 按需加载
 //! - PromptDeclaration：直接注入到 system prompt 或对话消息中，始终可见
 
+pub use astrcode_core::{
+    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource,
+    SystemPromptLayer as PromptLayer,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockKind, PromptLayer, RenderTarget};
+use crate::{BlockKind, RenderTarget};
 
-/// Prompt 声明的来源。
-///
-/// 与 `astrcode_adapter_skills::SkillSource` 保持独立，因为两者的来源集合可能不同
-/// （如未来可能出现 `PromptDeclarationSource::System`）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptDeclarationSource {
-    Builtin,
-    #[default]
-    Plugin,
-    Mcp,
-}
-
-impl PromptDeclarationSource {
-    pub fn as_tag(&self) -> &'static str {
-        match self {
-            Self::Builtin => "source:builtin",
-            Self::Plugin => "source:plugin",
-            Self::Mcp => "source:mcp",
-        }
+pub(crate) fn prompt_declaration_block_kind(kind: &PromptDeclarationKind) -> BlockKind {
+    match kind {
+        PromptDeclarationKind::ToolGuide => BlockKind::ToolGuide,
+        PromptDeclarationKind::ExtensionInstruction => BlockKind::ExtensionInstruction,
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptDeclarationKind {
-    /// 工具使用指南，映射到 [`BlockKind::ToolGuide`]。
-    ToolGuide,
-    /// 扩展指令（插件或 MCP 注入的 prompt），默认类型。
-    /// 映射到 [`BlockKind::ExtensionInstruction`]。
-    #[default]
-    ExtensionInstruction,
-}
-
-impl PromptDeclarationKind {
-    pub fn as_block_kind(&self) -> BlockKind {
-        match self {
-            Self::ToolGuide => BlockKind::ToolGuide,
-            Self::ExtensionInstruction => BlockKind::ExtensionInstruction,
-        }
+pub(crate) fn prompt_declaration_category(kind: &PromptDeclarationKind) -> &'static str {
+    match kind {
+        PromptDeclarationKind::ToolGuide => "capabilities",
+        PromptDeclarationKind::ExtensionInstruction => "extensions",
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptDeclarationRenderTarget {
-    /// 渲染到 system prompt（默认）。
-    #[default]
-    System,
-    /// 插入到用户消息列表头部。
-    PrependUser,
-    /// 插入到助手消息列表头部。
-    PrependAssistant,
-    /// 追加到用户消息列表尾部。
-    AppendUser,
-    /// 追加到助手消息列表尾部。
-    AppendAssistant,
+pub(crate) fn prompt_declaration_source_tag(source: &PromptDeclarationSource) -> &'static str {
+    match source {
+        PromptDeclarationSource::Builtin => "source:builtin",
+        PromptDeclarationSource::Plugin => "source:plugin",
+        PromptDeclarationSource::Mcp => "source:mcp",
+    }
 }
 
-impl PromptDeclarationRenderTarget {
-    pub fn as_render_target(&self) -> RenderTarget {
-        match self {
-            Self::System => RenderTarget::System,
-            Self::PrependUser => RenderTarget::PrependUser,
-            Self::PrependAssistant => RenderTarget::PrependAssistant,
-            Self::AppendUser => RenderTarget::AppendUser,
-            Self::AppendAssistant => RenderTarget::AppendAssistant,
+pub(crate) fn prompt_declaration_render_target(
+    render_target: &PromptDeclarationRenderTarget,
+) -> RenderTarget {
+    match render_target {
+        PromptDeclarationRenderTarget::System => RenderTarget::System,
+        PromptDeclarationRenderTarget::PrependUser => RenderTarget::PrependUser,
+        PromptDeclarationRenderTarget::PrependAssistant => RenderTarget::PrependAssistant,
+        PromptDeclarationRenderTarget::AppendUser => RenderTarget::AppendUser,
+        PromptDeclarationRenderTarget::AppendAssistant => RenderTarget::AppendAssistant,
+    }
+}
+
+impl From<astrcode_core::PromptDeclaration> for PromptDeclaration {
+    fn from(value: astrcode_core::PromptDeclaration) -> Self {
+        Self {
+            block_id: value.block_id,
+            title: value.title,
+            content: value.content,
+            render_target: value.render_target,
+            layer: value.layer,
+            kind: value.kind,
+            priority_hint: value.priority_hint,
+            always_include: value.always_include,
+            source: value.source,
+            capability_name: value.capability_name,
+            origin: value.origin,
         }
     }
 }
@@ -110,6 +95,52 @@ pub struct PromptDeclaration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
 }
+
+impl From<PromptDeclaration> for astrcode_core::PromptDeclaration {
+    fn from(value: PromptDeclaration) -> Self {
+        Self {
+            block_id: value.block_id,
+            title: value.title,
+            content: value.content,
+            render_target: value.render_target,
+            layer: value.layer,
+            kind: value.kind,
+            priority_hint: value.priority_hint,
+            always_include: value.always_include,
+            source: value.source,
+            capability_name: value.capability_name,
+            origin: value.origin,
+        }
+    }
+}
+
 fn is_unspecified_prompt_layer(layer: &PromptLayer) -> bool {
     matches!(layer, PromptLayer::Unspecified)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_declaration_round_trip_matches_core_shape() {
+        let declaration = PromptDeclaration {
+            block_id: "tool.shell".to_string(),
+            title: "Shell Tool".to_string(),
+            content: "use shell carefully".to_string(),
+            render_target: PromptDeclarationRenderTarget::PrependAssistant,
+            layer: PromptLayer::Inherited,
+            kind: PromptDeclarationKind::ToolGuide,
+            priority_hint: Some(42),
+            always_include: true,
+            source: PromptDeclarationSource::Builtin,
+            capability_name: Some("shell".to_string()),
+            origin: Some("builtin:test".to_string()),
+        };
+
+        let core: astrcode_core::PromptDeclaration = declaration.clone().into();
+        let round_trip: PromptDeclaration = core.into();
+
+        assert_eq!(round_trip, declaration);
+    }
 }

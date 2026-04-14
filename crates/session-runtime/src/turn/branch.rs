@@ -1,13 +1,14 @@
 use std::{path::PathBuf, sync::Arc};
 
 use astrcode_core::{
-    AstrError, SessionId, SessionTurnAcquireResult, SessionTurnLease, StorageEvent,
-    StorageEventPayload, StoredEvent, event::generate_session_id,
+    AstrError, SessionId, SessionTurnAcquireResult, SessionTurnLease, StorageEventPayload,
+    StoredEvent, event::generate_session_id,
 };
 use chrono::Utc;
 
 use crate::{
-    SessionRuntime, actor::SessionActor, catalog::SessionCatalogEvent, state::normalize_working_dir,
+    SessionRuntime, actor::SessionActor, catalog::SessionCatalogEvent,
+    state::normalize_working_dir, turn::events::session_start_event,
 };
 
 pub(crate) struct SubmitTarget {
@@ -100,17 +101,13 @@ impl SessionRuntime {
             .ensure_session(&branched_session_id, &working_dir)
             .await?;
 
-        let session_start = StorageEvent {
-            turn_id: None,
-            agent: astrcode_core::AgentEventContext::default(),
-            payload: StorageEventPayload::SessionStart {
-                session_id: branched_session_id.to_string(),
-                timestamp: Utc::now(),
-                working_dir: working_dir.display().to_string(),
-                parent_session_id: Some(source_session_id.to_string()),
-                parent_storage_seq,
-            },
-        };
+        let session_start = session_start_event(
+            branched_session_id.to_string(),
+            working_dir.display().to_string(),
+            Some(source_session_id.to_string()),
+            parent_storage_seq,
+            Utc::now(),
+        );
         self.event_store
             .append(&branched_session_id, &session_start)
             .await?;
@@ -164,10 +161,16 @@ fn stable_events_before_active_turn(
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{AgentEventContext, StorageEvent, StorageEventPayload, StoredEvent};
+    use std::sync::Arc;
+
+    use astrcode_core::{AstrError, SessionId, StorageEventPayload, StoredEvent};
     use chrono::Utc;
 
     use super::stable_events_before_active_turn;
+    use crate::turn::{
+        events::session_start_event,
+        test_support::{BranchingTestEventStore, root_turn_event, test_runtime},
+    };
 
     fn stored(
         storage_seq: u64,
@@ -176,27 +179,16 @@ mod tests {
     ) -> StoredEvent {
         StoredEvent {
             storage_seq,
-            event: StorageEvent {
-                turn_id: turn_id.map(str::to_string),
-                agent: AgentEventContext::default(),
-                payload,
-            },
+            event: root_turn_event(turn_id, payload),
         }
     }
     #[test]
     fn stable_events_excludes_active_turn_tail() {
         let events = vec![
-            stored(
-                1,
-                None,
-                StorageEventPayload::SessionStart {
-                    session_id: "session-1".to_string(),
-                    timestamp: Utc::now(),
-                    working_dir: "/tmp".to_string(),
-                    parent_session_id: None,
-                    parent_storage_seq: None,
-                },
-            ),
+            StoredEvent {
+                storage_seq: 1,
+                event: session_start_event("session-1", "/tmp", None, None, Utc::now()),
+            },
             stored(
                 2,
                 Some("turn-stable"),
@@ -222,5 +214,44 @@ mod tests {
         assert_eq!(stable.len(), 2);
         assert_eq!(stable[0].storage_seq, 1);
         assert_eq!(stable[1].storage_seq, 2);
+    }
+
+    #[tokio::test]
+    async fn resolve_submit_target_rejects_when_branch_depth_limit_is_exceeded() {
+        let event_store = Arc::new(BranchingTestEventStore::default());
+        let runtime = test_runtime(event_store.clone());
+        let session = runtime
+            .create_session(".")
+            .await
+            .expect("test session should be created");
+        event_store.push_busy("turn-busy-1");
+        event_store.push_busy("turn-busy-2");
+
+        let error = match runtime
+            .resolve_submit_target(&SessionId::from(session.session_id.clone()), "turn-new", 1)
+            .await
+        {
+            Ok(_) => panic!("branch depth overflow should return validation error"),
+            Err(error) => error,
+        };
+
+        match error {
+            AstrError::Validation(message) => {
+                assert!(message.contains("too many concurrent branch attempts"));
+                assert!(message.contains("limit: 1"));
+            },
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        assert_eq!(
+            runtime
+                .list_session_metas()
+                .await
+                .expect("durable session metas should be readable")
+                .len(),
+            2,
+            "first busy submit should still create one durable branched session before the depth \
+             limit stops recursion"
+        );
     }
 }

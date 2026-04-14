@@ -35,32 +35,25 @@ impl AgentOrchestrationService {
         }
     }
 
-    /// 向子 Agent 追加消息（send 协作工具的业务逻辑）。
-    pub async fn send_to_child(
+    pub(super) async fn require_direct_child_handle(
         &self,
-        params: SendAgentParams,
+        agent_id: &str,
+        action: AgentCollaborationActionKind,
         ctx: &astrcode_core::ToolContext,
-    ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
-        let collaboration = self.tool_collaboration_context(ctx)?;
-        params
-            .validate()
-            .map_err(super::AgentOrchestrationError::from)?;
-
-        let child = match self.kernel.get_agent_handle(&params.agent_id).await {
+        collaboration: &super::ToolCollaborationContext,
+    ) -> Result<SubRunHandle, super::AgentOrchestrationError> {
+        let child = match self.kernel.agent().get_handle(agent_id).await {
             Some(child) => child,
             None => {
                 let error = super::AgentOrchestrationError::NotFound(format!(
                     "agent '{}' not found",
-                    params.agent_id
+                    agent_id
                 ));
                 return self
                     .reject_with_fact(
                         collaboration.runtime(),
                         collaboration
-                            .fact(
-                                AgentCollaborationActionKind::Send,
-                                AgentCollaborationOutcomeKind::Rejected,
-                            )
+                            .fact(action, AgentCollaborationOutcomeKind::Rejected)
                             .reason_code("child_not_found")
                             .summary(error.to_string()),
                         error,
@@ -74,10 +67,7 @@ impl AgentOrchestrationService {
                 .reject_with_fact(
                     collaboration.runtime(),
                     collaboration
-                        .fact(
-                            AgentCollaborationActionKind::Send,
-                            AgentCollaborationOutcomeKind::Rejected,
-                        )
+                        .fact(action, AgentCollaborationOutcomeKind::Rejected)
                         .child(&child)
                         .reason_code("ownership_mismatch")
                         .summary(error.to_string()),
@@ -86,23 +76,61 @@ impl AgentOrchestrationService {
                 .await;
         }
 
-        let lifecycle = self.kernel.get_agent_lifecycle(&params.agent_id).await;
+        Ok(child)
+    }
+
+    async fn reject_child_action<T>(
+        &self,
+        collaboration: &super::ToolCollaborationContext,
+        action: AgentCollaborationActionKind,
+        child: &SubRunHandle,
+        reason_code: &str,
+        error: super::AgentOrchestrationError,
+    ) -> Result<T, super::AgentOrchestrationError> {
+        self.reject_with_fact(
+            collaboration.runtime(),
+            collaboration
+                .fact(action, AgentCollaborationOutcomeKind::Rejected)
+                .child(child)
+                .reason_code(reason_code)
+                .summary(error.to_string()),
+            error,
+        )
+        .await
+    }
+
+    /// 向子 Agent 追加消息（send 协作工具的业务逻辑）。
+    pub async fn send_to_child(
+        &self,
+        params: SendAgentParams,
+        ctx: &astrcode_core::ToolContext,
+    ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
+        let collaboration = self.tool_collaboration_context(ctx)?;
+        params
+            .validate()
+            .map_err(super::AgentOrchestrationError::from)?;
+
+        let child = self
+            .require_direct_child_handle(
+                &params.agent_id,
+                AgentCollaborationActionKind::Send,
+                ctx,
+                &collaboration,
+            )
+            .await?;
+
+        let lifecycle = self.kernel.agent().get_lifecycle(&params.agent_id).await;
         if matches!(lifecycle, Some(AgentLifecycleStatus::Terminated)) {
             let error = super::AgentOrchestrationError::InvalidInput(format!(
                 "agent '{}' has been terminated and cannot receive new messages",
                 params.agent_id
             ));
             return self
-                .reject_with_fact(
-                    collaboration.runtime(),
-                    collaboration
-                        .fact(
-                            AgentCollaborationActionKind::Send,
-                            AgentCollaborationOutcomeKind::Rejected,
-                        )
-                        .child(&child)
-                        .reason_code("child_terminated")
-                        .summary(error.to_string()),
+                .reject_child_action(
+                    &collaboration,
+                    AgentCollaborationActionKind::Send,
+                    &child,
+                    "child_terminated",
                     error,
                 )
                 .await;
@@ -130,49 +158,20 @@ impl AgentOrchestrationService {
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;
 
-        let target = match self.kernel.get_agent_handle(&params.agent_id).await {
-            Some(target) => target,
-            None => {
-                let error = super::AgentOrchestrationError::NotFound(format!(
-                    "agent '{}' not found",
-                    params.agent_id
-                ));
-                return self
-                    .reject_with_fact(
-                        collaboration.runtime(),
-                        collaboration
-                            .fact(
-                                AgentCollaborationActionKind::Close,
-                                AgentCollaborationOutcomeKind::Rejected,
-                            )
-                            .reason_code("child_not_found")
-                            .summary(error.to_string()),
-                        error,
-                    )
-                    .await;
-            },
-        };
-        if let Err(error) = self.verify_caller_owns_child(ctx, &target) {
-            return self
-                .reject_with_fact(
-                    collaboration.runtime(),
-                    collaboration
-                        .fact(
-                            AgentCollaborationActionKind::Close,
-                            AgentCollaborationOutcomeKind::Rejected,
-                        )
-                        .child(&target)
-                        .reason_code("ownership_mismatch")
-                        .summary(error.to_string()),
-                    error,
-                )
-                .await;
-        }
+        let target = self
+            .require_direct_child_handle(
+                &params.agent_id,
+                AgentCollaborationActionKind::Close,
+                ctx,
+                &collaboration,
+            )
+            .await?;
 
         // 收集子树用于 durable discard
         let subtree_handles = self
             .kernel
-            .collect_agent_subtree_handles(&params.agent_id)
+            .agent()
+            .collect_subtree_handles(&params.agent_id)
             .await;
         let mut discard_targets = Vec::with_capacity(subtree_handles.len() + 1);
         discard_targets.push(target.clone());
@@ -184,7 +183,8 @@ impl AgentOrchestrationService {
         // 执行 terminate
         let cancelled = self
             .kernel
-            .terminate_agent_subtree(&params.agent_id)
+            .agent()
+            .terminate_subtree(&params.agent_id)
             .await
             .ok_or_else(|| {
                 super::AgentOrchestrationError::NotFound(format!(
@@ -258,10 +258,11 @@ impl AgentOrchestrationService {
         &self,
         mut child_ref: ChildAgentRef,
     ) -> ChildAgentRef {
-        let lifecycle = self.kernel.get_agent_lifecycle(&child_ref.agent_id).await;
+        let lifecycle = self.kernel.agent().get_lifecycle(&child_ref.agent_id).await;
         let last_turn_outcome = self
             .kernel
-            .get_agent_turn_outcome(&child_ref.agent_id)
+            .agent()
+            .get_turn_outcome(&child_ref.agent_id)
             .await;
         if let Some(lifecycle) = lifecycle {
             child_ref.status =
@@ -270,11 +271,15 @@ impl AgentOrchestrationService {
         child_ref
     }
 
+    /// resume 失败时恢复之前 drain 出的 inbox 信封。
+    /// 必须在 resume 前先 drain（否则无法取到 pending 消息来组合 resume prompt），
+    /// 但如果 resume 本身失败，必须把信封放回去，避免消息丢失。
     async fn restore_pending_inbox(&self, agent_id: &str, pending: Vec<AgentInboxEnvelope>) {
         for envelope in pending {
             if self
                 .kernel
-                .deliver_to_agent(agent_id, envelope)
+                .agent()
+                .deliver(agent_id, envelope)
                 .await
                 .is_none()
             {
@@ -285,6 +290,16 @@ impl AgentOrchestrationService {
                 break;
             }
         }
+    }
+
+    async fn restore_pending_inbox_and_fail<T>(
+        &self,
+        agent_id: &str,
+        pending: Vec<AgentInboxEnvelope>,
+        message: String,
+    ) -> Result<T, super::AgentOrchestrationError> {
+        self.restore_pending_inbox(agent_id, pending).await;
+        Err(super::AgentOrchestrationError::Internal(message))
     }
 
     async fn resume_idle_child_if_needed(
@@ -302,12 +317,13 @@ impl AgentOrchestrationService {
 
         let pending = self
             .kernel
-            .drain_agent_inbox(&child.agent_id)
+            .agent()
+            .drain_inbox(&child.agent_id)
             .await
             .unwrap_or_default();
         let resume_message = compose_reusable_child_message(&pending, params);
 
-        let Some(reused_handle) = self.kernel.resume_agent(&params.agent_id).await else {
+        let Some(reused_handle) = self.kernel.agent().resume(&params.agent_id).await else {
             self.restore_pending_inbox(&child.agent_id, pending).await;
             return Ok(None);
         };
@@ -323,11 +339,16 @@ impl AgentOrchestrationService {
             .as_ref()
             .or(child.child_session_id.as_ref())
         else {
-            self.restore_pending_inbox(&child.agent_id, pending).await;
-            return Err(super::AgentOrchestrationError::Internal(format!(
-                "agent '{}' resume failed: missing child session id",
-                params.agent_id
-            )));
+            return self
+                .restore_pending_inbox_and_fail(
+                    &child.agent_id,
+                    pending,
+                    format!(
+                        "agent '{}' resume failed: missing child session id",
+                        params.agent_id
+                    ),
+                )
+                .await;
         };
 
         let accepted = match self
@@ -343,11 +364,13 @@ impl AgentOrchestrationService {
         {
             Ok(accepted) => accepted,
             Err(error) => {
-                self.restore_pending_inbox(&child.agent_id, pending).await;
-                return Err(super::AgentOrchestrationError::Internal(format!(
-                    "agent '{}' resume submit failed: {error}",
-                    params.agent_id
-                )));
+                return self
+                    .restore_pending_inbox_and_fail(
+                        &child.agent_id,
+                        pending,
+                        format!("agent '{}' resume submit failed: {error}", params.agent_id),
+                    )
+                    .await;
             },
         };
         self.spawn_child_turn_terminal_watcher(
@@ -413,7 +436,8 @@ impl AgentOrchestrationService {
             .await?;
 
         self.kernel
-            .deliver_to_agent(&child.agent_id, envelope)
+            .agent()
+            .deliver(&child.agent_id, envelope)
             .await
             .ok_or_else(|| {
                 super::AgentOrchestrationError::NotFound(format!(
@@ -521,14 +545,15 @@ impl AgentOrchestrationService {
             AgentLifecycleStatus::Running
         } else {
             self.kernel
-                .get_agent_lifecycle(&sender_agent_id)
+                .agent()
+                .get_lifecycle(&sender_agent_id)
                 .await
                 .unwrap_or(AgentLifecycleStatus::Running)
         };
         let sender_last_turn_outcome = if sender_agent_id.is_empty() {
             None
         } else {
-            self.kernel.get_agent_turn_outcome(&sender_agent_id).await
+            self.kernel.agent().get_turn_outcome(&sender_agent_id).await
         };
         let sender_open_session_id = ctx
             .agent_context()
@@ -606,7 +631,10 @@ impl AgentOrchestrationService {
     }
 }
 
-/// 将 live 控制平面的 lifecycle + outcome 投影回 ChildAgentRef 的 lifecycle。
+/// 将 live 控制面的 lifecycle + outcome 投影回 `ChildAgentRef` 的 lifecycle。
+///
+/// `Idle` + `None` outcome 的含义是：agent 已空闲但还没有完成过一轮 turn，
+/// 此时保留调用方传入的 fallback 状态（通常是 handle 上的旧 lifecycle）。
 fn project_collaboration_lifecycle(
     lifecycle: AgentLifecycleStatus,
     last_turn_outcome: Option<astrcode_core::AgentTurnOutcome>,
@@ -688,7 +716,8 @@ mod tests {
         for _ in 0..20 {
             if harness
                 .kernel
-                .get_agent_lifecycle(&child_agent_id)
+                .agent()
+                .get_lifecycle(&child_agent_id)
                 .await
                 .is_some_and(|lifecycle| lifecycle == astrcode_core::AgentLifecycleStatus::Idle)
             {
@@ -904,7 +933,8 @@ mod tests {
 
         let child_handle = harness
             .kernel
-            .get_agent_handle(&child_agent_id)
+            .agent()
+            .get_handle(&child_agent_id)
             .await
             .expect("child handle should exist");
         let child_ctx = ToolContext::new(
