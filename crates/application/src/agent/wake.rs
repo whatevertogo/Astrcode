@@ -11,7 +11,8 @@ use astrcode_core::{
 
 use super::{
     AgentOrchestrationError, AgentOrchestrationService, child_delivery_mailbox_envelope,
-    root_execution_event_context, subrun_event_context, terminal_notification_message,
+    root_execution_event_context, subrun_event_context, terminal::ChildTurnTerminalContext,
+    terminal_notification_message,
 };
 
 impl AgentOrchestrationService {
@@ -208,6 +209,34 @@ impl AgentOrchestrationService {
                 && !terminal.events.iter().any(|stored| {
                     matches!(stored.event.payload, StorageEventPayload::Error { .. })
                 });
+        let target_handle = self
+            .kernel
+            .get_agent_handle(&target_agent_id)
+            .await
+            .ok_or_else(|| {
+                AgentOrchestrationError::NotFound(format!(
+                    "target wake agent '{}' not found",
+                    target_agent_id
+                ))
+            })?;
+
+        if target_handle.parent_agent_id.is_some() {
+            self.finalize_child_turn_with_outcome(
+                ChildTurnTerminalContext::new(
+                    target_handle.clone(),
+                    parent_session_id.clone(),
+                    turn_id.clone(),
+                    // 显式使用 handle 上的 parent routing truth，禁止从 child_ref 反推。
+                    target_handle.session_id.clone(),
+                    target_handle.parent_turn_id.clone(),
+                    None,
+                ),
+                self.session_runtime
+                    .project_turn_outcome(&parent_session_id, &turn_id)
+                    .await?,
+            )
+            .await?;
+        }
 
         if wake_succeeded {
             self.append_parent_delivery_batch_acked(
@@ -428,7 +457,7 @@ mod tests {
     use crate::{
         agent::{
             terminal_notification_turn_outcome,
-            test_support::{TestLlmBehavior, build_agent_test_harness},
+            test_support::{TestLlmBehavior, build_agent_test_harness, sample_profile},
         },
         lifecycle::governance::ObservabilitySnapshotProvider,
     };
@@ -587,6 +616,121 @@ mod tests {
         assert_eq!(
             metrics.execution_diagnostics.delivery_buffer_wake_succeeded,
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn wake_turn_bubbles_terminal_delivery_to_direct_parent() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "middle 已处理 leaf 交付。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let root_session = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("root session should be created");
+        let middle_session = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("middle session should be created");
+        let root = harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                root_session.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should register");
+        let middle = harness
+            .kernel
+            .agent_control()
+            .spawn_with_storage(
+                &sample_profile("reviewer"),
+                root_session.session_id.clone(),
+                Some(middle_session.session_id.clone()),
+                "turn-root".to_string(),
+                Some(root.agent_id.clone()),
+                astrcode_core::SubRunStorageMode::IndependentSession,
+            )
+            .await
+            .expect("middle handle should spawn");
+        harness
+            .kernel
+            .agent_control()
+            .set_lifecycle(&middle.agent_id, AgentLifecycleStatus::Running)
+            .await
+            .expect("middle lifecycle should update");
+
+        let leaf_delivery = ChildSessionNotification {
+            notification_id: "leaf-terminal:turn-leaf:completed".to_string(),
+            child_ref: ChildAgentRef {
+                agent_id: "agent-leaf".to_string(),
+                session_id: middle_session.session_id.clone(),
+                sub_run_id: "subrun-leaf".to_string(),
+                parent_agent_id: Some(middle.agent_id.clone()),
+                parent_sub_run_id: Some(middle.sub_run_id.clone()),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status: AgentLifecycleStatus::Idle,
+                open_session_id: "session-leaf".to_string(),
+            },
+            kind: ChildSessionNotificationKind::Delivered,
+            summary: "leaf 已完成".to_string(),
+            status: AgentLifecycleStatus::Idle,
+            source_tool_call_id: None,
+            final_reply_excerpt: Some("leaf 最终回复".to_string()),
+        };
+
+        harness
+            .service
+            .reactivate_parent_agent_if_idle(
+                &middle_session.session_id,
+                "turn-middle-parent",
+                &leaf_delivery,
+            )
+            .await;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let middle_pending = harness
+                .kernel
+                .agent_control()
+                .pending_parent_delivery_count(&middle_session.session_id)
+                .await;
+            let root_pending = harness
+                .kernel
+                .agent_control()
+                .pending_parent_delivery_count(&root_session.session_id)
+                .await;
+            if middle_pending == 0 && root_pending == 0 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "wake bubbling should eventually drain both middle and root delivery queues"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let root_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(root_session.session_id.clone()))
+            .await
+            .expect("root events should replay");
+        assert!(
+            root_events.iter().any(|stored| matches!(
+                &stored.event.payload,
+                StorageEventPayload::ChildSessionNotification { notification, .. }
+                    if notification.child_ref.agent_id == middle.agent_id
+                        && notification.kind == ChildSessionNotificationKind::Delivered
+                        && notification.final_reply_excerpt.as_deref()
+                            == Some("middle 已处理 leaf 交付。")
+            )),
+            "middle wake turn should bubble a terminal delivery to root"
         );
     }
 

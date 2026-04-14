@@ -17,55 +17,88 @@ struct ChildTerminalDeliveryProjection {
     final_reply_excerpt: Option<String>,
 }
 
-/// 聚合 watcher 完成收敛所需上下文，避免终态收口函数继续堆参数。
-struct ChildTerminalWatchContext {
+/// 聚合 child turn 终态收口所需上下文，避免不同入口重复传参与路由真相漂移。
+///
+/// 注意：这里显式携带 parent routing truth。
+/// `ChildAgentRef` 只用于 stable child reference / projection，
+/// 禁止再从 `child_ref.session_id` 反推父侧 notification 的落点。
+pub(super) struct ChildTurnTerminalContext {
     child: astrcode_core::SubRunHandle,
-    child_session_id: String,
-    child_turn_id: String,
+    execution_session_id: String,
+    execution_turn_id: String,
     parent_session_id: String,
     parent_turn_id: String,
     source_tool_call_id: Option<String>,
     started_at: Instant,
 }
 
+impl ChildTurnTerminalContext {
+    pub(super) fn new(
+        child: astrcode_core::SubRunHandle,
+        execution_session_id: String,
+        execution_turn_id: String,
+        parent_session_id: String,
+        parent_turn_id: String,
+        source_tool_call_id: Option<String>,
+    ) -> Self {
+        Self {
+            child,
+            execution_session_id,
+            execution_turn_id,
+            parent_session_id,
+            parent_turn_id,
+            source_tool_call_id,
+            started_at: Instant::now(),
+        }
+    }
+}
+
 impl AgentOrchestrationService {
-    pub(super) fn spawn_child_terminal_watcher(
+    pub(super) fn spawn_child_turn_terminal_watcher(
         &self,
         child: astrcode_core::SubRunHandle,
-        child_session_id: String,
-        child_turn_id: String,
+        execution_session_id: String,
+        execution_turn_id: String,
         parent_session_id: String,
         parent_turn_id: String,
         source_tool_call_id: Option<String>,
     ) {
         let service = self.clone();
         let handle = tokio::spawn(async move {
-            let watch = ChildTerminalWatchContext {
+            let watch = ChildTurnTerminalContext::new(
                 child,
-                child_session_id,
-                child_turn_id,
+                execution_session_id,
+                execution_turn_id,
                 parent_session_id,
                 parent_turn_id,
                 source_tool_call_id,
-                started_at: Instant::now(),
-            };
+            );
             if let Err(error) = service.finalize_child_turn_when_done(watch).await {
-                log::warn!("failed to finalize child terminal delivery: {error}");
+                log::warn!("failed to finalize child turn terminal delivery: {error}");
             }
         });
-        // 为什么登记：child terminal watcher 负责子任务终态收口，必须跟随治理关闭与
+        // 为什么登记：child turn terminal watcher 负责任意 child turn 的统一终态收口，
+        // 必须跟随治理关闭与
         // 测试 teardown 一起回收，避免后台 watcher 残留。
         self.task_registry.register_subagent_task(handle);
     }
 
-    async fn finalize_child_turn_when_done(
+    pub(super) async fn finalize_child_turn_when_done(
         &self,
-        watch: ChildTerminalWatchContext,
+        watch: ChildTurnTerminalContext,
     ) -> Result<(), AgentOrchestrationError> {
         let outcome = self
             .session_runtime
-            .project_turn_outcome(&watch.child_session_id, &watch.child_turn_id)
+            .project_turn_outcome(&watch.execution_session_id, &watch.execution_turn_id)
             .await?;
+        self.finalize_child_turn_with_outcome(watch, outcome).await
+    }
+
+    pub(super) async fn finalize_child_turn_with_outcome(
+        &self,
+        watch: ChildTurnTerminalContext,
+        outcome: astrcode_session_runtime::ProjectedTurnOutcome,
+    ) -> Result<(), AgentOrchestrationError> {
         let result = build_child_subrun_result(&watch.child, &watch.parent_session_id, &outcome);
         let _ = self
             .kernel
@@ -82,14 +115,16 @@ impl AgentOrchestrationService {
 
         let delivery = project_child_terminal_delivery(&result);
         let notification = ChildSessionNotification {
-            notification_id: format!(
-                "child-terminal:{}:{}",
-                watch.child.sub_run_id,
-                status_label(result.lifecycle, result.last_turn_outcome)
+            notification_id: child_terminal_notification_id(
+                &watch.child.sub_run_id,
+                &watch.execution_turn_id,
+                result.lifecycle,
+                result.last_turn_outcome,
             ),
             child_ref: ChildAgentRef {
                 agent_id: watch.child.agent_id.clone(),
-                session_id: watch.parent_session_id.clone(),
+                // 这里继续保留现有 ChildAgentRef 读侧语义，不把它作为父侧路由真相使用。
+                session_id: watch.child.session_id.clone(),
                 sub_run_id: watch.child.sub_run_id.clone(),
                 parent_agent_id: watch.child.parent_agent_id.clone(),
                 parent_sub_run_id: watch.child.parent_sub_run_id.clone(),
@@ -104,8 +139,13 @@ impl AgentOrchestrationService {
             final_reply_excerpt: delivery.final_reply_excerpt,
         };
 
-        self.append_child_terminal_notification(&watch.child, &watch.parent_turn_id, &notification)
-            .await?;
+        self.append_child_terminal_notification(
+            &watch.child,
+            &watch.parent_session_id,
+            &watch.parent_turn_id,
+            &notification,
+        )
+        .await?;
         self.reactivate_parent_agent_if_idle(
             &watch.parent_session_id,
             &watch.parent_turn_id,
@@ -118,13 +158,13 @@ impl AgentOrchestrationService {
     async fn append_child_terminal_notification(
         &self,
         child: &astrcode_core::SubRunHandle,
+        parent_session_id: &str,
         parent_turn_id: &str,
         notification: &ChildSessionNotification,
     ) -> Result<(), AgentOrchestrationError> {
-        let parent_session_id = notification.child_ref.session_id.clone();
         self.session_runtime
             .append_child_session_notification(
-                &parent_session_id,
+                parent_session_id,
                 parent_turn_id,
                 subrun_event_context_for_parent_turn(child, parent_turn_id),
                 notification.clone(),
@@ -237,6 +277,18 @@ fn child_open_session_id(child: &astrcode_core::SubRunHandle) -> String {
         .child_session_id
         .clone()
         .unwrap_or_else(|| child.session_id.clone())
+}
+
+fn child_terminal_notification_id(
+    sub_run_id: &str,
+    turn_id: &str,
+    lifecycle: AgentLifecycleStatus,
+    outcome: Option<AgentTurnOutcome>,
+) -> String {
+    format!(
+        "child-terminal:{sub_run_id}:{turn_id}:{}",
+        status_label(lifecycle, outcome)
+    )
 }
 
 fn project_child_terminal_delivery(result: &SubRunResult) -> ChildTerminalDeliveryProjection {
@@ -443,15 +495,14 @@ mod tests {
 
         harness
             .service
-            .finalize_child_turn_when_done(ChildTerminalWatchContext {
-                child: child_handle.clone(),
-                child_session_id: child.session_id.clone(),
-                child_turn_id: "turn-child".to_string(),
-                parent_session_id: parent.session_id.clone(),
-                parent_turn_id: "turn-parent".to_string(),
-                source_tool_call_id: Some("tool-call-1".to_string()),
-                started_at: Instant::now(),
-            })
+            .finalize_child_turn_when_done(ChildTurnTerminalContext::new(
+                child_handle.clone(),
+                child.session_id.clone(),
+                "turn-child".to_string(),
+                parent.session_id.clone(),
+                "turn-parent".to_string(),
+                Some("tool-call-1".to_string()),
+            ))
             .await
             .expect("child finalize should succeed");
 
@@ -516,6 +567,233 @@ mod tests {
         assert_eq!(
             metrics.execution_diagnostics.delivery_buffer_wake_succeeded,
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn append_child_terminal_notification_uses_explicit_parent_session_route() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "父级已收到交付。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let wrong_parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("wrong parent session should be created");
+        let child = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("child session should be created");
+        let root = harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should register");
+        let child_handle = harness
+            .kernel
+            .agent_control()
+            .spawn_with_storage(
+                &sample_profile("reviewer"),
+                parent.session_id.clone(),
+                Some(child.session_id.clone()),
+                "turn-parent".to_string(),
+                Some(root.agent_id.clone()),
+                SubRunStorageMode::IndependentSession,
+            )
+            .await
+            .expect("child handle should spawn");
+
+        harness
+            .service
+            .append_child_terminal_notification(
+                &child_handle,
+                &parent.session_id,
+                "turn-parent",
+                &ChildSessionNotification {
+                    notification_id: "child-terminal:subrun-test:turn-child:completed".to_string(),
+                    child_ref: ChildAgentRef {
+                        agent_id: child_handle.agent_id.clone(),
+                        // 故意写错：验证内部不再从 child_ref.session_id 反推父侧路由。
+                        session_id: wrong_parent.session_id.clone(),
+                        sub_run_id: child_handle.sub_run_id.clone(),
+                        parent_agent_id: child_handle.parent_agent_id.clone(),
+                        parent_sub_run_id: child_handle.parent_sub_run_id.clone(),
+                        lineage_kind: ChildSessionLineageKind::Spawn,
+                        status: AgentLifecycleStatus::Idle,
+                        open_session_id: child.session_id.clone(),
+                    },
+                    kind: ChildSessionNotificationKind::Delivered,
+                    summary: "子 Agent 已完成".to_string(),
+                    status: AgentLifecycleStatus::Idle,
+                    source_tool_call_id: None,
+                    final_reply_excerpt: Some("最终回复".to_string()),
+                },
+            )
+            .await
+            .expect("explicit parent session route should succeed");
+
+        let parent_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent events should replay");
+        let wrong_parent_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(wrong_parent.session_id.clone()))
+            .await
+            .expect("wrong parent events should replay");
+        assert!(
+            parent_events.iter().any(|stored| matches!(
+                &stored.event.payload,
+                StorageEventPayload::ChildSessionNotification { notification, .. }
+                    if notification.final_reply_excerpt.as_deref() == Some("最终回复")
+            )),
+            "notification should be written to the explicit parent session"
+        );
+        assert!(
+            !wrong_parent_events.iter().any(|stored| matches!(
+                &stored.event.payload,
+                StorageEventPayload::ChildSessionNotification { .. }
+            )),
+            "wrong child_ref.session_id must not hijack the durable notification route"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_child_turn_does_not_wait_for_descendant_settlement() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "父级已收到交付。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let root_session = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("root session should be created");
+        let middle_session = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("middle session should be created");
+        let leaf_session = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("leaf session should be created");
+        let root = harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                root_session.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should register");
+        let middle = harness
+            .kernel
+            .agent_control()
+            .spawn_with_storage(
+                &sample_profile("reviewer"),
+                root_session.session_id.clone(),
+                Some(middle_session.session_id.clone()),
+                "turn-root".to_string(),
+                Some(root.agent_id.clone()),
+                SubRunStorageMode::IndependentSession,
+            )
+            .await
+            .expect("middle handle should spawn");
+        let leaf = harness
+            .kernel
+            .agent_control()
+            .spawn_with_storage(
+                &sample_profile("explore"),
+                middle_session.session_id.clone(),
+                Some(leaf_session.session_id.clone()),
+                "turn-middle".to_string(),
+                Some(middle.agent_id.clone()),
+                SubRunStorageMode::IndependentSession,
+            )
+            .await
+            .expect("leaf handle should spawn");
+        harness
+            .kernel
+            .agent_control()
+            .set_lifecycle(&middle.agent_id, AgentLifecycleStatus::Running)
+            .await
+            .expect("middle lifecycle should update");
+        harness
+            .kernel
+            .agent_control()
+            .set_lifecycle(&leaf.agent_id, AgentLifecycleStatus::Running)
+            .await
+            .expect("leaf lifecycle should update");
+
+        let middle_state = harness
+            .session_runtime
+            .get_session_state(&SessionId::from(middle_session.session_id.clone()))
+            .await
+            .expect("middle state should load");
+        let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
+        let middle_agent = AgentEventContext::from(&middle);
+        for event in child_completion_events(middle_agent, "turn-middle-wake") {
+            append_and_broadcast(middle_state.as_ref(), &event, &mut translator)
+                .await
+                .expect("middle completion event should persist");
+        }
+        complete_session_execution(middle_state.as_ref(), Phase::Idle);
+
+        harness
+            .service
+            .finalize_child_turn_when_done(ChildTurnTerminalContext::new(
+                middle.clone(),
+                middle_session.session_id.clone(),
+                "turn-middle-wake".to_string(),
+                root_session.session_id.clone(),
+                "turn-root".to_string(),
+                None,
+            ))
+            .await
+            .expect("middle finalize should not block on running descendants");
+
+        let root_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(root_session.session_id.clone()))
+            .await
+            .expect("root events should replay");
+        assert!(
+            root_events.iter().any(|stored| matches!(
+                &stored.event.payload,
+                StorageEventPayload::ChildSessionNotification { notification, .. }
+                    if notification.child_ref.agent_id == middle.agent_id
+                        && notification.kind == ChildSessionNotificationKind::Delivered
+            )),
+            "middle should publish its own terminal delivery even when a descendant is still \
+             running"
+        );
+        let leaf_status = harness
+            .kernel
+            .get_agent_lifecycle(&leaf.agent_id)
+            .await
+            .expect("leaf should still exist");
+        assert_eq!(
+            leaf_status,
+            AgentLifecycleStatus::Running,
+            "running descendants should not block or be mutated by middle turn finalization"
         );
     }
 }

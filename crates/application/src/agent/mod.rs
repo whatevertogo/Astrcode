@@ -309,7 +309,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             (accepted.agent_id.clone(), ctx.turn_id())
         {
             if let Some(child_handle) = self.kernel.get_agent_handle(&child_agent_id).await {
-                self.spawn_child_terminal_watcher(
+                self.spawn_child_turn_terminal_watcher(
                     child_handle,
                     accepted.session_id.to_string(),
                     accepted.turn_id.to_string(),

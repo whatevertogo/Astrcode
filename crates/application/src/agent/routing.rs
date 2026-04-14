@@ -114,7 +114,7 @@ impl AgentOrchestrationService {
                         )));
                     },
                 };
-                self.spawn_child_terminal_watcher(
+                self.spawn_child_turn_terminal_watcher(
                     reused_handle.clone(),
                     accepted.session_id.to_string(),
                     accepted.turn_id.to_string(),
