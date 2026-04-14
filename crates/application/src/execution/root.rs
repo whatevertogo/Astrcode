@@ -17,7 +17,9 @@ use astrcode_session_runtime::SessionRuntime;
 use crate::{
     agent::root_execution_event_context,
     errors::ApplicationError,
-    execution::{ExecutionControl, ProfileResolutionService},
+    execution::{
+        ExecutionControl, ProfileResolutionService, ensure_profile_mode, merge_task_with_context,
+    },
 };
 
 /// 根代理执行请求。
@@ -48,8 +50,7 @@ pub async fn execute_root_agent(
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_root_request(&request)?;
     apply_execution_control(&mut runtime_config, request.control.as_ref());
-    let _resolved_context_overrides =
-        resolve_root_context_overrides(request.context_overrides.as_ref())?;
+    resolve_root_context_overrides(request.context_overrides.as_ref())?;
 
     let profile = profiles.find_profile(Path::new(&request.working_dir), &request.agent_id)?;
     ensure_root_profile_mode(&profile)?;
@@ -70,12 +71,7 @@ pub async fn execute_root_agent(
         .await
         .map_err(|e| ApplicationError::Internal(format!("failed to register root agent: {e}")))?;
 
-    let merged_task = match &request.context {
-        Some(ctx) if !ctx.trim().is_empty() => {
-            format!("{}\n\n{}", ctx.trim(), request.task)
-        },
-        _ => request.task,
-    };
+    let merged_task = merge_task_with_context(&request.task, request.context.as_deref());
 
     let mut accepted = session_runtime
         .submit_prompt_for_agent(
@@ -137,13 +133,11 @@ fn resolve_root_context_overrides(
 }
 
 fn ensure_root_profile_mode(profile: &astrcode_core::AgentProfile) -> Result<(), ApplicationError> {
-    if matches!(profile.mode, AgentMode::Primary | AgentMode::All) {
-        return Ok(());
-    }
-    Err(ApplicationError::InvalidArgument(format!(
-        "agent profile '{}' cannot be used for root execution",
-        profile.id
-    )))
+    ensure_profile_mode(
+        profile,
+        &[AgentMode::Primary, AgentMode::All],
+        "root execution",
+    )
 }
 
 fn apply_execution_control(
@@ -238,23 +232,13 @@ mod tests {
 
     #[test]
     fn merge_context_and_task() {
-        let merged = match &Some("background info".to_string()) {
-            Some(ctx) if !ctx.trim().is_empty() => {
-                format!("{}\n\n{}", ctx.trim(), "main task")
-            },
-            _ => "main task".to_string(),
-        };
+        let merged = merge_task_with_context("main task", Some("background info"));
         assert_eq!(merged, "background info\n\nmain task");
     }
 
     #[test]
     fn merge_skips_empty_context() {
-        let merged = match &Some("  ".to_string()) {
-            Some(ctx) if !ctx.trim().is_empty() => {
-                format!("{}\n\n{}", ctx.trim(), "main task")
-            },
-            _ => "main task".to_string(),
-        };
+        let merged = merge_task_with_context("main task", Some("  "));
         assert_eq!(merged, "main task");
     }
 

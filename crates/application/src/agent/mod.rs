@@ -99,6 +99,125 @@ pub(crate) struct CollaborationFactRecord<'a> {
     pub(crate) source_tool_call_id: Option<String>,
 }
 
+impl<'a> CollaborationFactRecord<'a> {
+    pub(crate) fn new(
+        action: AgentCollaborationActionKind,
+        outcome: AgentCollaborationOutcomeKind,
+        session_id: &'a str,
+        turn_id: &'a str,
+    ) -> Self {
+        Self {
+            action,
+            outcome,
+            session_id,
+            turn_id,
+            parent_agent_id: None,
+            child: None,
+            delivery_id: None,
+            reason_code: None,
+            summary: None,
+            latency_ms: None,
+            source_tool_call_id: None,
+        }
+    }
+
+    pub(crate) fn parent_agent_id(mut self, parent_agent_id: Option<String>) -> Self {
+        self.parent_agent_id = parent_agent_id;
+        self
+    }
+
+    pub(crate) fn child(mut self, child: &'a SubRunHandle) -> Self {
+        self.child = Some(child);
+        self
+    }
+
+    pub(crate) fn delivery_id(mut self, delivery_id: impl Into<String>) -> Self {
+        self.delivery_id = Some(delivery_id.into());
+        self
+    }
+
+    pub(crate) fn reason_code(mut self, reason_code: impl Into<String>) -> Self {
+        self.reason_code = Some(reason_code.into());
+        self
+    }
+
+    pub(crate) fn summary(mut self, summary: impl Into<String>) -> Self {
+        self.summary = Some(summary.into());
+        self
+    }
+
+    pub(crate) fn latency_ms(mut self, latency_ms: u64) -> Self {
+        self.latency_ms = Some(latency_ms);
+        self
+    }
+
+    pub(crate) fn source_tool_call_id(mut self, source_tool_call_id: Option<String>) -> Self {
+        self.source_tool_call_id = source_tool_call_id;
+        self
+    }
+}
+
+pub(crate) struct ToolCollaborationContext {
+    runtime: astrcode_core::ResolvedRuntimeConfig,
+    session_id: String,
+    turn_id: String,
+    parent_agent_id: Option<String>,
+    source_tool_call_id: Option<String>,
+}
+
+impl ToolCollaborationContext {
+    pub(crate) fn new(
+        runtime: astrcode_core::ResolvedRuntimeConfig,
+        session_id: String,
+        turn_id: String,
+        parent_agent_id: Option<String>,
+        source_tool_call_id: Option<String>,
+    ) -> Self {
+        Self {
+            runtime,
+            session_id,
+            turn_id,
+            parent_agent_id,
+            source_tool_call_id,
+        }
+    }
+
+    pub(crate) fn with_parent_agent_id(mut self, parent_agent_id: Option<String>) -> Self {
+        self.parent_agent_id = parent_agent_id;
+        self
+    }
+
+    pub(crate) fn runtime(&self) -> &astrcode_core::ResolvedRuntimeConfig {
+        &self.runtime
+    }
+
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub(crate) fn turn_id(&self) -> &str {
+        &self.turn_id
+    }
+
+    pub(crate) fn parent_agent_id(&self) -> Option<String> {
+        self.parent_agent_id.clone()
+    }
+
+    pub(crate) fn source_tool_call_id(&self) -> Option<String> {
+        self.source_tool_call_id.clone()
+    }
+
+    pub(crate) fn fact<'a>(
+        &'a self,
+        action: AgentCollaborationActionKind,
+        outcome: AgentCollaborationOutcomeKind,
+    ) -> CollaborationFactRecord<'a> {
+        CollaborationFactRecord::new(action, outcome, &self.session_id, &self.turn_id)
+            .parent_agent_id(self.parent_agent_id())
+            .source_tool_call_id(self.source_tool_call_id())
+    }
+}
+
 pub(crate) fn implicit_session_root_agent_id(session_id: &str) -> String {
     // 为什么按 session 生成 synthetic root id：
     // `AgentControl` 以 agent_id 作为全局索引键，普通会话若都共用 `root-agent`
@@ -148,6 +267,95 @@ pub(crate) fn terminal_notification_turn_outcome(
         astrcode_core::ChildSessionNotificationKind::Closed => Some(AgentTurnOutcome::Cancelled),
         _ => None,
     }
+}
+
+pub(crate) fn child_open_session_id(child: &SubRunHandle) -> String {
+    child
+        .child_session_id
+        .clone()
+        .unwrap_or_else(|| child.session_id.clone())
+}
+
+pub(crate) fn artifact_ref(
+    kind: &str,
+    id: impl Into<String>,
+    label: &str,
+    session_id: Option<String>,
+) -> ArtifactRef {
+    ArtifactRef {
+        kind: kind.to_string(),
+        id: id.into(),
+        label: label.to_string(),
+        session_id,
+        storage_seq: None,
+        uri: None,
+    }
+}
+
+pub(crate) fn child_collaboration_artifacts(
+    child: &SubRunHandle,
+    parent_session_id: &str,
+    include_parent_sub_run: bool,
+) -> Vec<ArtifactRef> {
+    let mut artifacts = vec![artifact_ref(
+        "subRun",
+        child.sub_run_id.clone(),
+        "Sub Run",
+        Some(parent_session_id.to_string()),
+    )];
+    artifacts.extend(child_reference_artifacts(
+        child,
+        parent_session_id,
+        include_parent_sub_run,
+    ));
+    artifacts
+}
+
+pub(crate) fn child_reference_artifacts(
+    child: &SubRunHandle,
+    parent_session_id: &str,
+    include_parent_sub_run: bool,
+) -> Vec<ArtifactRef> {
+    let child_session_id = child_open_session_id(child);
+    let mut artifacts = vec![
+        artifact_ref(
+            "agent",
+            child.agent_id.clone(),
+            "Agent",
+            Some(child_session_id.clone()),
+        ),
+        artifact_ref(
+            "parentSession",
+            parent_session_id.to_string(),
+            "Parent Session",
+            Some(parent_session_id.to_string()),
+        ),
+        artifact_ref(
+            "session",
+            child_session_id.clone(),
+            "Child Session",
+            Some(child_session_id),
+        ),
+    ];
+    if let Some(parent_agent_id) = &child.parent_agent_id {
+        artifacts.push(artifact_ref(
+            "parentAgent",
+            parent_agent_id.clone(),
+            "Parent Agent",
+            Some(parent_session_id.to_string()),
+        ));
+    }
+    if include_parent_sub_run {
+        if let Some(parent_sub_run_id) = &child.parent_sub_run_id {
+            artifacts.push(artifact_ref(
+                "parentSubRun",
+                parent_sub_run_id.clone(),
+                "Parent Sub Run",
+                Some(parent_session_id.to_string()),
+            ));
+        }
+    }
+    artifacts
 }
 
 fn map_orchestration_error(error: AgentOrchestrationError) -> astrcode_core::AstrError {
@@ -306,6 +514,37 @@ impl AgentOrchestrationService {
         self.append_collaboration_fact(fact).await
     }
 
+    fn tool_collaboration_context(
+        &self,
+        ctx: &ToolContext,
+    ) -> std::result::Result<ToolCollaborationContext, AgentOrchestrationError> {
+        Ok(ToolCollaborationContext::new(
+            self.resolve_runtime_config_for_working_dir(ctx.working_dir())?,
+            ctx.session_id().to_string(),
+            ctx.turn_id().unwrap_or("unknown-turn").to_string(),
+            ctx.agent_context().agent_id.clone(),
+            ctx.tool_call_id().map(ToString::to_string),
+        ))
+    }
+
+    async fn record_fact_best_effort(
+        &self,
+        runtime: &astrcode_core::ResolvedRuntimeConfig,
+        record: CollaborationFactRecord<'_>,
+    ) {
+        let _ = self.record_collaboration_fact(runtime, record).await;
+    }
+
+    async fn reject_with_fact<T>(
+        &self,
+        runtime: &astrcode_core::ResolvedRuntimeConfig,
+        record: CollaborationFactRecord<'_>,
+        error: AgentOrchestrationError,
+    ) -> std::result::Result<T, AgentOrchestrationError> {
+        self.record_fact_best_effort(runtime, record).await;
+        Err(error)
+    }
+
     async fn ensure_parent_agent_handle(
         &self,
         ctx: &ToolContext,
@@ -414,38 +653,32 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             .ensure_parent_agent_handle(ctx)
             .await
             .map_err(map_orchestration_error)?;
+        let collaboration = self
+            .tool_collaboration_context(ctx)
+            .map_err(map_orchestration_error)?
+            .with_parent_agent_id(Some(parent_handle.agent_id.clone()));
         let parent_agent_id = parent_handle.agent_id.clone();
-        let parent_turn_id = ctx.turn_id().unwrap_or("unknown-turn").to_string();
-        let parent_session_id = ctx.session_id().to_string();
-        let source_tool_call_id = ctx.tool_call_id().map(ToString::to_string);
+        let parent_turn_id = collaboration.turn_id().to_string();
+        let parent_session_id = collaboration.session_id().to_string();
         let profile_id = params
             .r#type
             .clone()
             .unwrap_or_else(|| "explore".to_string());
-        let runtime_config = self
-            .resolve_runtime_config_for_working_dir(ctx.working_dir())
-            .map_err(map_orchestration_error)?;
+        let runtime_config = collaboration.runtime().clone();
         let profile = match self.resolve_subagent_profile(ctx.working_dir(), &profile_id) {
             Ok(profile) => profile,
             Err(error) => {
-                let _ = self
-                    .record_collaboration_fact(
-                        &runtime_config,
-                        CollaborationFactRecord {
-                            action: AgentCollaborationActionKind::Spawn,
-                            outcome: AgentCollaborationOutcomeKind::Rejected,
-                            session_id: &parent_session_id,
-                            turn_id: &parent_turn_id,
-                            parent_agent_id: Some(parent_agent_id.clone()),
-                            child: None,
-                            delivery_id: None,
-                            reason_code: Some("profile_resolution_failed".to_string()),
-                            summary: Some(error.to_string()),
-                            latency_ms: None,
-                            source_tool_call_id: source_tool_call_id.clone(),
-                        },
-                    )
-                    .await;
+                self.record_fact_best_effort(
+                    &runtime_config,
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Spawn,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .reason_code("profile_resolution_failed")
+                        .summary(error.to_string()),
+                )
+                .await;
                 return Err(map_orchestration_error(error));
             },
         };
@@ -467,24 +700,17 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             )
             .await
         {
-            let _ = self
-                .record_collaboration_fact(
-                    &runtime_config,
-                    CollaborationFactRecord {
-                        action: AgentCollaborationActionKind::Spawn,
-                        outcome: AgentCollaborationOutcomeKind::Rejected,
-                        session_id: &parent_session_id,
-                        turn_id: &request.parent_turn_id,
-                        parent_agent_id: Some(parent_agent_id.clone()),
-                        child: None,
-                        delivery_id: None,
-                        reason_code: Some("spawn_budget_exhausted".to_string()),
-                        summary: Some(error.to_string()),
-                        latency_ms: None,
-                        source_tool_call_id: source_tool_call_id.clone(),
-                    },
-                )
-                .await;
+            self.record_fact_best_effort(
+                &runtime_config,
+                collaboration
+                    .fact(
+                        AgentCollaborationActionKind::Spawn,
+                        AgentCollaborationOutcomeKind::Rejected,
+                    )
+                    .reason_code("spawn_budget_exhausted")
+                    .summary(error.to_string()),
+            )
+            .await;
             return Err(map_orchestration_error(error));
         }
 
@@ -499,60 +725,99 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         {
             Ok(accepted) => accepted,
             Err(error) => {
-                let _ = self
-                    .record_collaboration_fact(
-                        &runtime_config,
-                        CollaborationFactRecord {
-                            action: AgentCollaborationActionKind::Spawn,
-                            outcome: AgentCollaborationOutcomeKind::Failed,
-                            session_id: &parent_session_id,
-                            turn_id: &parent_turn_id,
-                            parent_agent_id: Some(parent_agent_id.clone()),
-                            child: None,
-                            delivery_id: None,
-                            reason_code: Some("launch_subagent_failed".to_string()),
-                            summary: Some(error.to_string()),
-                            latency_ms: None,
-                            source_tool_call_id: source_tool_call_id.clone(),
-                        },
-                    )
-                    .await;
+                self.record_fact_best_effort(
+                    &runtime_config,
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Spawn,
+                            AgentCollaborationOutcomeKind::Failed,
+                        )
+                        .reason_code("launch_subagent_failed")
+                        .summary(error.to_string()),
+                )
+                .await;
                 return Err(astrcode_core::AstrError::Internal(error.to_string()));
             },
         };
+        let mut child_handle_for_handoff = None;
         if let (Some(child_agent_id), Some(parent_turn_id)) =
             (accepted.agent_id.clone(), ctx.turn_id())
         {
             if let Some(child_handle) = self.kernel.get_agent_handle(&child_agent_id).await {
-                let _ = self
-                    .record_collaboration_fact(
-                        &runtime_config,
-                        CollaborationFactRecord {
-                            action: AgentCollaborationActionKind::Spawn,
-                            outcome: AgentCollaborationOutcomeKind::Accepted,
-                            session_id: &parent_session_id,
-                            turn_id: parent_turn_id,
-                            parent_agent_id: Some(parent_agent_id.clone()),
-                            child: Some(&child_handle),
-                            delivery_id: None,
-                            reason_code: None,
-                            summary: Some(params.description.trim().to_string())
-                                .filter(|s| !s.is_empty()),
-                            latency_ms: None,
-                            source_tool_call_id: source_tool_call_id.clone(),
-                        },
-                    )
-                    .await;
+                let fact = {
+                    let mut fact = collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Spawn,
+                            AgentCollaborationOutcomeKind::Accepted,
+                        )
+                        .child(&child_handle);
+                    if let Some(summary) =
+                        Some(params.description.trim()).filter(|value| !value.is_empty())
+                    {
+                        fact = fact.summary(summary.to_string());
+                    }
+                    fact
+                };
+                self.record_fact_best_effort(&runtime_config, fact).await;
                 self.spawn_child_turn_terminal_watcher(
-                    child_handle,
+                    child_handle.clone(),
                     accepted.session_id.to_string(),
                     accepted.turn_id.to_string(),
                     parent_session_id.clone(),
                     parent_turn_id.to_string(),
-                    source_tool_call_id.clone(),
+                    collaboration.source_tool_call_id(),
                 );
+                child_handle_for_handoff = Some(child_handle);
             }
         }
+
+        let handoff_artifacts = if let Some(child_handle) = child_handle_for_handoff.as_ref() {
+            let mut artifacts = vec![artifact_ref(
+                "subRun",
+                accepted.turn_id.to_string(),
+                "Sub Run",
+                Some(parent_session_id.clone()),
+            )];
+            artifacts.extend(child_reference_artifacts(
+                child_handle,
+                &parent_session_id,
+                false,
+            ));
+            artifacts
+        } else {
+            vec![
+                artifact_ref(
+                    "subRun",
+                    accepted.turn_id.to_string(),
+                    "Sub Run",
+                    Some(parent_session_id.clone()),
+                ),
+                artifact_ref(
+                    "agent",
+                    accepted.agent_id.clone().unwrap_or_default().to_string(),
+                    "Agent",
+                    Some(accepted.session_id.to_string()),
+                ),
+                artifact_ref(
+                    "parentSession",
+                    ctx.session_id().to_string(),
+                    "Parent Session",
+                    Some(ctx.session_id().to_string()),
+                ),
+                artifact_ref(
+                    "session",
+                    accepted.session_id.to_string(),
+                    "Child Session",
+                    Some(accepted.session_id.to_string()),
+                ),
+                artifact_ref(
+                    "parentAgent",
+                    parent_agent_id.clone(),
+                    "Parent Agent",
+                    Some(ctx.session_id().to_string()),
+                ),
+            ]
+        };
 
         Ok(SubRunResult {
             lifecycle: AgentLifecycleStatus::Running,
@@ -564,48 +829,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
                     format!("子 Agent 已启动：{}", params.description.trim())
                 },
                 findings: Vec::new(),
-                artifacts: vec![
-                    ArtifactRef {
-                        kind: "subRun".to_string(),
-                        id: accepted.turn_id.to_string(),
-                        label: "Sub Run".to_string(),
-                        session_id: Some(parent_session_id),
-                        storage_seq: None,
-                        uri: None,
-                    },
-                    ArtifactRef {
-                        kind: "agent".to_string(),
-                        id: accepted.agent_id.clone().unwrap_or_default().to_string(),
-                        label: "Agent".to_string(),
-                        session_id: Some(accepted.session_id.to_string()),
-                        storage_seq: None,
-                        uri: None,
-                    },
-                    ArtifactRef {
-                        kind: "parentSession".to_string(),
-                        id: ctx.session_id().to_string(),
-                        label: "Parent Session".to_string(),
-                        session_id: Some(ctx.session_id().to_string()),
-                        storage_seq: None,
-                        uri: None,
-                    },
-                    ArtifactRef {
-                        kind: "session".to_string(),
-                        id: accepted.session_id.to_string(),
-                        label: "Child Session".to_string(),
-                        session_id: Some(accepted.session_id.to_string()),
-                        storage_seq: None,
-                        uri: None,
-                    },
-                    ArtifactRef {
-                        kind: "parentAgent".to_string(),
-                        id: parent_agent_id,
-                        label: "Parent Agent".to_string(),
-                        session_id: Some(ctx.session_id().to_string()),
-                        storage_seq: None,
-                        uri: None,
-                    },
-                ],
+                artifacts: handoff_artifacts,
             }),
             failure: None,
         })

@@ -57,12 +57,90 @@ pub fn validate_config(config: &Config) -> Result<()> {
 }
 
 fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()> {
-    validate_positive_usize(runtime.max_tool_concurrency, "runtime.maxToolConcurrency")?;
-    validate_positive_usize(runtime.tool_result_max_bytes, "runtime.toolResultMaxBytes")?;
-    validate_positive_u8(
-        runtime.compact_keep_recent_turns,
-        "runtime.compactKeepRecentTurns",
-    )?;
+    for (value, field) in [
+        (runtime.max_tool_concurrency, "runtime.maxToolConcurrency"),
+        (runtime.tool_result_max_bytes, "runtime.toolResultMaxBytes"),
+        (runtime.max_steps, "runtime.maxSteps"),
+        (runtime.max_tracked_files, "runtime.maxTrackedFiles"),
+        (runtime.max_recovered_files, "runtime.maxRecoveredFiles"),
+        (runtime.recovery_token_budget, "runtime.recoveryTokenBudget"),
+        (
+            runtime.tool_result_inline_limit,
+            "runtime.toolResultInlineLimit",
+        ),
+        (
+            runtime.tool_result_preview_limit,
+            "runtime.toolResultPreviewLimit",
+        ),
+        (runtime.max_image_size, "runtime.maxImageSize"),
+        (runtime.max_grep_lines, "runtime.maxGrepLines"),
+        (
+            runtime.session_broadcast_capacity,
+            "runtime.sessionBroadcastCapacity",
+        ),
+        (
+            runtime.session_recent_record_limit,
+            "runtime.sessionRecentRecordLimit",
+        ),
+        (
+            runtime.max_concurrent_branch_depth,
+            "runtime.maxConcurrentBranchDepth",
+        ),
+        (
+            runtime.aggregate_result_bytes_budget,
+            "runtime.aggregateResultBytesBudget",
+        ),
+        (
+            runtime.micro_compact_keep_recent_results,
+            "runtime.microCompactKeepRecentResults",
+        ),
+        (
+            runtime.max_consecutive_failures,
+            "runtime.maxConsecutiveFailures",
+        ),
+        (
+            runtime.recovery_truncate_bytes,
+            "runtime.recoveryTruncateBytes",
+        ),
+    ] {
+        validate_positive(value, field)?;
+    }
+
+    for (value, field) in [
+        (
+            runtime.compact_keep_recent_turns,
+            "runtime.compactKeepRecentTurns",
+        ),
+        (
+            runtime.max_reactive_compact_attempts,
+            "runtime.maxReactiveCompactAttempts",
+        ),
+        (
+            runtime.max_output_continuation_attempts,
+            "runtime.maxOutputContinuationAttempts",
+        ),
+    ] {
+        validate_positive(value, field)?;
+    }
+
+    for (value, field) in [
+        (
+            runtime.llm_connect_timeout_secs,
+            "runtime.llmConnectTimeoutSecs",
+        ),
+        (runtime.llm_read_timeout_secs, "runtime.llmReadTimeoutSecs"),
+        (
+            runtime.llm_retry_base_delay_ms,
+            "runtime.llmRetryBaseDelayMs",
+        ),
+        (
+            runtime.micro_compact_gap_threshold_secs,
+            "runtime.microCompactGapThresholdSecs",
+        ),
+    ] {
+        validate_positive(value, field)?;
+    }
+
     if let Some(percent) = runtime.compact_threshold_percent {
         if !(1..=100).contains(&percent) {
             return Err(AstrError::Validation(
@@ -70,118 +148,35 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
             ));
         }
     }
-    validate_positive_usize(runtime.max_steps, "runtime.maxSteps")?;
-    validate_positive_u64(
-        runtime.llm_connect_timeout_secs,
-        "runtime.llmConnectTimeoutSecs",
-    )?;
-    validate_positive_u64(runtime.llm_read_timeout_secs, "runtime.llmReadTimeoutSecs")?;
-    validate_positive_u64(
-        runtime.llm_retry_base_delay_ms,
-        "runtime.llmRetryBaseDelayMs",
-    )?;
-    validate_positive_u8(
-        runtime.max_reactive_compact_attempts,
-        "runtime.maxReactiveCompactAttempts",
-    )?;
-    validate_positive_u8(
-        runtime.max_output_continuation_attempts,
-        "runtime.maxOutputContinuationAttempts",
-    )?;
-    validate_positive_usize(runtime.max_tracked_files, "runtime.maxTrackedFiles")?;
-    validate_positive_usize(runtime.max_recovered_files, "runtime.maxRecoveredFiles")?;
-    validate_positive_usize(runtime.recovery_token_budget, "runtime.recoveryTokenBudget")?;
-    validate_positive_usize(
-        runtime.tool_result_inline_limit,
-        "runtime.toolResultInlineLimit",
-    )?;
-    validate_positive_usize(
-        runtime.tool_result_preview_limit,
-        "runtime.toolResultPreviewLimit",
-    )?;
-    validate_positive_usize(runtime.max_image_size, "runtime.maxImageSize")?;
-    validate_positive_usize(runtime.max_grep_lines, "runtime.maxGrepLines")?;
-    validate_positive_usize(
-        runtime.session_broadcast_capacity,
-        "runtime.sessionBroadcastCapacity",
-    )?;
-    validate_positive_usize(
-        runtime.session_recent_record_limit,
-        "runtime.sessionRecentRecordLimit",
-    )?;
-    validate_positive_usize(
-        runtime.max_concurrent_branch_depth,
-        "runtime.maxConcurrentBranchDepth",
-    )?;
-    validate_positive_usize(
-        runtime.aggregate_result_bytes_budget,
-        "runtime.aggregateResultBytesBudget",
-    )?;
-    validate_positive_u64(
-        runtime.micro_compact_gap_threshold_secs,
-        "runtime.microCompactGapThresholdSecs",
-    )?;
-    validate_positive_usize(
-        runtime.micro_compact_keep_recent_results,
-        "runtime.microCompactKeepRecentResults",
-    )?;
-    validate_positive_i64(runtime.api_session_ttl_hours, "runtime.apiSessionTtlHours")?;
-    validate_positive_usize(
-        runtime.max_consecutive_failures,
-        "runtime.maxConsecutiveFailures",
-    )?;
-    validate_positive_usize(
-        runtime.recovery_truncate_bytes,
-        "runtime.recoveryTruncateBytes",
-    )?;
+    validate_positive(runtime.api_session_ttl_hours, "runtime.apiSessionTtlHours")?;
 
     if let Some(agent) = runtime.agent.as_ref() {
-        validate_positive_usize(agent.max_subrun_depth, "runtime.agent.maxSubrunDepth")?;
-        validate_positive_usize(agent.max_spawn_per_turn, "runtime.agent.maxSpawnPerTurn")?;
-        validate_positive_usize(agent.max_concurrent, "runtime.agent.maxConcurrent")?;
-        validate_positive_usize(
-            agent.finalized_retain_limit,
-            "runtime.agent.finalizedRetainLimit",
-        )?;
-        validate_positive_usize(agent.inbox_capacity, "runtime.agent.inboxCapacity")?;
-        validate_positive_usize(
-            agent.parent_delivery_capacity,
-            "runtime.agent.parentDeliveryCapacity",
-        )?;
+        for (value, field) in [
+            (agent.max_subrun_depth, "runtime.agent.maxSubrunDepth"),
+            (agent.max_spawn_per_turn, "runtime.agent.maxSpawnPerTurn"),
+            (agent.max_concurrent, "runtime.agent.maxConcurrent"),
+            (
+                agent.finalized_retain_limit,
+                "runtime.agent.finalizedRetainLimit",
+            ),
+            (agent.inbox_capacity, "runtime.agent.inboxCapacity"),
+            (
+                agent.parent_delivery_capacity,
+                "runtime.agent.parentDeliveryCapacity",
+            ),
+        ] {
+            validate_positive(value, field)?;
+        }
     }
     Ok(())
 }
 
-fn validate_positive_usize(value: Option<usize>, field: &str) -> Result<()> {
-    if matches!(value, Some(0)) {
-        return Err(AstrError::Validation(format!(
-            "{field} must be greater than 0"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_positive_u64(value: Option<u64>, field: &str) -> Result<()> {
-    if matches!(value, Some(0)) {
-        return Err(AstrError::Validation(format!(
-            "{field} must be greater than 0"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_positive_u8(value: Option<u8>, field: &str) -> Result<()> {
-    if matches!(value, Some(0)) {
-        return Err(AstrError::Validation(format!(
-            "{field} must be greater than 0"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_positive_i64(value: Option<i64>, field: &str) -> Result<()> {
+fn validate_positive<T>(value: Option<T>, field: &str) -> Result<()>
+where
+    T: Copy + PartialOrd + From<u8>,
+{
     if let Some(value) = value {
-        if value <= 0 {
+        if value < T::from(1u8) {
             return Err(AstrError::Validation(format!(
                 "{field} must be greater than 0"
             )));
@@ -379,5 +374,14 @@ mod tests {
         };
         let result = normalize_config(config).unwrap();
         assert_eq!(result.version, "1");
+    }
+
+    #[test]
+    fn negative_api_session_ttl_fails() {
+        let mut config = Config::default();
+        config.runtime.api_session_ttl_hours = Some(-1);
+
+        let error = validate_config(&config).expect_err("negative ttl should fail");
+        assert!(error.to_string().contains("runtime.apiSessionTtlHours"));
     }
 }

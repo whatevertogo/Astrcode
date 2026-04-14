@@ -10,7 +10,7 @@ use astrcode_core::{
     MailboxQueuedPayload, SendAgentParams, SubRunHandle,
 };
 
-use super::{AgentOrchestrationService, CollaborationFactRecord, subrun_event_context};
+use super::{AgentOrchestrationService, subrun_event_context};
 
 impl AgentOrchestrationService {
     /// 验证调用者是否为目标子 agent 的直接父级。
@@ -41,11 +41,7 @@ impl AgentOrchestrationService {
         params: SendAgentParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
-        let runtime = self.resolve_runtime_config_for_working_dir(ctx.working_dir())?;
-        let turn_id = ctx.turn_id().unwrap_or("unknown-turn").to_string();
-        let parent_session_id = ctx.session_id().to_string();
-        let parent_agent_id = ctx.agent_context().agent_id.clone();
-        let source_tool_call_id = ctx.tool_call_id().map(ToString::to_string);
+        let collaboration = self.tool_collaboration_context(ctx)?;
         params
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;
@@ -57,48 +53,37 @@ impl AgentOrchestrationService {
                     "agent '{}' not found",
                     params.agent_id
                 ));
-                let _ = self
-                    .record_collaboration_fact(
-                        &runtime,
-                        CollaborationFactRecord {
-                            action: AgentCollaborationActionKind::Send,
-                            outcome: AgentCollaborationOutcomeKind::Rejected,
-                            session_id: &parent_session_id,
-                            turn_id: &turn_id,
-                            parent_agent_id: parent_agent_id.clone(),
-                            child: None,
-                            delivery_id: None,
-                            reason_code: Some("child_not_found".to_string()),
-                            summary: Some(error.to_string()),
-                            latency_ms: None,
-                            source_tool_call_id: source_tool_call_id.clone(),
-                        },
+                return self
+                    .reject_with_fact(
+                        collaboration.runtime(),
+                        collaboration
+                            .fact(
+                                AgentCollaborationActionKind::Send,
+                                AgentCollaborationOutcomeKind::Rejected,
+                            )
+                            .reason_code("child_not_found")
+                            .summary(error.to_string()),
+                        error,
                     )
                     .await;
-                return Err(error);
             },
         };
 
         if let Err(error) = self.verify_caller_owns_child(ctx, &child) {
-            let _ = self
-                .record_collaboration_fact(
-                    &runtime,
-                    CollaborationFactRecord {
-                        action: AgentCollaborationActionKind::Send,
-                        outcome: AgentCollaborationOutcomeKind::Rejected,
-                        session_id: &parent_session_id,
-                        turn_id: &turn_id,
-                        parent_agent_id: parent_agent_id.clone(),
-                        child: Some(&child),
-                        delivery_id: None,
-                        reason_code: Some("ownership_mismatch".to_string()),
-                        summary: Some(error.to_string()),
-                        latency_ms: None,
-                        source_tool_call_id: source_tool_call_id.clone(),
-                    },
+            return self
+                .reject_with_fact(
+                    collaboration.runtime(),
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Send,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .child(&child)
+                        .reason_code("ownership_mismatch")
+                        .summary(error.to_string()),
+                    error,
                 )
                 .await;
-            return Err(error);
         }
 
         let lifecycle = self.kernel.get_agent_lifecycle(&params.agent_id).await;
@@ -107,194 +92,31 @@ impl AgentOrchestrationService {
                 "agent '{}' has been terminated and cannot receive new messages",
                 params.agent_id
             ));
-            let _ = self
-                .record_collaboration_fact(
-                    &runtime,
-                    CollaborationFactRecord {
-                        action: AgentCollaborationActionKind::Send,
-                        outcome: AgentCollaborationOutcomeKind::Rejected,
-                        session_id: &parent_session_id,
-                        turn_id: &turn_id,
-                        parent_agent_id: parent_agent_id.clone(),
-                        child: Some(&child),
-                        delivery_id: None,
-                        reason_code: Some("child_terminated".to_string()),
-                        summary: Some(error.to_string()),
-                        latency_ms: None,
-                        source_tool_call_id: source_tool_call_id.clone(),
-                    },
+            return self
+                .reject_with_fact(
+                    collaboration.runtime(),
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Send,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .child(&child)
+                        .reason_code("child_terminated")
+                        .summary(error.to_string()),
+                    error,
                 )
                 .await;
-            return Err(error);
         }
 
-        // idle child 需要重新启动以消费新消息
-        if matches!(lifecycle, Some(AgentLifecycleStatus::Idle)) && !child.lifecycle.occupies_slot()
+        if let Some(result) = self
+            .resume_idle_child_if_needed(&child, &params, ctx, &collaboration, lifecycle)
+            .await?
         {
-            let pending = self
-                .kernel
-                .drain_agent_inbox(&child.agent_id)
-                .await
-                .unwrap_or_default();
-            let resume_message = compose_reusable_child_message(&pending, &params);
-
-            // 通过 kernel resume 机制重启子 agent
-            if let Some(reused_handle) = self.kernel.resume_agent(&params.agent_id).await {
-                log::info!(
-                    "send: reusable child agent '{}' restarted with new turn (subRunId='{}')",
-                    params.agent_id,
-                    reused_handle.sub_run_id
-                );
-
-                // 向子 session 提交 resume prompt
-                let Some(child_session_id) = reused_handle
-                    .child_session_id
-                    .as_ref()
-                    .or(child.child_session_id.as_ref())
-                else {
-                    self.restore_pending_inbox(&child.agent_id, pending).await;
-                    return Err(super::AgentOrchestrationError::Internal(format!(
-                        "agent '{}' resume failed: missing child session id",
-                        params.agent_id
-                    )));
-                };
-
-                let accepted = match self
-                    .session_runtime
-                    .submit_prompt_for_agent(
-                        child_session_id,
-                        resume_message,
-                        self.resolve_runtime_config_for_session(child_session_id)
-                            .await?,
-                        astrcode_core::AgentEventContext::from(&reused_handle),
-                    )
-                    .await
-                {
-                    Ok(accepted) => accepted,
-                    Err(error) => {
-                        self.restore_pending_inbox(&child.agent_id, pending).await;
-                        return Err(super::AgentOrchestrationError::Internal(format!(
-                            "agent '{}' resume submit failed: {error}",
-                            params.agent_id
-                        )));
-                    },
-                };
-                self.spawn_child_turn_terminal_watcher(
-                    reused_handle.clone(),
-                    accepted.session_id.to_string(),
-                    accepted.turn_id.to_string(),
-                    ctx.session_id().to_string(),
-                    ctx.turn_id()
-                        .unwrap_or(&reused_handle.parent_turn_id)
-                        .to_string(),
-                    ctx.tool_call_id().map(ToString::to_string),
-                );
-
-                let child_ref = self.build_child_ref_from_handle(&reused_handle).await;
-                let _ = self
-                    .record_collaboration_fact(
-                        &runtime,
-                        CollaborationFactRecord {
-                            action: AgentCollaborationActionKind::Send,
-                            outcome: AgentCollaborationOutcomeKind::Reused,
-                            session_id: &parent_session_id,
-                            turn_id: &turn_id,
-                            parent_agent_id: parent_agent_id.clone(),
-                            child: Some(&reused_handle),
-                            delivery_id: None,
-                            reason_code: None,
-                            summary: Some("idle child resumed".to_string()),
-                            latency_ms: None,
-                            source_tool_call_id: source_tool_call_id.clone(),
-                        },
-                    )
-                    .await;
-                return Ok(CollaborationResult {
-                    accepted: true,
-                    kind: CollaborationResultKind::Sent,
-                    agent_ref: Some(self.project_child_ref_status(child_ref).await),
-                    delivery_id: None,
-                    summary: Some(format!(
-                        "子 Agent {} 已恢复，并开始处理新的具体指令。",
-                        params.agent_id
-                    )),
-                    observe_result: None,
-                    cascade: None,
-                    closed_root_agent_id: None,
-                    failure: None,
-                });
-            }
-
-            // resume 失败时恢复原 inbox，随后走常规 send 路径追加新消息。
-            self.restore_pending_inbox(&child.agent_id, pending).await;
+            return Ok(result);
         }
 
-        // 非 idle child：直接追加 inbox 信封
-        let delivery_id = format!("delivery-{}", uuid::Uuid::new_v4());
-        let envelope = astrcode_core::AgentInboxEnvelope {
-            delivery_id: delivery_id.clone(),
-            from_agent_id: ctx.agent_context().agent_id.clone().unwrap_or_default(),
-            to_agent_id: params.agent_id.clone(),
-            kind: InboxEnvelopeKind::ParentMessage,
-            message: params.message.clone(),
-            context: params.context.clone(),
-            is_final: false,
-            summary: None,
-            findings: Vec::new(),
-            artifacts: Vec::new(),
-        };
-        self.append_durable_mailbox_queue(&child, &envelope, ctx)
-            .await?;
-
-        self.kernel
-            .deliver_to_agent(&child.agent_id, envelope)
+        self.queue_message_for_active_child(&child, &params, ctx, &collaboration)
             .await
-            .ok_or_else(|| {
-                super::AgentOrchestrationError::NotFound(format!(
-                    "agent '{}' inbox not available",
-                    params.agent_id
-                ))
-            })?;
-
-        let child_ref = self.build_child_ref_from_handle(&child).await;
-        log::info!(
-            "send: message sent to child agent '{}' (subRunId='{}')",
-            params.agent_id,
-            child.sub_run_id
-        );
-        let _ = self
-            .record_collaboration_fact(
-                &runtime,
-                CollaborationFactRecord {
-                    action: AgentCollaborationActionKind::Send,
-                    outcome: AgentCollaborationOutcomeKind::Queued,
-                    session_id: &parent_session_id,
-                    turn_id: &turn_id,
-                    parent_agent_id,
-                    child: Some(&child),
-                    delivery_id: Some(delivery_id.clone()),
-                    reason_code: None,
-                    summary: Some("message queued for running child".to_string()),
-                    latency_ms: None,
-                    source_tool_call_id,
-                },
-            )
-            .await;
-
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Sent,
-            agent_ref: Some(self.project_child_ref_status(child_ref).await),
-            delivery_id: Some(delivery_id),
-            summary: Some(format!(
-                "子 Agent {} 正在运行；消息已进入 mailbox 排队，待当前工作完成后处理。",
-                params.agent_id
-            )),
-            observe_result: None,
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
-        })
     }
 
     /// 关闭子 agent 及其子树（close 协作工具的业务逻辑）。
@@ -303,11 +125,7 @@ impl AgentOrchestrationService {
         params: CloseAgentParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
-        let runtime = self.resolve_runtime_config_for_working_dir(ctx.working_dir())?;
-        let turn_id = ctx.turn_id().unwrap_or("unknown-turn").to_string();
-        let parent_session_id = ctx.session_id().to_string();
-        let parent_agent_id = ctx.agent_context().agent_id.clone();
-        let source_tool_call_id = ctx.tool_call_id().map(ToString::to_string);
+        let collaboration = self.tool_collaboration_context(ctx)?;
         params
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;
@@ -319,47 +137,36 @@ impl AgentOrchestrationService {
                     "agent '{}' not found",
                     params.agent_id
                 ));
-                let _ = self
-                    .record_collaboration_fact(
-                        &runtime,
-                        CollaborationFactRecord {
-                            action: AgentCollaborationActionKind::Close,
-                            outcome: AgentCollaborationOutcomeKind::Rejected,
-                            session_id: &parent_session_id,
-                            turn_id: &turn_id,
-                            parent_agent_id: parent_agent_id.clone(),
-                            child: None,
-                            delivery_id: None,
-                            reason_code: Some("child_not_found".to_string()),
-                            summary: Some(error.to_string()),
-                            latency_ms: None,
-                            source_tool_call_id: source_tool_call_id.clone(),
-                        },
+                return self
+                    .reject_with_fact(
+                        collaboration.runtime(),
+                        collaboration
+                            .fact(
+                                AgentCollaborationActionKind::Close,
+                                AgentCollaborationOutcomeKind::Rejected,
+                            )
+                            .reason_code("child_not_found")
+                            .summary(error.to_string()),
+                        error,
                     )
                     .await;
-                return Err(error);
             },
         };
         if let Err(error) = self.verify_caller_owns_child(ctx, &target) {
-            let _ = self
-                .record_collaboration_fact(
-                    &runtime,
-                    CollaborationFactRecord {
-                        action: AgentCollaborationActionKind::Close,
-                        outcome: AgentCollaborationOutcomeKind::Rejected,
-                        session_id: &parent_session_id,
-                        turn_id: &turn_id,
-                        parent_agent_id: parent_agent_id.clone(),
-                        child: Some(&target),
-                        delivery_id: None,
-                        reason_code: Some("ownership_mismatch".to_string()),
-                        summary: Some(error.to_string()),
-                        latency_ms: None,
-                        source_tool_call_id: source_tool_call_id.clone(),
-                    },
+            return self
+                .reject_with_fact(
+                    collaboration.runtime(),
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Close,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .child(&target)
+                        .reason_code("ownership_mismatch")
+                        .summary(error.to_string()),
+                    error,
                 )
                 .await;
-            return Err(error);
         }
 
         // 收集子树用于 durable discard
@@ -395,24 +202,17 @@ impl AgentOrchestrationService {
         } else {
             format!("已关闭子 Agent {}。", params.agent_id)
         };
-        let _ = self
-            .record_collaboration_fact(
-                &runtime,
-                CollaborationFactRecord {
-                    action: AgentCollaborationActionKind::Close,
-                    outcome: AgentCollaborationOutcomeKind::Closed,
-                    session_id: &parent_session_id,
-                    turn_id: &turn_id,
-                    parent_agent_id,
-                    child: Some(&target),
-                    delivery_id: None,
-                    reason_code: None,
-                    summary: Some(summary.clone()),
-                    latency_ms: None,
-                    source_tool_call_id,
-                },
-            )
-            .await;
+        self.record_fact_best_effort(
+            collaboration.runtime(),
+            collaboration
+                .fact(
+                    AgentCollaborationActionKind::Close,
+                    AgentCollaborationOutcomeKind::Closed,
+                )
+                .child(&target)
+                .summary(summary.clone()),
+        )
+        .await;
 
         Ok(CollaborationResult {
             accepted: true,
@@ -485,6 +285,176 @@ impl AgentOrchestrationService {
                 break;
             }
         }
+    }
+
+    async fn resume_idle_child_if_needed(
+        &self,
+        child: &SubRunHandle,
+        params: &SendAgentParams,
+        ctx: &astrcode_core::ToolContext,
+        collaboration: &super::ToolCollaborationContext,
+        lifecycle: Option<AgentLifecycleStatus>,
+    ) -> Result<Option<CollaborationResult>, super::AgentOrchestrationError> {
+        if !matches!(lifecycle, Some(AgentLifecycleStatus::Idle)) || child.lifecycle.occupies_slot()
+        {
+            return Ok(None);
+        }
+
+        let pending = self
+            .kernel
+            .drain_agent_inbox(&child.agent_id)
+            .await
+            .unwrap_or_default();
+        let resume_message = compose_reusable_child_message(&pending, params);
+
+        let Some(reused_handle) = self.kernel.resume_agent(&params.agent_id).await else {
+            self.restore_pending_inbox(&child.agent_id, pending).await;
+            return Ok(None);
+        };
+
+        log::info!(
+            "send: reusable child agent '{}' restarted with new turn (subRunId='{}')",
+            params.agent_id,
+            reused_handle.sub_run_id
+        );
+
+        let Some(child_session_id) = reused_handle
+            .child_session_id
+            .as_ref()
+            .or(child.child_session_id.as_ref())
+        else {
+            self.restore_pending_inbox(&child.agent_id, pending).await;
+            return Err(super::AgentOrchestrationError::Internal(format!(
+                "agent '{}' resume failed: missing child session id",
+                params.agent_id
+            )));
+        };
+
+        let accepted = match self
+            .session_runtime
+            .submit_prompt_for_agent(
+                child_session_id,
+                resume_message,
+                self.resolve_runtime_config_for_session(child_session_id)
+                    .await?,
+                astrcode_core::AgentEventContext::from(&reused_handle),
+            )
+            .await
+        {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                self.restore_pending_inbox(&child.agent_id, pending).await;
+                return Err(super::AgentOrchestrationError::Internal(format!(
+                    "agent '{}' resume submit failed: {error}",
+                    params.agent_id
+                )));
+            },
+        };
+        self.spawn_child_turn_terminal_watcher(
+            reused_handle.clone(),
+            accepted.session_id.to_string(),
+            accepted.turn_id.to_string(),
+            ctx.session_id().to_string(),
+            ctx.turn_id()
+                .unwrap_or(&reused_handle.parent_turn_id)
+                .to_string(),
+            ctx.tool_call_id().map(ToString::to_string),
+        );
+
+        let child_ref = self.build_child_ref_from_handle(&reused_handle).await;
+        self.record_fact_best_effort(
+            collaboration.runtime(),
+            collaboration
+                .fact(
+                    AgentCollaborationActionKind::Send,
+                    AgentCollaborationOutcomeKind::Reused,
+                )
+                .child(&reused_handle)
+                .summary("idle child resumed"),
+        )
+        .await;
+        Ok(Some(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Sent,
+            agent_ref: Some(self.project_child_ref_status(child_ref).await),
+            delivery_id: None,
+            summary: Some(format!(
+                "子 Agent {} 已恢复，并开始处理新的具体指令。",
+                params.agent_id
+            )),
+            observe_result: None,
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        }))
+    }
+
+    async fn queue_message_for_active_child(
+        &self,
+        child: &SubRunHandle,
+        params: &SendAgentParams,
+        ctx: &astrcode_core::ToolContext,
+        collaboration: &super::ToolCollaborationContext,
+    ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
+        let delivery_id = format!("delivery-{}", uuid::Uuid::new_v4());
+        let envelope = astrcode_core::AgentInboxEnvelope {
+            delivery_id: delivery_id.clone(),
+            from_agent_id: ctx.agent_context().agent_id.clone().unwrap_or_default(),
+            to_agent_id: params.agent_id.clone(),
+            kind: InboxEnvelopeKind::ParentMessage,
+            message: params.message.clone(),
+            context: params.context.clone(),
+            is_final: false,
+            summary: None,
+            findings: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        self.append_durable_mailbox_queue(child, &envelope, ctx)
+            .await?;
+
+        self.kernel
+            .deliver_to_agent(&child.agent_id, envelope)
+            .await
+            .ok_or_else(|| {
+                super::AgentOrchestrationError::NotFound(format!(
+                    "agent '{}' inbox not available",
+                    params.agent_id
+                ))
+            })?;
+
+        let child_ref = self.build_child_ref_from_handle(child).await;
+        log::info!(
+            "send: message sent to child agent '{}' (subRunId='{}')",
+            params.agent_id,
+            child.sub_run_id
+        );
+        self.record_fact_best_effort(
+            collaboration.runtime(),
+            collaboration
+                .fact(
+                    AgentCollaborationActionKind::Send,
+                    AgentCollaborationOutcomeKind::Queued,
+                )
+                .child(child)
+                .delivery_id(delivery_id.clone())
+                .summary("message queued for running child"),
+        )
+        .await;
+
+        Ok(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Sent,
+            agent_ref: Some(self.project_child_ref_status(child_ref).await),
+            delivery_id: Some(delivery_id),
+            summary: Some(format!(
+                "子 Agent {} 正在运行；消息已进入 mailbox 排队，待当前工作完成后处理。",
+                params.agent_id
+            )),
+            observe_result: None,
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        })
     }
 }
 

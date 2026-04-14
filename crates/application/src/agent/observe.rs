@@ -12,7 +12,7 @@ use astrcode_core::{
     CollaborationResult, CollaborationResultKind, ObserveAgentResult, ObserveParams,
 };
 
-use super::{AgentOrchestrationService, CollaborationFactRecord};
+use super::AgentOrchestrationService;
 
 impl AgentOrchestrationService {
     /// 获取目标 child agent 的增强快照（四工具模型 observe）。
@@ -21,11 +21,7 @@ impl AgentOrchestrationService {
         params: ObserveParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
-        let runtime = self.resolve_runtime_config_for_working_dir(ctx.working_dir())?;
-        let turn_id = ctx.turn_id().unwrap_or("unknown-turn").to_string();
-        let parent_session_id = ctx.session_id().to_string();
-        let parent_agent_id = ctx.agent_context().agent_id.clone();
-        let source_tool_call_id = ctx.tool_call_id().map(ToString::to_string);
+        let collaboration = self.tool_collaboration_context(ctx)?;
         params
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;
@@ -37,48 +33,37 @@ impl AgentOrchestrationService {
                     "agent '{}' not found",
                     params.agent_id
                 ));
-                let _ = self
-                    .record_collaboration_fact(
-                        &runtime,
-                        CollaborationFactRecord {
-                            action: AgentCollaborationActionKind::Observe,
-                            outcome: AgentCollaborationOutcomeKind::Rejected,
-                            session_id: &parent_session_id,
-                            turn_id: &turn_id,
-                            parent_agent_id: parent_agent_id.clone(),
-                            child: None,
-                            delivery_id: None,
-                            reason_code: Some("child_not_found".to_string()),
-                            summary: Some(error.to_string()),
-                            latency_ms: None,
-                            source_tool_call_id: source_tool_call_id.clone(),
-                        },
+                return self
+                    .reject_with_fact(
+                        collaboration.runtime(),
+                        collaboration
+                            .fact(
+                                AgentCollaborationActionKind::Observe,
+                                AgentCollaborationOutcomeKind::Rejected,
+                            )
+                            .reason_code("child_not_found")
+                            .summary(error.to_string()),
+                        error,
                     )
                     .await;
-                return Err(error);
             },
         };
 
         if let Err(error) = self.verify_caller_owns_child(ctx, &child) {
-            let _ = self
-                .record_collaboration_fact(
-                    &runtime,
-                    CollaborationFactRecord {
-                        action: AgentCollaborationActionKind::Observe,
-                        outcome: AgentCollaborationOutcomeKind::Rejected,
-                        session_id: &parent_session_id,
-                        turn_id: &turn_id,
-                        parent_agent_id: parent_agent_id.clone(),
-                        child: Some(&child),
-                        delivery_id: None,
-                        reason_code: Some("ownership_mismatch".to_string()),
-                        summary: Some(error.to_string()),
-                        latency_ms: None,
-                        source_tool_call_id: source_tool_call_id.clone(),
-                    },
+            return self
+                .reject_with_fact(
+                    collaboration.runtime(),
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Observe,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .child(&child)
+                        .reason_code("ownership_mismatch")
+                        .summary(error.to_string()),
+                    error,
                 )
                 .await;
-            return Err(error);
         }
 
         let lifecycle_status = self
@@ -151,24 +136,17 @@ impl AgentOrchestrationService {
             lifecycle_status,
             observe_result.pending_message_count
         );
-        let _ = self
-            .record_collaboration_fact(
-                &runtime,
-                CollaborationFactRecord {
-                    action: AgentCollaborationActionKind::Observe,
-                    outcome: AgentCollaborationOutcomeKind::Accepted,
-                    session_id: &parent_session_id,
-                    turn_id: &turn_id,
-                    parent_agent_id,
-                    child: Some(&child),
-                    delivery_id: None,
-                    reason_code: None,
-                    summary: Some(format_observe_summary(&observe_result)),
-                    latency_ms: None,
-                    source_tool_call_id,
-                },
-            )
-            .await;
+        self.record_fact_best_effort(
+            collaboration.runtime(),
+            collaboration
+                .fact(
+                    AgentCollaborationActionKind::Observe,
+                    AgentCollaborationOutcomeKind::Accepted,
+                )
+                .child(&child)
+                .summary(format_observe_summary(&observe_result)),
+        )
+        .await;
 
         Ok(CollaborationResult {
             accepted: true,

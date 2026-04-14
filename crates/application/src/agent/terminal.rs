@@ -7,8 +7,8 @@ use astrcode_core::{
 };
 
 use super::{
-    AgentOrchestrationError, AgentOrchestrationService, CollaborationFactRecord,
-    subrun_event_context_for_parent_turn,
+    AgentOrchestrationError, AgentOrchestrationService, child_collaboration_artifacts,
+    child_open_session_id, subrun_event_context_for_parent_turn,
 };
 
 struct ChildTerminalDeliveryProjection {
@@ -151,24 +151,21 @@ impl AgentOrchestrationService {
             .resolve_runtime_config_for_session(&watch.parent_session_id)
             .await
             .unwrap_or_default();
-        let _ = self
-            .record_collaboration_fact(
-                &runtime,
-                CollaborationFactRecord {
-                    action: AgentCollaborationActionKind::Delivery,
-                    outcome: AgentCollaborationOutcomeKind::Delivered,
-                    session_id: &watch.parent_session_id,
-                    turn_id: &watch.parent_turn_id,
-                    parent_agent_id: watch.child.parent_agent_id.clone(),
-                    child: Some(&watch.child),
-                    delivery_id: Some(notification.notification_id.clone()),
-                    reason_code: None,
-                    summary: Some(notification.summary.clone()),
-                    latency_ms: None,
-                    source_tool_call_id: notification.source_tool_call_id.clone(),
-                },
+        self.record_fact_best_effort(
+            &runtime,
+            super::CollaborationFactRecord::new(
+                AgentCollaborationActionKind::Delivery,
+                AgentCollaborationOutcomeKind::Delivered,
+                &watch.parent_session_id,
+                &watch.parent_turn_id,
             )
-            .await;
+            .parent_agent_id(watch.child.parent_agent_id.clone())
+            .child(&watch.child)
+            .delivery_id(notification.notification_id.clone())
+            .summary(notification.summary.clone())
+            .source_tool_call_id(notification.source_tool_call_id.clone()),
+        )
+        .await;
         self.reactivate_parent_agent_if_idle(
             &watch.parent_session_id,
             &watch.parent_turn_id,
@@ -237,69 +234,7 @@ fn child_handoff_artifacts(
     child: &astrcode_core::SubRunHandle,
     parent_session_id: &str,
 ) -> Vec<astrcode_core::ArtifactRef> {
-    let child_session_id = child_open_session_id(child);
-    let mut artifacts = vec![
-        astrcode_core::ArtifactRef {
-            kind: "subRun".to_string(),
-            id: child.sub_run_id.clone(),
-            label: "Sub Run".to_string(),
-            session_id: Some(parent_session_id.to_string()),
-            storage_seq: None,
-            uri: None,
-        },
-        astrcode_core::ArtifactRef {
-            kind: "agent".to_string(),
-            id: child.agent_id.clone(),
-            label: "Agent".to_string(),
-            session_id: Some(child_session_id.clone()),
-            storage_seq: None,
-            uri: None,
-        },
-        astrcode_core::ArtifactRef {
-            kind: "parentSession".to_string(),
-            id: parent_session_id.to_string(),
-            label: "Parent Session".to_string(),
-            session_id: Some(parent_session_id.to_string()),
-            storage_seq: None,
-            uri: None,
-        },
-        astrcode_core::ArtifactRef {
-            kind: "session".to_string(),
-            id: child_session_id.clone(),
-            label: "Child Session".to_string(),
-            session_id: Some(child_session_id),
-            storage_seq: None,
-            uri: None,
-        },
-    ];
-    if let Some(parent_agent_id) = &child.parent_agent_id {
-        artifacts.push(astrcode_core::ArtifactRef {
-            kind: "parentAgent".to_string(),
-            id: parent_agent_id.clone(),
-            label: "Parent Agent".to_string(),
-            session_id: Some(parent_session_id.to_string()),
-            storage_seq: None,
-            uri: None,
-        });
-    }
-    if let Some(parent_sub_run_id) = &child.parent_sub_run_id {
-        artifacts.push(astrcode_core::ArtifactRef {
-            kind: "parentSubRun".to_string(),
-            id: parent_sub_run_id.clone(),
-            label: "Parent Sub Run".to_string(),
-            session_id: Some(parent_session_id.to_string()),
-            storage_seq: None,
-            uri: None,
-        });
-    }
-    artifacts
-}
-
-fn child_open_session_id(child: &astrcode_core::SubRunHandle) -> String {
-    child
-        .child_session_id
-        .clone()
-        .unwrap_or_else(|| child.session_id.clone())
+    child_collaboration_artifacts(child, parent_session_id, true)
 }
 
 fn child_terminal_notification_id(

@@ -12,7 +12,11 @@ use astrcode_core::{
 use astrcode_kernel::{AgentControlError, Kernel};
 use astrcode_session_runtime::SessionRuntime;
 
-use crate::{agent::subrun_event_context, errors::ApplicationError};
+use crate::{
+    agent::subrun_event_context,
+    errors::ApplicationError,
+    execution::{ensure_profile_mode, merge_task_with_context},
+};
 
 /// 子代理执行请求。
 pub struct SubagentExecutionRequest {
@@ -65,12 +69,7 @@ pub async fn launch_subagent(
         .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
         .await;
 
-    let merged_task = match &request.context {
-        Some(ctx) if !ctx.trim().is_empty() => {
-            format!("{}\n\n{}", ctx.trim(), request.task)
-        },
-        _ => request.task,
-    };
+    let merged_task = merge_task_with_context(&request.task, request.context.as_deref());
 
     let mut accepted = session_runtime
         .submit_prompt_for_agent(
@@ -111,13 +110,7 @@ fn validate_subagent_request(request: &SubagentExecutionRequest) -> Result<(), A
 }
 
 fn ensure_subagent_profile_mode(profile: &AgentProfile) -> Result<(), ApplicationError> {
-    if matches!(profile.mode, AgentMode::SubAgent | AgentMode::All) {
-        return Ok(());
-    }
-    Err(ApplicationError::InvalidArgument(format!(
-        "agent profile '{}' cannot be used as subagent",
-        profile.id
-    )))
+    ensure_profile_mode(profile, &[AgentMode::SubAgent, AgentMode::All], "subagent")
 }
 
 fn map_spawn_error(error: AgentControlError) -> ApplicationError {

@@ -8,7 +8,34 @@ mod profiles;
 mod root;
 mod subagent;
 
+use astrcode_core::{AgentMode, AgentProfile};
 pub use control::ExecutionControl;
 pub use profiles::{ProfileProvider, ProfileResolutionService};
 pub use root::{RootExecutionRequest, execute_root_agent};
 pub use subagent::{SubagentExecutionRequest, launch_subagent};
+
+use crate::ApplicationError;
+
+pub(super) fn merge_task_with_context(task: &str, context: Option<&str>) -> String {
+    match context {
+        Some(context) if !context.trim().is_empty() => {
+            format!("{}\n\n{}", context.trim(), task)
+        },
+        _ => task.to_string(),
+    }
+}
+
+pub(super) fn ensure_profile_mode(
+    profile: &AgentProfile,
+    allowed_modes: &[AgentMode],
+    execution_name: &str,
+) -> Result<(), ApplicationError> {
+    if allowed_modes.iter().any(|mode| mode == &profile.mode) {
+        return Ok(());
+    }
+
+    Err(ApplicationError::InvalidArgument(format!(
+        "agent profile '{}' cannot be used for {execution_name}",
+        profile.id
+    )))
+}

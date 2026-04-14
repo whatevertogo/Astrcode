@@ -20,6 +20,9 @@ use crate::{
     },
 };
 
+/// scorecard 中的比例统一使用 basis points，避免浮点数在跨层传输时失真。
+const BASIS_POINTS_SCALE: u64 = 10_000;
+
 #[derive(Default)]
 struct OperationMetrics {
     total: AtomicU64,
@@ -400,7 +403,9 @@ impl CollaborationMetricsState {
 }
 
 fn ratio_bps(numerator: u64, denominator: u64) -> Option<u64> {
-    numerator.saturating_mul(10_000).checked_div(denominator)
+    numerator
+        .saturating_mul(BASIS_POINTS_SCALE)
+        .checked_div(denominator)
 }
 
 /// 真实运行时观测采集器。

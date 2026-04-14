@@ -243,35 +243,27 @@ impl AgentOrchestrationService {
                         .get_agent_handle(&delivery.notification.child_ref.agent_id)
                         .await
                     {
-                        let _ = self
-                            .record_collaboration_fact(
-                                &runtime,
-                                CollaborationFactRecord {
-                                    action: AgentCollaborationActionKind::Delivery,
-                                    outcome: AgentCollaborationOutcomeKind::Consumed,
-                                    session_id: &parent_session_id,
-                                    turn_id: &turn_id,
-                                    parent_agent_id: delivery
-                                        .notification
-                                        .child_ref
-                                        .parent_agent_id
-                                        .clone(),
-                                    child: Some(&child_handle),
-                                    delivery_id: Some(delivery.delivery_id.clone()),
-                                    reason_code: None,
-                                    summary: Some(delivery.notification.summary.clone()),
-                                    latency_ms: Some(
-                                        (chrono::Utc::now().timestamp_millis()
-                                            - delivery.queued_at_ms)
-                                            .max(0) as u64,
-                                    ),
-                                    source_tool_call_id: delivery
-                                        .notification
-                                        .source_tool_call_id
-                                        .clone(),
-                                },
+                        self.record_fact_best_effort(
+                            &runtime,
+                            CollaborationFactRecord::new(
+                                AgentCollaborationActionKind::Delivery,
+                                AgentCollaborationOutcomeKind::Consumed,
+                                &parent_session_id,
+                                &turn_id,
                             )
-                            .await;
+                            .parent_agent_id(
+                                delivery.notification.child_ref.parent_agent_id.clone(),
+                            )
+                            .child(&child_handle)
+                            .delivery_id(delivery.delivery_id.clone())
+                            .summary(delivery.notification.summary.clone())
+                            .latency_ms(
+                                (chrono::Utc::now().timestamp_millis() - delivery.queued_at_ms)
+                                    .max(0) as u64,
+                            )
+                            .source_tool_call_id(delivery.notification.source_tool_call_id.clone()),
+                        )
+                        .await;
                     }
                 }
                 self.metrics.record_parent_reactivation_succeeded();
@@ -400,24 +392,22 @@ impl AgentOrchestrationService {
                 .get_agent_handle(&pending.notification.child_ref.agent_id)
                 .await
             {
-                let _ = self
-                    .record_collaboration_fact(
-                        &runtime,
-                        CollaborationFactRecord {
-                            action: AgentCollaborationActionKind::Delivery,
-                            outcome: AgentCollaborationOutcomeKind::Replayed,
-                            session_id: parent_session_id,
-                            turn_id: &pending.parent_turn_id,
-                            parent_agent_id: pending.notification.child_ref.parent_agent_id.clone(),
-                            child: Some(&child_handle),
-                            delivery_id: Some(pending.delivery_id.clone()),
-                            reason_code: Some("durable_recovery".to_string()),
-                            summary: Some(pending.notification.summary.clone()),
-                            latency_ms: None,
-                            source_tool_call_id: pending.notification.source_tool_call_id.clone(),
-                        },
+                self.record_fact_best_effort(
+                    &runtime,
+                    CollaborationFactRecord::new(
+                        AgentCollaborationActionKind::Delivery,
+                        AgentCollaborationOutcomeKind::Replayed,
+                        parent_session_id,
+                        &pending.parent_turn_id,
                     )
-                    .await;
+                    .parent_agent_id(pending.notification.child_ref.parent_agent_id.clone())
+                    .child(&child_handle)
+                    .delivery_id(pending.delivery_id.clone())
+                    .reason_code("durable_recovery")
+                    .summary(pending.notification.summary.clone())
+                    .source_tool_call_id(pending.notification.source_tool_call_id.clone()),
+                )
+                .await;
             }
             let _ = self
                 .kernel

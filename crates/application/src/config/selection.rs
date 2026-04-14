@@ -33,17 +33,7 @@ pub fn resolve_active_selection(
 
     // profile 不存在时回退到第一个 profile 的第一个 model
     if selected_profile.name != active_profile {
-        let fallback_model = selected_profile
-            .models
-            .first()
-            .ok_or_else(|| {
-                ApplicationError::InvalidArgument(format!(
-                    "profile '{}' has no models configured",
-                    selected_profile.name
-                ))
-            })?
-            .id
-            .clone();
+        let fallback_model = first_model_id(selected_profile)?.to_string();
 
         return Ok(ActiveSelection {
             active_profile: selected_profile.name.clone(),
@@ -69,17 +59,7 @@ pub fn resolve_active_selection(
     }
 
     // model 不存在时回退到 profile 的第一个 model
-    let fallback_model = selected_profile
-        .models
-        .first()
-        .ok_or_else(|| {
-            ApplicationError::InvalidArgument(format!(
-                "profile '{}' has no models configured",
-                selected_profile.name
-            ))
-        })?
-        .id
-        .clone();
+    let fallback_model = first_model_id(selected_profile)?.to_string();
 
     Ok(ActiveSelection {
         active_profile: selected_profile.name.clone(),
@@ -134,6 +114,19 @@ pub fn resolve_model_for_profile<'a>(
         .iter()
         .find(|m| m.id == active_model)
         .or_else(|| profile.models.first()))
+}
+
+fn first_model_id(profile: &Profile) -> Result<&str, ApplicationError> {
+    profile
+        .models
+        .first()
+        .map(|model| model.id.as_str())
+        .ok_or_else(|| {
+            ApplicationError::InvalidArgument(format!(
+                "profile '{}' has no models configured",
+                profile.name
+            ))
+        })
 }
 
 /// 列出所有可用的模型选项。

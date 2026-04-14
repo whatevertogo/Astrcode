@@ -24,6 +24,16 @@ fn prune_completed_handles(handles: &mut Vec<tokio::task::JoinHandle<()>>) {
     handles.retain(|h| !h.is_finished());
 }
 
+fn take_all_handles(
+    handles: &std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    std::mem::take(
+        &mut *handles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 impl Default for TaskRegistry {
     fn default() -> Self {
         Self::new()
@@ -60,22 +70,12 @@ impl TaskRegistry {
 
     /// 取出所有 turn 任务句柄用于 abort。
     pub fn take_all_turn_handles(&self) -> Vec<tokio::task::JoinHandle<()>> {
-        std::mem::take(
-            &mut *self
-                .turn_handles
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
+        take_all_handles(&self.turn_handles)
     }
 
     /// 取出所有子 Agent 任务句柄用于 abort。
     pub fn take_all_subagent_handles(&self) -> Vec<tokio::task::JoinHandle<()>> {
-        std::mem::take(
-            &mut *self
-                .subagent_handles
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
+        take_all_handles(&self.subagent_handles)
     }
 }
 

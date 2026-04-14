@@ -15,6 +15,8 @@ pub mod constants;
 pub mod env_resolver;
 pub mod mcp;
 pub mod selection;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod validation;
 
 use std::{
@@ -217,65 +219,8 @@ pub fn is_env_var_name(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
-    use serde_json::Value;
-
     use super::*;
-
-    #[derive(Default)]
-    struct TestConfigStore {
-        config: Mutex<Config>,
-        overlay: Mutex<Option<ConfigOverlay>>,
-    }
-
-    impl ConfigStore for TestConfigStore {
-        fn load(&self) -> astrcode_core::Result<Config> {
-            Ok(self.config.lock().expect("config mutex").clone())
-        }
-
-        fn save(&self, config: &Config) -> astrcode_core::Result<()> {
-            *self.config.lock().expect("config mutex") = config.clone();
-            Ok(())
-        }
-
-        fn path(&self) -> PathBuf {
-            PathBuf::from("test-config.json")
-        }
-
-        fn load_overlay(
-            &self,
-            _working_dir: &Path,
-        ) -> astrcode_core::Result<Option<ConfigOverlay>> {
-            Ok(self.overlay.lock().expect("overlay mutex").clone())
-        }
-
-        fn save_overlay(
-            &self,
-            _working_dir: &Path,
-            overlay: &ConfigOverlay,
-        ) -> astrcode_core::Result<()> {
-            *self.overlay.lock().expect("overlay mutex") = Some(overlay.clone());
-            Ok(())
-        }
-
-        fn load_mcp(
-            &self,
-            _scope: McpConfigFileScope,
-            _working_dir: Option<&Path>,
-        ) -> astrcode_core::Result<Option<Value>> {
-            Ok(None)
-        }
-
-        fn save_mcp(
-            &self,
-            _scope: McpConfigFileScope,
-            _working_dir: Option<&Path>,
-            _mcp: Option<&Value>,
-        ) -> astrcode_core::Result<()> {
-            Ok(())
-        }
-    }
+    use crate::config::test_support::TestConfigStore;
 
     #[test]
     fn load_resolved_runtime_config_materializes_defaults() {

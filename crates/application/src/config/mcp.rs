@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use astrcode_core::{Config, ConfigOverlay};
 use serde_json::{Map, Value};
 
 use super::{ConfigService, McpConfigFileScope, validation};
@@ -14,6 +15,30 @@ use crate::{
     ApplicationError,
     mcp::{McpConfigScope, RegisterMcpServerInput},
 };
+
+enum McpTargetResolutionMode {
+    PreferSidecarIfPresent,
+    PreferContainingServer,
+}
+
+enum McpEditTarget {
+    Sidecar {
+        scope: McpConfigFileScope,
+        current: Option<Value>,
+    },
+    UserConfig(Box<Config>),
+    LocalOverlay(Box<ConfigOverlay>),
+}
+
+impl McpEditTarget {
+    fn current_document(&self) -> Option<Value> {
+        match self {
+            Self::Sidecar { current, .. } => current.clone(),
+            Self::UserConfig(config) => config.mcp.clone(),
+            Self::LocalOverlay(overlay) => overlay.mcp.clone(),
+        }
+    }
+}
 
 impl ConfigService {
     /// 读取指定作用域的独立 `mcp.json`。
@@ -25,6 +50,134 @@ impl ConfigService {
         self.store.load_mcp(scope, working_dir).map_err(Into::into)
     }
 
+    fn resolve_mcp_edit_target(
+        &self,
+        working_dir: &Path,
+        scope: McpConfigScope,
+        name: &str,
+        mode: McpTargetResolutionMode,
+    ) -> std::result::Result<McpEditTarget, ApplicationError> {
+        match scope {
+            McpConfigScope::User => self.resolve_user_mcp_edit_target(name, mode),
+            McpConfigScope::Local => self.resolve_local_mcp_edit_target(working_dir, name, mode),
+            McpConfigScope::Project => Ok(McpEditTarget::Sidecar {
+                scope: McpConfigFileScope::Project,
+                current: self
+                    .store
+                    .load_mcp(McpConfigFileScope::Project, Some(working_dir))?,
+            }),
+        }
+    }
+
+    fn resolve_user_mcp_edit_target(
+        &self,
+        name: &str,
+        mode: McpTargetResolutionMode,
+    ) -> std::result::Result<McpEditTarget, ApplicationError> {
+        let sidecar = self.store.load_mcp(McpConfigFileScope::User, None)?;
+        match mode {
+            McpTargetResolutionMode::PreferSidecarIfPresent => {
+                if sidecar.is_some() {
+                    return Ok(McpEditTarget::Sidecar {
+                        scope: McpConfigFileScope::User,
+                        current: sidecar,
+                    });
+                }
+
+                let config = validation::normalize_config(self.store.load()?)?;
+                if mcp_document_contains_server(config.mcp.as_ref(), name)? {
+                    return Ok(McpEditTarget::UserConfig(Box::new(config)));
+                }
+
+                Ok(McpEditTarget::Sidecar {
+                    scope: McpConfigFileScope::User,
+                    current: None,
+                })
+            },
+            McpTargetResolutionMode::PreferContainingServer => {
+                if mcp_document_contains_server(sidecar.as_ref(), name)? {
+                    return Ok(McpEditTarget::Sidecar {
+                        scope: McpConfigFileScope::User,
+                        current: sidecar,
+                    });
+                }
+                Ok(McpEditTarget::UserConfig(Box::new(
+                    validation::normalize_config(self.store.load()?)?,
+                )))
+            },
+        }
+    }
+
+    fn resolve_local_mcp_edit_target(
+        &self,
+        working_dir: &Path,
+        name: &str,
+        mode: McpTargetResolutionMode,
+    ) -> std::result::Result<McpEditTarget, ApplicationError> {
+        let sidecar = self
+            .store
+            .load_mcp(McpConfigFileScope::Local, Some(working_dir))?;
+        match mode {
+            McpTargetResolutionMode::PreferSidecarIfPresent => {
+                if sidecar.is_some() {
+                    return Ok(McpEditTarget::Sidecar {
+                        scope: McpConfigFileScope::Local,
+                        current: sidecar,
+                    });
+                }
+
+                let overlay = self.store.load_overlay(working_dir)?.unwrap_or_default();
+                if mcp_document_contains_server(overlay.mcp.as_ref(), name)? {
+                    return Ok(McpEditTarget::LocalOverlay(Box::new(overlay)));
+                }
+
+                Ok(McpEditTarget::Sidecar {
+                    scope: McpConfigFileScope::Local,
+                    current: None,
+                })
+            },
+            McpTargetResolutionMode::PreferContainingServer => {
+                if mcp_document_contains_server(sidecar.as_ref(), name)? {
+                    return Ok(McpEditTarget::Sidecar {
+                        scope: McpConfigFileScope::Local,
+                        current: sidecar,
+                    });
+                }
+                Ok(McpEditTarget::LocalOverlay(Box::new(
+                    self.store.load_overlay(working_dir)?.unwrap_or_default(),
+                )))
+            },
+        }
+    }
+
+    async fn save_mcp_edit_target(
+        &self,
+        working_dir: &Path,
+        target: McpEditTarget,
+        next: Option<Value>,
+    ) -> std::result::Result<(), ApplicationError> {
+        match target {
+            McpEditTarget::Sidecar { scope, .. } => {
+                self.store.save_mcp(
+                    scope,
+                    working_dir_for_scope(scope, working_dir),
+                    next.as_ref(),
+                )?;
+            },
+            McpEditTarget::UserConfig(mut config) => {
+                config.mcp = next;
+                self.store.save(&config)?;
+                let mut guard = self.config.write().await;
+                *guard = *config;
+            },
+            McpEditTarget::LocalOverlay(mut overlay) => {
+                overlay.mcp = next;
+                self.store.save_overlay(working_dir, &overlay)?;
+            },
+        }
+        Ok(())
+    }
+
     /// 按 scope 持久化 MCP 服务器声明。
     pub async fn upsert_mcp_server(
         &self,
@@ -32,66 +185,15 @@ impl ConfigService {
         input: &RegisterMcpServerInput,
     ) -> std::result::Result<(), ApplicationError> {
         let entry = register_input_to_mcp_entry(input)?;
-        match input.scope {
-            McpConfigScope::User => {
-                let user_sidecar = self.store.load_mcp(McpConfigFileScope::User, None)?;
-                if user_sidecar.is_some() {
-                    let next = upsert_mcp_entry(user_sidecar, &input.name, entry)?;
-                    self.store
-                        .save_mcp(McpConfigFileScope::User, None, Some(&next))?;
-                    return Ok(());
-                }
-
-                let mut config = validation::normalize_config(self.store.load()?)?;
-                if mcp_document_contains_server(config.mcp.as_ref(), &input.name)? {
-                    config.mcp = Some(upsert_mcp_entry(config.mcp.take(), &input.name, entry)?);
-                    self.store.save(&config)?;
-                    let mut guard = self.config.write().await;
-                    *guard = config;
-                    return Ok(());
-                }
-
-                let next = upsert_mcp_entry(None, &input.name, entry)?;
-                self.store
-                    .save_mcp(McpConfigFileScope::User, None, Some(&next))?;
-                Ok(())
-            },
-            McpConfigScope::Local => {
-                let local_sidecar = self
-                    .store
-                    .load_mcp(McpConfigFileScope::Local, Some(working_dir))?;
-                if local_sidecar.is_some() {
-                    let next = upsert_mcp_entry(local_sidecar, &input.name, entry)?;
-                    self.store.save_mcp(
-                        McpConfigFileScope::Local,
-                        Some(working_dir),
-                        Some(&next),
-                    )?;
-                    return Ok(());
-                }
-
-                let mut overlay = self.store.load_overlay(working_dir)?.unwrap_or_default();
-                if mcp_document_contains_server(overlay.mcp.as_ref(), &input.name)? {
-                    overlay.mcp = Some(upsert_mcp_entry(overlay.mcp.take(), &input.name, entry)?);
-                    self.store.save_overlay(working_dir, &overlay)?;
-                    return Ok(());
-                }
-
-                let next = upsert_mcp_entry(None, &input.name, entry)?;
-                self.store
-                    .save_mcp(McpConfigFileScope::Local, Some(working_dir), Some(&next))?;
-                Ok(())
-            },
-            McpConfigScope::Project => {
-                let project_mcp = self
-                    .store
-                    .load_mcp(McpConfigFileScope::Project, Some(working_dir))?;
-                let next = upsert_mcp_entry(project_mcp, &input.name, entry)?;
-                self.store
-                    .save_mcp(McpConfigFileScope::Project, Some(working_dir), Some(&next))?;
-                Ok(())
-            },
-        }
+        let target = self.resolve_mcp_edit_target(
+            working_dir,
+            input.scope,
+            &input.name,
+            McpTargetResolutionMode::PreferSidecarIfPresent,
+        )?;
+        let next = upsert_mcp_entry(target.current_document(), &input.name, entry)?;
+        self.save_mcp_edit_target(working_dir, target, Some(next))
+            .await
     }
 
     /// 删除指定 scope 的 MCP 声明。
@@ -101,55 +203,14 @@ impl ConfigService {
         scope: McpConfigScope,
         name: &str,
     ) -> std::result::Result<(), ApplicationError> {
-        match scope {
-            McpConfigScope::User => {
-                let user_sidecar = self.store.load_mcp(McpConfigFileScope::User, None)?;
-                if mcp_document_contains_server(user_sidecar.as_ref(), name)? {
-                    let next = remove_mcp_entry(user_sidecar, name)?;
-                    self.store
-                        .save_mcp(McpConfigFileScope::User, None, next.as_ref())?;
-                    return Ok(());
-                }
-
-                let mut config = validation::normalize_config(self.store.load()?)?;
-                config.mcp = remove_mcp_entry(config.mcp.take(), name)?;
-                self.store.save(&config)?;
-                let mut guard = self.config.write().await;
-                *guard = config;
-                Ok(())
-            },
-            McpConfigScope::Local => {
-                let local_sidecar = self
-                    .store
-                    .load_mcp(McpConfigFileScope::Local, Some(working_dir))?;
-                if mcp_document_contains_server(local_sidecar.as_ref(), name)? {
-                    let next = remove_mcp_entry(local_sidecar, name)?;
-                    self.store.save_mcp(
-                        McpConfigFileScope::Local,
-                        Some(working_dir),
-                        next.as_ref(),
-                    )?;
-                    return Ok(());
-                }
-
-                let mut overlay = self.store.load_overlay(working_dir)?.unwrap_or_default();
-                overlay.mcp = remove_mcp_entry(overlay.mcp.take(), name)?;
-                self.store.save_overlay(working_dir, &overlay)?;
-                Ok(())
-            },
-            McpConfigScope::Project => {
-                let project_mcp = self
-                    .store
-                    .load_mcp(McpConfigFileScope::Project, Some(working_dir))?;
-                let next = remove_mcp_entry(project_mcp, name)?;
-                self.store.save_mcp(
-                    McpConfigFileScope::Project,
-                    Some(working_dir),
-                    next.as_ref(),
-                )?;
-                Ok(())
-            },
-        }
+        let target = self.resolve_mcp_edit_target(
+            working_dir,
+            scope,
+            name,
+            McpTargetResolutionMode::PreferContainingServer,
+        )?;
+        let next = remove_mcp_entry(target.current_document(), name)?;
+        self.save_mcp_edit_target(working_dir, target, next).await
     }
 
     /// 启用或禁用已声明的 MCP 服务器。
@@ -160,55 +221,21 @@ impl ConfigService {
         name: &str,
         enabled: bool,
     ) -> std::result::Result<(), ApplicationError> {
-        match scope {
-            McpConfigScope::User => {
-                let user_sidecar = self.store.load_mcp(McpConfigFileScope::User, None)?;
-                if mcp_document_contains_server(user_sidecar.as_ref(), name)? {
-                    let next = set_mcp_entry_enabled(user_sidecar, name, enabled)?;
-                    self.store
-                        .save_mcp(McpConfigFileScope::User, None, next.as_ref())?;
-                    return Ok(());
-                }
+        let target = self.resolve_mcp_edit_target(
+            working_dir,
+            scope,
+            name,
+            McpTargetResolutionMode::PreferContainingServer,
+        )?;
+        let next = set_mcp_entry_enabled(target.current_document(), name, enabled)?;
+        self.save_mcp_edit_target(working_dir, target, next).await
+    }
+}
 
-                let mut config = validation::normalize_config(self.store.load()?)?;
-                config.mcp = set_mcp_entry_enabled(config.mcp.take(), name, enabled)?;
-                self.store.save(&config)?;
-                let mut guard = self.config.write().await;
-                *guard = config;
-                Ok(())
-            },
-            McpConfigScope::Local => {
-                let local_sidecar = self
-                    .store
-                    .load_mcp(McpConfigFileScope::Local, Some(working_dir))?;
-                if mcp_document_contains_server(local_sidecar.as_ref(), name)? {
-                    let next = set_mcp_entry_enabled(local_sidecar, name, enabled)?;
-                    self.store.save_mcp(
-                        McpConfigFileScope::Local,
-                        Some(working_dir),
-                        next.as_ref(),
-                    )?;
-                    return Ok(());
-                }
-
-                let mut overlay = self.store.load_overlay(working_dir)?.unwrap_or_default();
-                overlay.mcp = set_mcp_entry_enabled(overlay.mcp.take(), name, enabled)?;
-                self.store.save_overlay(working_dir, &overlay)?;
-                Ok(())
-            },
-            McpConfigScope::Project => {
-                let project_mcp = self
-                    .store
-                    .load_mcp(McpConfigFileScope::Project, Some(working_dir))?;
-                let next = set_mcp_entry_enabled(project_mcp, name, enabled)?;
-                self.store.save_mcp(
-                    McpConfigFileScope::Project,
-                    Some(working_dir),
-                    next.as_ref(),
-                )?;
-                Ok(())
-            },
-        }
+fn working_dir_for_scope(scope: McpConfigFileScope, working_dir: &Path) -> Option<&Path> {
+    match scope {
+        McpConfigFileScope::User => None,
+        McpConfigFileScope::Local | McpConfigFileScope::Project => Some(working_dir),
     }
 }
 
@@ -411,81 +438,13 @@ fn mcp_servers(doc: &Value) -> std::result::Result<&Map<String, Value>, Applicat
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::{Path, PathBuf},
-        sync::{Arc, Mutex},
-    };
+    use std::{path::Path, sync::Arc};
 
-    use astrcode_core::{Config, ConfigOverlay, Result, ports::ConfigStore};
+    use astrcode_core::ports::ConfigStore;
     use serde_json::json;
 
     use super::*;
-
-    #[derive(Default)]
-    struct TestConfigStore {
-        config: Mutex<Config>,
-        overlay: Mutex<Option<ConfigOverlay>>,
-        user_mcp: Mutex<Option<Value>>,
-        local_mcp: Mutex<Option<Value>>,
-    }
-
-    impl ConfigStore for TestConfigStore {
-        fn load(&self) -> Result<Config> {
-            Ok(self.config.lock().expect("config mutex").clone())
-        }
-
-        fn save(&self, config: &Config) -> Result<()> {
-            *self.config.lock().expect("config mutex") = config.clone();
-            Ok(())
-        }
-
-        fn path(&self) -> PathBuf {
-            PathBuf::from("test-config.json")
-        }
-
-        fn load_overlay(&self, _working_dir: &Path) -> Result<Option<ConfigOverlay>> {
-            Ok(self.overlay.lock().expect("overlay mutex").clone())
-        }
-
-        fn save_overlay(&self, _working_dir: &Path, overlay: &ConfigOverlay) -> Result<()> {
-            *self.overlay.lock().expect("overlay mutex") = Some(overlay.clone());
-            Ok(())
-        }
-
-        fn load_mcp(
-            &self,
-            scope: McpConfigFileScope,
-            _working_dir: Option<&Path>,
-        ) -> Result<Option<Value>> {
-            match scope {
-                McpConfigFileScope::User => {
-                    Ok(self.user_mcp.lock().expect("user mcp mutex").clone())
-                },
-                McpConfigFileScope::Project => Ok(None),
-                McpConfigFileScope::Local => {
-                    Ok(self.local_mcp.lock().expect("local mcp mutex").clone())
-                },
-            }
-        }
-
-        fn save_mcp(
-            &self,
-            scope: McpConfigFileScope,
-            _working_dir: Option<&Path>,
-            mcp: Option<&Value>,
-        ) -> Result<()> {
-            match scope {
-                McpConfigFileScope::User => {
-                    *self.user_mcp.lock().expect("user mcp mutex") = mcp.cloned();
-                },
-                McpConfigFileScope::Project => {},
-                McpConfigFileScope::Local => {
-                    *self.local_mcp.lock().expect("local mcp mutex") = mcp.cloned();
-                },
-            }
-            Ok(())
-        }
-    }
+    use crate::config::test_support::TestConfigStore;
 
     fn demo_stdio_input(scope: McpConfigScope, name: &str) -> RegisterMcpServerInput {
         RegisterMcpServerInput {
