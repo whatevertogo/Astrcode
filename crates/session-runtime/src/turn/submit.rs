@@ -2,8 +2,11 @@ use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, CancelToken, EventTranslator, ExecutionAccepted, Phase,
-    ResolvedRuntimeConfig, Result, RuntimeMetricsRecorder, SessionId, TurnId, UserMessageOrigin,
+    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
+    Result, RuntimeMetricsRecorder, SessionId, StorageEvent, StorageEventPayload, TurnId,
+    UserMessageOrigin,
 };
+use astrcode_kernel::CapabilityRouter;
 use chrono::Utc;
 
 use crate::{
@@ -28,15 +31,29 @@ struct TurnExecutionTask {
     finalize: TurnFinalizeContext,
 }
 
+#[derive(Clone, Default)]
+pub struct AgentPromptSubmission {
+    pub agent: AgentEventContext,
+    pub capability_router: Option<CapabilityRouter>,
+    pub resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
+    pub source_tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PersistedTurnContext {
+    turn_id: String,
+    agent: AgentEventContext,
+    source_tool_call_id: Option<String>,
+}
+
 struct TurnFinalizeContext {
     kernel: Arc<astrcode_kernel::Kernel>,
     prompt_facts_provider: Arc<dyn astrcode_core::PromptFactsProvider>,
     metrics: Arc<dyn RuntimeMetricsRecorder>,
     actor: Arc<SessionActor>,
     session_id: String,
-    turn_id: String,
-    agent: AgentEventContext,
     turn_started_at: Instant,
+    persisted: PersistedTurnContext,
 }
 
 async fn execute_turn_and_finalize(task: TurnExecutionTask) {
@@ -73,6 +90,7 @@ async fn finalize_turn_execution(
                 &finalize.session_id,
                 &mut translator,
                 turn_result,
+                &finalize.persisted,
             )
             .await;
         },
@@ -92,8 +110,8 @@ async fn finalize_turn_execution(
             persist_turn_failure(
                 finalize.actor.state(),
                 &finalize.session_id,
-                &finalize.turn_id,
-                finalize.agent.clone(),
+                &finalize.persisted.turn_id,
+                finalize.persisted.agent.clone(),
                 &mut translator,
                 error.to_string(),
             )
@@ -138,15 +156,30 @@ async fn persist_turn_events(
     session_id: &str,
     translator: &mut EventTranslator,
     turn_result: crate::TurnRunResult,
+    persisted: &PersistedTurnContext,
 ) {
-    for event in turn_result.events {
-        if let Err(error) = append_and_broadcast(session_state, &event, translator).await {
+    for event in &turn_result.events {
+        if let Err(error) = append_and_broadcast(session_state, event, translator).await {
             log::error!(
                 "failed to persist turn event for session '{}': {}",
                 session_id,
                 error
             );
             break;
+        }
+    }
+    if let Some(event) = subrun_finished_event(
+        &persisted.turn_id,
+        &persisted.agent,
+        &turn_result,
+        persisted.source_tool_call_id.clone(),
+    ) {
+        if let Err(error) = append_and_broadcast(session_state, &event, translator).await {
+            log::error!(
+                "failed to persist subrun finished event for session '{}': {}",
+                session_id,
+                error
+            );
         }
     }
 }
@@ -223,7 +256,7 @@ impl SessionRuntime {
         text: String,
         runtime: ResolvedRuntimeConfig,
     ) -> Result<ExecutionAccepted> {
-        self.submit_prompt_for_agent(session_id, text, runtime, AgentEventContext::default())
+        self.submit_prompt_for_agent(session_id, text, runtime, AgentPromptSubmission::default())
             .await
     }
 
@@ -232,21 +265,24 @@ impl SessionRuntime {
         session_id: &str,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        agent: AgentEventContext,
+        submission: AgentPromptSubmission,
     ) -> Result<ExecutionAccepted> {
         self.submit_prompt_inner(
             session_id,
             None,
             text,
             runtime,
-            agent,
             SubmitBusyPolicy::BranchOnBusy,
+            submission,
         )
-        .await?
-        .ok_or_else(|| {
-            astrcode_core::AstrError::Validation(
-                "submit prompt unexpectedly rejected while branch-on-busy is enabled".to_string(),
-            )
+        .await
+        .and_then(|accepted| {
+            accepted.ok_or_else(|| {
+                astrcode_core::AstrError::Validation(
+                    "submit prompt unexpectedly rejected while branch-on-busy is enabled"
+                        .to_string(),
+                )
+            })
         })
     }
 
@@ -255,15 +291,15 @@ impl SessionRuntime {
         session_id: &str,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        agent: AgentEventContext,
+        submission: AgentPromptSubmission,
     ) -> Result<Option<ExecutionAccepted>> {
         self.submit_prompt_inner(
             session_id,
             None,
             text,
             runtime,
-            agent,
             SubmitBusyPolicy::RejectOnBusy,
+            submission,
         )
         .await
     }
@@ -274,17 +310,40 @@ impl SessionRuntime {
         turn_id: TurnId,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        agent: AgentEventContext,
+        submission: AgentPromptSubmission,
     ) -> Result<Option<ExecutionAccepted>> {
         self.submit_prompt_inner(
             session_id,
             Some(turn_id),
             text,
             runtime,
-            agent,
             SubmitBusyPolicy::RejectOnBusy,
+            submission,
         )
         .await
+    }
+
+    pub async fn submit_prompt_for_agent_with_submission(
+        &self,
+        session_id: &str,
+        text: String,
+        runtime: ResolvedRuntimeConfig,
+        submission: AgentPromptSubmission,
+    ) -> Result<ExecutionAccepted> {
+        self.submit_prompt_inner(
+            session_id,
+            None,
+            text,
+            runtime,
+            SubmitBusyPolicy::BranchOnBusy,
+            submission,
+        )
+        .await?
+        .ok_or_else(|| {
+            astrcode_core::AstrError::Validation(
+                "submit prompt unexpectedly rejected while branch-on-busy is enabled".to_string(),
+            )
+        })
     }
 
     async fn submit_prompt_inner(
@@ -293,8 +352,8 @@ impl SessionRuntime {
         turn_id: Option<TurnId>,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        agent: AgentEventContext,
         busy_policy: SubmitBusyPolicy,
+        submission: AgentPromptSubmission,
     ) -> Result<Option<ExecutionAccepted>> {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -332,6 +391,12 @@ impl SessionRuntime {
             .actor
             .state()
             .pending_reactivation_messages()?;
+        let AgentPromptSubmission {
+            agent,
+            capability_router,
+            resolved_limits,
+            source_tool_call_id,
+        } = submission;
 
         let user_message = user_message_event(
             turn_id.as_str(),
@@ -357,6 +422,14 @@ impl SessionRuntime {
 
         let mut translator = EventTranslator::new(submit_target.actor.state().current_phase()?);
         append_and_broadcast(submit_target.actor.state(), &user_message, &mut translator).await?;
+        if let Some(event) = subrun_started_event(
+            turn_id.as_str(),
+            &agent,
+            resolved_limits.clone(),
+            source_tool_call_id.clone(),
+        ) {
+            append_and_broadcast(submit_target.actor.state(), &event, &mut translator).await?;
+        }
         let mut messages = current_turn_messages(submit_target.actor.state())?;
         if !pending_reactivation_messages.is_empty() {
             let insert_at = messages.len().saturating_sub(1);
@@ -380,6 +453,9 @@ impl SessionRuntime {
                 cancel: cancel.clone(),
                 agent: agent.clone(),
                 prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
+                capability_router,
+                resolved_limits: resolved_limits.clone(),
+                source_tool_call_id: source_tool_call_id.clone(),
             },
             finalize: TurnFinalizeContext {
                 kernel: Arc::clone(&self.kernel),
@@ -387,9 +463,12 @@ impl SessionRuntime {
                 metrics: Arc::clone(&self.metrics),
                 actor: Arc::clone(&submit_target.actor),
                 session_id: submit_target.session_id.to_string(),
-                turn_id: turn_id.to_string(),
-                agent: agent.clone(),
                 turn_started_at: Instant::now(),
+                persisted: PersistedTurnContext {
+                    turn_id: turn_id.to_string(),
+                    agent: agent.clone(),
+                    source_tool_call_id,
+                },
             },
         }));
 
@@ -400,6 +479,102 @@ impl SessionRuntime {
             branched_from_session_id: submit_target.branched_from_session_id,
         }))
     }
+}
+
+fn subrun_started_event(
+    turn_id: &str,
+    agent: &AgentEventContext,
+    resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
+    source_tool_call_id: Option<String>,
+) -> Option<StorageEvent> {
+    if agent.invocation_kind != Some(astrcode_core::InvocationKind::SubRun) {
+        return None;
+    }
+
+    Some(StorageEvent {
+        turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
+        payload: StorageEventPayload::SubRunStarted {
+            tool_call_id: source_tool_call_id,
+            resolved_overrides: ResolvedSubagentContextOverrides::default(),
+            resolved_limits: resolved_limits.unwrap_or_default(),
+            timestamp: Some(Utc::now()),
+        },
+    })
+}
+
+fn subrun_finished_event(
+    turn_id: &str,
+    agent: &AgentEventContext,
+    turn_result: &crate::TurnRunResult,
+    source_tool_call_id: Option<String>,
+) -> Option<StorageEvent> {
+    if agent.invocation_kind != Some(astrcode_core::InvocationKind::SubRun) {
+        return None;
+    }
+
+    let summary = turn_result
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            astrcode_core::LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => {
+                Some(content.trim().to_string())
+            },
+            _ => None,
+        })
+        .unwrap_or_else(|| match &turn_result.outcome {
+            crate::TurnOutcome::Completed => "子 Agent 已完成，但没有返回可读总结。".to_string(),
+            crate::TurnOutcome::Cancelled => "子 Agent 已关闭。".to_string(),
+            crate::TurnOutcome::Error { message } => message.trim().to_string(),
+        });
+
+    let result = match &turn_result.outcome {
+        crate::TurnOutcome::Completed => astrcode_core::SubRunResult {
+            lifecycle: astrcode_core::AgentLifecycleStatus::Idle,
+            last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
+            handoff: Some(astrcode_core::SubRunHandoff {
+                summary,
+                findings: Vec::new(),
+                artifacts: Vec::new(),
+            }),
+            failure: None,
+        },
+        crate::TurnOutcome::Cancelled => astrcode_core::SubRunResult {
+            lifecycle: astrcode_core::AgentLifecycleStatus::Idle,
+            last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Cancelled),
+            handoff: None,
+            failure: Some(astrcode_core::SubRunFailure {
+                code: astrcode_core::SubRunFailureCode::Interrupted,
+                display_message: summary,
+                technical_message: "interrupted".to_string(),
+                retryable: false,
+            }),
+        },
+        crate::TurnOutcome::Error { message } => astrcode_core::SubRunResult {
+            lifecycle: astrcode_core::AgentLifecycleStatus::Idle,
+            last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Failed),
+            handoff: None,
+            failure: Some(astrcode_core::SubRunFailure {
+                code: astrcode_core::SubRunFailureCode::Internal,
+                display_message: summary,
+                technical_message: message.clone(),
+                retryable: true,
+            }),
+        },
+    };
+
+    Some(StorageEvent {
+        turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
+        payload: StorageEventPayload::SubRunFinished {
+            tool_call_id: source_tool_call_id,
+            result,
+            step_count: turn_result.summary.step_count as u32,
+            estimated_tokens: turn_result.summary.total_tokens_used,
+            timestamp: Some(Utc::now()),
+        },
+    })
 }
 
 #[cfg(test)]
@@ -509,9 +684,12 @@ mod tests {
             metrics: Arc::new(NoopMetrics),
             actor,
             session_id: "session-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            agent: AgentEventContext::default(),
             turn_started_at: Instant::now(),
+            persisted: PersistedTurnContext {
+                turn_id: "turn-1".to_string(),
+                agent: AgentEventContext::default(),
+                source_tool_call_id: None,
+            },
         }
     }
 
@@ -642,6 +820,22 @@ mod tests {
         assert_contains_compact_summary(&stored, "manual compact summary");
     }
 
+    #[test]
+    fn subrun_lifecycle_events_ignore_non_subrun_context() {
+        assert!(
+            subrun_started_event("turn-1", &AgentEventContext::default(), None, None).is_none()
+        );
+        assert!(
+            subrun_finished_event(
+                "turn-1",
+                &AgentEventContext::default(),
+                &completed_turn_result(),
+                None,
+            )
+            .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn submit_prompt_inner_returns_none_when_reject_on_busy() {
         let event_store = Arc::new(BranchingTestEventStore::default());
@@ -658,8 +852,8 @@ mod tests {
                 None,
                 "hello".to_string(),
                 ResolvedRuntimeConfig::default(),
-                AgentEventContext::default(),
                 SubmitBusyPolicy::RejectOnBusy,
+                AgentPromptSubmission::default(),
             )
             .await
             .expect("submit should not error");
@@ -690,8 +884,8 @@ mod tests {
                     max_concurrent_branch_depth: 2,
                     ..ResolvedRuntimeConfig::default()
                 },
-                AgentEventContext::default(),
                 SubmitBusyPolicy::BranchOnBusy,
+                AgentPromptSubmission::default(),
             )
             .await
             .expect("submit should not error")
@@ -807,8 +1001,8 @@ mod tests {
                 None,
                 "first after compact".to_string(),
                 ResolvedRuntimeConfig::default(),
-                AgentEventContext::default(),
                 SubmitBusyPolicy::RejectOnBusy,
+                AgentPromptSubmission::default(),
             )
             .await
             .expect("submit should not error")
@@ -827,8 +1021,8 @@ mod tests {
                 None,
                 "second turn".to_string(),
                 ResolvedRuntimeConfig::default(),
-                AgentEventContext::default(),
                 SubmitBusyPolicy::RejectOnBusy,
+                AgentPromptSubmission::default(),
             )
             .await
             .expect("second submit should not error")

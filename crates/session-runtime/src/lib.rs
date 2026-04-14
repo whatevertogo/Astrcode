@@ -50,8 +50,8 @@ pub use state::{
     should_record_compaction_tail_event,
 };
 pub use turn::{
-    TurnCollaborationSummary, TurnFinishReason, TurnOutcome, TurnRunRequest, TurnRunResult,
-    TurnSummary, run_turn,
+    AgentPromptSubmission, TurnCollaborationSummary, TurnFinishReason, TurnOutcome, TurnRunRequest,
+    TurnRunResult, TurnSummary, run_turn,
 };
 
 const ROOT_AGENT_ID: &str = "root-agent";

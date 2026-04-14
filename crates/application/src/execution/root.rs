@@ -8,13 +8,14 @@
 use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
-    AgentMode, ExecutionAccepted, ResolvedRuntimeConfig, SubagentContextOverrides,
+    AgentMode, ExecutionAccepted, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
+    SubagentContextOverrides,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
 
 use crate::{
-    agent::root_execution_event_context,
+    agent::{persist_resolved_limits_for_handle, root_execution_event_context},
     errors::ApplicationError,
     execution::{
         ExecutionControl, ProfileResolutionService, ensure_profile_mode, merge_task_with_context,
@@ -60,7 +61,7 @@ pub async fn execute_root_agent(
         .await
         .map_err(ApplicationError::from)?;
 
-    kernel
+    let handle = kernel
         .agent()
         .register_root_agent(
             request.agent_id.clone(),
@@ -69,6 +70,16 @@ pub async fn execute_root_agent(
         )
         .await
         .map_err(|e| ApplicationError::Internal(format!("failed to register root agent: {e}")))?;
+    let handle = persist_resolved_limits_for_handle(
+        kernel.as_ref(),
+        handle,
+        ResolvedExecutionLimitsSnapshot {
+            allowed_tools: kernel.gateway().capabilities().tool_names(),
+            max_steps: Some(runtime_config.max_steps as u32),
+        },
+    )
+    .await
+    .map_err(ApplicationError::Internal)?;
 
     let merged_task = merge_task_with_context(&request.task, request.context.as_deref());
 
@@ -77,7 +88,10 @@ pub async fn execute_root_agent(
             &session.session_id,
             merged_task,
             runtime_config,
-            root_execution_event_context(request.agent_id.clone(), profile_id),
+            astrcode_session_runtime::AgentPromptSubmission {
+                agent: root_execution_event_context(handle.agent_id.clone(), profile_id),
+                ..Default::default()
+            },
         )
         .await
         .map_err(ApplicationError::from)?;

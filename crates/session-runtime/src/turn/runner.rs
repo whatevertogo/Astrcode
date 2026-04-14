@@ -27,10 +27,11 @@ mod step;
 use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, LlmMessage, PromptFactsProvider, ResolvedRuntimeConfig, Result,
-    StorageEvent, StorageEventPayload, ToolDefinition,
+    AgentEventContext, CancelToken, LlmMessage, PromptFactsProvider,
+    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, Result, StorageEvent,
+    StorageEventPayload, ToolDefinition,
 };
-use astrcode_kernel::Kernel;
+use astrcode_kernel::{CapabilityRouter, Kernel, KernelGateway};
 use chrono::{DateTime, Utc};
 use step::{StepOutcome, run_single_step};
 
@@ -65,6 +66,9 @@ pub struct TurnRunRequest {
     pub cancel: CancelToken,
     pub agent: AgentEventContext,
     pub prompt_facts_provider: Arc<dyn PromptFactsProvider>,
+    pub capability_router: Option<CapabilityRouter>,
+    pub resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
+    pub source_tool_call_id: Option<String>,
 }
 
 /// Turn 执行结果。
@@ -278,10 +282,13 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         cancel,
         agent,
         prompt_facts_provider,
+        capability_router,
+        resolved_limits: _,
+        source_tool_call_id: _,
     } = request;
-    let gateway = kernel.gateway();
+    let gateway = scoped_gateway(kernel.gateway(), capability_router)?;
     let resources = TurnExecutionResources::new(
-        gateway,
+        &gateway,
         TurnExecutionRequestView {
             prompt_facts_provider: prompt_facts_provider.as_ref(),
             session_id: &session_id,
@@ -326,6 +333,16 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
             },
         }
     }
+}
+
+fn scoped_gateway(
+    gateway: &KernelGateway,
+    capability_router: Option<CapabilityRouter>,
+) -> Result<KernelGateway> {
+    Ok(match capability_router {
+        Some(router) => gateway.with_capabilities(router),
+        None => gateway.clone(),
+    })
 }
 
 /// 从 session 事件流中聚合当前 turn 的 collaboration facts，生成 turn 级摘要。

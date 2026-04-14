@@ -24,8 +24,8 @@ use std::{
 
 use astrcode_core::{
     AgentInboxEnvelope, AgentLifecycleStatus, AgentProfile, AgentTurnOutcome, AstrError,
-    CancelToken, LiveSubRunControlBoundary, SessionId, SpawnAgentParams, SubRunHandle,
-    SubRunResult, SubRunStorageMode, ToolContext,
+    CancelToken, LiveSubRunControlBoundary, ResolvedExecutionLimitsSnapshot, SessionId,
+    SpawnAgentParams, SubRunHandle, SubRunResult, SubRunStorageMode, ToolContext,
 };
 use async_trait::async_trait;
 use delivery_queue::{
@@ -302,6 +302,7 @@ impl AgentControl {
             storage_mode,
             lifecycle: AgentLifecycleStatus::Pending,
             last_turn_outcome: None,
+            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
         };
         let cancel = CancelToken::new();
         let (status_tx, _status_rx) = watch::channel(handle.lifecycle);
@@ -368,6 +369,7 @@ impl AgentControl {
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
             last_turn_outcome: None,
+            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
         };
         let cancel = CancelToken::new();
         let (status_tx, _status_rx) = watch::channel(handle.lifecycle);
@@ -453,6 +455,19 @@ impl AgentControl {
         }
         prune_finalized_agents_locked(&mut state, retain_limit);
         Some(AgentLifecycleStatus::Idle)
+    }
+
+    /// 更新 agent 当前执行实例的 resolved limits 快照。
+    pub async fn set_resolved_limits(
+        &self,
+        id: &str,
+        resolved_limits: ResolvedExecutionLimitsSnapshot,
+    ) -> Option<()> {
+        let mut state = self.state.write().await;
+        let key = resolve_entry_key(&state, id)?.to_string();
+        let entry = state.entries.get_mut(&key)?;
+        entry.handle.resolved_limits = resolved_limits;
+        Some(())
     }
 
     /// 列出当前已注册的 Agent。

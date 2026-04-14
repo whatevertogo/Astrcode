@@ -139,6 +139,13 @@ crates/
 
 这些限制的判断标准不是“代码多不多”，而是看它回答的是不是“全局控制与能力寻址”这个问题域。
 
+子 Agent 的能力裁剪也遵循同一原则：
+
+- `AgentProfile` 只描述行为模板，例如 system prompt、模型偏好、协作风格。
+- `spawn` 时的 task-scoped capability grant 只描述“这次任务申请的最小工具子集”。
+- child 的最终 capability surface 必须由父级当前可继承能力面、spawn grant、runtime availability 与既有 policy 护栏求交得到。
+- prompt 可见工具集合与 runtime 可执行工具集合必须读取同一份 filtered capability router，不能一边看 profile、一边看全局 registry。
+
 ### 4.5 `session-runtime`
 
 - `session-runtime` 是单 session 真相面，不是新的超级 runtime。

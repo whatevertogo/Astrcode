@@ -221,6 +221,12 @@ pub(crate) async fn build_prompt_output(
             session_id: Some(session_id.to_string().into()),
             turn_id: Some(turn_id.to_string().into()),
             working_dir: working_dir.to_path_buf(),
+            allowed_capability_names: gateway
+                .capabilities()
+                .capability_specs()
+                .into_iter()
+                .map(|spec| spec.name.to_string())
+                .collect(),
         })
         .await?;
     let turn_index = count_user_turns(messages);

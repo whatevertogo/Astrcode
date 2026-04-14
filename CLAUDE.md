@@ -38,7 +38,6 @@ cd frontend && npm run typecheck && npm run lint && npm run format:check
 - `application` 不依赖任何 `adapter-*`，只依赖 `core` + `kernel` + `session-runtime`
 - 治理层使用 `AppGovernance`（`astrcode-application`），不使用旧 `RuntimeGovernance`（`astrcode-runtime`）
 - 能力语义统一使用 `CapabilitySpec`（`astrcode-core`），传输层使用 `CapabilityDescriptor`（`astrcode-protocol`）
-- 旧 `crates/runtime/` 及其子 crate 仍存在但处于过渡期，新代码不应增加对它们的依赖
 
 ## 代码规范
 

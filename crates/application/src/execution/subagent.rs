@@ -6,14 +6,15 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, ResolvedRuntimeConfig,
-    RuntimeMetricsRecorder,
+    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted,
+    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, RuntimeMetricsRecorder,
+    SpawnCapabilityGrant, normalize_non_empty_unique_string_list,
 };
 use astrcode_kernel::{AgentControlError, Kernel};
-use astrcode_session_runtime::SessionRuntime;
+use astrcode_session_runtime::{AgentPromptSubmission, SessionRuntime};
 
 use crate::{
-    agent::subrun_event_context,
+    agent::{persist_resolved_limits_for_handle, subrun_event_context},
     errors::ApplicationError,
     execution::{ensure_profile_mode, merge_task_with_context},
 };
@@ -27,6 +28,9 @@ pub struct SubagentExecutionRequest {
     pub profile: AgentProfile,
     pub task: String,
     pub context: Option<String>,
+    pub parent_allowed_tools: Vec<String>,
+    pub capability_grant: Option<SpawnCapabilityGrant>,
+    pub source_tool_call_id: Option<String>,
 }
 
 /// 启动子代理执行。
@@ -46,6 +50,16 @@ pub async fn launch_subagent(
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_subagent_request(&request)?;
     ensure_subagent_profile_mode(&request.profile)?;
+    let resolved_limits = resolve_child_execution_limits(
+        &request.parent_allowed_tools,
+        request.capability_grant.as_ref(),
+        runtime_config.max_steps as u32,
+    )?;
+    let scoped_gateway = kernel
+        .gateway()
+        .subset_for_tools_checked(&resolved_limits.allowed_tools)
+        .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
+    let scoped_router = scoped_gateway.capabilities().clone();
 
     let child_session = session_runtime
         .create_child_session(&request.working_dir, &request.parent_session_id)
@@ -63,25 +77,75 @@ pub async fn launch_subagent(
         )
         .await
         .map_err(map_spawn_error)?;
-    let _ = kernel
+    if kernel
         .agent()
         .set_lifecycle(&handle.agent_id, AgentLifecycleStatus::Running)
-        .await;
+        .await
+        .is_none()
+    {
+        return Err(ApplicationError::Internal(format!(
+            "failed to mark child agent '{}' as running because the control handle disappeared \
+             immediately after spawn",
+            handle.agent_id
+        )));
+    }
+    let handle =
+        persist_resolved_limits_for_handle(kernel.as_ref(), handle, resolved_limits.clone())
+            .await
+            .map_err(ApplicationError::Internal)?;
 
     let merged_task = merge_task_with_context(&request.task, request.context.as_deref());
 
     let mut accepted = session_runtime
-        .submit_prompt_for_agent(
+        .submit_prompt_for_agent_with_submission(
             &child_session.session_id,
             merged_task,
             runtime_config,
-            subrun_event_context(&handle),
+            AgentPromptSubmission {
+                agent: subrun_event_context(&handle),
+                capability_router: Some(scoped_router),
+                resolved_limits: Some(resolved_limits),
+                source_tool_call_id: request.source_tool_call_id,
+            },
         )
         .await
         .map_err(ApplicationError::from)?;
     metrics.record_child_spawned();
     accepted.agent_id = Some(handle.agent_id.into());
     Ok(accepted)
+}
+
+fn resolve_child_execution_limits(
+    parent_allowed_tools: &[String],
+    capability_grant: Option<&SpawnCapabilityGrant>,
+    max_steps: u32,
+) -> Result<ResolvedExecutionLimitsSnapshot, ApplicationError> {
+    let parent_allowed_tools =
+        normalize_non_empty_unique_string_list(parent_allowed_tools, "parentAllowedTools")
+            .map_err(ApplicationError::from)?;
+    let allowed_tools = match capability_grant {
+        Some(grant) => {
+            let requested_tools = grant
+                .normalized_allowed_tools()
+                .map_err(ApplicationError::from)?;
+            let allowed_tools = requested_tools
+                .into_iter()
+                .filter(|tool| parent_allowed_tools.iter().any(|parent| parent == tool))
+                .collect::<Vec<_>>();
+            if allowed_tools.is_empty() {
+                return Err(ApplicationError::InvalidArgument(
+                    "capability grant 与父级当前可继承工具无交集".to_string(),
+                ));
+            }
+            allowed_tools
+        },
+        None => parent_allowed_tools,
+    };
+
+    Ok(ResolvedExecutionLimitsSnapshot {
+        allowed_tools,
+        max_steps: Some(max_steps),
+    })
 }
 
 fn validate_subagent_request(request: &SubagentExecutionRequest) -> Result<(), ApplicationError> {
@@ -161,6 +225,9 @@ mod tests {
             profile: test_profile(),
             task: "explore the code".to_string(),
             context: None,
+            parent_allowed_tools: vec!["read_file".to_string(), "grep".to_string()],
+            capability_grant: None,
+            source_tool_call_id: None,
         }
     }
 
@@ -243,5 +310,47 @@ mod tests {
 
         assert!(matches!(err, ApplicationError::Conflict(_)));
         assert!(err.to_string().contains("too many active agents"));
+    }
+
+    #[test]
+    fn resolve_child_execution_limits_inherits_parent_tools_when_no_grant() {
+        let limits = resolve_child_execution_limits(
+            &["read_file".to_string(), "grep".to_string()],
+            None,
+            12,
+        )
+        .expect("limits should resolve");
+
+        assert_eq!(limits.allowed_tools, vec!["read_file", "grep"]);
+        assert_eq!(limits.max_steps, Some(12));
+    }
+
+    #[test]
+    fn resolve_child_execution_limits_intersects_parent_and_grant() {
+        let limits = resolve_child_execution_limits(
+            &["read_file".to_string(), "grep".to_string()],
+            Some(&SpawnCapabilityGrant {
+                allowed_tools: vec!["grep".to_string(), "write_file".to_string()],
+            }),
+            8,
+        )
+        .expect("limits should resolve");
+
+        assert_eq!(limits.allowed_tools, vec!["grep"]);
+        assert_eq!(limits.max_steps, Some(8));
+    }
+
+    #[test]
+    fn resolve_child_execution_limits_rejects_disjoint_grant() {
+        let error = resolve_child_execution_limits(
+            &["read_file".to_string(), "grep".to_string()],
+            Some(&SpawnCapabilityGrant {
+                allowed_tools: vec!["write_file".to_string()],
+            }),
+            8,
+        )
+        .expect_err("disjoint grants should fail fast");
+
+        assert!(error.to_string().contains("无交集"));
     }
 }

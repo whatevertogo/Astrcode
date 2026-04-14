@@ -24,6 +24,7 @@ mod tool_result_budget;
 
 use astrcode_core::{SessionId, TurnId};
 pub use loop_control::{TurnLoopTransition, TurnStopCause};
+pub use submit::AgentPromptSubmission;
 pub use summary::{TurnCollaborationSummary, TurnFinishReason, TurnSummary};
 
 /// Turn 运行请求参数。

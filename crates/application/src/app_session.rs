@@ -88,7 +88,15 @@ impl App {
         }
         let root_agent = self.ensure_session_root_agent_context(session_id).await?;
         self.session_runtime
-            .submit_prompt_for_agent(session_id, text, runtime, root_agent)
+            .submit_prompt_for_agent(
+                session_id,
+                text,
+                runtime,
+                astrcode_session_runtime::AgentPromptSubmission {
+                    agent: root_agent,
+                    ..Default::default()
+                },
+            )
             .await
             .map_err(ApplicationError::from)
     }

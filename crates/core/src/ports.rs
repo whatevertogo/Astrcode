@@ -225,6 +225,8 @@ pub struct PromptFactsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<TurnId>,
     pub working_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_capability_names: Vec<String>,
 }
 
 /// Prompt 组装前的已解析事实。

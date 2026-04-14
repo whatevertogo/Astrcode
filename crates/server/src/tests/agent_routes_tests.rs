@@ -5,7 +5,7 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, SpawnAgentParams, ToolContext,
+    AgentEventContext, CancelToken, SpawnAgentParams, SpawnCapabilityGrant, ToolContext,
     agent::executor::SubAgentExecutor,
 };
 use axum::{
@@ -15,7 +15,8 @@ use axum::{
 use tower::ServiceExt;
 
 use crate::{
-    AUTH_HEADER_NAME,
+    AUTH_HEADER_NAME, AppState,
+    auth::{AuthSessionManager, BootstrapAuth},
     routes::build_api_router,
     test_support::{ManualWatchHarness, ServerTestContext, test_state, test_state_with_options},
 };
@@ -296,6 +297,9 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
                 description: "仓库审查".to_string(),
                 prompt: "请阅读代码".to_string(),
                 context: Some("关注最近修改".to_string()),
+                capability_grant: Some(SpawnCapabilityGrant {
+                    allowed_tools: vec!["observe".to_string()],
+                }),
             },
             &ctx,
         )
@@ -333,6 +337,15 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
         subrun.child_session_id.as_deref(),
         Some(child_session_id.as_str()),
         "independent child session id should be preserved on the handle"
+    );
+    assert_eq!(
+        subrun.resolved_limits.allowed_tools,
+        vec!["observe".to_string()],
+        "live status should expose the launch-time capability grant intersection"
+    );
+    assert!(
+        subrun.resolved_limits.max_steps.is_some(),
+        "live status should expose the launch-time max step limit"
     );
 
     let child_meta = state
@@ -397,6 +410,7 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
                 description: "缺失 profile".to_string(),
                 prompt: "请阅读代码".to_string(),
                 context: None,
+                capability_grant: None,
             },
             &ctx,
         )
@@ -416,6 +430,143 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
     assert_eq!(
         after, before,
         "无效 subagent profile 不得创建 child session"
+    );
+}
+
+#[tokio::test]
+async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits() {
+    let context = ServerTestContext::new();
+    let initial_runtime = crate::bootstrap::bootstrap_server_runtime_with_options(
+        crate::bootstrap::ServerBootstrapOptions {
+            home_dir: Some(context.home_dir().to_path_buf()),
+            enable_profile_watch: false,
+            ..crate::bootstrap::ServerBootstrapOptions::default()
+        },
+    )
+    .await
+    .expect("server runtime should bootstrap");
+    let project = tempfile::tempdir().expect("tempdir should be created");
+    write_agent_profile(project.path(), "reviewer", "仓库审查");
+    let parent = initial_runtime
+        .app
+        .create_session(project.path().display().to_string())
+        .await
+        .expect("parent session should be created");
+    initial_runtime
+        .app
+        .kernel()
+        .agent_control()
+        .register_root_agent(
+            "root-agent".to_string(),
+            parent.session_id.clone(),
+            "root-profile".to_string(),
+        )
+        .await
+        .expect("root agent should be registered");
+
+    let ctx = ToolContext::new(
+        parent.session_id.clone().into(),
+        project.path().to_path_buf(),
+        CancelToken::new(),
+    )
+    .with_turn_id("turn-1")
+    .with_agent_context(AgentEventContext::root_execution(
+        "root-agent",
+        "root-profile",
+    ));
+
+    let result = initial_runtime
+        .app
+        .agent()
+        .launch(
+            SpawnAgentParams {
+                r#type: Some("reviewer".to_string()),
+                description: "仓库审查".to_string(),
+                prompt: "请阅读代码".to_string(),
+                context: Some("关注最近修改".to_string()),
+                capability_grant: Some(SpawnCapabilityGrant {
+                    allowed_tools: vec!["observe".to_string()],
+                }),
+            },
+            &ctx,
+        )
+        .await
+        .expect("subagent should launch");
+
+    let child_agent_id = result
+        .handoff
+        .as_ref()
+        .expect("handoff should exist")
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "agent")
+        .map(|artifact| artifact.id.clone())
+        .expect("child agent artifact should exist");
+
+    initial_runtime
+        .app
+        .close_agent(&parent.session_id, &child_agent_id)
+        .await
+        .expect("child should be closable so live handle disappears");
+
+    drop(initial_runtime);
+
+    let reloaded_runtime = crate::bootstrap::bootstrap_server_runtime_with_options(
+        crate::bootstrap::ServerBootstrapOptions {
+            home_dir: Some(context.home_dir().to_path_buf()),
+            enable_profile_watch: false,
+            ..crate::bootstrap::ServerBootstrapOptions::default()
+        },
+    )
+    .await
+    .expect("reloaded server runtime should bootstrap from durable state");
+    let auth_sessions = std::sync::Arc::new(AuthSessionManager::default());
+    auth_sessions.issue_test_token("browser-token");
+    let app = build_api_router().with_state(AppState {
+        app: std::sync::Arc::clone(&reloaded_runtime.app),
+        governance: std::sync::Arc::clone(&reloaded_runtime.governance),
+        #[cfg(feature = "debug-workbench")]
+        debug_workbench: std::sync::Arc::new(astrcode_debug_workbench::DebugWorkbenchService::new(
+            std::sync::Arc::clone(&reloaded_runtime.app),
+            std::sync::Arc::clone(&reloaded_runtime.governance),
+        )),
+        auth_sessions,
+        bootstrap_auth: BootstrapAuth::new(
+            "browser-token".to_string(),
+            chrono::Utc::now()
+                .checked_add_signed(chrono::Duration::seconds(60))
+                .expect("expiry should be valid")
+                .timestamp_millis(),
+        ),
+        frontend_build: None,
+        _runtime_handles: reloaded_runtime.handles,
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/sessions/{}/subruns/{}",
+                    parent.session_id, child_agent_id
+                ))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: astrcode_protocol::http::SubRunStatusDto = json_body(response).await;
+    assert_eq!(
+        payload.source,
+        astrcode_protocol::http::SubRunStatusSourceDto::Durable
+    );
+    assert_eq!(
+        payload
+            .resolved_limits
+            .expect("durable fallback should expose resolved limits")
+            .allowed_tools,
+        vec!["observe".to_string()]
     );
 }
 

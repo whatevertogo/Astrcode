@@ -351,14 +351,42 @@ impl AgentOrchestrationService {
                 .await;
         };
 
+        let allowed_tools =
+            super::effective_tool_names_for_handle(&reused_handle, self.kernel.gateway());
+        let scoped_router = match self
+            .kernel
+            .gateway()
+            .capabilities()
+            .subset_for_tools_checked(&allowed_tools)
+        {
+            Ok(router) => router,
+            Err(error) => {
+                return self
+                    .restore_pending_inbox_and_fail(
+                        &child.agent_id,
+                        pending,
+                        format!(
+                            "agent '{}' resume capability resolution failed: {error}",
+                            params.agent_id
+                        ),
+                    )
+                    .await;
+            },
+        };
+
         let accepted = match self
             .session_runtime
-            .submit_prompt_for_agent(
+            .submit_prompt_for_agent_with_submission(
                 child_session_id,
                 resume_message,
                 self.resolve_runtime_config_for_session(child_session_id)
                     .await?,
-                astrcode_core::AgentEventContext::from(&reused_handle),
+                astrcode_session_runtime::AgentPromptSubmission {
+                    agent: astrcode_core::AgentEventContext::from(&reused_handle),
+                    capability_router: Some(scoped_router),
+                    resolved_limits: Some(reused_handle.resolved_limits.clone()),
+                    source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
+                },
             )
             .await
         {
@@ -697,6 +725,7 @@ mod tests {
                     description: "检查 crates".to_string(),
                     prompt: "请检查 crates 目录".to_string(),
                     context: None,
+                    capability_grant: None,
                 },
                 &parent_ctx,
             )
@@ -956,6 +985,7 @@ mod tests {
                     description: "进一步检查".to_string(),
                     prompt: "请进一步检查测试覆盖".to_string(),
                     context: None,
+                    capability_grant: None,
                 },
                 &child_ctx,
             )

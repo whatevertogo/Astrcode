@@ -35,6 +35,25 @@ impl KernelGateway {
         &self.capabilities
     }
 
+    pub fn with_capabilities(&self, capabilities: CapabilityRouter) -> Self {
+        Self {
+            llm: Arc::clone(&self.llm),
+            prompt: Arc::clone(&self.prompt),
+            resource: Arc::clone(&self.resource),
+            capabilities,
+        }
+    }
+
+    pub fn subset_for_tools_checked(
+        &self,
+        allowed_tool_names: &[String],
+    ) -> Result<Self, KernelError> {
+        let capabilities = self
+            .capabilities
+            .subset_for_tools_checked(allowed_tool_names)?;
+        Ok(self.with_capabilities(capabilities))
+    }
+
     pub fn model_limits(&self) -> astrcode_core::ModelLimits {
         self.llm.model_limits()
     }

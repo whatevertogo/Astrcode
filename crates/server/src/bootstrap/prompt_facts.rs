@@ -84,6 +84,7 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
             .await
             .prompt_declarations
             .into_iter()
+            .filter(|declaration| prompt_declaration_is_visible(request, declaration))
             .map(convert_prompt_declaration)
             .collect();
 
@@ -198,5 +199,85 @@ fn convert_prompt_declaration(
         },
         capability_name: declaration.capability_name,
         origin: declaration.origin,
+    }
+}
+
+fn prompt_declaration_is_visible(
+    request: &PromptFactsRequest,
+    declaration: &astrcode_adapter_prompt::PromptDeclaration,
+) -> bool {
+    declaration
+        .capability_name
+        .as_ref()
+        .is_none_or(|capability_name| {
+            request
+                .allowed_capability_names
+                .iter()
+                .any(|allowed| allowed == capability_name)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use astrcode_adapter_prompt::{
+        PromptDeclaration as AdapterPromptDeclaration, PromptDeclarationKind,
+        PromptDeclarationRenderTarget, PromptDeclarationSource, PromptLayer,
+    };
+    use astrcode_core::PromptFactsRequest;
+
+    use super::prompt_declaration_is_visible;
+
+    fn declaration(capability_name: Option<&str>) -> AdapterPromptDeclaration {
+        AdapterPromptDeclaration {
+            block_id: "tool-guide".to_string(),
+            title: "Tool Guide".to_string(),
+            content: "only visible for allowed capabilities".to_string(),
+            render_target: PromptDeclarationRenderTarget::System,
+            layer: PromptLayer::Dynamic,
+            kind: PromptDeclarationKind::ToolGuide,
+            priority_hint: None,
+            always_include: false,
+            source: PromptDeclarationSource::Mcp,
+            capability_name: capability_name.map(ToString::to_string),
+            origin: Some("test".to_string()),
+        }
+    }
+
+    fn request(allowed_capability_names: &[&str]) -> PromptFactsRequest {
+        PromptFactsRequest {
+            session_id: None,
+            turn_id: None,
+            working_dir: PathBuf::from("."),
+            allowed_capability_names: allowed_capability_names
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn prompt_declaration_visibility_keeps_capabilityless_declarations() {
+        assert!(prompt_declaration_is_visible(
+            &request(&[]),
+            &declaration(None)
+        ));
+    }
+
+    #[test]
+    fn prompt_declaration_visibility_filters_out_ungranted_capabilities() {
+        assert!(!prompt_declaration_is_visible(
+            &request(&["readFile"]),
+            &declaration(Some("spawn"))
+        ));
+    }
+
+    #[test]
+    fn prompt_declaration_visibility_keeps_granted_capabilities() {
+        assert!(prompt_declaration_is_visible(
+            &request(&["spawn"]),
+            &declaration(Some("spawn"))
+        ));
     }
 }

@@ -25,8 +25,8 @@ use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
     AgentCollaborationPolicyContext, AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope,
     AgentTurnOutcome, ArtifactRef, CloseAgentParams, CollaborationResult, InvocationKind,
-    ObserveParams, Result, RuntimeMetricsRecorder, SendAgentParams, SpawnAgentParams, SubRunHandle,
-    SubRunHandoff, SubRunResult, ToolContext,
+    ObserveParams, ResolvedExecutionLimitsSnapshot, Result, RuntimeMetricsRecorder,
+    SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff, SubRunResult, ToolContext,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -226,6 +226,68 @@ pub(crate) fn implicit_session_root_agent_id(session_id: &str) -> String {
         "root-agent:{}",
         astrcode_session_runtime::normalize_session_id(session_id)
     )
+}
+
+fn default_resolved_limits_for_gateway(
+    gateway: &astrcode_kernel::KernelGateway,
+    max_steps: Option<u32>,
+) -> ResolvedExecutionLimitsSnapshot {
+    ResolvedExecutionLimitsSnapshot {
+        allowed_tools: gateway.capabilities().tool_names(),
+        max_steps,
+    }
+}
+
+fn effective_tool_names_for_handle(
+    handle: &SubRunHandle,
+    gateway: &astrcode_kernel::KernelGateway,
+) -> Vec<String> {
+    if handle.resolved_limits.allowed_tools.is_empty() {
+        gateway.capabilities().tool_names()
+    } else {
+        handle.resolved_limits.allowed_tools.clone()
+    }
+}
+
+pub(crate) async fn persist_resolved_limits_for_handle(
+    kernel: &Kernel,
+    handle: SubRunHandle,
+    resolved_limits: ResolvedExecutionLimitsSnapshot,
+) -> std::result::Result<SubRunHandle, String> {
+    if kernel
+        .agent()
+        .set_resolved_limits(&handle.agent_id, resolved_limits.clone())
+        .await
+        .is_none()
+    {
+        return Err(format!(
+            "failed to persist resolved limits for agent '{}' because the control handle \
+             disappeared before the limits snapshot was recorded",
+            handle.agent_id
+        ));
+    }
+
+    let mut handle = handle;
+    handle.resolved_limits = resolved_limits;
+    Ok(handle)
+}
+
+async fn ensure_handle_has_resolved_limits(
+    kernel: &Kernel,
+    gateway: &astrcode_kernel::KernelGateway,
+    handle: SubRunHandle,
+    max_steps: Option<u32>,
+) -> std::result::Result<SubRunHandle, String> {
+    if !handle.resolved_limits.allowed_tools.is_empty() {
+        return Ok(handle);
+    }
+
+    persist_resolved_limits_for_handle(
+        kernel,
+        handle,
+        default_resolved_limits_for_gateway(gateway, max_steps),
+    )
+    .await
 }
 
 pub(crate) fn child_delivery_mailbox_envelope(
@@ -667,6 +729,16 @@ impl AgentOrchestrationService {
 
         if let Some(agent_id) = explicit_agent_id {
             if let Some(handle) = self.kernel.agent().get_handle(&agent_id).await {
+                if handle.depth == 0 && handle.resolved_limits.allowed_tools.is_empty() {
+                    return ensure_handle_has_resolved_limits(
+                        self.kernel.as_ref(),
+                        self.kernel.gateway(),
+                        handle,
+                        None,
+                    )
+                    .await
+                    .map_err(AgentOrchestrationError::Internal);
+                }
                 return Ok(handle);
             }
 
@@ -681,7 +753,7 @@ impl AgentOrchestrationService {
                     .clone()
                     .filter(|profile_id| !profile_id.trim().is_empty())
                     .unwrap_or_else(|| IMPLICIT_ROOT_PROFILE_ID.to_string());
-                return self
+                let handle = self
                     .kernel
                     .agent()
                     .register_root_agent(agent_id, session_id, profile_id)
@@ -690,7 +762,15 @@ impl AgentOrchestrationService {
                         AgentOrchestrationError::Internal(format!(
                             "failed to register root agent for parent context: {error}"
                         ))
-                    });
+                    })?;
+                return ensure_handle_has_resolved_limits(
+                    self.kernel.as_ref(),
+                    self.kernel.gateway(),
+                    handle,
+                    None,
+                )
+                .await
+                .map_err(AgentOrchestrationError::Internal);
             }
 
             return Err(AgentOrchestrationError::NotFound(format!(
@@ -705,10 +785,18 @@ impl AgentOrchestrationService {
             .find_root_handle_for_session(&session_id)
             .await
         {
-            return Ok(handle);
+            return ensure_handle_has_resolved_limits(
+                self.kernel.as_ref(),
+                self.kernel.gateway(),
+                handle,
+                None,
+            )
+            .await
+            .map_err(AgentOrchestrationError::Internal);
         }
 
-        self.kernel
+        let handle = self
+            .kernel
             .agent()
             .register_root_agent(
                 implicit_session_root_agent_id(&session_id),
@@ -720,7 +808,10 @@ impl AgentOrchestrationService {
                 AgentOrchestrationError::Internal(format!(
                     "failed to register implicit root agent for session parent context: {error}"
                 ))
-            })
+            })?;
+        ensure_handle_has_resolved_limits(self.kernel.as_ref(), self.kernel.gateway(), handle, None)
+            .await
+            .map_err(AgentOrchestrationError::Internal)
     }
 
     async fn enforce_spawn_budget_for_turn(
@@ -785,6 +876,12 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             profile,
             task: params.prompt,
             context: params.context,
+            parent_allowed_tools: effective_tool_names_for_handle(
+                &parent_handle,
+                self.kernel.gateway(),
+            ),
+            capability_grant: params.capability_grant,
+            source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
         };
         if let Err(error) = self
             .enforce_spawn_budget_for_turn(
@@ -1075,6 +1172,7 @@ mod tests {
                     description: "仓库审查".to_string(),
                     prompt: "请阅读代码".to_string(),
                     context: None,
+                    capability_grant: None,
                 },
                 &ctx,
             )
@@ -1140,6 +1238,7 @@ mod tests {
                     description: "仓库审查".to_string(),
                     prompt: "请阅读代码".to_string(),
                     context: Some("关注最近修改".to_string()),
+                    capability_grant: None,
                 },
                 &ctx,
             )
@@ -1254,6 +1353,7 @@ mod tests {
                     description: "第一次".to_string(),
                     prompt: "请阅读代码".to_string(),
                     context: None,
+                    capability_grant: None,
                 },
                 &ctx,
             )
@@ -1268,6 +1368,7 @@ mod tests {
                     description: "第二次".to_string(),
                     prompt: "请继续阅读代码".to_string(),
                     context: None,
+                    capability_grant: None,
                 },
                 &ctx,
             )

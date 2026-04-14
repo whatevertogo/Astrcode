@@ -338,7 +338,7 @@ fn to_subrun_outcome_dto(
         Some(astrcode_core::AgentTurnOutcome::Cancelled) => SubRunOutcomeDto::Aborted,
         Some(astrcode_core::AgentTurnOutcome::TokenExceeded) => SubRunOutcomeDto::TokenExceeded,
         None => match lifecycle {
-            astrcode_core::AgentLifecycleStatus::Terminated => SubRunOutcomeDto::Running,
+            astrcode_core::AgentLifecycleStatus::Terminated => SubRunOutcomeDto::Aborted,
             _ => SubRunOutcomeDto::Running,
         },
     }

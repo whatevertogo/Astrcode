@@ -16,6 +16,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AstrError, Result};
 
+/// 归一化一个非空白、无重复的字符串列表，并保留首次出现顺序。
+pub fn normalize_non_empty_unique_string_list(
+    values: &[String],
+    field: &str,
+) -> Result<Vec<String>> {
+    let mut normalized = Vec::with_capacity(values.len());
+    let mut seen = std::collections::BTreeSet::new();
+
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(AstrError::Validation(format!("{field} 不能包含空字符串")));
+        }
+        if !seen.insert(trimmed.to_string()) {
+            return Err(AstrError::Validation(format!(
+                "{field} 不能包含重复项: {trimmed}"
+            )));
+        }
+        normalized.push(trimmed.to_string());
+    }
+
+    Ok(normalized)
+}
+
 /// Agent 可见模式。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +86,37 @@ pub enum ForkMode {
 /// 避免 `runtime-execution` 只为了复用字段定义而反向依赖 `runtime-agent-tool`。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct SpawnCapabilityGrant {
+    /// 本次 child 允许使用的 tool capability names。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+}
+
+impl SpawnCapabilityGrant {
+    pub fn validate(&self) -> Result<()> {
+        let normalized = normalize_non_empty_unique_string_list(
+            &self.allowed_tools,
+            "capabilityGrant.allowedTools",
+        )?;
+        if normalized.is_empty() {
+            return Err(AstrError::Validation(
+                "capabilityGrant.allowedTools 不能为空".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn normalized_allowed_tools(&self) -> Result<Vec<String>> {
+        normalize_non_empty_unique_string_list(&self.allowed_tools, "capabilityGrant.allowedTools")
+    }
+}
+
+/// `spawn` 的稳定调用参数。
+///
+/// 该 DTO 下沉到 core，是为了让工具层和执行装配层共享同一份参数语义，
+/// 避免 `runtime-execution` 只为了复用字段定义而反向依赖 `runtime-agent-tool`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SpawnAgentParams {
     /// Agent profile 标识。留空默认 "explore"。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,6 +131,10 @@ pub struct SpawnAgentParams {
     /// 可选补充材料。不保证完整历史，只是附加信息。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+
+    /// 本次任务级 capability grant。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_grant: Option<SpawnCapabilityGrant>,
 }
 
 impl SpawnAgentParams {
@@ -92,6 +151,9 @@ impl SpawnAgentParams {
             return Err(AstrError::Validation(
                 "description 不能为纯空白".to_string(),
             ));
+        }
+        if let Some(grant) = &self.capability_grant {
+            grant.validate()?;
         }
         Ok(())
     }
@@ -347,6 +409,9 @@ pub struct SubRunHandle {
     /// 最近一轮执行的结束原因。Running/Pending 期间为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_turn_outcome: Option<lifecycle::AgentTurnOutcome>,
+    /// 当前 agent 执行实例生效的 capability 限制快照。
+    #[serde(default)]
+    pub resolved_limits: ResolvedExecutionLimitsSnapshot,
 }
 
 /// 子会话 lineage 来源。
@@ -871,7 +936,7 @@ impl From<&SubRunHandle> for AgentEventContext {
 mod tests {
     use super::{
         AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionStatusSource,
-        SpawnAgentParams, SubRunStorageMode,
+        SpawnAgentParams, SpawnCapabilityGrant, SubRunStorageMode,
     };
 
     #[test]
@@ -881,6 +946,7 @@ mod tests {
             description: "review".to_string(),
             prompt: "   ".to_string(),
             context: None,
+            capability_grant: None,
         }
         .validate()
         .expect_err("blank prompt should be rejected");
@@ -895,6 +961,7 @@ mod tests {
             description: " \t ".to_string(),
             prompt: "review".to_string(),
             context: None,
+            capability_grant: None,
         }
         .validate()
         .expect_err("whitespace-only description should be rejected");
@@ -926,6 +993,30 @@ mod tests {
         assert_eq!(child_ref.sub_run_id, "subrun-1");
         assert_eq!(child_ref.open_session_id, "session-child");
         assert_eq!(child_ref.parent_agent_id.as_deref(), Some("agent-parent"));
+    }
+
+    #[test]
+    fn spawn_capability_grant_rejects_blank_and_duplicate_tools() {
+        let error = SpawnCapabilityGrant {
+            allowed_tools: vec!["readFile".to_string(), "  ".to_string()],
+        }
+        .validate()
+        .expect_err("blank tool names should be rejected");
+        assert!(error.to_string().contains("allowedTools"));
+
+        let error = SpawnCapabilityGrant {
+            allowed_tools: vec!["readFile".to_string(), "readFile".to_string()],
+        }
+        .validate()
+        .expect_err("duplicate tool names should be rejected");
+        assert!(error.to_string().contains("重复"));
+
+        let error = SpawnCapabilityGrant {
+            allowed_tools: Vec::new(),
+        }
+        .validate()
+        .expect_err("empty grants should be rejected");
+        assert!(error.to_string().contains("不能为空"));
     }
 
     #[test]

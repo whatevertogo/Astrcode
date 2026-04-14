@@ -119,7 +119,10 @@ impl AgentOrchestrationService {
                 wake_prompt,
                 self.resolve_runtime_config_for_session(&parent_session_id)
                     .await?,
-                wake_agent.clone(),
+                astrcode_session_runtime::AgentPromptSubmission {
+                    agent: wake_agent.clone(),
+                    ..Default::default()
+                },
             )
             .await
         {

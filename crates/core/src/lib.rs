@@ -60,8 +60,8 @@ pub use agent::{
     ChildSessionNode, ChildSessionNotification, ChildSessionNotificationKind,
     ChildSessionStatusSource, CloseAgentParams, CollaborationResult, CollaborationResultKind,
     ForkMode, InboxEnvelopeKind, InvocationKind, LineageSnapshot, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SendAgentParams, SpawnAgentParams, SubRunFailure,
-    SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
+    ResolvedSubagentContextOverrides, SendAgentParams, SpawnAgentParams, SpawnCapabilityGrant,
+    SubRunFailure, SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
     SubagentContextOverrides,
     executor::{CollaborationExecutor, SubAgentExecutor},
     lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
@@ -70,6 +70,7 @@ pub use agent::{
         MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxProjection,
         MailboxQueuedPayload, ObserveAgentResult, ObserveParams, SendParams,
     },
+    normalize_non_empty_unique_string_list,
 };
 pub use cancel::CancelToken;
 pub use capability::{

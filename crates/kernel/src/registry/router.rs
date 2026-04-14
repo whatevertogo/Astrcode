@@ -236,11 +236,26 @@ impl CapabilityRouter {
     }
 
     pub fn subset_for_tools(&self, allowed_tool_names: &[String]) -> Result<Self> {
+        self.subset_for_tools_checked(allowed_tool_names)
+    }
+
+    pub fn subset_for_tools_checked(&self, allowed_tool_names: &[String]) -> Result<Self> {
         let allowed = allowed_tool_names
             .iter()
             .map(|name| name.as_str())
             .collect::<HashSet<_>>();
         support::with_read_lock_recovery(&self.inner, "capability_router", |inner| {
+            let unknown = allowed_tool_names
+                .iter()
+                .filter(|name| !inner.tool_order.iter().any(|candidate| candidate == *name))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !unknown.is_empty() {
+                return Err(AstrError::Validation(format!(
+                    "unknown tool capabilities in grant: {}",
+                    unknown.join(", ")
+                )));
+            }
             let mut builder = CapabilityRouter::builder();
 
             for name in &inner.order {

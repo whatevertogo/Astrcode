@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use astrcode_core::{
     AgentLifecycleStatus, AgentTurnOutcome, ArtifactRef, CancelToken, ChildAgentRef,
     ChildSessionLineageKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
-    ObserveParams, SendAgentParams, SpawnAgentParams, SubRunFailure, SubRunFailureCode,
-    SubRunHandoff, SubRunResult, Tool, ToolContext,
+    ObserveParams, SendAgentParams, SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure,
+    SubRunFailureCode, SubRunHandoff, SubRunResult, Tool, ToolContext,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -61,7 +61,10 @@ async fn spawn_agent_tool_parses_params_and_returns_summary() {
                 "type": "explore",
                 "description": "inspect changes",
                 "prompt": "inspect changes",
-                "context": "focus on tests"
+                "context": "focus on tests",
+                "capabilityGrant": {
+                    "allowedTools": ["grep", "readFile"]
+                }
             }),
             &tool_context(),
         )
@@ -73,6 +76,12 @@ async fn spawn_agent_tool_parses_params_and_returns_summary() {
     let calls = executor.calls.lock().expect("calls lock");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].r#type, Some("explore".to_string()));
+    assert_eq!(
+        calls[0].capability_grant,
+        Some(SpawnCapabilityGrant {
+            allowed_tools: vec!["grep".to_string(), "readFile".to_string()],
+        })
+    );
     assert_eq!(
         result
             .metadata
@@ -141,6 +150,7 @@ fn spawn_tool_exposes_prompt_metadata_for_tool_summary_indexing() {
     assert!(prompt.summary.contains("isolated context"));
     assert!(prompt.guide.contains("Start with one child"));
     assert!(prompt.guide.contains("`agentId`"));
+    assert!(prompt.guide.contains("`capabilityGrant`"));
 }
 
 #[test]
