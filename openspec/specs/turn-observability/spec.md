@@ -1,10 +1,12 @@
 ## Purpose
 
 统一 turn 级 observability 的稳定汇总输出，减少治理端对原始事件流重建的依赖。
+
 ## Requirements
+
 ### Requirement: turn 执行形成稳定的 observability 汇总
 
-`session-runtime` SHALL 为每个 turn 产生稳定的执行汇总结果，至少覆盖耗时、continuation 次数、prompt cache reuse 和 compaction 命中情况，并将这些结果汇入运行时 observability 管线。
+`session-runtime` SHALL 为每个 turn 产生稳定的执行汇总结果，至少覆盖耗时、continuation 次数、prompt cache reuse、compaction 命中情况以及 agent collaboration summary，并将这些结果汇入运行时 observability 管线。
 
 #### Scenario: turn 成功完成时生成汇总
 
@@ -19,9 +21,15 @@
 - **AND** 汇总中体现失败或取消状态
 - **AND** 失败结果 SHALL 汇入运行时 observability
 
+#### Scenario: turn includes child collaboration
+
+- **WHEN** 某轮 turn 内发生 `spawn`、`send`、`observe`、`close`、delivery 消费或 child reuse
+- **THEN** turn 汇总 SHALL 包含 collaboration summary
+- **AND** 该 summary SHALL 至少覆盖动作计数、拒绝/失败情况和关键延迟或等价效率信息
+
 ### Requirement: 原始事件与聚合结果职责分离
 
-`PromptMetrics`、`CompactApplied` 等事件 SHALL 继续作为原始事实源，但治理和诊断读取 SHALL 使用聚合后的稳定结果，而不是重复扫描整条事件流。
+`PromptMetrics`、`CompactApplied` 以及 agent collaboration facts 等事件 SHALL 继续作为原始事实源，但治理和诊断读取 SHALL 使用聚合后的稳定结果，而不是重复扫描整条事件流。
 
 #### Scenario: cache reuse 由原始事件汇入稳定结果
 
@@ -35,3 +43,8 @@
 - **THEN** turn 汇总反映该次 compact 命中信息
 - **AND** 治理读取 SHALL 基于聚合结果而不是临时重扫事件流
 
+#### Scenario: collaboration facts 由原始事件汇入稳定结果
+
+- **WHEN** turn 期间产生 agent collaboration facts
+- **THEN** turn 汇总 SHALL 基于这些事实生成 collaboration summary
+- **AND** 治理读取 SHALL 基于该 summary 而不是直接重扫原始协作事件
