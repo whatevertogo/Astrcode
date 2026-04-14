@@ -5,11 +5,11 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AgentId, AgentLifecycleStatus, ChildSessionNotification,
-    DeleteProjectResult, EventStore, EventTranslator, LlmMessage, MailboxBatchAckedPayload,
-    MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload, Phase,
-    PromptFactsProvider, Result, RuntimeMetricsRecorder, SessionId, SessionMeta, StorageEvent,
-    StorageEventPayload, StoredEvent, event::generate_session_id,
+    AgentCollaborationFact, AgentEventContext, AgentId, AgentLifecycleStatus,
+    ChildSessionNotification, DeleteProjectResult, EventStore, EventTranslator, LlmMessage,
+    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
+    MailboxQueuedPayload, Phase, PromptFactsProvider, Result, RuntimeMetricsRecorder, SessionId,
+    SessionMeta, StorageEvent, StorageEventPayload, StoredEvent, event::generate_session_id,
 };
 use astrcode_kernel::{Kernel, PendingParentDelivery};
 use chrono::Utc;
@@ -48,7 +48,8 @@ pub use state::{
     should_record_compaction_tail_event,
 };
 pub use turn::{
-    TurnFinishReason, TurnOutcome, TurnRunRequest, TurnRunResult, TurnSummary, run_turn,
+    TurnCollaborationSummary, TurnFinishReason, TurnOutcome, TurnRunRequest, TurnRunResult,
+    TurnSummary, run_turn,
 };
 
 const ROOT_AGENT_ID: &str = "root-agent";
@@ -397,6 +398,32 @@ impl SessionRuntime {
                 agent,
                 payload: StorageEventPayload::ChildSessionNotification {
                     notification,
+                    timestamp: Some(Utc::now()),
+                },
+            },
+            &mut translator,
+        )
+        .await
+    }
+
+    /// 向指定 session 追加 agent collaboration durable 事实。
+    pub async fn append_agent_collaboration_fact(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        agent: AgentEventContext,
+        fact: AgentCollaborationFact,
+    ) -> Result<StoredEvent> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let session_state = self.get_session_state(&session_id).await?;
+        let mut translator = EventTranslator::new(session_state.current_phase()?);
+        append_and_broadcast(
+            &session_state,
+            &StorageEvent {
+                turn_id: Some(turn_id.to_string()),
+                agent,
+                payload: StorageEventPayload::AgentCollaborationFact {
+                    fact,
                     timestamp: Some(Utc::now()),
                 },
             },

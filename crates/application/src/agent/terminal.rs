@@ -1,13 +1,14 @@
 use std::time::Instant;
 
 use astrcode_core::{
-    AgentLifecycleStatus, AgentTurnOutcome, ChildAgentRef, ChildSessionLineageKind,
-    ChildSessionNotification, ChildSessionNotificationKind, SubRunFailure, SubRunFailureCode,
-    SubRunHandoff, SubRunResult,
+    AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
+    AgentTurnOutcome, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
+    ChildSessionNotificationKind, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
 };
 
 use super::{
-    AgentOrchestrationError, AgentOrchestrationService, subrun_event_context_for_parent_turn,
+    AgentOrchestrationError, AgentOrchestrationService, CollaborationFactRecord,
+    subrun_event_context_for_parent_turn,
 };
 
 struct ChildTerminalDeliveryProjection {
@@ -146,6 +147,28 @@ impl AgentOrchestrationService {
             &notification,
         )
         .await?;
+        let runtime = self
+            .resolve_runtime_config_for_session(&watch.parent_session_id)
+            .await
+            .unwrap_or_default();
+        let _ = self
+            .record_collaboration_fact(
+                &runtime,
+                CollaborationFactRecord {
+                    action: AgentCollaborationActionKind::Delivery,
+                    outcome: AgentCollaborationOutcomeKind::Delivered,
+                    session_id: &watch.parent_session_id,
+                    turn_id: &watch.parent_turn_id,
+                    parent_agent_id: watch.child.parent_agent_id.clone(),
+                    child: Some(&watch.child),
+                    delivery_id: Some(notification.notification_id.clone()),
+                    reason_code: None,
+                    summary: Some(notification.summary.clone()),
+                    latency_ms: None,
+                    source_tool_call_id: notification.source_tool_call_id.clone(),
+                },
+            )
+            .await;
         self.reactivate_parent_agent_if_idle(
             &watch.parent_session_id,
             &watch.parent_turn_id,

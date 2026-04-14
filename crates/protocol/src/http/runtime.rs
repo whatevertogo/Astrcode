@@ -74,6 +74,8 @@ pub struct RuntimeMetricsDto {
     pub subrun_execution: SubRunExecutionMetricsDto,
     /// delivery / lineage / cache 诊断指标
     pub execution_diagnostics: ExecutionDiagnosticsDto,
+    /// agent-tool 协作效果评估读模型
+    pub agent_collaboration: AgentCollaborationScorecardDto,
 }
 
 /// 子执行域共享观测指标。
@@ -115,6 +117,33 @@ pub struct ExecutionDiagnosticsDto {
     pub delivery_buffer_wake_requested: u64,
     pub delivery_buffer_wake_succeeded: u64,
     pub delivery_buffer_wake_failed: u64,
+}
+
+/// agent-tool 协作效果评估 DTO。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCollaborationScorecardDto {
+    pub total_facts: u64,
+    pub spawn_accepted: u64,
+    pub spawn_rejected: u64,
+    pub send_reused: u64,
+    pub send_queued: u64,
+    pub send_rejected: u64,
+    pub observe_calls: u64,
+    pub observe_rejected: u64,
+    pub observe_followed_by_action: u64,
+    pub close_calls: u64,
+    pub close_rejected: u64,
+    pub delivery_delivered: u64,
+    pub delivery_consumed: u64,
+    pub delivery_replayed: u64,
+    pub orphan_child_count: u64,
+    pub child_reuse_ratio_bps: Option<u64>,
+    pub observe_to_action_ratio_bps: Option<u64>,
+    pub spawn_to_delivery_ratio_bps: Option<u64>,
+    pub orphan_child_ratio_bps: Option<u64>,
+    pub avg_delivery_latency_ms: Option<u64>,
+    pub max_delivery_latency_ms: Option<u64>,
 }
 
 /// 插件运行时状态。

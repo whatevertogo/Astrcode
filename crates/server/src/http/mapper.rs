@@ -20,11 +20,11 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_application::{
-    ApplicationError, ComposerOption, ComposerOptionKind, ExecutionDiagnosticsSnapshot,
-    GovernanceSnapshot, OperationMetricsSnapshot, ReplayMetricsSnapshot,
-    RuntimeObservabilitySnapshot, SessionCatalogEvent, SubRunExecutionMetricsSnapshot,
-    is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
-    resolve_current_model as resolve_runtime_current_model,
+    AgentCollaborationScorecardSnapshot, ApplicationError, ComposerOption, ComposerOptionKind,
+    ExecutionDiagnosticsSnapshot, GovernanceSnapshot, OperationMetricsSnapshot,
+    ReplayMetricsSnapshot, RuntimeObservabilitySnapshot, SessionCatalogEvent,
+    SubRunExecutionMetricsSnapshot, is_env_var_name, list_model_options as resolve_model_options,
+    resolve_active_selection, resolve_current_model as resolve_runtime_current_model,
 };
 use astrcode_core::{
     AgentEvent, AgentEventContext, ArtifactRef, CapabilitySpec, Config, ForkMode, InvocationMode,
@@ -33,19 +33,31 @@ use astrcode_core::{
     SubRunFailureCode, SubRunHandoff, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
     format_local_rfc3339, plugin::PluginEntry,
 };
+#[cfg(feature = "debug-workbench")]
+use astrcode_debug_workbench::{
+    DebugAgentNodeKind, RuntimeDebugOverview, RuntimeDebugTimeline, RuntimeDebugTimelineSample,
+    SessionDebugAgentNode, SessionDebugAgents, SessionDebugTrace, SessionDebugTraceItem,
+    SessionDebugTraceItemKind,
+};
 use astrcode_protocol::http::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentLifecycleDto, AgentProfileDto,
-    ArtifactRefDto, ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationKindDto,
-    CompactTriggerDto, ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
-    ConfigView, CurrentModelInfoDto, ExecutionDiagnosticsDto, ForkModeDto, InvocationKindDto,
-    MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto, ModelOptionDto, OperationMetricsDto,
-    PROTOCOL_VERSION, PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView,
-    ReplayMetricsDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
-    RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
-    SubRunExecutionMetricsDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-    SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto, SubagentContextOverridesDto,
-    ToolCallResultDto, ToolOutputStreamDto,
+    AgentCollaborationScorecardDto, AgentContextDto, AgentEventEnvelope, AgentEventPayload,
+    AgentLifecycleDto, AgentProfileDto, ArtifactRefDto, ChildAgentRefDto,
+    ChildSessionLineageKindDto, ChildSessionNotificationKindDto, CompactTriggerDto,
+    ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView,
+    CurrentModelInfoDto, ExecutionDiagnosticsDto, ForkModeDto, InvocationKindDto, MailboxBatchDto,
+    MailboxDiscardedDto, MailboxQueuedDto, ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION,
+    PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto,
+    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto,
+    RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
+    SessionCatalogEventPayload, SessionListItem, SubRunExecutionMetricsDto, SubRunFailureCodeDto,
+    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
+    SubagentContextOverridesDto, ToolCallResultDto, ToolOutputStreamDto,
+};
+#[cfg(feature = "debug-workbench")]
+use astrcode_protocol::http::{
+    AgentTurnOutcomeDto, DebugAgentNodeKindDto, RuntimeDebugOverviewDto, RuntimeDebugTimelineDto,
+    RuntimeDebugTimelineSampleDto, SessionDebugAgentNodeDto, SessionDebugAgentsDto,
+    SessionDebugTraceDto, SessionDebugTraceItemDto, SessionDebugTraceItemKindDto,
 };
 use axum::{http::StatusCode, response::sse::Event};
 
@@ -513,13 +525,68 @@ fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
 ///
 /// 包含三个维度的指标：会话重连（session_rehydrate）、
 /// SSE 追赶（sse_catch_up）、轮次执行（turn_execution）和子执行域观测（subrun_execution）。
-fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetricsDto {
+pub(crate) fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetricsDto {
     RuntimeMetricsDto {
         session_rehydrate: to_operation_metrics_dto(snapshot.session_rehydrate),
         sse_catch_up: to_replay_metrics_dto(snapshot.sse_catch_up),
         turn_execution: to_operation_metrics_dto(snapshot.turn_execution),
         subrun_execution: to_subrun_execution_metrics_dto(snapshot.subrun_execution),
         execution_diagnostics: to_execution_diagnostics_dto(snapshot.execution_diagnostics),
+        agent_collaboration: to_agent_collaboration_scorecard_dto(snapshot.agent_collaboration),
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+pub(crate) fn to_runtime_debug_overview_dto(
+    overview: RuntimeDebugOverview,
+) -> RuntimeDebugOverviewDto {
+    RuntimeDebugOverviewDto {
+        collected_at: format_local_rfc3339(overview.collected_at),
+        spawn_rejection_ratio_bps: overview.spawn_rejection_ratio_bps,
+        metrics: to_runtime_metrics_dto(overview.metrics),
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+pub(crate) fn to_runtime_debug_timeline_dto(
+    timeline: RuntimeDebugTimeline,
+) -> RuntimeDebugTimelineDto {
+    RuntimeDebugTimelineDto {
+        window_started_at: format_local_rfc3339(timeline.window_started_at),
+        window_ended_at: format_local_rfc3339(timeline.window_ended_at),
+        samples: timeline
+            .samples
+            .into_iter()
+            .map(to_runtime_debug_timeline_sample_dto)
+            .collect(),
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+pub(crate) fn to_session_debug_trace_dto(trace: SessionDebugTrace) -> SessionDebugTraceDto {
+    SessionDebugTraceDto {
+        session_id: trace.session_id,
+        title: trace.title,
+        phase: to_phase_dto(trace.phase),
+        parent_session_id: trace.parent_session_id,
+        items: trace
+            .items
+            .into_iter()
+            .map(to_session_debug_trace_item_dto)
+            .collect(),
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+pub(crate) fn to_session_debug_agents_dto(agents: SessionDebugAgents) -> SessionDebugAgentsDto {
+    SessionDebugAgentsDto {
+        session_id: agents.session_id,
+        title: agents.title,
+        nodes: agents
+            .nodes
+            .into_iter()
+            .map(to_session_debug_agent_node_dto)
+            .collect(),
     }
 }
 
@@ -588,6 +655,138 @@ fn to_execution_diagnostics_dto(snapshot: ExecutionDiagnosticsSnapshot) -> Execu
         delivery_buffer_wake_requested: snapshot.delivery_buffer_wake_requested,
         delivery_buffer_wake_succeeded: snapshot.delivery_buffer_wake_succeeded,
         delivery_buffer_wake_failed: snapshot.delivery_buffer_wake_failed,
+    }
+}
+
+fn to_agent_collaboration_scorecard_dto(
+    snapshot: AgentCollaborationScorecardSnapshot,
+) -> AgentCollaborationScorecardDto {
+    AgentCollaborationScorecardDto {
+        total_facts: snapshot.total_facts,
+        spawn_accepted: snapshot.spawn_accepted,
+        spawn_rejected: snapshot.spawn_rejected,
+        send_reused: snapshot.send_reused,
+        send_queued: snapshot.send_queued,
+        send_rejected: snapshot.send_rejected,
+        observe_calls: snapshot.observe_calls,
+        observe_rejected: snapshot.observe_rejected,
+        observe_followed_by_action: snapshot.observe_followed_by_action,
+        close_calls: snapshot.close_calls,
+        close_rejected: snapshot.close_rejected,
+        delivery_delivered: snapshot.delivery_delivered,
+        delivery_consumed: snapshot.delivery_consumed,
+        delivery_replayed: snapshot.delivery_replayed,
+        orphan_child_count: snapshot.orphan_child_count,
+        child_reuse_ratio_bps: snapshot.child_reuse_ratio_bps,
+        observe_to_action_ratio_bps: snapshot.observe_to_action_ratio_bps,
+        spawn_to_delivery_ratio_bps: snapshot.spawn_to_delivery_ratio_bps,
+        orphan_child_ratio_bps: snapshot.orphan_child_ratio_bps,
+        avg_delivery_latency_ms: snapshot.avg_delivery_latency_ms,
+        max_delivery_latency_ms: snapshot.max_delivery_latency_ms,
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+fn to_runtime_debug_timeline_sample_dto(
+    sample: RuntimeDebugTimelineSample,
+) -> RuntimeDebugTimelineSampleDto {
+    RuntimeDebugTimelineSampleDto {
+        collected_at: format_local_rfc3339(sample.collected_at),
+        spawn_rejection_ratio_bps: sample.spawn_rejection_ratio_bps,
+        observe_to_action_ratio_bps: sample.observe_to_action_ratio_bps,
+        child_reuse_ratio_bps: sample.child_reuse_ratio_bps,
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+fn to_session_debug_trace_item_dto(item: SessionDebugTraceItem) -> SessionDebugTraceItemDto {
+    SessionDebugTraceItemDto {
+        id: item.id,
+        storage_seq: item.storage_seq,
+        turn_id: item.turn_id,
+        recorded_at: item.recorded_at.map(format_local_rfc3339),
+        kind: to_session_debug_trace_item_kind_dto(item.kind),
+        title: item.title,
+        summary: item.summary,
+        agent_id: item.agent_id,
+        sub_run_id: item.sub_run_id,
+        child_agent_id: item.child_agent_id,
+        delivery_id: item.delivery_id,
+        tool_call_id: item.tool_call_id,
+        tool_name: item.tool_name,
+        lifecycle: item.lifecycle.map(to_agent_lifecycle_dto),
+        last_turn_outcome: item.last_turn_outcome.map(to_agent_turn_outcome_dto),
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+fn to_session_debug_trace_item_kind_dto(
+    kind: SessionDebugTraceItemKind,
+) -> SessionDebugTraceItemKindDto {
+    match kind {
+        SessionDebugTraceItemKind::ToolCall => SessionDebugTraceItemKindDto::ToolCall,
+        SessionDebugTraceItemKind::ToolResult => SessionDebugTraceItemKindDto::ToolResult,
+        SessionDebugTraceItemKind::PromptMetrics => SessionDebugTraceItemKindDto::PromptMetrics,
+        SessionDebugTraceItemKind::SubRunStarted => SessionDebugTraceItemKindDto::SubRunStarted,
+        SessionDebugTraceItemKind::SubRunFinished => SessionDebugTraceItemKindDto::SubRunFinished,
+        SessionDebugTraceItemKind::ChildNotification => {
+            SessionDebugTraceItemKindDto::ChildNotification
+        },
+        SessionDebugTraceItemKind::CollaborationFact => {
+            SessionDebugTraceItemKindDto::CollaborationFact
+        },
+        SessionDebugTraceItemKind::MailboxQueued => SessionDebugTraceItemKindDto::MailboxQueued,
+        SessionDebugTraceItemKind::MailboxBatchStarted => {
+            SessionDebugTraceItemKindDto::MailboxBatchStarted
+        },
+        SessionDebugTraceItemKind::MailboxBatchAcked => {
+            SessionDebugTraceItemKindDto::MailboxBatchAcked
+        },
+        SessionDebugTraceItemKind::MailboxDiscarded => {
+            SessionDebugTraceItemKindDto::MailboxDiscarded
+        },
+        SessionDebugTraceItemKind::TurnDone => SessionDebugTraceItemKindDto::TurnDone,
+        SessionDebugTraceItemKind::Error => SessionDebugTraceItemKindDto::Error,
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+fn to_session_debug_agent_node_dto(node: SessionDebugAgentNode) -> SessionDebugAgentNodeDto {
+    SessionDebugAgentNodeDto {
+        node_id: node.node_id,
+        kind: to_debug_agent_node_kind_dto(node.kind),
+        title: node.title,
+        agent_id: node.agent_id,
+        session_id: node.session_id,
+        child_session_id: node.child_session_id,
+        sub_run_id: node.sub_run_id,
+        parent_agent_id: node.parent_agent_id,
+        parent_session_id: node.parent_session_id,
+        depth: node.depth,
+        lifecycle: to_agent_lifecycle_dto(node.lifecycle),
+        last_turn_outcome: node.last_turn_outcome.map(to_agent_turn_outcome_dto),
+        status_source: node.status_source.map(|value| format!("{value:?}")),
+        lineage_kind: node
+            .lineage_kind
+            .map(|value| format!("{value:?}").to_lowercase()),
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+fn to_debug_agent_node_kind_dto(kind: DebugAgentNodeKind) -> DebugAgentNodeKindDto {
+    match kind {
+        DebugAgentNodeKind::SessionRoot => DebugAgentNodeKindDto::SessionRoot,
+        DebugAgentNodeKind::ChildAgent => DebugAgentNodeKindDto::ChildAgent,
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
+fn to_agent_turn_outcome_dto(outcome: astrcode_core::AgentTurnOutcome) -> AgentTurnOutcomeDto {
+    match outcome {
+        astrcode_core::AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
+        astrcode_core::AgentTurnOutcome::Failed => AgentTurnOutcomeDto::Failed,
+        astrcode_core::AgentTurnOutcome::Cancelled => AgentTurnOutcomeDto::Cancelled,
+        astrcode_core::AgentTurnOutcome::TokenExceeded => AgentTurnOutcomeDto::TokenExceeded,
     }
 }
 

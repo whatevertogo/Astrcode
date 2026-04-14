@@ -28,6 +28,16 @@ pub fn recoverable_parent_deliveries(events: &[StoredEvent]) -> Vec<PendingParen
 
     let mut recovered = Vec::new();
     let mut seen = HashSet::new();
+    let queued_at_by_delivery = events
+        .iter()
+        .filter_map(|stored| match &stored.event.payload {
+            StorageEventPayload::AgentMailboxQueued { payload } => Some((
+                payload.envelope.delivery_id.clone(),
+                payload.envelope.queued_at,
+            )),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
     for stored in events {
         let StorageEventPayload::ChildSessionNotification { notification, .. } =
             &stored.event.payload
@@ -53,6 +63,10 @@ pub fn recoverable_parent_deliveries(events: &[StoredEvent]) -> Vec<PendingParen
             delivery_id: notification.notification_id.clone(),
             parent_session_id: notification.child_ref.session_id.clone(),
             parent_turn_id,
+            queued_at_ms: queued_at_by_delivery
+                .get(&notification.notification_id)
+                .map(|queued_at| queued_at.timestamp_millis())
+                .unwrap_or_default(),
             notification: notification.clone(),
         });
     }

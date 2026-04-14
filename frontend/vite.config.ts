@@ -121,6 +121,14 @@ console.log(
 );
 export default defineConfig({
   plugins: [react(), tailwindcss(), astrcodeBrowserBootstrapPlugin()],
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        debug: path.resolve(__dirname, 'debug.html'),
+      },
+    },
+  },
   server: {
     host: '127.0.0.1',
     port: 5173,

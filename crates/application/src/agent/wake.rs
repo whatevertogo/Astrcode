@@ -5,13 +5,15 @@
 //! 再通过“不分叉”的父级 wake turn 继续驱动父 agent。
 
 use astrcode_core::{
-    AgentEventContext, MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxQueuedPayload,
+    AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentEventContext,
+    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxQueuedPayload,
     StorageEventPayload, TurnId,
 };
 
 use super::{
-    AgentOrchestrationError, AgentOrchestrationService, child_delivery_mailbox_envelope,
-    root_execution_event_context, subrun_event_context, terminal_notification_message,
+    AgentOrchestrationError, AgentOrchestrationService, CollaborationFactRecord,
+    child_delivery_mailbox_envelope, root_execution_event_context, subrun_event_context,
+    terminal_notification_message,
 };
 
 impl AgentOrchestrationService {
@@ -158,7 +160,7 @@ impl AgentOrchestrationService {
         self.spawn_parent_wake_completion_watcher(
             parent_session_id,
             accepted.turn_id.to_string(),
-            batch_delivery_ids,
+            delivery_batch,
             target_agent_id,
         );
         Ok(true)
@@ -168,7 +170,7 @@ impl AgentOrchestrationService {
         &self,
         parent_session_id: String,
         turn_id: String,
-        batch_delivery_ids: Vec<String>,
+        batch_deliveries: Vec<astrcode_kernel::PendingParentDelivery>,
         target_agent_id: String,
     ) {
         let service = self.clone();
@@ -177,7 +179,7 @@ impl AgentOrchestrationService {
                 .finalize_parent_wake_turn(
                     parent_session_id,
                     turn_id,
-                    batch_delivery_ids,
+                    batch_deliveries,
                     target_agent_id,
                 )
                 .await
@@ -194,9 +196,13 @@ impl AgentOrchestrationService {
         &self,
         parent_session_id: String,
         turn_id: String,
-        batch_delivery_ids: Vec<String>,
+        batch_deliveries: Vec<astrcode_kernel::PendingParentDelivery>,
         target_agent_id: String,
     ) -> Result<(), AgentOrchestrationError> {
+        let batch_delivery_ids = batch_deliveries
+            .iter()
+            .map(|delivery| delivery.delivery_id.clone())
+            .collect::<Vec<_>>();
         let terminal = self
             .session_runtime
             .wait_for_turn_terminal_snapshot(&parent_session_id, &turn_id)
@@ -227,6 +233,47 @@ impl AgentOrchestrationService {
                 .consume_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
                 .await;
             if consumed {
+                let runtime = self
+                    .resolve_runtime_config_for_session(&parent_session_id)
+                    .await
+                    .unwrap_or_default();
+                for delivery in &batch_deliveries {
+                    if let Some(child_handle) = self
+                        .kernel
+                        .get_agent_handle(&delivery.notification.child_ref.agent_id)
+                        .await
+                    {
+                        let _ = self
+                            .record_collaboration_fact(
+                                &runtime,
+                                CollaborationFactRecord {
+                                    action: AgentCollaborationActionKind::Delivery,
+                                    outcome: AgentCollaborationOutcomeKind::Consumed,
+                                    session_id: &parent_session_id,
+                                    turn_id: &turn_id,
+                                    parent_agent_id: delivery
+                                        .notification
+                                        .child_ref
+                                        .parent_agent_id
+                                        .clone(),
+                                    child: Some(&child_handle),
+                                    delivery_id: Some(delivery.delivery_id.clone()),
+                                    reason_code: None,
+                                    summary: Some(delivery.notification.summary.clone()),
+                                    latency_ms: Some(
+                                        (chrono::Utc::now().timestamp_millis()
+                                            - delivery.queued_at_ms)
+                                            .max(0) as u64,
+                                    ),
+                                    source_tool_call_id: delivery
+                                        .notification
+                                        .source_tool_call_id
+                                        .clone(),
+                                },
+                            )
+                            .await;
+                    }
+                }
                 self.metrics.record_parent_reactivation_succeeded();
                 self.metrics.record_delivery_buffer_wake_succeeded();
                 let _ = self
@@ -344,6 +391,34 @@ impl AgentOrchestrationService {
         }
 
         for pending in recoverable {
+            let runtime = self
+                .resolve_runtime_config_for_session(parent_session_id)
+                .await
+                .unwrap_or_default();
+            if let Some(child_handle) = self
+                .kernel
+                .get_agent_handle(&pending.notification.child_ref.agent_id)
+                .await
+            {
+                let _ = self
+                    .record_collaboration_fact(
+                        &runtime,
+                        CollaborationFactRecord {
+                            action: AgentCollaborationActionKind::Delivery,
+                            outcome: AgentCollaborationOutcomeKind::Replayed,
+                            session_id: parent_session_id,
+                            turn_id: &pending.parent_turn_id,
+                            parent_agent_id: pending.notification.child_ref.parent_agent_id.clone(),
+                            child: Some(&child_handle),
+                            delivery_id: Some(pending.delivery_id.clone()),
+                            reason_code: Some("durable_recovery".to_string()),
+                            summary: Some(pending.notification.summary.clone()),
+                            latency_ms: None,
+                            source_tool_call_id: pending.notification.source_tool_call_id.clone(),
+                        },
+                    )
+                    .await;
+            }
             let _ = self
                 .kernel
                 .enqueue_child_delivery(
@@ -897,12 +972,14 @@ mod tests {
                 delivery_id: "delivery-1".to_string(),
                 parent_session_id: "session-parent".to_string(),
                 parent_turn_id: "turn-parent".to_string(),
+                queued_at_ms: chrono::Utc::now().timestamp_millis(),
                 notification: delivered,
             },
             astrcode_kernel::PendingParentDelivery {
                 delivery_id: "delivery-2".to_string(),
                 parent_session_id: "session-parent".to_string(),
                 parent_turn_id: "turn-parent".to_string(),
+                queued_at_ms: chrono::Utc::now().timestamp_millis(),
                 notification: summary_only,
             },
         ]);

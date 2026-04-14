@@ -22,10 +22,11 @@ mod wake;
 use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
-    AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentTurnOutcome, ArtifactRef,
-    CloseAgentParams, CollaborationResult, InvocationKind, ObserveParams, Result,
-    RuntimeMetricsRecorder, SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff,
-    SubRunResult, ToolContext,
+    AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
+    AgentCollaborationPolicyContext, AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope,
+    AgentTurnOutcome, ArtifactRef, CloseAgentParams, CollaborationResult, InvocationKind,
+    ObserveParams, Result, RuntimeMetricsRecorder, SendAgentParams, SpawnAgentParams, SubRunHandle,
+    SubRunHandoff, SubRunResult, ToolContext,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -82,6 +83,21 @@ pub(crate) fn subrun_event_context_for_parent_turn(
 }
 
 pub(crate) const IMPLICIT_ROOT_PROFILE_ID: &str = "default";
+pub(crate) const AGENT_COLLABORATION_POLICY_REVISION: &str = "agent-collaboration-v1";
+
+pub(crate) struct CollaborationFactRecord<'a> {
+    pub(crate) action: AgentCollaborationActionKind,
+    pub(crate) outcome: AgentCollaborationOutcomeKind,
+    pub(crate) session_id: &'a str,
+    pub(crate) turn_id: &'a str,
+    pub(crate) parent_agent_id: Option<String>,
+    pub(crate) child: Option<&'a SubRunHandle>,
+    pub(crate) delivery_id: Option<String>,
+    pub(crate) reason_code: Option<String>,
+    pub(crate) summary: Option<String>,
+    pub(crate) latency_ms: Option<u64>,
+    pub(crate) source_tool_call_id: Option<String>,
+}
 
 pub(crate) fn implicit_session_root_agent_id(session_id: &str) -> String {
     // 为什么按 session 生成 synthetic root id：
@@ -218,6 +234,78 @@ impl AgentOrchestrationService {
             })
     }
 
+    fn collaboration_policy_context(
+        &self,
+        runtime: &astrcode_core::ResolvedRuntimeConfig,
+    ) -> AgentCollaborationPolicyContext {
+        AgentCollaborationPolicyContext {
+            policy_revision: AGENT_COLLABORATION_POLICY_REVISION.to_string(),
+            max_subrun_depth: runtime.agent.max_subrun_depth,
+            max_spawn_per_turn: runtime.agent.max_spawn_per_turn,
+        }
+    }
+
+    async fn append_collaboration_fact(
+        &self,
+        fact: AgentCollaborationFact,
+    ) -> std::result::Result<(), AgentOrchestrationError> {
+        let turn_id = fact.turn_id.clone();
+        let parent_session_id = fact.parent_session_id.clone();
+        let event_agent = if let Some(parent_agent_id) = fact.parent_agent_id.as_deref() {
+            self.kernel
+                .get_agent_handle(parent_agent_id)
+                .await
+                .map(|handle| {
+                    if handle.depth == 0 {
+                        root_execution_event_context(handle.agent_id, handle.agent_profile)
+                    } else {
+                        subrun_event_context(&handle)
+                    }
+                })
+                .unwrap_or_default()
+        } else {
+            AgentEventContext::default()
+        };
+        self.session_runtime
+            .append_agent_collaboration_fact(
+                &parent_session_id,
+                &turn_id,
+                event_agent,
+                fact.clone(),
+            )
+            .await
+            .map_err(AgentOrchestrationError::from)?;
+        self.metrics.record_agent_collaboration_fact(&fact);
+        Ok(())
+    }
+
+    async fn record_collaboration_fact(
+        &self,
+        runtime: &astrcode_core::ResolvedRuntimeConfig,
+        record: CollaborationFactRecord<'_>,
+    ) -> std::result::Result<(), AgentOrchestrationError> {
+        let fact = AgentCollaborationFact {
+            fact_id: format!("acf-{}", uuid::Uuid::new_v4()),
+            action: record.action,
+            outcome: record.outcome,
+            parent_session_id: record.session_id.to_string(),
+            turn_id: record.turn_id.to_string(),
+            parent_agent_id: record.parent_agent_id,
+            child_agent_id: record.child.map(|handle| handle.agent_id.clone()),
+            child_session_id: record
+                .child
+                .and_then(|handle| handle.child_session_id.clone()),
+            child_sub_run_id: record.child.map(|handle| handle.sub_run_id.clone()),
+            delivery_id: record.delivery_id,
+            reason_code: record.reason_code,
+            summary: record.summary,
+            latency_ms: record.latency_ms,
+            source_tool_call_id: record.source_tool_call_id,
+            policy: self.collaboration_policy_context(runtime),
+        };
+        self.append_collaboration_fact(fact).await
+    }
+
     async fn ensure_parent_agent_handle(
         &self,
         ctx: &ToolContext,
@@ -329,54 +417,139 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         let parent_agent_id = parent_handle.agent_id.clone();
         let parent_turn_id = ctx.turn_id().unwrap_or("unknown-turn").to_string();
         let parent_session_id = ctx.session_id().to_string();
+        let source_tool_call_id = ctx.tool_call_id().map(ToString::to_string);
         let profile_id = params
             .r#type
             .clone()
             .unwrap_or_else(|| "explore".to_string());
-        let profile = self
-            .resolve_subagent_profile(ctx.working_dir(), &profile_id)
+        let runtime_config = self
+            .resolve_runtime_config_for_working_dir(ctx.working_dir())
             .map_err(map_orchestration_error)?;
+        let profile = match self.resolve_subagent_profile(ctx.working_dir(), &profile_id) {
+            Ok(profile) => profile,
+            Err(error) => {
+                let _ = self
+                    .record_collaboration_fact(
+                        &runtime_config,
+                        CollaborationFactRecord {
+                            action: AgentCollaborationActionKind::Spawn,
+                            outcome: AgentCollaborationOutcomeKind::Rejected,
+                            session_id: &parent_session_id,
+                            turn_id: &parent_turn_id,
+                            parent_agent_id: Some(parent_agent_id.clone()),
+                            child: None,
+                            delivery_id: None,
+                            reason_code: Some("profile_resolution_failed".to_string()),
+                            summary: Some(error.to_string()),
+                            latency_ms: None,
+                            source_tool_call_id: source_tool_call_id.clone(),
+                        },
+                    )
+                    .await;
+                return Err(map_orchestration_error(error));
+            },
+        };
 
         let request = SubagentExecutionRequest {
             parent_session_id: parent_session_id.clone(),
             parent_agent_id: parent_agent_id.clone(),
-            parent_turn_id,
+            parent_turn_id: parent_turn_id.clone(),
             working_dir: ctx.working_dir().display().to_string(),
             profile,
             task: params.prompt,
             context: params.context,
         };
-        let runtime_config = self
-            .resolve_runtime_config_for_working_dir(ctx.working_dir())
-            .map_err(map_orchestration_error)?;
-        self.enforce_spawn_budget_for_turn(
-            &parent_agent_id,
-            &request.parent_turn_id,
-            runtime_config.agent.max_spawn_per_turn,
-        )
-        .await
-        .map_err(map_orchestration_error)?;
+        if let Err(error) = self
+            .enforce_spawn_budget_for_turn(
+                &parent_agent_id,
+                &request.parent_turn_id,
+                runtime_config.agent.max_spawn_per_turn,
+            )
+            .await
+        {
+            let _ = self
+                .record_collaboration_fact(
+                    &runtime_config,
+                    CollaborationFactRecord {
+                        action: AgentCollaborationActionKind::Spawn,
+                        outcome: AgentCollaborationOutcomeKind::Rejected,
+                        session_id: &parent_session_id,
+                        turn_id: &request.parent_turn_id,
+                        parent_agent_id: Some(parent_agent_id.clone()),
+                        child: None,
+                        delivery_id: None,
+                        reason_code: Some("spawn_budget_exhausted".to_string()),
+                        summary: Some(error.to_string()),
+                        latency_ms: None,
+                        source_tool_call_id: source_tool_call_id.clone(),
+                    },
+                )
+                .await;
+            return Err(map_orchestration_error(error));
+        }
 
-        let accepted = launch_subagent(
+        let accepted = match launch_subagent(
             &self.kernel,
             &self.session_runtime,
             request,
-            runtime_config,
+            runtime_config.clone(),
             &self.metrics,
         )
         .await
-        .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))?;
+        {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                let _ = self
+                    .record_collaboration_fact(
+                        &runtime_config,
+                        CollaborationFactRecord {
+                            action: AgentCollaborationActionKind::Spawn,
+                            outcome: AgentCollaborationOutcomeKind::Failed,
+                            session_id: &parent_session_id,
+                            turn_id: &parent_turn_id,
+                            parent_agent_id: Some(parent_agent_id.clone()),
+                            child: None,
+                            delivery_id: None,
+                            reason_code: Some("launch_subagent_failed".to_string()),
+                            summary: Some(error.to_string()),
+                            latency_ms: None,
+                            source_tool_call_id: source_tool_call_id.clone(),
+                        },
+                    )
+                    .await;
+                return Err(astrcode_core::AstrError::Internal(error.to_string()));
+            },
+        };
         if let (Some(child_agent_id), Some(parent_turn_id)) =
             (accepted.agent_id.clone(), ctx.turn_id())
         {
             if let Some(child_handle) = self.kernel.get_agent_handle(&child_agent_id).await {
+                let _ = self
+                    .record_collaboration_fact(
+                        &runtime_config,
+                        CollaborationFactRecord {
+                            action: AgentCollaborationActionKind::Spawn,
+                            outcome: AgentCollaborationOutcomeKind::Accepted,
+                            session_id: &parent_session_id,
+                            turn_id: parent_turn_id,
+                            parent_agent_id: Some(parent_agent_id.clone()),
+                            child: Some(&child_handle),
+                            delivery_id: None,
+                            reason_code: None,
+                            summary: Some(params.description.trim().to_string())
+                                .filter(|s| !s.is_empty()),
+                            latency_ms: None,
+                            source_tool_call_id: source_tool_call_id.clone(),
+                        },
+                    )
+                    .await;
                 self.spawn_child_turn_terminal_watcher(
                     child_handle,
                     accepted.session_id.to_string(),
                     accepted.turn_id.to_string(),
                     parent_session_id.clone(),
                     parent_turn_id.to_string(),
-                    ctx.tool_call_id().map(ToString::to_string),
+                    source_tool_call_id.clone(),
                 );
             }
         }
@@ -477,9 +650,10 @@ impl astrcode_core::CollaborationExecutor for AgentOrchestrationService {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentLifecycleStatus, CancelToken, ChildAgentRef, ChildSessionLineageKind,
-        ChildSessionNotification, ChildSessionNotificationKind, SessionId, SpawnAgentParams,
-        StorageEventPayload, ToolContext, agent::executor::SubAgentExecutor,
+        AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
+        CancelToken, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
+        ChildSessionNotificationKind, SessionId, SpawnAgentParams, StorageEventPayload,
+        ToolContext, agent::executor::SubAgentExecutor,
     };
 
     use super::{
@@ -769,5 +943,19 @@ mod tests {
                 .contains("spawn budget exhausted for this turn"),
             "unexpected error: {error}"
         );
+
+        let parent_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent events should replay");
+        assert!(parent_events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentCollaborationFact { fact, .. }
+                if fact.action == AgentCollaborationActionKind::Spawn
+                    && fact.outcome == AgentCollaborationOutcomeKind::Rejected
+                    && fact.reason_code.as_deref() == Some("spawn_budget_exhausted")
+                    && fact.policy.max_spawn_per_turn == 1
+        )));
     }
 }

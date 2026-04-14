@@ -30,29 +30,15 @@ impl SpawnAgentTool {
     fn build_description() -> String {
         r#"Spawn a dedicated sub-agent to run a specific task and return a summary result.
 
-## Usage Guide
+Use `spawn` for one new isolated responsibility.
 
-1. **Choose the right profile**: Set `type` to the target profile identifier. Available profiles are listed in the current session's agent index.
-2. **Be specific in `prompt`**: Give one concrete responsibility, deliverable, or review angle.
-3. **Add only useful context**: Use `context` for narrow constraints such as scope, quality bar, or files to focus on.
-4. **Background by default**: `spawn` starts a child and returns immediately.
-5. **Preserve the original agentId**: Copy the returned `agentId` exactly into later `send` / `observe` / `close` calls.
-6. **Start with one child**: Add more children only when work clearly splits into independent threads.
-7. **Reuse before respawn**: If a child is `Idle`, prefer `send` or `observe` over creating another child for the same responsibility.
-8. **Depth and fan-out are limited**: Reuse an existing child before creating a deeper or wider subtree.
+- Put the real task in `prompt`
+- Keep `description` short for UI/logs
+- Start with one child; add more only for truly separate workstreams
+- Reuse an idle child with `send` before creating another child
+- Copy the returned `agentId` exactly into later `send` / `observe` / `close` calls
 
-## When to Use
-
-- Exploring a large codebase or finding specific code patterns
-- Creating detailed implementation plans
-- Multi-perspective code review
-- Targeted code modification tasks with clear ownership boundaries
-
-## When NOT to Use
-
-- Simple file reads or searches (use `readFile`, `grep` etc. directly)
-- Questions you already know the answer to
-- Broad "explore everything" delegation without first defining a few concrete workstreams"#
+Do not use `spawn` for simple reads, one-off searches, or vague "explore everything" delegation."#
             .to_string()
     }
 
@@ -106,14 +92,10 @@ impl Tool for SpawnAgentTool {
                 ToolPromptMetadata::new(
                     "Launch a sub-agent with an isolated context. Only use when parallel benefit, \
                      context isolation, or responsibility separation is clear.",
-                    "Use `spawn` to delegate exploration, review, planning, or targeted modification \
-                     to a sub-agent when there is clear isolation or parallel value. Start with one \
-                     child unless there are clearly separate workstreams. Give the child one narrow \
-                     responsibility, not a vague request to explore everything. Do not delegate \
-                     simple reads, one-off searches, or work you can finish immediately. After \
-                     calling, reuse the returned `agentId` exactly in later `send`, `observe`, and \
-                     `close` calls. Reuse an idle child before spawning another child for the same \
-                     thread of work.",
+                    "Use `spawn` only for a new isolated responsibility. Give the child one \
+                     narrow task, not a vague exploration brief. Start with one child, reuse an \
+                     idle child before spawning another, and copy the returned `agentId` exactly \
+                     in later collaboration calls.",
                 )
                 .caveat(
                     "If your next step depends on the result, doing it yourself is usually faster; \

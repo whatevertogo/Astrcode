@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capability for AstrCode","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-close","core:app:allow-app-hide"]}}
+{"default":{"identifier":"default","description":"Default capability for AstrCode","local":true,"windows":["main","debug-workbench"],"permissions":["core:default","core:window:allow-close","core:app:allow-app-hide"]}}

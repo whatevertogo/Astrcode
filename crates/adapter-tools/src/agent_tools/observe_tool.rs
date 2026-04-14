@@ -35,34 +35,16 @@ impl ObserveAgentTool {
     fn build_description() -> String {
         r#"Get the current state snapshot of a specified sub-agent.
 
-## Usage Guide
+Use `observe` to decide the next action for one direct child.
 
-1. **Specify agentId**: The sub-agent ID to observe.
-2. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference`.
-3. **Use it to decide an action**: `observe` should usually answer "send next", "wait", or "close".
-4. **Do not poll aggressively**: Observe when a decision depends on the state, not in a tight loop.
+- Use the exact `agentId` returned earlier
+- Call it only when you cannot decide between `wait`, `send`, or `close` without a fresh snapshot
+- Read both the raw facts and the advisory fields in the result
+- Treat the mailbox section as a short tail view of recent messages, not as full history
 
-## Returned Fields
-
-- `lifecycleStatus`: Pending / Running / Idle / Terminated
-- `lastTurnOutcome`: Previous turn result (Completed / Cancelled / Failed / TokenExceeded)
-- `activeTask`: Summary of the currently processing task (if any)
-- `pendingTask`: Summary of the next pending task (if any)
-- `pendingMessageCount`: Number of pending messages (per durable replay)
-- `turnCount`: Number of completed turns
-- `lastOutput`: Summary of the most recent output
-
-## When to Use
-
-- Need to know whether a child is still running, idle, or done
-- Need the latest outcome before deciding whether to `send` or `close`
-- Need to confirm whether the child has pending mailbox work
-
-## When NOT to Use
-
-- Repeated heartbeat polling with no decision attached
-- Reading output that you already received in a delivery
-- Observing unrelated agents"#
+Do not poll repeatedly with no decision attached. If you are simply waiting for a running child,
+pause briefly with your current shell tool (for example `sleep`) instead of spending another
+tool call on `observe`. Do not use it for unrelated agents."#
             .to_string()
     }
 
@@ -102,23 +84,26 @@ impl Tool for ObserveAgentTool {
             .prompt(
                 ToolPromptMetadata::new(
                     "Observe child state when you need to decide the next action.",
-                    "Use `observe` to answer a concrete question such as: Is this child still \
-                     running? Did it finish its last turn? Should I `send` another instruction or \
-                     `close` it? Observe only direct children you spawned, and reuse the exact \
-                     `agentId` returned earlier.",
+                    "Use `observe` when the next decision depends on current child state. It is \
+                     a synchronous query for one direct child and should usually answer `wait`, \
+                     `send`, or `close`, not act as a polling loop.",
                 )
                 .caveat(
                     "Only returns snapshots for direct child agents. Never rewrite `agent-1` as \
                      `agent-01`.",
                 )
                 .caveat(
-                    "State transitions: Pending → Running → Idle (waiting for new tasks) or \
-                     Terminated (closed). `observe` is a synchronous non-blocking query — call at \
-                     intervals, do not poll aggressively.",
+                    "`observe` returns raw lifecycle/outcome facts plus advisory decision fields. \
+                     Treat the advice as guidance, not as a replacement for the facts.",
                 )
                 .caveat(
-                    "Prefer one well-timed observe over repeated checking. If a child just sent a \
-                     usable delivery, act on it instead of observing immediately again.",
+                    "Prefer one well-timed observe over repeated checking. If you are just \
+                     waiting for a running child, use your current shell tool to sleep briefly and \
+                     then continue, instead of polling `observe` again.",
+                )
+                .caveat(
+                    "`observe` only exposes a short mailbox tail and latest output excerpt. It is \
+                     intentionally not a full mailbox or transcript dump.",
                 )
                 .prompt_tag("collaboration"),
             )

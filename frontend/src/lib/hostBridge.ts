@@ -15,8 +15,10 @@ export interface HostBridge {
   isDesktopHost: boolean;
   canSelectDirectory: boolean;
   canOpenEditor: boolean;
+  canOpenDebugWorkbench: boolean;
   selectDirectory(): Promise<string | null>;
   openConfigInEditor(path?: string): Promise<void>;
+  openDebugWorkbench(sessionId?: string | null): Promise<void>;
 }
 
 function browserBridge(): HostBridge {
@@ -24,6 +26,7 @@ function browserBridge(): HostBridge {
     isDesktopHost: false,
     canSelectDirectory: false,
     canOpenEditor: false,
+    canOpenDebugWorkbench: true,
     selectDirectory() {
       return Promise.resolve(null);
     },
@@ -37,6 +40,14 @@ function browserBridge(): HostBridge {
         // 浏览器降级为静默失败；调用方仍会展示路径。
       }
     },
+    async openDebugWorkbench(sessionId?: string | null) {
+      const url = new URL('/debug.html', window.location.origin);
+      url.searchParams.set('debugWorkbench', '1');
+      if (sessionId) {
+        url.searchParams.set('sessionId', sessionId);
+      }
+      window.open(url.toString(), '_blank', 'noopener,noreferrer');
+    },
   };
 }
 
@@ -45,6 +56,7 @@ function desktopBridge(): HostBridge {
     isDesktopHost: true,
     canSelectDirectory: true,
     canOpenEditor: true,
+    canOpenDebugWorkbench: import.meta.env.DEV,
     async selectDirectory() {
       await waitForTauriEnvironment();
       return invoke<string | null>('select_directory');
@@ -52,6 +64,10 @@ function desktopBridge(): HostBridge {
     async openConfigInEditor(path?: string) {
       await waitForTauriEnvironment();
       await invoke('open_config_in_editor', { path: path ?? null });
+    },
+    async openDebugWorkbench(sessionId?: string | null) {
+      await waitForTauriEnvironment();
+      await invoke('open_debug_workbench', { sessionId: sessionId ?? null });
     },
   };
 }

@@ -58,6 +58,7 @@ pub struct PendingParentDelivery {
     pub delivery_id: String,
     pub parent_session_id: String,
     pub parent_turn_id: String,
+    pub queued_at_ms: i64,
     pub notification: astrcode_core::ChildSessionNotification,
 }
 
@@ -771,6 +772,10 @@ impl AgentControl {
                 delivery_id,
                 parent_session_id,
                 parent_turn_id: parent_turn_id.into(),
+                queued_at_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as i64)
+                    .unwrap_or_default(),
                 notification,
             },
             state: PendingParentDeliveryState::Queued,

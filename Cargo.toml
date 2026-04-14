@@ -14,6 +14,7 @@ members = [
     "crates/sdk",
     "crates/adapter-tools",
     "crates/adapter-mcp",
+    "crates/debug-workbench",
     "crates/server",
     "examples/example-plugin",
     "src-tauri",

@@ -352,8 +352,22 @@ pub struct ObserveAgentResult {
     pub active_task: Option<String>,
     /// 下一条待处理任务摘要。
     pub pending_task: Option<String>,
+    /// 最近几条 mailbox 消息摘要，仅用于帮助判断最近协作上下文。
+    ///
+    /// 这是 tail view，不是全量 mailbox dump，避免 observe 结果过长。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_mailbox_messages: Vec<String>,
     /// 最近 assistant 输出摘要。
     pub last_output: Option<String>,
+    /// 面向下一步决策的建议动作。
+    ///
+    /// 这是 advisory projection，不是新的业务真相；
+    /// 调用方仍应以 lifecycle/outcome 等原始事实为准。
+    pub recommended_next_action: String,
+    /// 对建议动作的简短说明。
+    pub recommended_reason: String,
+    /// 交付新鲜度投影，帮助调用方判断是继续等待还是立即处理。
+    pub delivery_freshness: String,
 }
 
 #[cfg(test)]

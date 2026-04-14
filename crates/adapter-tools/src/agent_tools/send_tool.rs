@@ -30,24 +30,13 @@ impl SendAgentTool {
     fn build_description() -> String {
         r#"Send a follow-up message or rework request to an existing sub-agent.
 
-## Usage Guide
+Use `send` to continue the same child with one concrete next step.
 
-1. **Specify agentId**: The target sub-agent's stable ID.
-2. **Write the next concrete instruction**: Ask for a revision, the next task, or a decision-ready deliverable.
-3. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference`.
-4. **Optional context**: Add only missing facts or constraints that materially change the task.
+- Use the exact `agentId` returned earlier
+- Send one clear instruction, revision request, or narrowed follow-up
+- Add `context` only when it materially changes the task
 
-## When to Use
-
-- Continue an existing line of work with the same child
-- Request a revision after reading the child's last result
-- Hand off the next scoped task to an idle child
-
-## When NOT to Use
-
-- Creating a new child for the same responsibility
-- Checking status only; use `observe`
-- Broadcasting vague reminders like "keep going""#
+Do not use `send` for status checks, vague reminders, or replacing a reusable child with a new spawn."#
             .to_string()
     }
 
@@ -95,22 +84,28 @@ impl Tool for SendAgentTool {
             .prompt(
                 ToolPromptMetadata::new(
                     "Send the next concrete instruction to an existing sub-agent.",
-                    "Use `send` when the same child should continue with the next scoped step. \
-                     Write one clear instruction, revision request, or additional constraint. Use \
-                     the exact `agentId` returned earlier. Prefer `send` over spawning a new child \
-                     when the responsibility stays the same.",
+                    "Use `send` when the same child should continue. Write one concrete next \
+                     step or revision request, use the exact `agentId`, and prefer `send` over \
+                     spawning a new child when the responsibility stays the same.",
                 )
                 .caveat(
                     "Only send to sub-agents you spawned yourself. Never rewrite `agent-1` as \
                      `agent-01`.",
                 )
                 .caveat(
-                    "Do not use `send` for status checks. If you need to know whether the child is \
-                     still running, idle, or blocked, use `observe`.",
+                    "Do not use `send` for status checks. If you already know the child is still \
+                     running and are simply waiting, do not call `observe` repeatedly either; wait \
+                     briefly with your current shell tool instead.",
                 )
                 .caveat(
                     "Messages enter the child's mailbox and are processed in order. Do not stack \
                      many speculative sends; wait for a result or observe before changing course.",
+                )
+                .caveat(
+                    "A good `send` gives the child one concrete next step and enough direction to \
+                     report back cleanly. Ask for a concise completion summary, key findings, and \
+                     any remaining follow-up instead of forcing the parent to infer progress from \
+                     raw intermediate work.",
                 )
                 .prompt_tag("collaboration"),
             )

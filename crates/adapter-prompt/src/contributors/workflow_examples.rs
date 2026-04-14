@@ -93,43 +93,42 @@ impl PromptContributor for WorkflowExamplesContributor {
                     BlockKind::CollaborationGuide,
                     "Child Agent Collaboration Guide",
                     format!(
-                        "When you receive a delivery from a child agent, use the four-tool \
-                         collaboration model consistently. Treat the `agentId` returned by tool \
-                         results as an exact opaque identifier. Copy it byte-for-byte in later \
-                         `send`, `observe`, and `close` calls. Never renumber it, never zero-pad \
-                         it, and never invent `agent-01` when the tool result says \
-                         `agent-1`.\n\nA child finishing one turn and returning to `Idle` is \
-                         normal. Do not treat `Idle` as an error, and do not immediately spawn a \
-                         replacement child just because one turn completed. Child agents are \
-                         reusable. Reuse an idle child with `send(agentId, message)` when the \
-                         responsibility stays the same. If you are unsure whether the child is \
-                         still running, idle, or already terminated, call `observe(agentId)` \
-                         before deciding.\n\nNested spawning is a scarce budget. The runtime \
-                         enforces a maximum child depth of {max_depth}. Prefer reusing an \
-                         existing child over creating a deeper descendant. If you hit the depth \
-                         limit, do not retry with more nested spawn calls. Finish the remaining \
-                         work in the current agent, or send the next instruction to an existing \
-                         child.\n\nChoose the next tool by intent, not habit:\n- Use `observe` \
-                         only when a real decision depends on current child state.\n- Use `send` \
-                         when the same child should continue with one concrete next step.\n- Use \
-                         `close` when the child is done or that branch is no longer useful.\nDo \
-                         not loop on `observe` with no decision attached. Do not stack many \
-                         speculative `send` calls. Do not spawn a new child when an existing idle \
-                         child already owns the responsibility.\n\nSpawn sparingly. Start with \
-                         one child unless there are clearly distinct, independent workstreams \
-                         that justify fan-out. The runtime caps new child creation per turn at \
-                         {max_spawn_per_turn}. Do not blanket-spawn agents just to explore a repo \
-                         broadly; first decide the concrete threads of work, then delegate only \
-                         the few that truly benefit from isolation or parallelism.\n\nIf the \
-                         delivery fully satisfies the original request, call `close(agentId)` to \
-                         terminate the child subtree. If you need follow-up work or revisions, \
-                         call `send(agentId, message)` with the next concrete instruction. \
-                         Runtime mailbox delivery can be replayed after recovery. If you see the \
-                         same `deliveryId` again, treat it as the same delivery rather than a new \
-                         task.\n\nExample: if the tool result contains `agentId: agent-7`, every \
-                         later collaboration call must use exactly `agent-7`. Default: close the \
-                         child if the delivery satisfies the request; otherwise send a precise \
-                         follow-up instruction or observe first."
+                        "Use the child-agent tools as one decision protocol.\n\nKeep `agentId` \
+                         exact. Copy it byte-for-byte in later `send`, `observe`, and `close` \
+                         calls. Never renumber it, never zero-pad it, and never invent `agent-01` \
+                         when the tool result says `agent-1`.\n\nDefault protocol:\n1. `spawn` \
+                         only for a new isolated responsibility with real parallel or \
+                         context-isolation value.\n2. `send` when the same child should take one \
+                         concrete next step.\n3. `observe` only when the next decision depends on \
+                         current child state.\n4. `close` when the branch is done or no longer \
+                         useful.\n\n`Idle` is normal and reusable. Do not respawn just because a \
+                         child finished one turn. Reuse an idle child with `send(agentId, \
+                         message)` when the responsibility stays the same. If you are unsure \
+                         whether the child is still running, idle, or terminated, call \
+                         `observe(agentId)` once and act on the result.\n\nSpawn sparingly. The \
+                         runtime enforces a maximum child depth of {max_depth} and at most \
+                         {max_spawn_per_turn} new children per turn. Start with one child unless \
+                         there are clearly separate workstreams. Do not blanket-spawn agents just \
+                         to explore a repo broadly.\n\nAvoid waste:\n- Do not loop on `observe` \
+                         with no decision attached.\n- If a child is still running and you are \
+                         simply waiting, use your current shell tool to sleep briefly instead of \
+                         spending another tool call on `observe`.\n- Do not stack speculative \
+                         `send` calls.\n- Do not spawn a new child when an existing idle child \
+                         already owns the responsibility.\n\nIf a delivery satisfies the request, \
+                         `close` the branch. If the same child should continue, `send` one \
+                         precise follow-up. If you see the same `deliveryId` again after \
+                         recovery, treat it as the same delivery, not a new task.\n\nWhen you are \
+                         the child on a delegated task, assume the parent mainly sees your final \
+                         delivery. End your turn with a concise, reusable summary for the parent: \
+                         what you finished, what you found, and what still needs follow-up. Do \
+                         not wait for the parent to guess your progress from raw intermediate \
+                         steps, and do not end with an open loop like '继续观察中' unless you \
+                         still need the parent to keep you alive.\n\nWhen you are the parent and \
+                         receive a child delivery, treat it as a decision point. Do not leave it \
+                         hanging and do not immediately re-observe the same child unless the \
+                         state is unclear. Decide immediately whether the result is complete \
+                         enough to `close` the branch, or whether the same child should continue \
+                         with one concrete `send` follow-up that names the exact next step."
                     ),
                 )
                 .with_priority(600),
@@ -317,20 +316,11 @@ mod tests {
             .iter()
             .find(|block| block.id == "child-collaboration-guidance")
             .expect("collaboration guidance block should exist");
-        assert!(
-            collaboration_block
-                .content
-                .contains("Copy it byte-for-byte")
-        );
+        assert!(collaboration_block.content.contains("Keep `agentId` exact"));
         assert!(collaboration_block.content.contains(&format!(
             "maximum child depth of {DEFAULT_MAX_SUBRUN_DEPTH}"
         )));
-        assert!(collaboration_block.content.contains("agent-01"));
-        assert!(
-            collaboration_block
-                .content
-                .contains("`send`, `observe`, and `close`")
-        );
+        assert!(collaboration_block.content.contains("Default protocol:"));
         assert!(
             collaboration_block
                 .content
@@ -339,8 +329,19 @@ mod tests {
         assert!(
             collaboration_block
                 .content
-                .contains("returning to `Idle` is normal")
+                .contains("`Idle` is normal and reusable")
         );
+        assert!(
+            collaboration_block
+                .content
+                .contains("Do not loop on `observe`")
+        );
+        assert!(
+            collaboration_block
+                .content
+                .contains("mainly sees your final delivery")
+        );
+        assert!(collaboration_block.content.contains("exact next step"));
     }
 
     #[tokio::test]

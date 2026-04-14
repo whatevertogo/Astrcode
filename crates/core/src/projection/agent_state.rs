@@ -211,6 +211,7 @@ impl AgentStateProjector {
             | StorageEventPayload::SubRunStarted { .. }
             | StorageEventPayload::SubRunFinished { .. }
             | StorageEventPayload::ChildSessionNotification { .. }
+            | StorageEventPayload::AgentCollaborationFact { .. }
             | StorageEventPayload::AgentMailboxQueued { .. }
             | StorageEventPayload::AgentMailboxBatchStarted { .. }
             | StorageEventPayload::AgentMailboxBatchAcked { .. }

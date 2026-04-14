@@ -1,8 +1,8 @@
 use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
-    AgentEventContext, AgentProfile, DeleteProjectResult, ExecutionAccepted, SessionMeta,
-    config::Config,
+    AgentEventContext, AgentProfile, ChildSessionNode, DeleteProjectResult, ExecutionAccepted,
+    SessionMeta, StoredEvent, config::Config,
 };
 use astrcode_kernel::Kernel;
 use astrcode_session_runtime::SessionRuntime;
@@ -23,7 +23,8 @@ use agent::{
     IMPLICIT_ROOT_PROFILE_ID, implicit_session_root_agent_id, root_execution_event_context,
 };
 pub use astrcode_session_runtime::{
-    SessionCatalogEvent, SessionHistorySnapshot, SessionReplay, SessionViewSnapshot, TurnSummary,
+    SessionCatalogEvent, SessionHistorySnapshot, SessionReplay, SessionViewSnapshot,
+    TurnCollaborationSummary, TurnSummary,
 };
 pub use composer::{ComposerOption, ComposerOptionKind, ComposerOptionsRequest};
 pub use config::{
@@ -107,9 +108,9 @@ pub use lifecycle::governance::{
 };
 pub use mcp::{McpConfigScope, McpPort, McpServerStatusView, McpService, RegisterMcpServerInput};
 pub use observability::{
-    ExecutionDiagnosticsSnapshot, GovernanceSnapshot, OperationMetricsSnapshot, ReloadResult,
-    ReplayMetricsSnapshot, ReplayPath, RuntimeObservabilityCollector, RuntimeObservabilitySnapshot,
-    SubRunExecutionMetricsSnapshot,
+    AgentCollaborationScorecardSnapshot, ExecutionDiagnosticsSnapshot, GovernanceSnapshot,
+    OperationMetricsSnapshot, ReloadResult, ReplayMetricsSnapshot, ReplayPath,
+    RuntimeObservabilityCollector, RuntimeObservabilitySnapshot, SubRunExecutionMetricsSnapshot,
 };
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
 
@@ -340,6 +341,43 @@ impl App {
         self.session_runtime
             .session_view(session_id)
             .await
+            .map_err(ApplicationError::from)
+    }
+
+    /// 返回指定 session 的 durable 存储事件。
+    ///
+    /// Debug Workbench 需要基于服务端真相构造 trace，
+    /// 这里显式暴露只读查询入口，避免上层直接穿透到 event store。
+    pub async fn session_stored_events(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<StoredEvent>, ApplicationError> {
+        let session_id = astrcode_core::SessionId::from(
+            astrcode_session_runtime::normalize_session_id(session_id),
+        );
+        self.session_runtime
+            .replay_stored_events(&session_id)
+            .await
+            .map_err(ApplicationError::from)
+    }
+
+    /// 返回指定 session 当前投影出的 child lineage 节点。
+    ///
+    /// Debug Workbench 的 agent tree 依赖这个稳定投影，不能在前端根据事件流二次猜测。
+    pub async fn session_child_nodes(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<ChildSessionNode>, ApplicationError> {
+        let session_id = astrcode_core::SessionId::from(
+            astrcode_session_runtime::normalize_session_id(session_id),
+        );
+        let state = self
+            .session_runtime
+            .get_session_state(&session_id)
+            .await
+            .map_err(ApplicationError::from)?;
+        state
+            .list_child_session_nodes()
             .map_err(ApplicationError::from)
     }
 

@@ -286,6 +286,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrcode-debug-workbench"
+version = "0.1.0"
+dependencies = [
+ "astrcode-application",
+ "astrcode-core",
+ "chrono",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "astrcode-example-plugin"
 version = "0.1.0"
 dependencies = [
@@ -359,6 +371,7 @@ dependencies = [
  "astrcode-adapter-tools",
  "astrcode-application",
  "astrcode-core",
+ "astrcode-debug-workbench",
  "astrcode-kernel",
  "astrcode-plugin",
  "astrcode-protocol",

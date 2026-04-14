@@ -543,6 +543,9 @@ pub struct CollaborationResult {
     /// 状态摘要。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// observe 的结构化结果。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observe_result: Option<mailbox::ObserveAgentResult>,
     /// 是否级联关闭（仅 close 场景）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<bool>,
@@ -561,6 +564,74 @@ pub enum CollaborationResultKind {
     Sent,
     Observed,
     Closed,
+}
+
+/// 协作动作类型。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCollaborationActionKind {
+    Spawn,
+    Send,
+    Observe,
+    Close,
+    Delivery,
+}
+
+/// 协作动作结果类型。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCollaborationOutcomeKind {
+    Accepted,
+    Reused,
+    Queued,
+    Rejected,
+    Failed,
+    Delivered,
+    Consumed,
+    Replayed,
+    Closed,
+}
+
+/// 记录协作动作发生时的策略上下文。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCollaborationPolicyContext {
+    pub policy_revision: String,
+    pub max_subrun_depth: usize,
+    pub max_spawn_per_turn: usize,
+}
+
+/// 结构化协作事实。
+///
+/// 这是 agent-tool 评估系统的原始事实层；
+/// 聚合比率与 scorecard 都应从这些事实推导，而不是反过来改写它。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCollaborationFact {
+    pub fact_id: String,
+    pub action: AgentCollaborationActionKind,
+    pub outcome: AgentCollaborationOutcomeKind,
+    pub parent_session_id: String,
+    pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_sub_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tool_call_id: Option<String>,
+    pub policy: AgentCollaborationPolicyContext,
 }
 
 /// Agent 收件箱信封。

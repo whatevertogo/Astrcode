@@ -1,4 +1,4 @@
-use crate::SubRunStorageMode;
+use crate::{AgentCollaborationFact, SubRunStorageMode};
 
 /// 统一的运行时观测记录接口。
 ///
@@ -36,6 +36,7 @@ pub trait RuntimeMetricsRecorder: Send + Sync {
     fn record_delivery_buffer_wake_failed(&self);
     fn record_cache_reuse_hit(&self);
     fn record_cache_reuse_miss(&self);
+    fn record_agent_collaboration_fact(&self, fact: &AgentCollaborationFact);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -29,23 +29,13 @@ impl CloseAgentTool {
     fn build_description() -> String {
         r#"Close a sub-agent and cascade-close its subtree.
 
-## Usage Guide
+Use `close` to end a child branch and cascade-close its subtree.
 
-1. **Specify agentId**: The sub-agent ID to close.
-2. **Copy agentId exactly**: `agentId` must be copied byte-for-byte from a previous tool result's `Child agent reference`.
-3. **Cascade close**: All descendants of the agent are closed together.
+- Use the exact `agentId` returned earlier
+- Close when the branch is done, abandoned, or no longer worth capacity
+- Expect descendant agents to close together
 
-## When to Use
-
-- The child has finished and you no longer need follow-up work
-- The child took a wrong direction and you want to stop that branch
-- You want to free capacity before spawning other children
-
-## When NOT to Use
-
-- You still expect more work from the same child; use `send`
-- You only want to inspect state; use `observe`
-- You are unsure whether the task is complete"#
+Do not use `close` as a status probe. If you are unsure, `observe` first."#
             .to_string()
     }
 
@@ -83,9 +73,8 @@ impl Tool for CloseAgentTool {
             .prompt(
                 ToolPromptMetadata::new(
                     "Close a child branch that is finished or no longer useful.",
-                    "Use `close` when a child has completed its job, when you want to stop an \
-                     unneeded branch, or when you need to free capacity. Closing cascades through \
-                     the child's subtree. Reuse the exact `agentId` returned earlier.",
+                    "Use `close` to end a child branch that is finished, abandoned, or no longer \
+                     worth capacity. Closing cascades through the child's subtree.",
                 )
                 .caveat(
                     "Already-terminated sub-agents are handled idempotently. Never rewrite \
@@ -98,6 +87,11 @@ impl Tool for CloseAgentTool {
                 .caveat(
                     "When unsure whether the child is still needed, `observe` first. Use `close` \
                      for cleanup, not as a status probe.",
+                )
+                .caveat(
+                    "After a child delivers a useful result, decide immediately: either `close` \
+                     the finished branch or `send` one concrete follow-up. Do not leave completed \
+                     children idle without an explicit decision.",
                 )
                 .prompt_tag("collaboration"),
             )

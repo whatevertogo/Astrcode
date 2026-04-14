@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentEventContext, ChildSessionNotification, MailboxBatchAckedPayload,
+    AgentCollaborationFact, AgentEventContext, ChildSessionNotification, MailboxBatchAckedPayload,
     MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunResult,
     ToolOutputStream, UserMessageOrigin,
@@ -180,6 +180,19 @@ pub enum StorageEventPayload {
     /// 子会话通知事件（父会话摘要投影的 durable 来源）。
     ChildSessionNotification {
         notification: ChildSessionNotification,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::local_rfc3339_option"
+        )]
+        timestamp: Option<DateTime<Utc>>,
+    },
+    /// Agent 协作原始事实。
+    ///
+    /// 这是评估系统的 durable 原始事实层，
+    /// 用于后续稳定聚合 turn summary 与 runtime scorecard。
+    AgentCollaborationFact {
+        fact: AgentCollaborationFact,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",

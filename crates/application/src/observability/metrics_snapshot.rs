@@ -80,6 +80,35 @@ pub struct ExecutionDiagnosticsSnapshot {
     pub delivery_buffer_wake_failed: u64,
 }
 
+/// Agent collaboration 评估读模型。
+///
+/// 这些字段全部由 raw collaboration facts 派生，
+/// 用于判断 agent-tool 是否真的创造了协作价值。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentCollaborationScorecardSnapshot {
+    pub total_facts: u64,
+    pub spawn_accepted: u64,
+    pub spawn_rejected: u64,
+    pub send_reused: u64,
+    pub send_queued: u64,
+    pub send_rejected: u64,
+    pub observe_calls: u64,
+    pub observe_rejected: u64,
+    pub observe_followed_by_action: u64,
+    pub close_calls: u64,
+    pub close_rejected: u64,
+    pub delivery_delivered: u64,
+    pub delivery_consumed: u64,
+    pub delivery_replayed: u64,
+    pub orphan_child_count: u64,
+    pub child_reuse_ratio_bps: Option<u64>,
+    pub observe_to_action_ratio_bps: Option<u64>,
+    pub spawn_to_delivery_ratio_bps: Option<u64>,
+    pub orphan_child_ratio_bps: Option<u64>,
+    pub avg_delivery_latency_ms: Option<u64>,
+    pub max_delivery_latency_ms: Option<u64>,
+}
+
 /// 运行时可观测性快照，包含各类操作的指标。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeObservabilitySnapshot {
@@ -93,4 +122,6 @@ pub struct RuntimeObservabilitySnapshot {
     pub subrun_execution: SubRunExecutionMetricsSnapshot,
     /// 子会话/缓存/legacy cutover 的结构化观测指标
     pub execution_diagnostics: ExecutionDiagnosticsSnapshot,
+    /// agent-tool 协作效果评估读模型
+    pub agent_collaboration: AgentCollaborationScorecardSnapshot,
 }

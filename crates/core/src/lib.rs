@@ -54,11 +54,12 @@ pub use action::{
     split_assistant_content,
 };
 pub use agent::{
-    AgentEventContext, AgentInboxEnvelope, AgentMode, AgentProfile, AgentProfileCatalog,
-    ArtifactRef, ChildAgentRef, ChildSessionLineageKind, ChildSessionNode,
-    ChildSessionNotification, ChildSessionNotificationKind, ChildSessionStatusSource,
-    CloseAgentParams, CollaborationResult, CollaborationResultKind, ForkMode, InboxEnvelopeKind,
-    InvocationKind, LineageSnapshot, ResolvedExecutionLimitsSnapshot,
+    AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
+    AgentCollaborationPolicyContext, AgentEventContext, AgentInboxEnvelope, AgentMode,
+    AgentProfile, AgentProfileCatalog, ArtifactRef, ChildAgentRef, ChildSessionLineageKind,
+    ChildSessionNode, ChildSessionNotification, ChildSessionNotificationKind,
+    ChildSessionStatusSource, CloseAgentParams, CollaborationResult, CollaborationResultKind,
+    ForkMode, InboxEnvelopeKind, InvocationKind, LineageSnapshot, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides, SendAgentParams, SpawnAgentParams, SubRunFailure,
     SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
     SubagentContextOverrides,

@@ -18,6 +18,7 @@ mod agent;
 mod auth;
 mod composer;
 mod config;
+mod debug;
 mod event;
 mod model;
 mod runtime;
@@ -37,6 +38,11 @@ pub use config::{
     ConfigReloadResponse, ConfigView, ProfileView, SaveActiveSelectionRequest,
     TestConnectionRequest, TestResultDto,
 };
+pub use debug::{
+    DebugAgentNodeKindDto, RuntimeDebugOverviewDto, RuntimeDebugTimelineDto,
+    RuntimeDebugTimelineSampleDto, SessionDebugAgentNodeDto, SessionDebugAgentsDto,
+    SessionDebugTraceDto, SessionDebugTraceItemDto, SessionDebugTraceItemKindDto,
+};
 pub use event::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto, CompactTriggerDto,
     ExecutionControlDto, ForkModeDto, InvocationKindDto, MailboxBatchDto, MailboxDiscardedDto,
@@ -47,9 +53,9 @@ pub use event::{
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};
 pub use runtime::{
-    ExecutionDiagnosticsDto, OperationMetricsDto, PluginHealthDto, PluginRuntimeStateDto,
-    ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto,
-    RuntimeReloadResponseDto, RuntimeStatusDto, SubRunExecutionMetricsDto,
+    AgentCollaborationScorecardDto, ExecutionDiagnosticsDto, OperationMetricsDto, PluginHealthDto,
+    PluginRuntimeStateDto, ReplayMetricsDto, RuntimeCapabilityDto, RuntimeMetricsDto,
+    RuntimePluginDto, RuntimeReloadResponseDto, RuntimeStatusDto, SubRunExecutionMetricsDto,
 };
 pub use session::{
     CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,

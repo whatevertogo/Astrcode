@@ -22,7 +22,9 @@ use anyhow::{Context, Result, anyhow};
 use astrcode_core::LocalServerInfo;
 use instance::{DesktopInstanceCoordinator, InstanceBootstrap};
 use serde::Deserialize;
-use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder, async_runtime};
+use tauri::{
+    Emitter, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, async_runtime,
+};
 use tauri_plugin_shell::{
     ShellExt,
     process::{CommandChild, CommandEvent},
@@ -37,6 +39,7 @@ struct ServerState {
     child: Mutex<Option<CommandChild>>,
     shutting_down: Arc<AtomicBool>,
     spawned_sidecar_path: SpawnedSidecarPath,
+    bootstrap_script: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +86,7 @@ fn run_desktop_shell() -> Result<()> {
             commands::close_window,
             commands::select_directory,
             commands::open_config_in_editor,
+            commands::open_debug_workbench,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -108,13 +112,15 @@ fn run_desktop_shell() -> Result<()> {
 
 fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, String)> {
     if let Some(run_info) = try_connect_existing_server()? {
+        let bootstrap_script = build_bootstrap_script(&run_info)?;
         return Ok((
             ServerState {
                 child: Mutex::new(None),
                 shutting_down: Arc::new(AtomicBool::new(false)),
                 spawned_sidecar_path: Arc::new(Mutex::new(None)),
+                bootstrap_script: bootstrap_script.clone(),
             },
-            build_bootstrap_script(&run_info)?,
+            bootstrap_script,
         ));
     }
 
@@ -149,53 +155,36 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Stri
         )
     })?;
 
+    let bootstrap_script = build_bootstrap_script(&run_info)?;
     Ok((
         ServerState {
             child: Mutex::new(child),
             shutting_down,
             spawned_sidecar_path,
+            bootstrap_script: bootstrap_script.clone(),
         },
-        build_bootstrap_script(&run_info)?,
+        bootstrap_script,
     ))
 }
 
 fn create_main_window(
     app_handle: &tauri::AppHandle,
     bootstrap_script: &str,
-) -> Result<tauri::WebviewWindow> {
-    if let Some(window) = app_handle.get_webview_window("main") {
-        return Ok(window);
-    }
-
-    let mut window_config = app_handle
-        .config()
-        .app
-        .windows
-        .iter()
-        .find(|config| config.label == "main")
-        .cloned()
-        .ok_or_else(|| anyhow!("main window config is missing"))?;
-    window_config.url = resolve_main_window_url(app_handle)?;
-
-    // Windows 上同步创建 WebView 和同步 `eval` 都踩过 WebView2 死锁面。
-    // 这里保留初始化脚本注入，并配合 setup 里的独立线程创建窗口，避开阻塞主 UI 线程。
-    WebviewWindowBuilder::from_config(app_handle, &window_config)
-        .context("failed to build main window from config")?
-        .initialization_script(bootstrap_script)
-        .build()
-        .context("failed to create main window")
+) -> Result<WebviewWindow> {
+    create_named_window(app_handle, "main", "index.html", bootstrap_script)
 }
 
-fn build_bootstrap_script(run_info: &LocalServerInfo) -> Result<String> {
-    let bootstrap = serde_json::json!({
-        "token": run_info.token,
-        "isDesktopHost": true,
-        "serverOrigin": format!("http://127.0.0.1:{}", run_info.port),
-    });
-    Ok(format!(
-        "window.__ASTRCODE_BOOTSTRAP__ = {};",
-        serde_json::to_string(&bootstrap)?
-    ))
+pub(crate) fn create_debug_workbench_window(
+    app_handle: &tauri::AppHandle,
+    bootstrap_script: &str,
+    session_id: Option<&str>,
+) -> Result<WebviewWindow> {
+    let entry_path = debug_workbench_entry_path(session_id);
+    let window = create_named_window(app_handle, "debug-workbench", &entry_path, bootstrap_script)?;
+    if let Some(next_session_id) = session_id.filter(|value| !value.is_empty()) {
+        window.emit("debug-workbench:set-session", next_session_id)?;
+    }
+    Ok(window)
 }
 
 fn try_connect_existing_server() -> Result<Option<LocalServerInfo>> {
@@ -277,30 +266,82 @@ fn fetch_existing_server_bootstrap_token(port: u16) -> Result<Option<String>> {
     Ok(Some(payload.token))
 }
 
-fn resolve_main_window_url(app_handle: &tauri::AppHandle) -> Result<WebviewUrl> {
-    let window_config = app_handle
+fn create_named_window(
+    app_handle: &tauri::AppHandle,
+    label: &str,
+    entry_path: &str,
+    bootstrap_script: &str,
+) -> Result<WebviewWindow> {
+    if let Some(window) = app_handle.get_webview_window(label) {
+        return Ok(window);
+    }
+
+    let mut window_config = app_handle
         .config()
         .app
         .windows
         .iter()
-        .find(|config| config.label == "main")
-        .ok_or_else(|| anyhow!("main window config is missing"))?;
+        .find(|config| config.label == label)
+        .cloned()
+        .ok_or_else(|| anyhow!("{label} window config is missing"))?;
+    window_config.url = resolve_window_url(app_handle, entry_path, window_config.use_https_scheme)?;
+
+    // Windows 上同步创建 WebView 和同步 `eval` 都踩过 WebView2 死锁面。
+    // 这里保留初始化脚本注入，并配合 setup 里的独立线程创建窗口，避开阻塞主 UI 线程。
+    WebviewWindowBuilder::from_config(app_handle, &window_config)
+        .with_context(|| format!("failed to build {label} window from config"))?
+        .initialization_script(bootstrap_script)
+        .build()
+        .with_context(|| format!("failed to create {label} window"))
+}
+
+fn build_bootstrap_script(run_info: &LocalServerInfo) -> Result<String> {
+    let bootstrap = serde_json::json!({
+        "token": run_info.token,
+        "isDesktopHost": true,
+        "serverOrigin": format!("http://127.0.0.1:{}", run_info.port),
+    });
+    Ok(format!(
+        "window.__ASTRCODE_BOOTSTRAP__ = {};",
+        serde_json::to_string(&bootstrap)?
+    ))
+}
+
+fn debug_workbench_entry_path(session_id: Option<&str>) -> String {
+    match session_id.filter(|value| !value.is_empty()) {
+        Some(session_id) => format!("debug.html?sessionId={session_id}"),
+        None => "debug.html".to_string(),
+    }
+}
+
+fn resolve_window_url(
+    app_handle: &tauri::AppHandle,
+    entry_path: &str,
+    use_https_scheme: bool,
+) -> Result<WebviewUrl> {
     if !cfg!(dev) {
         // 生产构建必须回到 Tauri 的资源型 URL。这里让框架自己解析内嵌资源，
         // 避免我们把资源地址硬编码成 http(s)://tauri.localhost/index.html 后，
         // 再次绕开官方的 app asset 解析路径，导致桌面端报 asset not found。
-        return Ok(WebviewUrl::App("index.html".into()));
+        return Ok(WebviewUrl::App(entry_path.into()));
     }
 
     let Some(dev_url) = app_handle.config().build.dev_url.as_ref() else {
-        return explicit_embedded_frontend_url(window_config.use_https_scheme);
+        return explicit_embedded_frontend_url(use_https_scheme, entry_path);
     };
 
     // 开发环境优先直连 Vite，这样 `cargo tauri dev` 仍保留 HMR。
     // `beforeDevCommand` 会先编译 sidecar 再启动 Vite，
     // 所以这里需要重试等待 Vite 就绪，避免 fallback 到不可用的 asset URL。
     if wait_for_dev_server(dev_url) {
-        return Ok(WebviewUrl::External(dev_url.clone()));
+        let url = if entry_path == "index.html" {
+            dev_url.clone()
+        } else {
+            dev_url
+                .join(entry_path)
+                .with_context(|| format!("failed to resolve dev url for '{entry_path}'"))?
+        };
+        return Ok(WebviewUrl::External(url));
     }
 
     // Vite 未能在规定时间内启动。
@@ -311,7 +352,7 @@ fn resolve_main_window_url(app_handle: &tauri::AppHandle) -> Result<WebviewUrl> 
          build output for errors.",
         dev_url
     );
-    let error_page_html = build_vite_unreachable_error_page(dev_url);
+    let error_page_html = build_vite_unreachable_error_page(dev_url, entry_path);
     let error_uri = format!(
         "data:text/html;charset=utf-8,{}",
         error_page_html.replace('%', "%25").replace('#', "%23")
@@ -342,7 +383,7 @@ fn wait_for_dev_server(dev_url: &Url) -> bool {
 }
 
 /// 生成一个可读的错误页 HTML，提示用户 Vite 未启动。
-fn build_vite_unreachable_error_page(dev_url: &Url) -> String {
+fn build_vite_unreachable_error_page(dev_url: &Url, entry_path: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -356,7 +397,7 @@ fn build_vite_unreachable_error_page(dev_url: &Url) -> String {
 </style></head>
 <body>
   <h1>⚠️ 前端开发服务器未就绪</h1>
-  <p>桌面端尝试连接 <code>{}</code> 失败。</p>
+  <p>桌面端尝试连接 <code>{}</code> 并打开 <code>{}</code> 失败。</p>
   <p>可能的原因：</p>
   <ol>
     <li><code>beforeDevCommand</code>（<code>scripts/tauri-frontend.js</code>）编译 sidecar 耗时过长</li>
@@ -368,11 +409,11 @@ fn build_vite_unreachable_error_page(dev_url: &Url) -> String {
   <p>然后重启桌面应用。如果只想验证已构建的前端产物：<code>cargo tauri build</code></p>
 </body>
 </html>"#,
-        dev_url
+        dev_url, entry_path
     )
 }
 
-fn explicit_embedded_frontend_url(use_https_scheme: bool) -> Result<WebviewUrl> {
+fn explicit_embedded_frontend_url(use_https_scheme: bool, entry_path: &str) -> Result<WebviewUrl> {
     let scheme = if cfg!(windows) || cfg!(target_os = "android") {
         if use_https_scheme {
             "https://tauri.localhost"
@@ -382,7 +423,7 @@ fn explicit_embedded_frontend_url(use_https_scheme: bool) -> Result<WebviewUrl> 
     } else {
         "tauri://localhost"
     };
-    let url = Url::parse(&format!("{scheme}/index.html"))
+    let url = Url::parse(&format!("{scheme}/{entry_path}"))
         .with_context(|| format!("failed to build embedded frontend url from '{scheme}'"))?;
     Ok(WebviewUrl::External(url))
 }
@@ -861,8 +902,8 @@ mod tests {
 
     #[test]
     fn explicit_embedded_frontend_url_builds_expected_dev_fallback_url() {
-        let url =
-            explicit_embedded_frontend_url(false).expect("embedded frontend url should build");
+        let url = explicit_embedded_frontend_url(false, "index.html")
+            .expect("embedded frontend url should build");
 
         match url {
             WebviewUrl::External(url) => {
@@ -883,6 +924,23 @@ mod tests {
         match url {
             WebviewUrl::App(path) => assert_eq!(path.to_string_lossy(), "index.html"),
             other => panic!("expected resource app url, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_embedded_debug_url_uses_debug_entry() {
+        let url = explicit_embedded_frontend_url(false, "debug.html")
+            .expect("embedded debug url should build");
+
+        match url {
+            WebviewUrl::External(url) => {
+                if cfg!(windows) || cfg!(target_os = "android") {
+                    assert_eq!(url.as_str(), "http://tauri.localhost/debug.html");
+                } else {
+                    assert_eq!(url.as_str(), "tauri://localhost/debug.html");
+                }
+            },
+            other => panic!("expected explicit external embedded url, got {other:?}"),
         }
     }
 }

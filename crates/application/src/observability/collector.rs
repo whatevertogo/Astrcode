@@ -1,12 +1,22 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    collections::HashMap,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
-use astrcode_core::{RuntimeMetricsRecorder, SubRunExecutionOutcome, SubRunStorageMode};
+use astrcode_core::{
+    AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
+    RuntimeMetricsRecorder, SubRunExecutionOutcome, SubRunStorageMode,
+};
 
 use crate::{
     ObservabilitySnapshotProvider,
     observability::{
-        ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot, ReplayMetricsSnapshot,
-        RuntimeObservabilitySnapshot, SubRunExecutionMetricsSnapshot,
+        AgentCollaborationScorecardSnapshot, ExecutionDiagnosticsSnapshot,
+        OperationMetricsSnapshot, ReplayMetricsSnapshot, RuntimeObservabilitySnapshot,
+        SubRunExecutionMetricsSnapshot,
     },
 };
 
@@ -204,6 +214,195 @@ impl ExecutionDiagnostics {
     }
 }
 
+#[derive(Default)]
+struct ChildCollaborationState {
+    had_reuse: bool,
+    had_delivery: bool,
+    closed: bool,
+}
+
+#[derive(Default)]
+struct PendingObserveState {
+    satisfied: bool,
+}
+
+#[derive(Default)]
+struct CollaborationMetricsState {
+    total_facts: u64,
+    spawn_accepted: u64,
+    spawn_rejected: u64,
+    send_reused: u64,
+    send_queued: u64,
+    send_rejected: u64,
+    observe_calls: u64,
+    observe_rejected: u64,
+    observe_followed_by_action: u64,
+    close_calls: u64,
+    close_rejected: u64,
+    delivery_delivered: u64,
+    delivery_consumed: u64,
+    delivery_replayed: u64,
+    delivery_latency_total_ms: u64,
+    delivery_latency_samples: u64,
+    max_delivery_latency_ms: u64,
+    child_states: HashMap<String, ChildCollaborationState>,
+    pending_observes: HashMap<String, PendingObserveState>,
+}
+
+impl CollaborationMetricsState {
+    fn record(&mut self, fact: &AgentCollaborationFact) {
+        self.total_facts = self.total_facts.saturating_add(1);
+        match (fact.action, fact.outcome) {
+            (AgentCollaborationActionKind::Spawn, AgentCollaborationOutcomeKind::Accepted) => {
+                self.spawn_accepted = self.spawn_accepted.saturating_add(1);
+                if let Some(child_id) = fact.child_agent_id.as_deref() {
+                    self.child_states.entry(child_id.to_string()).or_default();
+                }
+            },
+            (AgentCollaborationActionKind::Spawn, AgentCollaborationOutcomeKind::Rejected)
+            | (AgentCollaborationActionKind::Spawn, AgentCollaborationOutcomeKind::Failed) => {
+                self.spawn_rejected = self.spawn_rejected.saturating_add(1);
+            },
+            (AgentCollaborationActionKind::Send, AgentCollaborationOutcomeKind::Reused) => {
+                self.send_reused = self.send_reused.saturating_add(1);
+                self.mark_child_reused(fact.child_agent_id.as_deref());
+                self.satisfy_pending_observe(fact.child_agent_id.as_deref());
+            },
+            (AgentCollaborationActionKind::Send, AgentCollaborationOutcomeKind::Queued) => {
+                self.send_queued = self.send_queued.saturating_add(1);
+                self.mark_child_reused(fact.child_agent_id.as_deref());
+                self.satisfy_pending_observe(fact.child_agent_id.as_deref());
+            },
+            (AgentCollaborationActionKind::Send, AgentCollaborationOutcomeKind::Rejected)
+            | (AgentCollaborationActionKind::Send, AgentCollaborationOutcomeKind::Failed) => {
+                self.send_rejected = self.send_rejected.saturating_add(1);
+            },
+            (AgentCollaborationActionKind::Observe, AgentCollaborationOutcomeKind::Accepted) => {
+                self.observe_calls = self.observe_calls.saturating_add(1);
+                if let Some(child_id) = fact.child_agent_id.as_deref() {
+                    self.pending_observes
+                        .entry(child_id.to_string())
+                        .or_default();
+                }
+            },
+            (AgentCollaborationActionKind::Observe, AgentCollaborationOutcomeKind::Rejected)
+            | (AgentCollaborationActionKind::Observe, AgentCollaborationOutcomeKind::Failed) => {
+                self.observe_rejected = self.observe_rejected.saturating_add(1);
+            },
+            (AgentCollaborationActionKind::Close, AgentCollaborationOutcomeKind::Closed) => {
+                self.close_calls = self.close_calls.saturating_add(1);
+                if let Some(child_id) = fact.child_agent_id.as_deref() {
+                    self.child_states
+                        .entry(child_id.to_string())
+                        .or_default()
+                        .closed = true;
+                    self.satisfy_pending_observe(Some(child_id));
+                }
+            },
+            (AgentCollaborationActionKind::Close, AgentCollaborationOutcomeKind::Rejected)
+            | (AgentCollaborationActionKind::Close, AgentCollaborationOutcomeKind::Failed) => {
+                self.close_rejected = self.close_rejected.saturating_add(1);
+            },
+            (AgentCollaborationActionKind::Delivery, AgentCollaborationOutcomeKind::Delivered) => {
+                self.delivery_delivered = self.delivery_delivered.saturating_add(1);
+                if let Some(child_id) = fact.child_agent_id.as_deref() {
+                    self.child_states
+                        .entry(child_id.to_string())
+                        .or_default()
+                        .had_delivery = true;
+                }
+            },
+            (AgentCollaborationActionKind::Delivery, AgentCollaborationOutcomeKind::Consumed) => {
+                self.delivery_consumed = self.delivery_consumed.saturating_add(1);
+                if let Some(latency_ms) = fact.latency_ms {
+                    self.delivery_latency_total_ms =
+                        self.delivery_latency_total_ms.saturating_add(latency_ms);
+                    self.delivery_latency_samples = self.delivery_latency_samples.saturating_add(1);
+                    self.max_delivery_latency_ms = self.max_delivery_latency_ms.max(latency_ms);
+                }
+            },
+            (AgentCollaborationActionKind::Delivery, AgentCollaborationOutcomeKind::Replayed) => {
+                self.delivery_replayed = self.delivery_replayed.saturating_add(1);
+            },
+            _ => {},
+        }
+    }
+
+    fn mark_child_reused(&mut self, child_id: Option<&str>) {
+        if let Some(child_id) = child_id {
+            self.child_states
+                .entry(child_id.to_string())
+                .or_default()
+                .had_reuse = true;
+        }
+    }
+
+    fn satisfy_pending_observe(&mut self, child_id: Option<&str>) {
+        let Some(child_id) = child_id else {
+            return;
+        };
+        if let Some(observe) = self.pending_observes.get_mut(child_id) {
+            if !observe.satisfied {
+                observe.satisfied = true;
+                self.observe_followed_by_action = self.observe_followed_by_action.saturating_add(1);
+            }
+        }
+    }
+
+    fn snapshot(&self) -> AgentCollaborationScorecardSnapshot {
+        let orphan_child_count = self
+            .child_states
+            .values()
+            .filter(|state| !state.had_reuse && !state.had_delivery && !state.closed)
+            .count() as u64;
+        let reuse_numerator = self.send_reused.saturating_add(self.send_queued);
+        let delivery_ratio_denominator = self.spawn_accepted;
+
+        AgentCollaborationScorecardSnapshot {
+            total_facts: self.total_facts,
+            spawn_accepted: self.spawn_accepted,
+            spawn_rejected: self.spawn_rejected,
+            send_reused: self.send_reused,
+            send_queued: self.send_queued,
+            send_rejected: self.send_rejected,
+            observe_calls: self.observe_calls,
+            observe_rejected: self.observe_rejected,
+            observe_followed_by_action: self.observe_followed_by_action,
+            close_calls: self.close_calls,
+            close_rejected: self.close_rejected,
+            delivery_delivered: self.delivery_delivered,
+            delivery_consumed: self.delivery_consumed,
+            delivery_replayed: self.delivery_replayed,
+            orphan_child_count,
+            child_reuse_ratio_bps: ratio_bps(
+                reuse_numerator,
+                self.spawn_accepted.saturating_add(reuse_numerator),
+            ),
+            observe_to_action_ratio_bps: ratio_bps(
+                self.observe_followed_by_action,
+                self.observe_calls,
+            ),
+            spawn_to_delivery_ratio_bps: ratio_bps(
+                self.delivery_delivered,
+                delivery_ratio_denominator,
+            ),
+            orphan_child_ratio_bps: ratio_bps(orphan_child_count, self.spawn_accepted),
+            avg_delivery_latency_ms: self
+                .delivery_latency_total_ms
+                .checked_div(self.delivery_latency_samples),
+            max_delivery_latency_ms: if self.delivery_latency_samples > 0 {
+                Some(self.max_delivery_latency_ms)
+            } else {
+                None
+            },
+        }
+    }
+}
+
+fn ratio_bps(numerator: u64, denominator: u64) -> Option<u64> {
+    numerator.saturating_mul(10_000).checked_div(denominator)
+}
+
 /// 真实运行时观测采集器。
 #[derive(Default)]
 pub struct RuntimeObservabilityCollector {
@@ -212,6 +411,7 @@ pub struct RuntimeObservabilityCollector {
     turn_execution: OperationMetrics,
     subrun_execution: SubRunMetrics,
     diagnostics: ExecutionDiagnostics,
+    collaboration: Mutex<CollaborationMetricsState>,
 }
 
 impl RuntimeObservabilityCollector {
@@ -228,6 +428,11 @@ impl ObservabilitySnapshotProvider for RuntimeObservabilityCollector {
             turn_execution: self.turn_execution.snapshot(),
             subrun_execution: self.subrun_execution.snapshot(),
             execution_diagnostics: self.diagnostics.snapshot(),
+            agent_collaboration: self
+                .collaboration
+                .lock()
+                .expect("collaboration metrics mutex")
+                .snapshot(),
         }
     }
 }
@@ -334,11 +539,22 @@ impl RuntimeMetricsRecorder for RuntimeObservabilityCollector {
             .cache_reuse_misses
             .fetch_add(1, Ordering::Relaxed);
     }
+
+    fn record_agent_collaboration_fact(&self, fact: &AgentCollaborationFact) {
+        self.collaboration
+            .lock()
+            .expect("collaboration metrics mutex")
+            .record(fact);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{RuntimeMetricsRecorder, SubRunExecutionOutcome, SubRunStorageMode};
+    use astrcode_core::{
+        AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
+        AgentCollaborationPolicyContext, RuntimeMetricsRecorder, SubRunExecutionOutcome,
+        SubRunStorageMode,
+    };
 
     use super::RuntimeObservabilityCollector;
     use crate::ObservabilitySnapshotProvider;
@@ -396,6 +612,105 @@ mod tests {
                 .execution_diagnostics
                 .delivery_buffer_wake_succeeded,
             1
+        );
+    }
+
+    #[test]
+    fn collector_snapshot_derives_collaboration_scorecard() {
+        let collector = RuntimeObservabilityCollector::new();
+        let policy = AgentCollaborationPolicyContext {
+            policy_revision: "agent-collaboration-v1".to_string(),
+            max_subrun_depth: 3,
+            max_spawn_per_turn: 3,
+        };
+
+        collector.record_agent_collaboration_fact(&AgentCollaborationFact {
+            fact_id: "fact-spawn".to_string(),
+            action: AgentCollaborationActionKind::Spawn,
+            outcome: AgentCollaborationOutcomeKind::Accepted,
+            parent_session_id: "session-parent".to_string(),
+            turn_id: "turn-1".to_string(),
+            parent_agent_id: Some("agent-root".to_string()),
+            child_agent_id: Some("agent-child".to_string()),
+            child_session_id: Some("session-child".to_string()),
+            child_sub_run_id: Some("subrun-child".to_string()),
+            delivery_id: None,
+            reason_code: None,
+            summary: Some("spawned".to_string()),
+            latency_ms: None,
+            source_tool_call_id: Some("call-1".to_string()),
+            policy: policy.clone(),
+        });
+        collector.record_agent_collaboration_fact(&AgentCollaborationFact {
+            fact_id: "fact-observe".to_string(),
+            action: AgentCollaborationActionKind::Observe,
+            outcome: AgentCollaborationOutcomeKind::Accepted,
+            parent_session_id: "session-parent".to_string(),
+            turn_id: "turn-1".to_string(),
+            parent_agent_id: Some("agent-root".to_string()),
+            child_agent_id: Some("agent-child".to_string()),
+            child_session_id: Some("session-child".to_string()),
+            child_sub_run_id: Some("subrun-child".to_string()),
+            delivery_id: None,
+            reason_code: None,
+            summary: Some("observe".to_string()),
+            latency_ms: None,
+            source_tool_call_id: Some("call-2".to_string()),
+            policy: policy.clone(),
+        });
+        collector.record_agent_collaboration_fact(&AgentCollaborationFact {
+            fact_id: "fact-send".to_string(),
+            action: AgentCollaborationActionKind::Send,
+            outcome: AgentCollaborationOutcomeKind::Reused,
+            parent_session_id: "session-parent".to_string(),
+            turn_id: "turn-1".to_string(),
+            parent_agent_id: Some("agent-root".to_string()),
+            child_agent_id: Some("agent-child".to_string()),
+            child_session_id: Some("session-child".to_string()),
+            child_sub_run_id: Some("subrun-child".to_string()),
+            delivery_id: None,
+            reason_code: None,
+            summary: Some("reused".to_string()),
+            latency_ms: None,
+            source_tool_call_id: Some("call-3".to_string()),
+            policy: policy.clone(),
+        });
+        collector.record_agent_collaboration_fact(&AgentCollaborationFact {
+            fact_id: "fact-delivery".to_string(),
+            action: AgentCollaborationActionKind::Delivery,
+            outcome: AgentCollaborationOutcomeKind::Consumed,
+            parent_session_id: "session-parent".to_string(),
+            turn_id: "turn-2".to_string(),
+            parent_agent_id: Some("agent-root".to_string()),
+            child_agent_id: Some("agent-child".to_string()),
+            child_session_id: Some("session-child".to_string()),
+            child_sub_run_id: Some("subrun-child".to_string()),
+            delivery_id: Some("delivery-1".to_string()),
+            reason_code: None,
+            summary: Some("consumed".to_string()),
+            latency_ms: Some(250),
+            source_tool_call_id: None,
+            policy,
+        });
+
+        let snapshot = collector.snapshot();
+        assert_eq!(snapshot.agent_collaboration.total_facts, 4);
+        assert_eq!(snapshot.agent_collaboration.spawn_accepted, 1);
+        assert_eq!(snapshot.agent_collaboration.send_reused, 1);
+        assert_eq!(snapshot.agent_collaboration.observe_calls, 1);
+        assert_eq!(snapshot.agent_collaboration.observe_followed_by_action, 1);
+        assert_eq!(snapshot.agent_collaboration.delivery_consumed, 1);
+        assert_eq!(
+            snapshot.agent_collaboration.child_reuse_ratio_bps,
+            Some(5000)
+        );
+        assert_eq!(
+            snapshot.agent_collaboration.observe_to_action_ratio_bps,
+            Some(10000)
+        );
+        assert_eq!(
+            snapshot.agent_collaboration.avg_delivery_latency_ms,
+            Some(250)
         );
     }
 }

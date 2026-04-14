@@ -17,6 +17,7 @@ pub struct AgentObserveSnapshot {
     pub pending_message_count: usize,
     pub active_task: Option<String>,
     pub pending_task: Option<String>,
+    pub recent_mailbox_messages: Vec<String>,
     pub last_output: Option<String>,
 }
 
@@ -41,6 +42,7 @@ pub fn build_agent_observe_snapshot(
             &mailbox_messages,
         ),
         pending_task: pending_task_summary(mailbox_projection, &mailbox_messages),
+        recent_mailbox_messages: recent_mailbox_message_summaries(stored_events, target_agent_id),
         last_output: extract_last_output(&projected.messages),
     }
 }
@@ -139,6 +141,30 @@ fn collect_mailbox_messages(
     messages
 }
 
+fn recent_mailbox_message_summaries(
+    stored_events: &[StoredEvent],
+    target_agent_id: &str,
+) -> Vec<String> {
+    const MAX_RECENT_MAILBOX_MESSAGES: usize = 3;
+
+    stored_events
+        .iter()
+        .filter_map(|stored| match &stored.event.payload {
+            StorageEventPayload::AgentMailboxQueued { payload }
+                if payload.envelope.to_agent_id == target_agent_id =>
+            {
+                summarize_task_text(&payload.envelope.message)
+            },
+            _ => None,
+        })
+        .rev()
+        .take(MAX_RECENT_MAILBOX_MESSAGES)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
 fn summarize_task_text(text: &str) -> Option<String> {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = normalized.trim();
@@ -163,9 +189,47 @@ fn summarize_task_text(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::LlmMessage;
+    use std::path::PathBuf;
 
-    use super::{extract_last_output, summarize_task_text};
+    use astrcode_core::{
+        AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentState, LlmMessage,
+        MailboxProjection, MailboxQueuedPayload, Phase, StorageEvent, StorageEventPayload,
+        StoredEvent,
+    };
+
+    use super::{
+        build_agent_observe_snapshot, extract_last_output, recent_mailbox_message_summaries,
+        summarize_task_text,
+    };
+
+    fn queued_mailbox_event(
+        storage_seq: u64,
+        delivery_id: &str,
+        target_agent_id: &str,
+        message: &str,
+    ) -> StoredEvent {
+        StoredEvent {
+            storage_seq,
+            event: StorageEvent {
+                turn_id: Some("turn-parent".to_string()),
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::AgentMailboxQueued {
+                    payload: MailboxQueuedPayload {
+                        envelope: AgentMailboxEnvelope {
+                            delivery_id: delivery_id.to_string(),
+                            from_agent_id: "parent".to_string(),
+                            to_agent_id: target_agent_id.to_string(),
+                            message: message.to_string(),
+                            queued_at: chrono::Utc::now(),
+                            sender_lifecycle_status: AgentLifecycleStatus::Idle,
+                            sender_last_turn_outcome: None,
+                            sender_open_session_id: "session-parent".to_string(),
+                        },
+                    },
+                },
+            },
+        }
+    }
 
     #[test]
     fn summarize_task_text_trims_and_truncates() {
@@ -196,5 +260,51 @@ mod tests {
             },
         ];
         assert_eq!(extract_last_output(&messages), Some("最后输出".to_string()));
+    }
+
+    #[test]
+    fn recent_mailbox_message_summaries_returns_only_tail() {
+        let stored_events = vec![
+            queued_mailbox_event(1, "d1", "child-1", "第一条"),
+            queued_mailbox_event(2, "d2", "child-1", "第二条"),
+            queued_mailbox_event(3, "d3", "child-1", "第三条"),
+            queued_mailbox_event(4, "d4", "child-1", "第四条"),
+        ];
+
+        assert_eq!(
+            recent_mailbox_message_summaries(&stored_events, "child-1"),
+            vec![
+                "第二条".to_string(),
+                "第三条".to_string(),
+                "第四条".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn build_agent_observe_snapshot_includes_recent_mailbox_tail() {
+        let stored_events = vec![
+            queued_mailbox_event(1, "d1", "child-1", "第一条"),
+            queued_mailbox_event(2, "d2", "child-1", "第二条"),
+        ];
+        let snapshot = build_agent_observe_snapshot(
+            AgentLifecycleStatus::Idle,
+            &AgentState {
+                session_id: "session-child".to_string(),
+                working_dir: PathBuf::from("/workspace/demo"),
+                messages: Vec::new(),
+                phase: Phase::Idle,
+                turn_count: 2,
+                last_assistant_at: None,
+            },
+            &MailboxProjection::default(),
+            &stored_events,
+            "child-1",
+        );
+
+        assert_eq!(
+            snapshot.recent_mailbox_messages,
+            vec!["第一条".to_string(), "第二条".to_string()]
+        );
     }
 }

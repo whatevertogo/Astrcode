@@ -4,12 +4,13 @@
 //! 改为通过 Kernel + SessionRuntime 完成所有操作。
 
 use astrcode_core::{
-    AgentInboxEnvelope, AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind,
-    CloseAgentParams, CollaborationResult, CollaborationResultKind, InboxEnvelopeKind,
-    MailboxDiscardedPayload, MailboxQueuedPayload, SendAgentParams, SubRunHandle,
+    AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentInboxEnvelope,
+    AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind, CloseAgentParams,
+    CollaborationResult, CollaborationResultKind, InboxEnvelopeKind, MailboxDiscardedPayload,
+    MailboxQueuedPayload, SendAgentParams, SubRunHandle,
 };
 
-use super::{AgentOrchestrationService, subrun_event_context};
+use super::{AgentOrchestrationService, CollaborationFactRecord, subrun_event_context};
 
 impl AgentOrchestrationService {
     /// 验证调用者是否为目标子 agent 的直接父级。
@@ -25,9 +26,10 @@ impl AgentOrchestrationService {
             (Some(caller), Some(parent)) if caller == parent => Ok(()),
             (None, None) => Ok(()),
             _ => Err(super::AgentOrchestrationError::InvalidInput(format!(
-                "caller '{}' does not own agent '{}' (parent: {})",
-                caller_agent_id.unwrap_or("<root>"),
+                "agent '{}' is not a direct child of caller '{}' (actual parent: {}); \
+                 send/observe/close only support direct children",
                 child_handle.agent_id,
+                caller_agent_id.unwrap_or("<root>"),
                 child_parent_id.unwrap_or("<none>")
             ))),
         }
@@ -39,29 +41,91 @@ impl AgentOrchestrationService {
         params: SendAgentParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
+        let runtime = self.resolve_runtime_config_for_working_dir(ctx.working_dir())?;
+        let turn_id = ctx.turn_id().unwrap_or("unknown-turn").to_string();
+        let parent_session_id = ctx.session_id().to_string();
+        let parent_agent_id = ctx.agent_context().agent_id.clone();
+        let source_tool_call_id = ctx.tool_call_id().map(ToString::to_string);
         params
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;
 
-        let child = self
-            .kernel
-            .get_agent_handle(&params.agent_id)
-            .await
-            .ok_or_else(|| {
-                super::AgentOrchestrationError::NotFound(format!(
+        let child = match self.kernel.get_agent_handle(&params.agent_id).await {
+            Some(child) => child,
+            None => {
+                let error = super::AgentOrchestrationError::NotFound(format!(
                     "agent '{}' not found",
                     params.agent_id
-                ))
-            })?;
+                ));
+                let _ = self
+                    .record_collaboration_fact(
+                        &runtime,
+                        CollaborationFactRecord {
+                            action: AgentCollaborationActionKind::Send,
+                            outcome: AgentCollaborationOutcomeKind::Rejected,
+                            session_id: &parent_session_id,
+                            turn_id: &turn_id,
+                            parent_agent_id: parent_agent_id.clone(),
+                            child: None,
+                            delivery_id: None,
+                            reason_code: Some("child_not_found".to_string()),
+                            summary: Some(error.to_string()),
+                            latency_ms: None,
+                            source_tool_call_id: source_tool_call_id.clone(),
+                        },
+                    )
+                    .await;
+                return Err(error);
+            },
+        };
 
-        self.verify_caller_owns_child(ctx, &child)?;
+        if let Err(error) = self.verify_caller_owns_child(ctx, &child) {
+            let _ = self
+                .record_collaboration_fact(
+                    &runtime,
+                    CollaborationFactRecord {
+                        action: AgentCollaborationActionKind::Send,
+                        outcome: AgentCollaborationOutcomeKind::Rejected,
+                        session_id: &parent_session_id,
+                        turn_id: &turn_id,
+                        parent_agent_id: parent_agent_id.clone(),
+                        child: Some(&child),
+                        delivery_id: None,
+                        reason_code: Some("ownership_mismatch".to_string()),
+                        summary: Some(error.to_string()),
+                        latency_ms: None,
+                        source_tool_call_id: source_tool_call_id.clone(),
+                    },
+                )
+                .await;
+            return Err(error);
+        }
 
         let lifecycle = self.kernel.get_agent_lifecycle(&params.agent_id).await;
         if matches!(lifecycle, Some(AgentLifecycleStatus::Terminated)) {
-            return Err(super::AgentOrchestrationError::InvalidInput(format!(
+            let error = super::AgentOrchestrationError::InvalidInput(format!(
                 "agent '{}' has been terminated and cannot receive new messages",
                 params.agent_id
-            )));
+            ));
+            let _ = self
+                .record_collaboration_fact(
+                    &runtime,
+                    CollaborationFactRecord {
+                        action: AgentCollaborationActionKind::Send,
+                        outcome: AgentCollaborationOutcomeKind::Rejected,
+                        session_id: &parent_session_id,
+                        turn_id: &turn_id,
+                        parent_agent_id: parent_agent_id.clone(),
+                        child: Some(&child),
+                        delivery_id: None,
+                        reason_code: Some("child_terminated".to_string()),
+                        summary: Some(error.to_string()),
+                        latency_ms: None,
+                        source_tool_call_id: source_tool_call_id.clone(),
+                    },
+                )
+                .await;
+            return Err(error);
         }
 
         // idle child 需要重新启动以消费新消息
@@ -127,12 +191,34 @@ impl AgentOrchestrationService {
                 );
 
                 let child_ref = self.build_child_ref_from_handle(&reused_handle).await;
+                let _ = self
+                    .record_collaboration_fact(
+                        &runtime,
+                        CollaborationFactRecord {
+                            action: AgentCollaborationActionKind::Send,
+                            outcome: AgentCollaborationOutcomeKind::Reused,
+                            session_id: &parent_session_id,
+                            turn_id: &turn_id,
+                            parent_agent_id: parent_agent_id.clone(),
+                            child: Some(&reused_handle),
+                            delivery_id: None,
+                            reason_code: None,
+                            summary: Some("idle child resumed".to_string()),
+                            latency_ms: None,
+                            source_tool_call_id: source_tool_call_id.clone(),
+                        },
+                    )
+                    .await;
                 return Ok(CollaborationResult {
                     accepted: true,
                     kind: CollaborationResultKind::Sent,
                     agent_ref: Some(self.project_child_ref_status(child_ref).await),
                     delivery_id: None,
-                    summary: Some(format!("消息已发送到子 Agent {}", params.agent_id)),
+                    summary: Some(format!(
+                        "子 Agent {} 已恢复，并开始处理新的具体指令。",
+                        params.agent_id
+                    )),
+                    observe_result: None,
                     cascade: None,
                     closed_root_agent_id: None,
                     failure: None,
@@ -176,13 +262,35 @@ impl AgentOrchestrationService {
             params.agent_id,
             child.sub_run_id
         );
+        let _ = self
+            .record_collaboration_fact(
+                &runtime,
+                CollaborationFactRecord {
+                    action: AgentCollaborationActionKind::Send,
+                    outcome: AgentCollaborationOutcomeKind::Queued,
+                    session_id: &parent_session_id,
+                    turn_id: &turn_id,
+                    parent_agent_id,
+                    child: Some(&child),
+                    delivery_id: Some(delivery_id.clone()),
+                    reason_code: None,
+                    summary: Some("message queued for running child".to_string()),
+                    latency_ms: None,
+                    source_tool_call_id,
+                },
+            )
+            .await;
 
         Ok(CollaborationResult {
             accepted: true,
             kind: CollaborationResultKind::Sent,
             agent_ref: Some(self.project_child_ref_status(child_ref).await),
             delivery_id: Some(delivery_id),
-            summary: Some(format!("消息已发送到子 Agent {}", params.agent_id)),
+            summary: Some(format!(
+                "子 Agent {} 正在运行；消息已进入 mailbox 排队，待当前工作完成后处理。",
+                params.agent_id
+            )),
+            observe_result: None,
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -195,21 +303,64 @@ impl AgentOrchestrationService {
         params: CloseAgentParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
+        let runtime = self.resolve_runtime_config_for_working_dir(ctx.working_dir())?;
+        let turn_id = ctx.turn_id().unwrap_or("unknown-turn").to_string();
+        let parent_session_id = ctx.session_id().to_string();
+        let parent_agent_id = ctx.agent_context().agent_id.clone();
+        let source_tool_call_id = ctx.tool_call_id().map(ToString::to_string);
         params
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;
 
-        let target = self
-            .kernel
-            .get_agent_handle(&params.agent_id)
-            .await
-            .ok_or_else(|| {
-                super::AgentOrchestrationError::NotFound(format!(
+        let target = match self.kernel.get_agent_handle(&params.agent_id).await {
+            Some(target) => target,
+            None => {
+                let error = super::AgentOrchestrationError::NotFound(format!(
                     "agent '{}' not found",
                     params.agent_id
-                ))
-            })?;
-        self.verify_caller_owns_child(ctx, &target)?;
+                ));
+                let _ = self
+                    .record_collaboration_fact(
+                        &runtime,
+                        CollaborationFactRecord {
+                            action: AgentCollaborationActionKind::Close,
+                            outcome: AgentCollaborationOutcomeKind::Rejected,
+                            session_id: &parent_session_id,
+                            turn_id: &turn_id,
+                            parent_agent_id: parent_agent_id.clone(),
+                            child: None,
+                            delivery_id: None,
+                            reason_code: Some("child_not_found".to_string()),
+                            summary: Some(error.to_string()),
+                            latency_ms: None,
+                            source_tool_call_id: source_tool_call_id.clone(),
+                        },
+                    )
+                    .await;
+                return Err(error);
+            },
+        };
+        if let Err(error) = self.verify_caller_owns_child(ctx, &target) {
+            let _ = self
+                .record_collaboration_fact(
+                    &runtime,
+                    CollaborationFactRecord {
+                        action: AgentCollaborationActionKind::Close,
+                        outcome: AgentCollaborationOutcomeKind::Rejected,
+                        session_id: &parent_session_id,
+                        turn_id: &turn_id,
+                        parent_agent_id: parent_agent_id.clone(),
+                        child: Some(&target),
+                        delivery_id: None,
+                        reason_code: Some("ownership_mismatch".to_string()),
+                        summary: Some(error.to_string()),
+                        latency_ms: None,
+                        source_tool_call_id: source_tool_call_id.clone(),
+                    },
+                )
+                .await;
+            return Err(error);
+        }
 
         // 收集子树用于 durable discard
         let subtree_handles = self
@@ -238,12 +389,30 @@ impl AgentOrchestrationService {
         let subtree_count = subtree_handles.len();
         let summary = if subtree_count > 0 {
             format!(
-                "子 Agent {} 已关闭（含 {} 个后代）",
+                "已级联关闭子 Agent {} 及 {} 个后代。",
                 params.agent_id, subtree_count
             )
         } else {
-            format!("子 Agent {} 已关闭", params.agent_id)
+            format!("已关闭子 Agent {}。", params.agent_id)
         };
+        let _ = self
+            .record_collaboration_fact(
+                &runtime,
+                CollaborationFactRecord {
+                    action: AgentCollaborationActionKind::Close,
+                    outcome: AgentCollaborationOutcomeKind::Closed,
+                    session_id: &parent_session_id,
+                    turn_id: &turn_id,
+                    parent_agent_id,
+                    child: Some(&target),
+                    delivery_id: None,
+                    reason_code: None,
+                    summary: Some(summary.clone()),
+                    latency_ms: None,
+                    source_tool_call_id,
+                },
+            )
+            .await;
 
         Ok(CollaborationResult {
             accepted: true,
@@ -251,6 +420,7 @@ impl AgentOrchestrationService {
             agent_ref: None,
             delivery_id: None,
             summary: Some(summary),
+            observe_result: None,
             cascade: Some(true),
             closed_root_agent_id: Some(cancelled.agent_id.clone()),
             failure: None,
@@ -480,5 +650,343 @@ fn project_collaboration_lifecycle(
             None => fallback,
         },
         AgentLifecycleStatus::Terminated => AgentLifecycleStatus::Terminated,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use astrcode_core::{
+        AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken, CloseAgentParams,
+        ObserveParams, SendAgentParams, SessionId, SpawnAgentParams, StorageEventPayload,
+        ToolContext,
+        agent::executor::{CollaborationExecutor, SubAgentExecutor},
+    };
+    use tokio::time::sleep;
+
+    use super::super::{root_execution_event_context, subrun_event_context};
+    use crate::agent::test_support::{TestLlmBehavior, build_agent_test_harness};
+
+    async fn spawn_direct_child(
+        harness: &crate::agent::test_support::AgentTestHarness,
+        parent_session_id: &str,
+        working_dir: &std::path::Path,
+    ) -> (String, String) {
+        harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent_session_id.to_string(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should be registered");
+        let parent_ctx = ToolContext::new(
+            parent_session_id.to_string().into(),
+            working_dir.to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-parent")
+        .with_agent_context(root_execution_event_context("root-agent", "root-profile"));
+
+        let launched = harness
+            .service
+            .launch(
+                SpawnAgentParams {
+                    r#type: Some("reviewer".to_string()),
+                    description: "检查 crates".to_string(),
+                    prompt: "请检查 crates 目录".to_string(),
+                    context: None,
+                },
+                &parent_ctx,
+            )
+            .await
+            .expect("spawn should succeed");
+        let child_agent_id = launched
+            .handoff
+            .as_ref()
+            .and_then(|handoff| {
+                handoff
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.kind == "agent")
+                    .map(|artifact| artifact.id.clone())
+            })
+            .expect("child agent artifact should exist");
+        for _ in 0..20 {
+            if harness
+                .kernel
+                .get_agent_lifecycle(&child_agent_id)
+                .await
+                .is_some_and(|lifecycle| lifecycle == astrcode_core::AgentLifecycleStatus::Idle)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        (child_agent_id, parent_ctx.session_id().to_string())
+    }
+
+    #[tokio::test]
+    async fn collaboration_calls_reject_non_direct_child() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+
+        let parent_a = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session A should be created");
+        let (child_agent_id, _) =
+            spawn_direct_child(&harness, &parent_a.session_id, project.path()).await;
+
+        let parent_b = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session B should be created");
+        harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "other-root".to_string(),
+                parent_b.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("other root agent should be registered");
+        let other_ctx = ToolContext::new(
+            parent_b.session_id.clone().into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-other")
+        .with_agent_context(root_execution_event_context("other-root", "root-profile"));
+
+        let send_error = harness
+            .service
+            .send(
+                SendAgentParams {
+                    agent_id: child_agent_id.clone(),
+                    message: "继续".to_string(),
+                    context: None,
+                },
+                &other_ctx,
+            )
+            .await
+            .expect_err("send should reject non-direct child");
+        assert!(send_error.to_string().contains("direct child"));
+
+        let observe_error = harness
+            .service
+            .observe(
+                ObserveParams {
+                    agent_id: child_agent_id.clone(),
+                },
+                &other_ctx,
+            )
+            .await
+            .expect_err("observe should reject non-direct child");
+        assert!(observe_error.to_string().contains("direct child"));
+
+        let close_error = harness
+            .service
+            .close(
+                CloseAgentParams {
+                    agent_id: child_agent_id,
+                },
+                &other_ctx,
+            )
+            .await
+            .expect_err("close should reject non-direct child");
+        assert!(close_error.to_string().contains("direct child"));
+
+        let parent_b_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(parent_b.session_id.clone()))
+            .await
+            .expect("other parent events should replay");
+        assert!(parent_b_events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentCollaborationFact { fact, .. }
+                if fact.action == AgentCollaborationActionKind::Send
+                    && fact.outcome == AgentCollaborationOutcomeKind::Rejected
+                    && fact.reason_code.as_deref() == Some("ownership_mismatch")
+        )));
+    }
+
+    #[tokio::test]
+    async fn send_to_idle_child_reports_resume_semantics() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let (child_agent_id, parent_session_id) =
+            spawn_direct_child(&harness, &parent.session_id, project.path()).await;
+        let parent_ctx = ToolContext::new(
+            parent_session_id.into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-parent-2")
+        .with_agent_context(root_execution_event_context("root-agent", "root-profile"));
+
+        let result = harness
+            .service
+            .send(
+                SendAgentParams {
+                    agent_id: child_agent_id,
+                    message: "请继续整理结论".to_string(),
+                    context: None,
+                },
+                &parent_ctx,
+            )
+            .await
+            .expect("send should succeed");
+
+        assert_eq!(result.delivery_id, None);
+        assert!(
+            result
+                .summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("已恢复"))
+        );
+    }
+
+    #[tokio::test]
+    async fn send_to_running_child_reports_mailbox_queue_semantics() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let (child_agent_id, parent_session_id) =
+            spawn_direct_child(&harness, &parent.session_id, project.path()).await;
+        let parent_ctx = ToolContext::new(
+            parent_session_id.into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-parent-3")
+        .with_agent_context(root_execution_event_context("root-agent", "root-profile"));
+
+        let _ = harness
+            .kernel
+            .agent_control()
+            .set_lifecycle(
+                &child_agent_id,
+                astrcode_core::AgentLifecycleStatus::Running,
+            )
+            .await;
+
+        let result = harness
+            .service
+            .send(
+                SendAgentParams {
+                    agent_id: child_agent_id,
+                    message: "继续第二轮".to_string(),
+                    context: Some("只看 CI".to_string()),
+                },
+                &parent_ctx,
+            )
+            .await
+            .expect("send should succeed");
+
+        assert!(result.delivery_id.is_some());
+        assert!(
+            result
+                .summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("mailbox 排队"))
+        );
+    }
+
+    #[tokio::test]
+    async fn close_reports_cascade_scope_for_descendants() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let (child_agent_id, parent_session_id) =
+            spawn_direct_child(&harness, &parent.session_id, project.path()).await;
+
+        let child_handle = harness
+            .kernel
+            .get_agent_handle(&child_agent_id)
+            .await
+            .expect("child handle should exist");
+        let child_ctx = ToolContext::new(
+            child_handle
+                .child_session_id
+                .clone()
+                .expect("child session id should exist")
+                .into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-child-1")
+        .with_agent_context(subrun_event_context(&child_handle));
+        let _grandchild = harness
+            .service
+            .launch(
+                SpawnAgentParams {
+                    r#type: Some("reviewer".to_string()),
+                    description: "进一步检查".to_string(),
+                    prompt: "请进一步检查测试覆盖".to_string(),
+                    context: None,
+                },
+                &child_ctx,
+            )
+            .await
+            .expect("grandchild spawn should succeed");
+
+        let parent_ctx = ToolContext::new(
+            parent_session_id.into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-parent-close")
+        .with_agent_context(root_execution_event_context("root-agent", "root-profile"));
+
+        let result = harness
+            .service
+            .close(
+                CloseAgentParams {
+                    agent_id: child_agent_id,
+                },
+                &parent_ctx,
+            )
+            .await
+            .expect("close should succeed");
+
+        assert_eq!(result.cascade, Some(true));
+        assert!(
+            result
+                .summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("1 个后代"))
+        );
     }
 }

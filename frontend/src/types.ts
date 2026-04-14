@@ -575,6 +575,174 @@ export interface ConfigView {
   warning?: string;
 }
 
+export interface OperationMetricsSnapshot {
+  total: number;
+  failures: number;
+  totalDurationMs: number;
+  lastDurationMs: number;
+  maxDurationMs: number;
+}
+
+export interface ReplayMetricsSnapshot {
+  totals: OperationMetricsSnapshot;
+  cacheHits: number;
+  diskFallbacks: number;
+  recoveredEvents: number;
+}
+
+export interface SubRunExecutionMetricsSnapshot {
+  total: number;
+  failures: number;
+  completed: number;
+  aborted: number;
+  tokenExceeded: number;
+  independentSessionTotal: number;
+  totalDurationMs: number;
+  lastDurationMs: number;
+  totalSteps: number;
+  lastStepCount: number;
+  totalEstimatedTokens: number;
+  lastEstimatedTokens: number;
+}
+
+export interface ExecutionDiagnosticsSnapshot {
+  childSpawned: number;
+  childStartedPersisted: number;
+  childTerminalPersisted: number;
+  parentReactivationRequested: number;
+  parentReactivationSucceeded: number;
+  parentReactivationFailed: number;
+  lineageMismatchParentAgent: number;
+  lineageMismatchParentSession: number;
+  lineageMismatchChildSession: number;
+  lineageMismatchDescriptorMissing: number;
+  cacheReuseHits: number;
+  cacheReuseMisses: number;
+  deliveryBufferQueued: number;
+  deliveryBufferDequeued: number;
+  deliveryBufferWakeRequested: number;
+  deliveryBufferWakeSucceeded: number;
+  deliveryBufferWakeFailed: number;
+}
+
+export interface AgentCollaborationScorecard {
+  totalFacts: number;
+  spawnAccepted: number;
+  spawnRejected: number;
+  sendReused: number;
+  sendQueued: number;
+  sendRejected: number;
+  observeCalls: number;
+  observeRejected: number;
+  observeFollowedByAction: number;
+  closeCalls: number;
+  closeRejected: number;
+  deliveryDelivered: number;
+  deliveryConsumed: number;
+  deliveryReplayed: number;
+  orphanChildCount: number;
+  childReuseRatioBps?: number;
+  observeToActionRatioBps?: number;
+  spawnToDeliveryRatioBps?: number;
+  orphanChildRatioBps?: number;
+  avgDeliveryLatencyMs?: number;
+  maxDeliveryLatencyMs?: number;
+}
+
+export interface RuntimeMetricsSnapshot {
+  sessionRehydrate: OperationMetricsSnapshot;
+  sseCatchUp: ReplayMetricsSnapshot;
+  turnExecution: OperationMetricsSnapshot;
+  subrunExecution: SubRunExecutionMetricsSnapshot;
+  executionDiagnostics: ExecutionDiagnosticsSnapshot;
+  agentCollaboration: AgentCollaborationScorecard;
+}
+
+export interface RuntimeDebugOverview {
+  collectedAt: string;
+  spawnRejectionRatioBps?: number;
+  metrics: RuntimeMetricsSnapshot;
+}
+
+export interface RuntimeDebugTimelineSample {
+  collectedAt: string;
+  spawnRejectionRatioBps?: number;
+  observeToActionRatioBps?: number;
+  childReuseRatioBps?: number;
+}
+
+export interface RuntimeDebugTimeline {
+  windowStartedAt: string;
+  windowEndedAt: string;
+  samples: RuntimeDebugTimelineSample[];
+}
+
+export type SessionDebugTraceItemKind =
+  | 'toolCall'
+  | 'toolResult'
+  | 'promptMetrics'
+  | 'subRunStarted'
+  | 'subRunFinished'
+  | 'childNotification'
+  | 'collaborationFact'
+  | 'mailboxQueued'
+  | 'mailboxBatchStarted'
+  | 'mailboxBatchAcked'
+  | 'mailboxDiscarded'
+  | 'turnDone'
+  | 'error';
+
+export interface SessionDebugTraceItem {
+  id: string;
+  storageSeq: number;
+  turnId?: string;
+  recordedAt?: string;
+  kind: SessionDebugTraceItemKind;
+  title: string;
+  summary: string;
+  agentId?: string;
+  subRunId?: string;
+  childAgentId?: string;
+  deliveryId?: string;
+  toolCallId?: string;
+  toolName?: string;
+  lifecycle?: AgentLifecycle;
+  lastTurnOutcome?: AgentTurnOutcome;
+}
+
+export interface SessionDebugTrace {
+  sessionId: string;
+  title: string;
+  phase: Phase;
+  parentSessionId?: string;
+  items: SessionDebugTraceItem[];
+}
+
+export type DebugAgentNodeKind = 'sessionRoot' | 'childAgent';
+
+export interface SessionDebugAgentNode {
+  nodeId: string;
+  kind: DebugAgentNodeKind;
+  title: string;
+  agentId: string;
+  sessionId: string;
+  childSessionId?: string;
+  subRunId?: string;
+  parentAgentId?: string;
+  parentSessionId?: string;
+  depth: number;
+  lifecycle: AgentLifecycle;
+  lastTurnOutcome?: AgentTurnOutcome;
+  statusSource?: string;
+  lineageKind?: string;
+}
+
+export interface SessionDebugAgents {
+  sessionId: string;
+  title: string;
+  nodes: SessionDebugAgentNode[];
+}
+
 export interface TestResult {
   success: boolean;
   provider: string;

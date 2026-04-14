@@ -73,6 +73,8 @@ function prepareSidecar(currentMode) {
   ];
   if (release) {
     cargoArgs.push("--release");
+  } else {
+    cargoArgs.push("--features", "debug-workbench");
   }
 
   const result = spawnSync(cargoCommand, cargoArgs, {

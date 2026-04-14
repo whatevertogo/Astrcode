@@ -35,7 +35,7 @@ use super::{
     TurnOutcome,
     compaction_cycle::{self, ReactiveCompactContext},
     llm_cycle,
-    summary::{TurnFinishReason, TurnSummary},
+    summary::{TurnCollaborationSummary, TurnFinishReason, TurnSummary},
     tool_cycle::{self, ToolCycleContext, ToolCycleOutcome},
 };
 use crate::{
@@ -123,6 +123,10 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
                 cache_creation_input_tokens: total_cache_creation_tokens,
                 auto_compaction_count: 0,
                 reactive_compact_count: reactive_compact_attempts,
+                collaboration: turn_collaboration_summary(
+                    request.session_state.as_ref(),
+                    &request.turn_id,
+                ),
             }
         };
     }
@@ -334,4 +338,24 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
 
         step_index += 1;
     }
+}
+
+fn turn_collaboration_summary(
+    session_state: &SessionState,
+    turn_id: &str,
+) -> TurnCollaborationSummary {
+    let facts = session_state
+        .snapshot_recent_stored_events()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|stored| match stored.event.payload {
+            StorageEventPayload::AgentCollaborationFact { fact, .. }
+                if stored.event.turn_id() == Some(turn_id) =>
+            {
+                Some(fact)
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    TurnCollaborationSummary::from_facts(&facts)
 }

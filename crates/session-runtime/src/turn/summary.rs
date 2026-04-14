@@ -10,6 +10,10 @@
 
 use std::time::Duration;
 
+use astrcode_core::{
+    AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
+};
+
 /// Turn 完成原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnFinishReason {
@@ -21,6 +25,62 @@ pub enum TurnFinishReason {
     Error,
     /// 超过 step 上限
     StepLimitExceeded,
+}
+
+/// 单轮 turn 内的协作汇总。
+#[derive(Debug, Clone, Default)]
+pub struct TurnCollaborationSummary {
+    pub fact_count: usize,
+    pub spawn_count: usize,
+    pub send_count: usize,
+    pub observe_count: usize,
+    pub close_count: usize,
+    pub delivery_count: usize,
+    pub rejected_count: usize,
+    pub failed_count: usize,
+    pub child_reuse_count: usize,
+    pub delivery_latency_samples: usize,
+    pub avg_delivery_latency_ms: Option<u64>,
+    pub max_delivery_latency_ms: Option<u64>,
+}
+
+impl TurnCollaborationSummary {
+    pub fn from_facts(facts: &[AgentCollaborationFact]) -> Self {
+        let mut summary = Self {
+            fact_count: facts.len(),
+            ..Self::default()
+        };
+        let mut latency_total = 0u64;
+        let mut max_latency = 0u64;
+        for fact in facts {
+            match fact.action {
+                AgentCollaborationActionKind::Spawn => summary.spawn_count += 1,
+                AgentCollaborationActionKind::Send => summary.send_count += 1,
+                AgentCollaborationActionKind::Observe => summary.observe_count += 1,
+                AgentCollaborationActionKind::Close => summary.close_count += 1,
+                AgentCollaborationActionKind::Delivery => summary.delivery_count += 1,
+            }
+            match fact.outcome {
+                AgentCollaborationOutcomeKind::Rejected => summary.rejected_count += 1,
+                AgentCollaborationOutcomeKind::Failed => summary.failed_count += 1,
+                AgentCollaborationOutcomeKind::Reused => summary.child_reuse_count += 1,
+                AgentCollaborationOutcomeKind::Consumed => {
+                    if let Some(latency_ms) = fact.latency_ms {
+                        summary.delivery_latency_samples += 1;
+                        latency_total = latency_total.saturating_add(latency_ms);
+                        max_latency = max_latency.max(latency_ms);
+                    }
+                },
+                _ => {},
+            }
+        }
+        if summary.delivery_latency_samples > 0 {
+            summary.avg_delivery_latency_ms =
+                Some(latency_total / summary.delivery_latency_samples as u64);
+            summary.max_delivery_latency_ms = Some(max_latency);
+        }
+        summary
+    }
 }
 
 /// 单次 Turn 执行的稳定汇总结果。
@@ -45,6 +105,8 @@ pub struct TurnSummary {
     pub auto_compaction_count: usize,
     /// Turn 期间发生的 reactive compact 次数
     pub reactive_compact_count: usize,
+    /// Turn 内 agent-tool 协作汇总
+    pub collaboration: TurnCollaborationSummary,
 }
 
 impl TurnSummary {
@@ -61,5 +123,85 @@ impl TurnSummary {
             return 0.0;
         }
         self.cache_read_input_tokens as f64 / total_input as f64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::{
+        AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
+        AgentCollaborationPolicyContext,
+    };
+
+    use super::TurnCollaborationSummary;
+
+    fn fact(
+        id: &str,
+        action: AgentCollaborationActionKind,
+        outcome: AgentCollaborationOutcomeKind,
+        latency_ms: Option<u64>,
+    ) -> AgentCollaborationFact {
+        AgentCollaborationFact {
+            fact_id: id.to_string(),
+            action,
+            outcome,
+            parent_session_id: "session-parent".to_string(),
+            turn_id: "turn-1".to_string(),
+            parent_agent_id: Some("agent-root".to_string()),
+            child_agent_id: Some("agent-child".to_string()),
+            child_session_id: Some("session-child".to_string()),
+            child_sub_run_id: Some("subrun-child".to_string()),
+            delivery_id: None,
+            reason_code: None,
+            summary: None,
+            latency_ms,
+            source_tool_call_id: None,
+            policy: AgentCollaborationPolicyContext {
+                policy_revision: "agent-collaboration-v1".to_string(),
+                max_subrun_depth: 3,
+                max_spawn_per_turn: 3,
+            },
+        }
+    }
+
+    #[test]
+    fn collaboration_summary_counts_actions_and_latency() {
+        let summary = TurnCollaborationSummary::from_facts(&[
+            fact(
+                "spawn",
+                AgentCollaborationActionKind::Spawn,
+                AgentCollaborationOutcomeKind::Accepted,
+                None,
+            ),
+            fact(
+                "observe",
+                AgentCollaborationActionKind::Observe,
+                AgentCollaborationOutcomeKind::Rejected,
+                None,
+            ),
+            fact(
+                "send",
+                AgentCollaborationActionKind::Send,
+                AgentCollaborationOutcomeKind::Reused,
+                None,
+            ),
+            fact(
+                "delivery",
+                AgentCollaborationActionKind::Delivery,
+                AgentCollaborationOutcomeKind::Consumed,
+                Some(180),
+            ),
+        ]);
+
+        assert_eq!(summary.fact_count, 4);
+        assert_eq!(summary.spawn_count, 1);
+        assert_eq!(summary.observe_count, 1);
+        assert_eq!(summary.send_count, 1);
+        assert_eq!(summary.delivery_count, 1);
+        assert_eq!(summary.rejected_count, 1);
+        assert_eq!(summary.child_reuse_count, 1);
+        assert_eq!(summary.delivery_latency_samples, 1);
+        assert_eq!(summary.avg_delivery_latency_ms, Some(180));
+        assert_eq!(summary.max_delivery_latency_ms, Some(180));
     }
 }

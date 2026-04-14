@@ -117,10 +117,13 @@ fn tool_description_is_stable_and_excludes_dynamic_profile_listing() {
 
     assert!(!definition.description.contains("## 可用的子 Agent"));
     assert!(!definition.description.contains("当前没有可用的子 Agent"));
-    assert!(definition.description.contains("When to Use"));
-    assert!(definition.description.contains("Be specific"));
+    assert!(
+        definition
+            .description
+            .contains("one new isolated responsibility")
+    );
     assert!(definition.description.contains("Start with one child"));
-    assert!(definition.description.contains("Reuse before respawn"));
+    assert!(definition.description.contains("Do not use `spawn`"));
 }
 
 #[test]
@@ -150,14 +153,18 @@ fn send_observe_close_prompt_metadata_stays_action_oriented() {
         .expect("send should expose prompt metadata");
     assert!(send_prompt.summary.contains("next concrete instruction"));
     assert!(send_prompt.guide.contains("same child should continue"));
+    assert!(send_prompt.guide.contains("prefer `send` over spawning"));
+    assert!(send_prompt.guide.contains("same child should continue"));
 
     let observe_prompt = ObserveAgentTool::new(executor.clone())
         .capability_metadata()
         .prompt
         .expect("observe should expose prompt metadata");
     assert!(observe_prompt.summary.contains("decide the next action"));
+    assert!(observe_prompt.guide.contains("`wait`, `send`, or `close`"));
+    assert!(observe_prompt.guide.contains("current child state"));
     assert!(
-        observe_prompt
+        !observe_prompt
             .guide
             .contains("Should I `send` another instruction")
     );
@@ -171,7 +178,7 @@ fn send_observe_close_prompt_metadata_stays_action_oriented() {
             .summary
             .contains("finished or no longer useful")
     );
-    assert!(close_prompt.guide.contains("free capacity"));
+    assert!(close_prompt.guide.contains("cascade"));
 }
 
 #[tokio::test]
@@ -536,6 +543,7 @@ impl CollaborationExecutor for RecordingCollabExecutor {
             agent_ref: Some(sample_child_ref()),
             delivery_id: Some("delivery-1".to_string()),
             summary: Some("消息已发送".to_string()),
+            observe_result: None,
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -554,6 +562,7 @@ impl CollaborationExecutor for RecordingCollabExecutor {
             agent_ref: None,
             delivery_id: None,
             summary: Some("子 Agent 已关闭".to_string()),
+            observe_result: None,
             cascade: Some(true),
             closed_root_agent_id: Some("agent-42".to_string()),
             failure: None,
@@ -572,7 +581,29 @@ impl CollaborationExecutor for RecordingCollabExecutor {
             kind: CollaborationResultKind::Observed,
             agent_ref: Some(sample_child_ref()),
             delivery_id: None,
-            summary: Some(format!("observe result for agent '{}'", agent_id)),
+            summary: Some(format!(
+                "子 Agent {} 当前为 Idle；建议 send_or_close：上一轮已完成。",
+                agent_id
+            )),
+            observe_result: Some(astrcode_core::ObserveAgentResult {
+                agent_id,
+                sub_run_id: "subrun-42".to_string(),
+                session_id: "session-parent".to_string(),
+                open_session_id: "session-child-42".to_string(),
+                parent_agent_id: "agent-parent".to_string(),
+                lifecycle_status: AgentLifecycleStatus::Idle,
+                last_turn_outcome: Some(AgentTurnOutcome::Completed),
+                phase: "Idle".to_string(),
+                turn_count: 1,
+                pending_message_count: 0,
+                active_task: None,
+                pending_task: None,
+                recent_mailbox_messages: vec!["最近一条 mailbox 摘要".to_string()],
+                last_output: Some("done".to_string()),
+                recommended_next_action: "send_or_close".to_string(),
+                recommended_reason: "上一轮已完成。".to_string(),
+                delivery_freshness: "ready_for_follow_up".to_string(),
+            }),
             cascade: None,
             closed_root_agent_id: None,
             failure: None,
@@ -718,6 +749,15 @@ async fn observe_agent_tool_parses_params_and_delegates_to_executor() {
 
     assert!(result.ok);
     assert_eq!(result.tool_name, "observe");
+    assert!(
+        result
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("observeResult"))
+            .and_then(|value| value.get("recommendedNextAction"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value == "send_or_close")
+    );
     let calls = executor.observe_calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].agent_id, "agent-42");
