@@ -30,7 +30,7 @@
 
 ### 环境要求
 
-- [Rust](https://www.rust-lang.org/tools/install) 1.70+
+- Rust **nightly** 工具链（见 `rust-toolchain.toml`）
 - [Node.js](https://nodejs.org/) 20+
 - npm（Node.js 自带）
 
@@ -52,49 +52,24 @@ cd frontend && npm install
 
 ### 开发模式
 
-#### 使用 Makefile（推荐）
-
-```bash
-# 桌面端开发
-make dev          # Windows
-make dev-unix     # Linux/macOS
-
-# 只启动前端
-make frontend
-
-# 只启动 Tauri
-make tauri
-
-# 代码检查
-make check
-```
-
-#### 直接命令
-
 ```bash
 # 桌面端开发（推荐）
 cargo tauri dev
 
-# 浏览器端开发
-# 终端 1：启动 Server
+# 只启动前端
+cd frontend && npm run dev
+
+# 只启动后端
 cargo run -p astrcode-server
 
-# 终端 2：启动前端
-cd frontend && npm run dev
-# 然后打开 http://127.0.0.1:5173/
+# 浏览器端开发：分别启动 server 和前端，然后打开 http://127.0.0.1:5173/
 ```
 
 ### 构建
 
 ```bash
-# 使用 Makefile
-make build
-
-# 或直接命令
+# 桌面端构建
 cargo tauri build
-
-# Windows: 最终可分发产物在 target/release/bundle/ 下；
-# target/release/astrcode.exe 更适合本地调试，安装包 / bundle 才是完整桌面应用形态。
 
 # 浏览器端构建
 cd frontend && npm run build
@@ -299,7 +274,8 @@ AstrCode/
 ### Skill 架构
 
 - skill 采用 Claude 风格的两阶段模型：system prompt 先给模型看 skill 索引，命中后再调用内置 `Skill` tool 加载完整 `SKILL.md`。
-- skill 目录格式固定为 `skill-name/SKILL.md`，frontmatter 只认 `name` 和 `description`。
+- skill 目录格式固定为 `skill-name/SKILL.md`，会读取 `name` 和 `description`，其余 Claude 风格 frontmatter 字段会被忽略。
+- 项目级 skill 会从工作目录祖先链上的 `.claude/skills/` 与 `.astrcode/skills/` 一并解析；用户级 skill 会从 `~/.claude/skills/` 与 `~/.astrcode/skills/` 解析。
 - `references/`、`scripts/` 等目录会作为 skill 资产一起索引；builtin skill 整目录会在运行时物化到 `~/.astrcode/runtime/builtin-skills/`，方便 shell 直接执行其中脚本。
 
 ### Tauri 桌面端
@@ -358,14 +334,16 @@ Tauri 仅作为"薄壳"，负责：
 
 ```bash
 # 本地 push 前检查
-make check
+cargo check --workspace
+cargo test --workspace --exclude astrcode --lib
+cd frontend && npm run typecheck
 
 # 与 CI 对齐的完整检查
-make check-ci
-
-# 或直接运行 npm 脚本
-npm run check:push
-npm run check:ci
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace --exclude astrcode
+node scripts/check-crate-boundaries.mjs
+cd frontend && npm run typecheck && npm run lint && npm run format:check
 
 # 前端检查
 cd frontend

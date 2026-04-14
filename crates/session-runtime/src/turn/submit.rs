@@ -540,6 +540,7 @@ fn subrun_finished_event(
                 summary,
                 findings: Vec::new(),
                 artifacts: Vec::new(),
+                delivery: None,
             }),
             failure: None,
         },

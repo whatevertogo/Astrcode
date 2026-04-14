@@ -1119,6 +1119,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
                 },
                 findings: Vec::new(),
                 artifacts: handoff_artifacts,
+                delivery: None,
             }),
             failure: None,
         })
@@ -1265,6 +1266,7 @@ mod tests {
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             final_reply_excerpt: Some("final reply".to_string()),
+            delivery: None,
         };
 
         let envelope = child_delivery_mailbox_envelope(&notification, "agent-parent".to_string());

@@ -33,6 +33,9 @@ use astrcode_application::{
     list_model_options as resolve_model_options, resolve_active_selection,
     resolve_current_model as resolve_runtime_current_model,
 };
+use astrcode_core::{
+    ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
+};
 #[cfg(feature = "debug-workbench")]
 use astrcode_debug_workbench::{
     DebugAgentNodeKind, RuntimeDebugOverview, RuntimeDebugTimeline, RuntimeDebugTimelineSample,
@@ -42,11 +45,14 @@ use astrcode_debug_workbench::{
 use astrcode_protocol::http::{
     AgentCollaborationScorecardDto, AgentContextDto, AgentEventEnvelope, AgentEventPayload,
     AgentLifecycleDto, AgentProfileDto, ArtifactRefDto, ChildAgentRefDto,
-    ChildSessionLineageKindDto, ChildSessionNotificationKindDto, CompactTriggerDto,
+    ChildSessionLineageKindDto, ChildSessionNotificationKindDto,
+    CloseRequestParentDeliveryPayloadDto, CompactTriggerDto, CompletedParentDeliveryPayloadDto,
     ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView,
-    CurrentModelInfoDto, ExecutionDiagnosticsDto, ForkModeDto, InvocationKindDto, MailboxBatchDto,
-    MailboxDiscardedDto, MailboxQueuedDto, ModelOptionDto, OperationMetricsDto, PROTOCOL_VERSION,
-    PhaseDto, PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto,
+    CurrentModelInfoDto, ExecutionDiagnosticsDto, FailedParentDeliveryPayloadDto, ForkModeDto,
+    InvocationKindDto, MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto, ModelOptionDto,
+    OperationMetricsDto, PROTOCOL_VERSION, ParentDeliveryDto, ParentDeliveryOriginDto,
+    ParentDeliveryPayloadDto, ParentDeliveryTerminalSemanticsDto, PhaseDto, PluginHealthDto,
+    PluginRuntimeStateDto, ProfileView, ProgressParentDeliveryPayloadDto, ReplayMetricsDto,
     ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto,
     RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
     SessionCatalogEventPayload, SessionListItem, SubRunExecutionMetricsDto, SubRunFailureCodeDto,
@@ -407,6 +413,69 @@ fn to_subrun_handoff_dto(handoff: SubRunHandoff) -> SubRunHandoffDto {
             .into_iter()
             .map(to_artifact_ref_dto)
             .collect(),
+        delivery: handoff.delivery.map(to_parent_delivery_dto),
+    }
+}
+
+fn to_parent_delivery_origin_dto(origin: ParentDeliveryOrigin) -> ParentDeliveryOriginDto {
+    match origin {
+        ParentDeliveryOrigin::Explicit => ParentDeliveryOriginDto::Explicit,
+        ParentDeliveryOrigin::Fallback => ParentDeliveryOriginDto::Fallback,
+    }
+}
+
+fn to_parent_delivery_terminal_semantics_dto(
+    semantics: ParentDeliveryTerminalSemantics,
+) -> ParentDeliveryTerminalSemanticsDto {
+    match semantics {
+        ParentDeliveryTerminalSemantics::NonTerminal => {
+            ParentDeliveryTerminalSemanticsDto::NonTerminal
+        },
+        ParentDeliveryTerminalSemantics::Terminal => ParentDeliveryTerminalSemanticsDto::Terminal,
+    }
+}
+
+fn to_parent_delivery_payload_dto(payload: ParentDeliveryPayload) -> ParentDeliveryPayloadDto {
+    match payload {
+        ParentDeliveryPayload::Progress(payload) => {
+            ParentDeliveryPayloadDto::Progress(ProgressParentDeliveryPayloadDto {
+                message: payload.message,
+            })
+        },
+        ParentDeliveryPayload::Completed(payload) => {
+            ParentDeliveryPayloadDto::Completed(CompletedParentDeliveryPayloadDto {
+                message: payload.message,
+                findings: payload.findings,
+                artifacts: payload
+                    .artifacts
+                    .into_iter()
+                    .map(to_artifact_ref_dto)
+                    .collect(),
+            })
+        },
+        ParentDeliveryPayload::Failed(payload) => {
+            ParentDeliveryPayloadDto::Failed(FailedParentDeliveryPayloadDto {
+                message: payload.message,
+                code: to_subrun_failure_code_dto(payload.code),
+                technical_message: payload.technical_message,
+                retryable: payload.retryable,
+            })
+        },
+        ParentDeliveryPayload::CloseRequest(payload) => {
+            ParentDeliveryPayloadDto::CloseRequest(CloseRequestParentDeliveryPayloadDto {
+                message: payload.message,
+                reason: payload.reason,
+            })
+        },
+    }
+}
+
+fn to_parent_delivery_dto(delivery: ParentDelivery) -> ParentDeliveryDto {
+    ParentDeliveryDto {
+        idempotency_key: delivery.idempotency_key,
+        origin: to_parent_delivery_origin_dto(delivery.origin),
+        terminal_semantics: to_parent_delivery_terminal_semantics_dto(delivery.terminal_semantics),
+        payload: to_parent_delivery_payload_dto(delivery.payload),
     }
 }
 
@@ -934,6 +1003,7 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             status: to_agent_lifecycle_dto(notification.status),
             source_tool_call_id: notification.source_tool_call_id,
             final_reply_excerpt: notification.final_reply_excerpt,
+            delivery: notification.delivery.map(to_parent_delivery_dto),
         },
         AgentEvent::TurnDone { turn_id, agent } => AgentEventPayload::TurnDone {
             turn_id,

@@ -33,7 +33,9 @@ pub use astrcode_session_runtime::{
     SessionCatalogEvent, SessionEventFilterSpec, SessionHistorySnapshot, SessionReplay,
     SessionViewSnapshot, SubRunEventScope, TurnCollaborationSummary, TurnSummary,
 };
-pub use composer::{ComposerOption, ComposerOptionKind, ComposerOptionsRequest};
+pub use composer::{
+    ComposerOption, ComposerOptionKind, ComposerOptionsRequest, ComposerSkillSummary,
+};
 pub use config::{
     // 常量与解析函数
     ALL_ASTRCODE_ENV_VARS,
@@ -119,7 +121,9 @@ pub use observability::{
     OperationMetricsSnapshot, ReloadResult, ReplayMetricsSnapshot, ReplayPath,
     RuntimeObservabilityCollector, RuntimeObservabilitySnapshot, SubRunExecutionMetricsSnapshot,
 };
-pub use ports::{AgentKernelPort, AgentSessionPort, AppKernelPort, AppSessionPort};
+pub use ports::{
+    AgentKernelPort, AgentSessionPort, AppKernelPort, AppSessionPort, ComposerSkillPort,
+};
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
 
 /// 唯一业务用例入口。
@@ -129,6 +133,7 @@ pub struct App {
     profiles: Arc<ProfileResolutionService>,
     config_service: Arc<ConfigService>,
     composer_service: Arc<composer::ComposerService>,
+    composer_skills: Arc<dyn ComposerSkillPort>,
     mcp_service: Arc<mcp::McpService>,
     agent_service: Arc<AgentOrchestrationService>,
 }
@@ -146,6 +151,7 @@ impl App {
         session_runtime: Arc<dyn AppSessionPort>,
         profiles: Arc<ProfileResolutionService>,
         config_service: Arc<ConfigService>,
+        composer_skills: Arc<dyn ComposerSkillPort>,
         mcp_service: Arc<mcp::McpService>,
         agent_service: Arc<AgentOrchestrationService>,
     ) -> Self {
@@ -155,6 +161,7 @@ impl App {
             profiles,
             config_service,
             composer_service: Arc::new(composer::ComposerService::new()),
+            composer_skills,
             mcp_service,
             agent_service,
         }
@@ -182,6 +189,10 @@ impl App {
 
     pub fn composer(&self) -> &Arc<composer::ComposerService> {
         &self.composer_service
+    }
+
+    pub fn composer_skills(&self) -> &Arc<dyn ComposerSkillPort> {
+        &self.composer_skills
     }
 
     pub fn agent(&self) -> &Arc<AgentOrchestrationService> {
@@ -222,10 +233,22 @@ impl App {
 
     pub async fn list_composer_options(
         &self,
+        session_id: &str,
         request: ComposerOptionsRequest,
-    ) -> Vec<ComposerOption> {
+    ) -> Result<Vec<ComposerOption>, ApplicationError> {
+        self.validate_non_empty("sessionId", session_id)?;
         let gateway = self.kernel.gateway();
-        self.composer_service.list_options(request, Some(&gateway))
+        let working_dir = self
+            .session_runtime
+            .get_session_working_dir(session_id)
+            .await
+            .map_err(ApplicationError::from)?;
+        let skill_summaries = self
+            .composer_skills
+            .list_skill_summaries(Path::new(&working_dir));
+        Ok(self
+            .composer_service
+            .list_options(request, skill_summaries, Some(&gateway)))
     }
 
     pub async fn get_config(&self) -> Config {

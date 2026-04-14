@@ -312,7 +312,8 @@ function SubRunBlock({
 
   const renderFinalReply = () => {
     // 成功交付时展示最终回复摘要
-    if (!resultHandoff || status !== 'completed') {
+    // 独立子会话的完整结果应该留在子会话里，父视图只保留摘要和入口。
+    if (!resultHandoff || status !== 'completed' || childSessionId) {
       return null;
     }
     return (

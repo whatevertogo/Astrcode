@@ -44,6 +44,21 @@ pub struct ComposerOption {
     pub keywords: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerSkillSummary {
+    pub id: String,
+    pub description: String,
+}
+
+impl ComposerSkillSummary {
+    pub fn new(id: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            description: description.into(),
+        }
+    }
+}
+
 // ============================================================
 // Composer 用例服务
 // ============================================================
@@ -62,26 +77,15 @@ impl Default for ComposerService {
 impl ComposerService {
     pub fn new() -> Self {
         Self {
-            builtin_commands: vec![
-                ComposerOption {
-                    kind: ComposerOptionKind::Command,
-                    id: "compact".to_string(),
-                    title: "压缩上下文".to_string(),
-                    description: "压缩当前会话上下文".to_string(),
-                    insert_text: "/compact".to_string(),
-                    badges: vec!["built-in".to_string()],
-                    keywords: vec!["compact".to_string(), "compress".to_string()],
-                },
-                ComposerOption {
-                    kind: ComposerOptionKind::Skill,
-                    id: "git-commit".to_string(),
-                    title: "Git 提交".to_string(),
-                    description: "生成并执行规范提交".to_string(),
-                    insert_text: "/git-commit".to_string(),
-                    badges: vec!["skill".to_string()],
-                    keywords: vec!["git".to_string(), "commit".to_string()],
-                },
-            ],
+            builtin_commands: vec![ComposerOption {
+                kind: ComposerOptionKind::Command,
+                id: "compact".to_string(),
+                title: "压缩上下文".to_string(),
+                description: "压缩当前会话上下文".to_string(),
+                insert_text: "/compact".to_string(),
+                badges: vec!["built-in".to_string()],
+                keywords: vec!["compact".to_string(), "compress".to_string()],
+            }],
         }
     }
 
@@ -92,9 +96,11 @@ impl ComposerService {
     pub fn list_options(
         &self,
         request: ComposerOptionsRequest,
+        skill_summaries: Vec<ComposerSkillSummary>,
         gateway: Option<&KernelGateway>,
     ) -> Vec<ComposerOption> {
         let mut items = self.builtin_commands.clone();
+        items.extend(skill_summaries.into_iter().map(skill_summary_to_option));
 
         if let Some(gateway) = gateway {
             for spec in gateway.capabilities().capability_specs() {
@@ -130,6 +136,50 @@ impl ComposerService {
 
         items.truncate(request.limit);
         items
+    }
+}
+
+fn skill_summary_to_option(skill: ComposerSkillSummary) -> ComposerOption {
+    let keywords = skill
+        .id
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    ComposerOption {
+        kind: ComposerOptionKind::Skill,
+        title: humanize_skill_title(&skill.id),
+        insert_text: format!("/{}", skill.id),
+        badges: vec!["skill".to_string()],
+        keywords,
+        id: skill.id,
+        description: skill.description,
+    }
+}
+
+fn humanize_skill_title(skill_id: &str) -> String {
+    let words = skill_id
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .map(title_case_token)
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        skill_id.to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
+fn title_case_token(token: &str) -> String {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let rest = chars.collect::<String>();
+    if first.is_ascii_alphabetic() {
+        format!("{}{}", first.to_ascii_uppercase(), rest)
+    } else {
+        format!("{first}{rest}")
     }
 }
 

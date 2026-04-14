@@ -304,4 +304,44 @@ describe('SubRunBlock result rendering', () => {
     expect(html).not.toContain('"status"');
     expect(html).not.toContain('"handoff"');
   });
+
+  it('keeps completed child-session handoff in the child session instead of inlining it in parent', () => {
+    const finishMessage: SubRunFinishMessage = {
+      id: 'subrun-finish-child-session',
+      kind: 'subRunFinish',
+      subRunId: 'subrun-child-session',
+      childSessionId: 'session-child',
+      result: {
+        status: 'completed',
+        handoff: {
+          summary: '这是完整子会话报告，不应该再内嵌在父会话里。',
+          findings: ['finding-1'],
+          artifacts: [],
+        },
+      },
+      stepCount: 2,
+      estimatedTokens: 90,
+      timestamp: Date.now(),
+    };
+
+    const html = renderToStaticMarkup(
+      <SubRunBlock
+        subRunId="subrun-child-session"
+        sessionId="session-parent"
+        title="explore"
+        finishMessage={finishMessage}
+        threadItems={[]}
+        streamFingerprint=""
+        hasDescriptorLineage={true}
+        renderThreadItems={renderThreadItems}
+        onCancelSubRun={async () => {}}
+        onOpenChildSession={async () => {}}
+      />
+    );
+
+    expect(html).toContain('打开独立会话');
+    expect(html).toContain('这是完整子会话报告，不应该再内嵌在父会话里。');
+    expect(html).not.toContain('最终回复');
+    expect(html).not.toContain('<li>finding-1</li>');
+  });
 });

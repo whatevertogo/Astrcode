@@ -21,6 +21,7 @@ use super::{
         build_server_capability_router, build_skill_catalog, build_stable_local_invokers,
         sync_external_tool_search_index,
     },
+    composer_skills::RuntimeComposerSkillPort,
     deps::{
         core::{
             self, AstrError, CapabilityInvoker, Config, EventStore, LlmProvider, PromptProvider,
@@ -168,7 +169,7 @@ pub async fn bootstrap_server_runtime_with_options(
 
     // core builtin tools：工具定义本身是 builtin + stable；
     // 其中 `Skill` 工具消费的 catalog 可以包含 builtin / mcp / plugin 三类 skill。
-    let skill_catalog = build_skill_catalog(plugin_skills);
+    let skill_catalog = build_skill_catalog(paths.home_dir.as_path(), plugin_skills);
     let core_tool_invokers =
         build_core_tool_invokers(Arc::clone(&tool_search_index), skill_catalog.clone())?;
 
@@ -247,6 +248,7 @@ pub async fn bootstrap_server_runtime_with_options(
         session_runtime.clone(),
         profiles,
         config_service.clone(),
+        Arc::new(RuntimeComposerSkillPort::new(skill_catalog.clone())),
         mcp_service,
         agent_service,
     ));

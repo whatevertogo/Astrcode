@@ -23,8 +23,8 @@
 //! 2. **按需加载**：当模型调用 `Skill` tool 时，加载完整 guide 和 asset_files
 //!
 //! 用户可以在 `~/.astrcode/skills/` 或 `~/.claude/skills/` 中放置自定义 skill，
-//! 在项目 `.astrcode/skills/` 中放置项目特定 skill；这些层级的最终覆盖顺序
-//! 由 `SkillCatalog` 决定。
+//! 在项目祖先链上的 `.astrcode/skills/` 或 `.claude/skills/` 中放置项目特定 skill；
+//! 这些层级的最终覆盖顺序由 `SkillCatalog` 决定。
 
 use std::{
     fs,
@@ -52,7 +52,6 @@ pub const SKILL_TOOL_NAME: &str = "Skill";
 /// 设计意图：frontmatter 仅保留发现所需的最小信息（name + description），
 /// 真正的执行元数据由 runtime 代码管理，不放入 markdown frontmatter。
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct SkillFrontmatter {
     pub name: String,
     pub description: String,
@@ -198,48 +197,55 @@ pub fn load_user_skills() -> Vec<SkillSpec> {
         return Vec::new();
     };
 
-    let claude_skills =
-        load_skills_from_dir(&home_dir.join(".claude").join("skills"), SkillSource::User);
-    let astrcode_skills = load_skills_from_dir(
-        &home_dir.join(".astrcode").join("skills"),
-        SkillSource::User,
-    );
-
-    crate::skill_catalog::merge_skill_layers(claude_skills, astrcode_skills)
+    load_user_skills_from_home_dir(&home_dir)
 }
 
 /// 加载项目级 skill。
 ///
-/// 从 `<working_dir>/.astrcode/skills/` 加载。
-/// 该函数只返回项目层本身的 skill，不在这里和其他来源做优先级合并。
+/// 从工作目录祖先链上的 `.claude/skills/` 与 `.astrcode/skills/` 加载。
+/// 越靠近当前 working_dir 的目录优先级越高，同名 skill 覆盖祖先目录定义。
 pub fn load_project_skills(working_dir: &str) -> Vec<SkillSpec> {
-    load_skills_from_dir(
-        &PathBuf::from(working_dir).join(".astrcode").join("skills"),
-        SkillSource::Project,
-    )
+    let excluded_dirs = resolve_user_home_dir()
+        .map(|home_dir| user_skill_dir_candidates(&home_dir))
+        .unwrap_or_default();
+    load_project_skills_from_working_dir(Path::new(working_dir), &excluded_dirs)
+}
+
+pub(crate) fn load_project_skills_from_working_dir(
+    working_dir: &Path,
+    excluded_dirs: &[PathBuf],
+) -> Vec<SkillSpec> {
+    let mut project_skills = Vec::new();
+    for dir in project_skill_dir_candidates(working_dir) {
+        if excluded_dirs.iter().any(|excluded| excluded == &dir) {
+            continue;
+        }
+        project_skills = crate::skill_catalog::merge_skill_layers(
+            project_skills,
+            load_skills_from_dir(&dir, SkillSource::Project),
+        );
+    }
+    project_skills
 }
 
 /// 生成 skill 根目录的缓存标记。
 ///
-/// 基于用户 skill 目录和项目 skill 目录的文件元数据生成指纹，
+/// 基于用户 skill 目录和项目祖先链上的 skill 目录文件元数据生成指纹，
 /// 用于 prompt 层的 `SkillSummaryContributor` 检测 skill 目录变化以决定缓存是否失效。
 pub fn skill_roots_cache_marker(working_dir: &str) -> String {
     let mut markers = Vec::new();
 
     if let Some(home_dir) = resolve_user_home_dir() {
-        markers.push(cache_marker_for_skill_root(
-            &home_dir.join(".claude").join("skills"),
-        ));
-        markers.push(cache_marker_for_skill_root(
-            &home_dir.join(".astrcode").join("skills"),
-        ));
+        for dir in user_skill_dir_candidates(&home_dir) {
+            markers.push(cache_marker_for_skill_root(&dir));
+        }
     } else {
         markers.push("user-home=<unresolved>".to_string());
     }
 
-    markers.push(cache_marker_for_skill_root(
-        &PathBuf::from(working_dir).join(".astrcode").join("skills"),
-    ));
+    for dir in project_skill_dir_candidates(Path::new(working_dir)) {
+        markers.push(cache_marker_for_skill_root(&dir));
+    }
 
     markers.join("|")
 }
@@ -248,7 +254,10 @@ pub fn skill_roots_cache_marker(working_dir: &str) -> String {
 ///
 /// 去除 BOM（\u{feff}），统一换行符为 \n。
 fn normalize_skill_content(content: &str) -> String {
-    content.trim_start_matches('\u{feff}').replace('\r', "\n")
+    content
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
 }
 
 /// 分割 YAML frontmatter 和正文。
@@ -283,6 +292,36 @@ fn resolve_user_home_dir() -> Option<PathBuf> {
             None
         },
     }
+}
+
+pub(crate) fn load_user_skills_from_home_dir(home_dir: &Path) -> Vec<SkillSpec> {
+    let mut user_skills = Vec::new();
+    for dir in user_skill_dir_candidates(home_dir) {
+        user_skills = crate::skill_catalog::merge_skill_layers(
+            user_skills,
+            load_skills_from_dir(&dir, SkillSource::User),
+        );
+    }
+    user_skills
+}
+
+pub(crate) fn user_skill_dir_candidates(home_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        home_dir.join(".claude").join("skills"),
+        home_dir.join(".astrcode").join("skills"),
+    ]
+}
+
+fn project_skill_dir_candidates(working_dir: &Path) -> Vec<PathBuf> {
+    let mut ancestors = working_dir.ancestors().collect::<Vec<_>>();
+    ancestors.reverse();
+
+    let mut dirs = Vec::new();
+    for ancestor in ancestors {
+        dirs.push(ancestor.join(".claude").join("skills"));
+        dirs.push(ancestor.join(".astrcode").join("skills"));
+    }
+    dirs
 }
 
 fn cache_marker_for_path(path: &Path) -> String {
@@ -388,6 +427,8 @@ fn collect_files_recursive(root: &Path, base_dir: &Path, files: &mut Vec<String>
 mod tests {
     use std::fs;
 
+    use astrcode_core::test_support::TestEnvGuard;
+
     use super::*;
 
     fn write_skill(root: &Path, name: &str, content: &str) {
@@ -418,6 +459,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_skill_md_ignores_additional_claude_frontmatter_fields() {
+        let parsed = parse_skill_md(
+            "---\nname: git-commit\ndescription: Commit guide.\nlicense: MIT\nmetadata:\n  \
+             author: demo\n---\n# Commit guide",
+            "git-commit",
+            SkillSource::User,
+        )
+        .expect("extra Claude metadata should be ignored");
+
+        assert_eq!(parsed.id, "git-commit");
+        assert_eq!(parsed.description, "Commit guide.");
+    }
+
+    #[test]
     fn load_skills_from_dir_scans_subdirs() {
         let dir = tempfile::tempdir().expect("tempdir should be created");
         write_skill(
@@ -438,5 +493,76 @@ mod tests {
             ids,
             vec!["git-commit".to_string(), "repo-search".to_string()]
         );
+    }
+
+    #[test]
+    fn load_user_skills_from_home_dir_reads_claude_and_astrcode_layers() {
+        let guard = TestEnvGuard::new();
+        write_skill(
+            &guard.home_dir().join(".claude").join("skills"),
+            "clarify-first",
+            "---\nname: clarify-first\ndescription: Ask clarifying questions.\n---\n# Clarify",
+        );
+        write_skill(
+            &guard.home_dir().join(".astrcode").join("skills"),
+            "clarify-first",
+            "---\nname: clarify-first\ndescription: Astrcode override.\n---\n# Clarify",
+        );
+        write_skill(
+            &guard.home_dir().join(".astrcode").join("skills"),
+            "repo-search",
+            "---\nname: repo-search\ndescription: Search the repo.\n---\n# Search",
+        );
+
+        let skills = load_user_skills_from_home_dir(guard.home_dir());
+        assert_eq!(skills.len(), 2);
+        assert_eq!(
+            skills
+                .iter()
+                .find(|skill| skill.id == "clarify-first")
+                .map(|skill| skill.description.as_str()),
+            Some("Astrcode override.")
+        );
+        assert!(skills.iter().any(|skill| skill.id == "repo-search"));
+    }
+
+    #[test]
+    fn load_project_skills_reads_claude_and_astrcode_from_ancestor_chain() {
+        let guard = TestEnvGuard::new();
+        let workspace = guard.home_dir().join("workspace");
+        let nested = workspace.join("packages").join("app");
+        fs::create_dir_all(&nested).expect("nested working dir should exist");
+
+        write_skill(
+            &workspace.join(".claude").join("skills"),
+            "shared-skill",
+            "---\nname: shared-skill\ndescription: Workspace skill.\nlicense: MIT\n---\n# Shared",
+        );
+        write_skill(
+            &workspace.join(".astrcode").join("skills"),
+            "workspace-only",
+            "---\nname: workspace-only\ndescription: Workspace astrcode skill.\n---\n# Workspace",
+        );
+        write_skill(
+            &nested.join(".claude").join("skills"),
+            "shared-skill",
+            "---\nname: shared-skill\ndescription: App override.\n---\n# App",
+        );
+        write_skill(
+            &nested.join(".astrcode").join("skills"),
+            "app-only",
+            "---\nname: app-only\ndescription: App astrcode skill.\n---\n# App only",
+        );
+
+        let skills = load_project_skills(&nested.to_string_lossy());
+        assert_eq!(
+            skills
+                .iter()
+                .find(|skill| skill.id == "shared-skill")
+                .map(|skill| skill.description.as_str()),
+            Some("App override.")
+        );
+        assert!(skills.iter().any(|skill| skill.id == "workspace-only"));
+        assert!(skills.iter().any(|skill| skill.id == "app-only"));
     }
 }

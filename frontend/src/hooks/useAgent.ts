@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { normalizeAgentEvent } from '../lib/agentEvent';
 import { getHostBridge } from '../lib/hostBridge';
 import { consumeSseStream } from '../lib/sse/consumer';
+import { normalizeSessionIdForCompare } from '../lib/sessionId';
 import { buildSessionEventQueryString } from '../lib/sessionView';
 import { ensureServerSession } from '../lib/serverAuth';
 import { request } from '../lib/api/client';
@@ -446,9 +447,23 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
     []
   );
 
-  const handleDeleteSession = useCallback(async (sessionId: string): Promise<void> => {
-    await deleteSession(sessionId);
-  }, []);
+  const handleDeleteSession = useCallback(
+    async (sessionId: string): Promise<void> => {
+      const activeSessionId = connectedSessionIdRef.current;
+      if (
+        activeSessionId &&
+        normalizeSessionIdForCompare(activeSessionId) ===
+          normalizeSessionIdForCompare(sessionId)
+      ) {
+        // Why: 删除当前会话会让服务端按预期关闭 SSE；前端必须先主动断流，
+        // 否则会把正常关闭误判成异常断流并触发重连噪声。
+        disconnectSession();
+      }
+
+      await deleteSession(sessionId);
+    },
+    [disconnectSession]
+  );
 
   const handleDeleteProject = useCallback(
     async (workingDir: string): Promise<DeleteProjectResult> => {

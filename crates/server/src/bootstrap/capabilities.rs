@@ -7,7 +7,7 @@
 //! `CapabilitySurfaceSync` 负责在外部能力变化时重建整份 surface，
 //! 但始终保留稳定本地能力不被刷掉。
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use astrcode_adapter_skills::{SkillCatalog, SkillSpec, load_builtin_skills};
 use astrcode_adapter_tools::{
@@ -72,10 +72,13 @@ pub(crate) fn build_core_tool_invokers(
 ///
 /// base skills 的顺序必须满足 `builtin < mcp < plugin`，
 /// 这样 catalog 才能在后续叠加 user/project 时保持正确优先级。
-pub(crate) fn build_skill_catalog(mut external_base_skills: Vec<SkillSpec>) -> Arc<SkillCatalog> {
+pub(crate) fn build_skill_catalog(
+    home_dir: &Path,
+    mut external_base_skills: Vec<SkillSpec>,
+) -> Arc<SkillCatalog> {
     let mut base_skills = load_builtin_skills();
     base_skills.append(&mut external_base_skills);
-    Arc::new(SkillCatalog::new(base_skills))
+    Arc::new(SkillCatalog::new_with_home_dir(base_skills, home_dir))
 }
 
 /// 让 tool_search 索引与当前外部能力事实源保持同步。

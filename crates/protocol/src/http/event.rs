@@ -118,6 +118,73 @@ pub enum SubRunFailureCodeDto {
     Internal,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParentDeliveryOriginDto {
+    Explicit,
+    Fallback,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParentDeliveryTerminalSemanticsDto {
+    NonTerminal,
+    Terminal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressParentDeliveryPayloadDto {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletedParentDeliveryPayloadDto {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactRefDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedParentDeliveryPayloadDto {
+    pub message: String,
+    pub code: SubRunFailureCodeDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technical_message: Option<String>,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseRequestParentDeliveryPayloadDto {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
+pub enum ParentDeliveryPayloadDto {
+    Progress(ProgressParentDeliveryPayloadDto),
+    Completed(CompletedParentDeliveryPayloadDto),
+    Failed(FailedParentDeliveryPayloadDto),
+    CloseRequest(CloseRequestParentDeliveryPayloadDto),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParentDeliveryDto {
+    pub idempotency_key: String,
+    pub origin: ParentDeliveryOriginDto,
+    pub terminal_semantics: ParentDeliveryTerminalSemanticsDto,
+    #[serde(flatten)]
+    pub payload: ParentDeliveryPayloadDto,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubRunHandoffDto {
@@ -126,6 +193,8 @@ pub struct SubRunHandoffDto {
     pub findings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactRefDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<ParentDeliveryDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -427,6 +496,8 @@ pub enum AgentEventPayload {
         source_tool_call_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         final_reply_excerpt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<ParentDeliveryDto>,
     },
     /// 当前 turn 完成事件。
     TurnDone {

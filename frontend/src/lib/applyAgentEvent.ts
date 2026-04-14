@@ -64,6 +64,9 @@ function collectAgentEventActions(
       context.activeSessionIdRef.current
     );
   };
+  const resolveAgentScopedSessionId = (turnId?: string | null, parentTurnId?: string | null) => {
+    return resolveSessionId(turnId ?? parentTurnId ?? null);
+  };
   const agentFields =
     'agentId' in event.data ||
     'parentTurnId' in event.data ||
@@ -294,7 +297,10 @@ function collectAgentEventActions(
     }
 
     case 'subRunStarted': {
-      const sessionId = context.activeSessionIdRef.current;
+      const sessionId = resolveAgentScopedSessionId(
+        event.data.turnId,
+        'parentTurnId' in event.data ? event.data.parentTurnId : null
+      );
       if (!sessionId) {
         break;
       }
@@ -317,7 +323,10 @@ function collectAgentEventActions(
     }
 
     case 'subRunFinished': {
-      const sessionId = context.activeSessionIdRef.current;
+      const sessionId = resolveAgentScopedSessionId(
+        event.data.turnId,
+        'parentTurnId' in event.data ? event.data.parentTurnId : null
+      );
       if (!sessionId) {
         break;
       }
@@ -348,7 +357,10 @@ function collectAgentEventActions(
     }
 
     case 'childSessionNotification': {
-      const sessionId = context.activeSessionIdRef.current;
+      const sessionId = resolveAgentScopedSessionId(
+        event.data.turnId,
+        'parentTurnId' in event.data ? event.data.parentTurnId : null
+      );
       if (!sessionId) {
         break;
       }

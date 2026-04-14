@@ -1,9 +1,10 @@
 use astrcode_protocol::http::{
     AgentContextDto, AgentEventEnvelope, AgentEventPayload, AgentLifecycleDto, ChildAgentRefDto,
     ChildSessionLineageKindDto, ChildSessionNotificationDto, ChildSessionNotificationKindDto,
-    InvocationKindDto, ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto,
-    SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto,
-    SubRunStorageModeDto,
+    CompletedParentDeliveryPayloadDto, InvocationKindDto, ParentDeliveryDto,
+    ParentDeliveryOriginDto, ParentDeliveryPayloadDto, ParentDeliveryTerminalSemanticsDto,
+    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto,
+    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
 };
 
 #[test]
@@ -139,6 +140,7 @@ fn sub_run_finished_omits_parent_handoff_on_failure() {
                 summary: "done".to_string(),
                 findings: vec!["checked".to_string()],
                 artifacts: Vec::new(),
+                delivery: None,
             }),
             failure: None,
         },
@@ -173,6 +175,7 @@ fn child_session_notification_roundtrip_keeps_projection_fields() {
         status: AgentLifecycleDto::Running,
         source_tool_call_id: Some("call-1".to_string()),
         final_reply_excerpt: None,
+        delivery: None,
     };
 
     let encoded = serde_json::to_value(&notification).expect("serialize notification");
@@ -222,12 +225,61 @@ fn child_session_notification_event_payload_roundtrip() {
         status: AgentLifecycleDto::Running,
         source_tool_call_id: Some("call-1".to_string()),
         final_reply_excerpt: None,
+        delivery: None,
     };
 
     let encoded =
         serde_json::to_value(AgentEventEnvelope::new(payload.clone())).expect("serialize");
     let decoded: AgentEventEnvelope = serde_json::from_value(encoded).expect("deserialize");
     assert_eq!(decoded.event, payload);
+}
+
+#[test]
+fn child_session_notification_roundtrip_keeps_typed_delivery() {
+    let notification = ChildSessionNotificationDto {
+        notification_id: "note-typed".to_string(),
+        child_ref: ChildAgentRefDto {
+            agent_id: "agent-child".to_string(),
+            session_id: "session-parent".to_string(),
+            sub_run_id: "subrun-typed".to_string(),
+            parent_agent_id: Some("agent-parent".to_string()),
+            parent_sub_run_id: Some("subrun-parent".to_string()),
+            lineage_kind: ChildSessionLineageKindDto::Spawn,
+            status: AgentLifecycleDto::Idle,
+            open_session_id: "session-child".to_string(),
+        },
+        kind: ChildSessionNotificationKindDto::Delivered,
+        summary: "legacy summary".to_string(),
+        status: AgentLifecycleDto::Idle,
+        source_tool_call_id: Some("call-typed".to_string()),
+        final_reply_excerpt: Some("typed excerpt".to_string()),
+        delivery: Some(ParentDeliveryDto {
+            idempotency_key: "delivery-typed".to_string(),
+            origin: ParentDeliveryOriginDto::Fallback,
+            terminal_semantics: ParentDeliveryTerminalSemanticsDto::Terminal,
+            payload: ParentDeliveryPayloadDto::Completed(CompletedParentDeliveryPayloadDto {
+                message: "child completed".to_string(),
+                findings: vec!["checked".to_string()],
+                artifacts: Vec::new(),
+            }),
+        }),
+    };
+
+    let encoded = serde_json::to_value(&notification).expect("serialize notification");
+    let decoded: ChildSessionNotificationDto =
+        serde_json::from_value(encoded.clone()).expect("deserialize notification");
+
+    assert_eq!(decoded, notification);
+    assert_eq!(
+        encoded
+            .get("delivery")
+            .and_then(|value| value.get("origin")),
+        Some(&serde_json::json!("fallback"))
+    );
+    assert_eq!(
+        encoded.get("delivery").and_then(|value| value.get("kind")),
+        Some(&serde_json::json!("completed"))
+    );
 }
 
 // ─── 谱系兼容性测试 ──────────────────────────────

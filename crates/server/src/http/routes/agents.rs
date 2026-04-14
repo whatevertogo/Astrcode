@@ -449,6 +449,7 @@ fn to_subrun_handoff_dto(handoff: SubRunHandoff) -> SubRunHandoffDto {
                 uri: artifact.uri,
             })
             .collect(),
+        delivery: None,
     }
 }
 

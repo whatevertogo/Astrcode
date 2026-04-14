@@ -1,3 +1,5 @@
+use std::fs;
+
 use astrcode_protocol::http::{ComposerOptionKindDto, ComposerOptionsResponseDto};
 use axum::{
     body::{Body, to_bytes},
@@ -76,6 +78,51 @@ async fn composer_options_expose_session_scoped_skill_entries() {
             .all(|item| item.kind == ComposerOptionKindDto::Skill)
     );
     assert!(payload.items.iter().any(|item| item.id == "git-commit"));
+}
+
+#[tokio::test]
+async fn composer_options_include_user_claude_skills_for_session_scope() {
+    let (state, guard) = test_state(None).await;
+    let skill_dir = guard
+        .home_dir()
+        .join(".claude")
+        .join("skills")
+        .join("clarify-first");
+    fs::create_dir_all(&skill_dir).expect("user skill directory should exist");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: clarify-first\ndescription: Ask clarifying questions first.\n---\n# Clarify",
+    )
+    .expect("user skill should be written");
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let session = state
+        .app
+        .create_session(temp_dir.path().display().to_string())
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/sessions/{}/composer/options?kinds=skill&q=clarify",
+                    session.session_id
+                ))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: ComposerOptionsResponseDto = json_body(response).await;
+    assert!(
+        payload.items.iter().any(|item| item.id == "clarify-first"),
+        "user-level ~/.claude/skills should flow into session-scoped composer options"
+    );
 }
 
 #[tokio::test]

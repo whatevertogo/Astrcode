@@ -455,13 +455,18 @@ fn parent_wake_batch_id(turn_id: &str) -> String {
 fn build_wake_prompt_from_deliveries(
     deliveries: &[astrcode_kernel::PendingParentDelivery],
 ) -> String {
+    let guidance = "父级协作唤醒：下面是 direct child agent 刚交付给你的结果。\nTreat each \
+                    delivery as a new message from that child agent and continue the parent \
+                    task.\n如果 child 已完成，请整合结果并继续当前任务；如果 child \
+                    失败或提前关闭，请决定是修正、重试还是向上游明确报告。\n不要忽略这些交付，\
+                    也不要在没有具体修正指令时让 child 重复已经完成的工作。\n如果你看到相同 \
+                    delivery_id 再次出现，把它当作同一条消息的重放，而不是新任务。";
     let parts = deliveries
         .iter()
         .map(|delivery| {
             format!(
                 "[Agent Mailbox Message]\ndelivery_id: {}\nfrom_agent_id: \
-                 {}\nsender_lifecycle_status: Idle\nmessage: {}\n\n注意：如果你看到相同 \
-                 delivery_id 再次出现，不要把它当作新任务重复处理。",
+                 {}\nsender_lifecycle_status: Idle\nmessage: {}",
                 delivery.delivery_id,
                 delivery.notification.child_ref.agent_id,
                 terminal_notification_message(&delivery.notification),
@@ -470,11 +475,14 @@ fn build_wake_prompt_from_deliveries(
         .collect::<Vec<_>>();
 
     if parts.len() == 1 {
-        return parts.into_iter().next().unwrap_or_default();
+        return format!(
+            "{guidance}\n\n{}",
+            parts.into_iter().next().unwrap_or_default()
+        );
     }
 
     format!(
-        "请按顺序处理以下子 Agent 交付结果：\n\n{}",
+        "{guidance}\n\n请按顺序处理以下子 Agent 交付结果：\n\n{}",
         parts
             .into_iter()
             .enumerate()
@@ -528,6 +536,7 @@ mod tests {
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: Some("tool-call-1".to_string()),
             final_reply_excerpt: Some("最终回复摘录".to_string()),
+            delivery: None,
         }
     }
 
@@ -727,6 +736,7 @@ mod tests {
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             final_reply_excerpt: Some("leaf 最终回复".to_string()),
+            delivery: None,
         };
 
         harness
@@ -976,6 +986,8 @@ mod tests {
                 notification: summary_only,
             },
         ]);
+        assert!(prompt.contains("Treat each delivery as a new message from that child agent"));
+        assert!(prompt.contains("不要忽略这些交付"));
         assert!(prompt.contains("message: 最终回复摘录"));
         assert!(prompt.contains("message: 子 Agent 已完成"));
     }

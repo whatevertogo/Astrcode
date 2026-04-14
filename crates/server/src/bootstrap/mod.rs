@@ -21,6 +21,7 @@
 //! 它保留的原因是浏览器开发模式仍需要一个稳定的本地文件来读取 bootstrap token。
 
 mod capabilities;
+mod composer_skills;
 mod deps;
 mod governance;
 mod mcp;

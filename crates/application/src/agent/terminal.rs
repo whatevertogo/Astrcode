@@ -3,7 +3,10 @@ use std::time::Instant;
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
     AgentTurnOutcome, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
-    ChildSessionNotificationKind, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
+    ChildSessionNotificationKind, CloseRequestParentDeliveryPayload,
+    CompletedParentDeliveryPayload, FailedParentDeliveryPayload, ParentDelivery,
+    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
+    ProgressParentDeliveryPayload, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
 };
 
 use super::{
@@ -20,6 +23,7 @@ struct ChildTerminalDeliveryProjection {
     status: AgentLifecycleStatus,
     summary: String,
     final_reply_excerpt: Option<String>,
+    delivery: ParentDeliveryPayload,
 }
 
 /// 聚合 child turn 终态收口所需上下文，避免不同入口重复传参与路由真相漂移。
@@ -121,13 +125,14 @@ impl AgentOrchestrationService {
         );
 
         let delivery = project_child_terminal_delivery(&result);
+        let notification_id = child_terminal_notification_id(
+            &watch.child.sub_run_id,
+            &watch.execution_turn_id,
+            result.lifecycle,
+            result.last_turn_outcome,
+        );
         let notification = ChildSessionNotification {
-            notification_id: child_terminal_notification_id(
-                &watch.child.sub_run_id,
-                &watch.execution_turn_id,
-                result.lifecycle,
-                result.last_turn_outcome,
-            ),
+            notification_id: notification_id.clone(),
             child_ref: ChildAgentRef {
                 agent_id: watch.child.agent_id.clone(),
                 // 这里继续保留现有 ChildAgentRef 读侧语义，不把它作为父侧路由真相使用。
@@ -144,6 +149,24 @@ impl AgentOrchestrationService {
             status: delivery.status,
             source_tool_call_id: watch.source_tool_call_id,
             final_reply_excerpt: delivery.final_reply_excerpt,
+            delivery: Some(ParentDelivery {
+                idempotency_key: notification_id,
+                origin: ParentDeliveryOrigin::Fallback,
+                terminal_semantics: match delivery.kind {
+                    ChildSessionNotificationKind::Started
+                    | ChildSessionNotificationKind::ProgressSummary
+                    | ChildSessionNotificationKind::Waiting
+                    | ChildSessionNotificationKind::Resumed => {
+                        ParentDeliveryTerminalSemantics::NonTerminal
+                    },
+                    ChildSessionNotificationKind::Delivered
+                    | ChildSessionNotificationKind::Closed
+                    | ChildSessionNotificationKind::Failed => {
+                        ParentDeliveryTerminalSemantics::Terminal
+                    },
+                },
+                payload: delivery.delivery,
+            }),
         };
 
         self.append_child_terminal_notification(
@@ -219,6 +242,7 @@ fn build_child_subrun_result(
                 summary: outcome.summary.clone(),
                 findings: Vec::new(),
                 artifacts: child_handoff_artifacts(child, parent_session_id),
+                delivery: None,
             }),
             failure: None,
         },
@@ -322,12 +346,55 @@ fn project_child_terminal_delivery(result: &SubRunResult) -> ChildTerminalDelive
             )
             .then_some(summary.clone())
         });
+    let delivery = result
+        .handoff
+        .as_ref()
+        .and_then(|handoff| handoff.delivery.as_ref())
+        .map(|delivery| delivery.payload.clone())
+        .unwrap_or_else(|| match result.last_turn_outcome {
+            Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded) => {
+                ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                    message: summary.clone(),
+                    findings: result
+                        .handoff
+                        .as_ref()
+                        .map(|handoff| handoff.findings.clone())
+                        .unwrap_or_default(),
+                    artifacts: result
+                        .handoff
+                        .as_ref()
+                        .map(|handoff| handoff.artifacts.clone())
+                        .unwrap_or_default(),
+                })
+            },
+            Some(AgentTurnOutcome::Failed) => {
+                let failure = result.failure.as_ref();
+                ParentDeliveryPayload::Failed(FailedParentDeliveryPayload {
+                    message: summary.clone(),
+                    code: failure
+                        .map(|failure| failure.code)
+                        .unwrap_or(SubRunFailureCode::Internal),
+                    technical_message: failure.map(|failure| failure.technical_message.clone()),
+                    retryable: failure.is_some_and(|failure| failure.retryable),
+                })
+            },
+            Some(AgentTurnOutcome::Cancelled) => {
+                ParentDeliveryPayload::CloseRequest(CloseRequestParentDeliveryPayload {
+                    message: summary.clone(),
+                    reason: Some("child_turn_cancelled".to_string()),
+                })
+            },
+            None => ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
+                message: summary.clone(),
+            }),
+        });
 
     ChildTerminalDeliveryProjection {
         kind,
         status,
         summary,
         final_reply_excerpt,
+        delivery,
     }
 }
 
@@ -614,6 +681,7 @@ mod tests {
                     status: AgentLifecycleStatus::Idle,
                     source_tool_call_id: None,
                     final_reply_excerpt: Some("最终回复".to_string()),
+                    delivery: None,
                 },
             )
             .await

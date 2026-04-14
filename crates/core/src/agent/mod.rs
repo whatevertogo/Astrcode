@@ -198,6 +198,109 @@ pub enum SubRunFailureCode {
     Internal,
 }
 
+/// child -> parent 的 typed delivery 分类。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParentDeliveryKind {
+    Progress,
+    Completed,
+    Failed,
+    CloseRequest,
+}
+
+/// child -> parent delivery 的来源。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParentDeliveryOrigin {
+    Explicit,
+    Fallback,
+}
+
+/// delivery 是否终结当前 child work turn。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ParentDeliveryTerminalSemantics {
+    NonTerminal,
+    Terminal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressParentDeliveryPayload {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletedParentDeliveryPayload {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedParentDeliveryPayload {
+    pub message: String,
+    pub code: SubRunFailureCode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technical_message: Option<String>,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseRequestParentDeliveryPayload {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// child -> parent 的结构化 payload。
+///
+/// 使用判别联合而不是无结构 blob，防止 contract 退化回“只有 kind + 文本”。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
+pub enum ParentDeliveryPayload {
+    Progress(ProgressParentDeliveryPayload),
+    Completed(CompletedParentDeliveryPayload),
+    Failed(FailedParentDeliveryPayload),
+    CloseRequest(CloseRequestParentDeliveryPayload),
+}
+
+impl ParentDeliveryPayload {
+    pub fn kind(&self) -> ParentDeliveryKind {
+        match self {
+            Self::Progress(_) => ParentDeliveryKind::Progress,
+            Self::Completed(_) => ParentDeliveryKind::Completed,
+            Self::Failed(_) => ParentDeliveryKind::Failed,
+            Self::CloseRequest(_) => ParentDeliveryKind::CloseRequest,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Progress(payload) => payload.message.as_str(),
+            Self::Completed(payload) => payload.message.as_str(),
+            Self::Failed(payload) => payload.message.as_str(),
+            Self::CloseRequest(payload) => payload.message.as_str(),
+        }
+    }
+}
+
+/// child -> parent 的 typed delivery envelope。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParentDelivery {
+    pub idempotency_key: String,
+    pub origin: ParentDeliveryOrigin,
+    pub terminal_semantics: ParentDeliveryTerminalSemantics,
+    #[serde(flatten)]
+    pub payload: ParentDeliveryPayload,
+}
+
 /// 子执行传递给父会话的业务结果。
 ///
 /// 该结构只承载“父 Agent 后续决策真正需要消费的内容”，
@@ -205,11 +308,15 @@ pub enum SubRunFailureCode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubRunHandoff {
+    /// 旧 handoff summary 字段仍保留用于过渡期兼容；
+    /// 新的 child -> parent 主合同将逐步切到 `delivery`。
     pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<ParentDelivery>,
 }
 
 /// 子执行失败的结构化信息。
@@ -552,12 +659,16 @@ pub struct ChildSessionNotification {
     pub notification_id: String,
     pub child_ref: ChildAgentRef,
     pub kind: ChildSessionNotificationKind,
+    /// 旧 notification summary 字段仍保留用于 replay / mapper upgrade 兼容；
+    /// 新的 child -> parent 主合同将逐步切到 `delivery`。
     pub summary: String,
     pub status: AgentLifecycleStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_reply_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<ParentDelivery>,
 }
 
 /// `send` 的稳定调用参数。
@@ -663,6 +774,7 @@ pub enum AgentCollaborationActionKind {
     Observe,
     Close,
     Delivery,
+    ReplyToParent,
 }
 
 /// 协作动作结果类型。

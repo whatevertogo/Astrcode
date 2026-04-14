@@ -13,12 +13,15 @@
 //! 如果压缩请求本身超出上下文窗口，会逐步丢弃最旧的 compact unit 并重试，
 //! 最多重试 3 次。
 
+use std::sync::OnceLock;
+
 use astrcode_core::{
     AstrError, CancelToken, LlmMessage, LlmRequest, ModelLimits, Result, UserMessageOrigin,
     format_compact_summary, parse_compact_summary_message,
 };
 use astrcode_kernel::KernelGateway;
 use chrono::{DateTime, Utc};
+use regex::Regex;
 
 use super::token_usage::{effective_context_window, estimate_request_tokens};
 
@@ -374,24 +377,32 @@ fn compacted_messages(summary: &str, suffix: Vec<LlmMessage>) -> Vec<LlmMessage>
 }
 
 fn parse_compact_output(content: &str) -> Result<ParsedCompactOutput> {
-    let has_analysis = content.contains("<analysis>") && content.contains("</analysis>");
+    let has_analysis = extract_xml_block(content, "analysis").is_some();
     if !has_analysis {
         log::warn!("compact: missing <analysis> block in LLM response");
     }
 
-    let Some(summary_start) = content.find("<summary>") else {
-        return Err(AstrError::LlmStreamError(
-            "compact response missing <summary> block".to_string(),
-        ));
-    };
-    let summary_start = summary_start + "<summary>".len();
-    let Some(summary_end_offset) = content[summary_start..].find("</summary>") else {
+    if has_opening_xml_tag(content, "summary") && !has_closing_xml_tag(content, "summary") {
         return Err(AstrError::LlmStreamError(
             "compact response missing closing </summary> tag".to_string(),
         ));
-    };
-    let summary_end = summary_start + summary_end_offset;
-    let summary = content[summary_start..summary_end].trim().to_string();
+    }
+
+    let summary = extract_xml_block(content, "summary")
+        .map(str::to_string)
+        .or_else(|| {
+            let fallback = strip_xml_block(content, "analysis");
+            let fallback = strip_markdown_code_fence(&fallback);
+            if fallback.is_empty() {
+                None
+            } else {
+                log::warn!("compact: missing <summary> block, falling back to raw content");
+                Some(fallback)
+            }
+        })
+        .ok_or_else(|| {
+            AstrError::LlmStreamError("compact response missing <summary> block".to_string())
+        })?;
     if summary.is_empty() {
         return Err(AstrError::LlmStreamError(
             "compact summary response was empty".to_string(),
@@ -402,6 +413,91 @@ fn parse_compact_output(content: &str) -> Result<ParsedCompactOutput> {
         summary,
         has_analysis,
     })
+}
+
+fn extract_xml_block<'a>(content: &'a str, tag: &str) -> Option<&'a str> {
+    xml_block_regex(tag)
+        .captures(content)
+        .and_then(|captures| captures.name("body"))
+        .map(|body| body.as_str().trim())
+}
+
+fn strip_xml_block(content: &str, tag: &str) -> String {
+    xml_block_regex(tag).replace(content, "").into_owned()
+}
+
+fn has_opening_xml_tag(content: &str, tag: &str) -> bool {
+    xml_opening_tag_regex(tag).is_match(content)
+}
+
+fn has_closing_xml_tag(content: &str, tag: &str) -> bool {
+    xml_closing_tag_regex(tag).is_match(content)
+}
+
+fn strip_markdown_code_fence(content: &str) -> String {
+    let trimmed = content.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+
+    let mut lines = trimmed.lines();
+    let Some(first_line) = lines.next() else {
+        return trimmed.to_string();
+    };
+    if !first_line.trim_start().starts_with("```") {
+        return trimmed.to_string();
+    }
+
+    let body = lines.collect::<Vec<_>>().join("\n");
+    let body = body.trim_end();
+    body.strip_suffix("```").unwrap_or(body).trim().to_string()
+}
+
+fn xml_block_regex(tag: &str) -> &'static Regex {
+    static SUMMARY_REGEX: OnceLock<Regex> = OnceLock::new();
+    static ANALYSIS_REGEX: OnceLock<Regex> = OnceLock::new();
+
+    match tag {
+        "summary" => SUMMARY_REGEX.get_or_init(|| {
+            Regex::new(r"(?is)<summary\s*>(?P<body>.*?)</summary\s*>")
+                .expect("summary regex should compile")
+        }),
+        "analysis" => ANALYSIS_REGEX.get_or_init(|| {
+            Regex::new(r"(?is)<analysis\s*>(?P<body>.*?)</analysis\s*>")
+                .expect("analysis regex should compile")
+        }),
+        other => panic!("unsupported compact xml tag: {other}"),
+    }
+}
+
+fn xml_opening_tag_regex(tag: &str) -> &'static Regex {
+    static SUMMARY_REGEX: OnceLock<Regex> = OnceLock::new();
+    static ANALYSIS_REGEX: OnceLock<Regex> = OnceLock::new();
+
+    match tag {
+        "summary" => SUMMARY_REGEX.get_or_init(|| {
+            Regex::new(r"(?i)<summary\s*>").expect("summary opening regex should compile")
+        }),
+        "analysis" => ANALYSIS_REGEX.get_or_init(|| {
+            Regex::new(r"(?i)<analysis\s*>").expect("analysis opening regex should compile")
+        }),
+        other => panic!("unsupported compact xml tag: {other}"),
+    }
+}
+
+fn xml_closing_tag_regex(tag: &str) -> &'static Regex {
+    static SUMMARY_REGEX: OnceLock<Regex> = OnceLock::new();
+    static ANALYSIS_REGEX: OnceLock<Regex> = OnceLock::new();
+
+    match tag {
+        "summary" => SUMMARY_REGEX.get_or_init(|| {
+            Regex::new(r"(?i)</summary\s*>").expect("summary closing regex should compile")
+        }),
+        "analysis" => ANALYSIS_REGEX.get_or_init(|| {
+            Regex::new(r"(?i)</analysis\s*>").expect("analysis closing regex should compile")
+        }),
+        other => panic!("unsupported compact xml tag: {other}"),
+    }
 }
 
 fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
@@ -455,8 +551,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_compact_output_requires_summary_block() {
-        let error = parse_compact_output("plain text").expect_err("missing summary should fail");
+    fn parse_compact_output_requires_non_empty_content() {
+        let error = parse_compact_output("   ").expect_err("empty compact output should fail");
         assert!(error.to_string().contains("missing <summary> block"));
     }
 
@@ -475,6 +571,32 @@ mod tests {
 
         assert_eq!(parsed.summary, "Section");
         assert!(parsed.has_analysis);
+    }
+
+    #[test]
+    fn parse_compact_output_accepts_case_insensitive_summary_block() {
+        let parsed = parse_compact_output("<ANALYSIS>draft</ANALYSIS><SUMMARY>Section</SUMMARY>")
+            .expect("summary should parse");
+
+        assert_eq!(parsed.summary, "Section");
+        assert!(parsed.has_analysis);
+    }
+
+    #[test]
+    fn parse_compact_output_falls_back_to_plain_text_summary() {
+        let parsed = parse_compact_output("## Goal\n- preserve current task")
+            .expect("plain text summary should parse");
+
+        assert_eq!(parsed.summary, "## Goal\n- preserve current task");
+        assert!(!parsed.has_analysis);
+    }
+
+    #[test]
+    fn parse_compact_output_does_not_treat_analysis_only_as_summary() {
+        let error = parse_compact_output("<analysis>draft</analysis>")
+            .expect_err("analysis-only output should still fail");
+
+        assert!(error.to_string().contains("missing <summary> block"));
     }
 
     #[test]

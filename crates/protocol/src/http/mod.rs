@@ -44,9 +44,12 @@ pub use debug::{
     SessionDebugTraceDto, SessionDebugTraceItemDto, SessionDebugTraceItemKindDto,
 };
 pub use event::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto, CompactTriggerDto,
-    ExecutionControlDto, ForkModeDto, InvocationKindDto, MailboxBatchDto, MailboxDiscardedDto,
-    MailboxQueuedDto, PROTOCOL_VERSION, PhaseDto, ResolvedExecutionLimitsDto,
+    AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto,
+    CloseRequestParentDeliveryPayloadDto, CompactTriggerDto, CompletedParentDeliveryPayloadDto,
+    ExecutionControlDto, FailedParentDeliveryPayloadDto, ForkModeDto, InvocationKindDto,
+    MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto, PROTOCOL_VERSION, ParentDeliveryDto,
+    ParentDeliveryOriginDto, ParentDeliveryPayloadDto, ParentDeliveryTerminalSemanticsDto,
+    PhaseDto, ProgressParentDeliveryPayloadDto, ResolvedExecutionLimitsDto,
     ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
     SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto, ToolCallResultDto,
     ToolOutputStreamDto,

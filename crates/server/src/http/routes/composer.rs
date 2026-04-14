@@ -40,14 +40,18 @@ pub(crate) async fn session_composer_options(
     let requested_kinds = parse_composer_option_kinds(query.kinds.as_deref())?;
     let items = state
         .app
-        .list_composer_options(ComposerOptionsRequest {
-            query: query.q,
-            kinds: requested_kinds,
-            // 候选面板是交互式 UI，单次响应保持上限可以避免把全部 surface
-            // 一股脑推给前端造成首屏抖动。
-            limit: 50,
-        })
-        .await;
+        .list_composer_options(
+            &session_id,
+            ComposerOptionsRequest {
+                query: query.q,
+                kinds: requested_kinds,
+                // 候选面板是交互式 UI，单次响应保持上限可以避免把全部 surface
+                // 一股脑推给前端造成首屏抖动。
+                limit: 50,
+            },
+        )
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(to_composer_options_response(items)))
 }
 
