@@ -12,22 +12,25 @@
 
 ```bash
 # 开发
-make dev              # Windows 桌面端开发
-make dev-unix         # Linux/macOS 桌面端开发
-make frontend         # 只启动前端
+cargo tauri dev             # Tauri 桌面端开发
 cargo run -p astrcode-server  # 只启动后端
+cd frontend && npm run dev    # 只启动前端
 
 # 构建与检查
-make build            # Tauri 桌面端构建
-make check            # push 前快速检查
-make check-ci         # 与 CI 对齐的完整检查
+cargo tauri build            # Tauri 桌面端构建
+cargo check --workspace      # 快速编译检查
+cargo test --workspace --exclude astrcode --lib  # push 前快速测试
+
+# 完整 CI 检查
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace --exclude astrcode
+node scripts/check-crate-boundaries.mjs
+cd frontend && npm run typecheck && npm run lint && npm run format:check
 
 # 架构守卫
-make check-boundaries        # 检查 crate 依赖边界
-make check-boundaries-strict # 严格模式
-
-# 前端
-cd frontend && npm run typecheck && npm run lint && npm run format:check
+node scripts/check-crate-boundaries.mjs          # 检查 crate 依赖边界
+node scripts/check-crate-boundaries.mjs --strict  # 严格模式
 ```
 
 ## 架构约束
@@ -58,7 +61,7 @@ cd frontend && npm run typecheck && npm run lint && npm run format:check
 
 - 前端css不允许出现webview相关内容这会导致应用端无法下滑窗口
 - 文档必须使用中文
-- 使用 `make check-boundaries` 验证 crate 依赖规则没有被违反
+- 使用 `node scripts/check-crate-boundaries.mjs` 验证 crate 依赖规则没有被违反
 - `src-tauri` 是 Tauri 薄壳，不含业务逻辑
 - `server` 组合根在 `crates/server/src/bootstrap/runtime.rs`
 
