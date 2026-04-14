@@ -4,6 +4,7 @@
 //! 仍需要一个稳定骨架，否则后续 auto-continue、输出截断恢复和流式工具调度
 //! 都会退化成新的局部布尔值。
 
+
 use astrcode_core::{LlmFinishReason, LlmOutput, ModelLimits, ResolvedRuntimeConfig};
 
 use crate::context_window::token_usage::estimate_text_tokens;
@@ -90,6 +91,7 @@ pub fn decide_budget_continuation(
 
     // Why: auto-continue 只针对“输出明显偏短、且预算还有富余”的场景。
     // 这里故意保守：短输出阈值固定为 96 tokens，且剩余预算至少还能再撑两轮同规模回复。
+    // TODO: 待评估
     let output_is_short = output_tokens <= 96;
     let budget_is_healthy = remaining_budget >= output_tokens.saturating_mul(2).max(96);
 
