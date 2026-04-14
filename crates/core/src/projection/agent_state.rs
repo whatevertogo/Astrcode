@@ -121,7 +121,9 @@ impl AgentStateProjector {
                         origin: *origin,
                     });
                 }
-                self.state.phase = Phase::Thinking;
+                if matches!(origin, UserMessageOrigin::User) {
+                    self.state.phase = Phase::Thinking;
+                }
             },
 
             StorageEventPayload::AssistantFinal {
@@ -569,7 +571,28 @@ mod tests {
         ]);
 
         assert!(state.messages.is_empty());
-        assert_eq!(state.phase, Phase::Thinking);
+        assert_eq!(state.phase, Phase::Idle);
+    }
+
+    #[test]
+    fn internal_compact_summary_message_does_not_start_a_new_turn_phase() {
+        let state = project(&[
+            session_start("s1", "/tmp"),
+            user_message(
+                Some("turn-compact"),
+                root_agent(),
+                &format_compact_summary("summary"),
+                UserMessageOrigin::CompactSummary,
+            ),
+        ]);
+
+        assert_eq!(state.messages.len(), 1);
+        assert_user_message(
+            &state.messages[0],
+            &format_compact_summary("summary"),
+            UserMessageOrigin::CompactSummary,
+        );
+        assert_eq!(state.phase, Phase::Idle);
     }
 
     #[test]

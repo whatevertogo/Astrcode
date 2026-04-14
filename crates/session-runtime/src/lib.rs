@@ -6,10 +6,11 @@ use std::{
 
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentId, AgentLifecycleStatus,
-    ChildSessionNotification, DeleteProjectResult, EventStore, EventTranslator, LlmMessage,
+    ChildSessionNotification, DeleteProjectResult, EventStore, EventTranslator,
     MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
-    MailboxQueuedPayload, Phase, PromptFactsProvider, Result, RuntimeMetricsRecorder, SessionId,
-    SessionMeta, StorageEvent, StorageEventPayload, StoredEvent, event::generate_session_id,
+    MailboxQueuedPayload, Phase, PromptFactsProvider, ResolvedRuntimeConfig, Result,
+    RuntimeMetricsRecorder, SessionId, SessionMeta, StorageEvent, StorageEventPayload, StoredEvent,
+    event::generate_session_id,
 };
 use astrcode_kernel::{Kernel, PendingParentDelivery};
 use chrono::Utc;
@@ -520,7 +521,11 @@ impl SessionRuntime {
         Ok(deleted)
     }
 
-    pub async fn compact_session(&self, session_id: &str) -> Result<bool> {
+    pub async fn compact_session(
+        &self,
+        session_id: &str,
+        runtime: ResolvedRuntimeConfig,
+    ) -> Result<bool> {
         let session_id = SessionId::from(normalize_session_id(session_id));
         let actor = self.ensure_loaded_session(&session_id).await?;
         if actor
@@ -528,41 +533,26 @@ impl SessionRuntime {
             .running
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            actor.state().request_manual_compact()?;
+            actor.state().request_manual_compact(runtime)?;
             return Ok(true);
         }
-        let projected = actor.state().snapshot_projected_state()?;
-        let summary = projected
-            .messages
-            .iter()
-            .rev()
-            .find_map(|message| match message {
-                LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => {
-                    Some(content.clone())
-                },
-                LlmMessage::User { content, .. } if !content.trim().is_empty() => {
-                    Some(content.clone())
-                },
-                _ => None,
-            })
-            .unwrap_or_else(|| "compacted".to_string());
-
         let mut translator = EventTranslator::new(actor.state().current_phase()?);
-        let event = StorageEvent {
-            turn_id: None,
-            agent: AgentEventContext::default(),
-            payload: StorageEventPayload::CompactApplied {
-                trigger: astrcode_core::CompactTrigger::Manual,
-                summary,
-                preserved_recent_turns: 1,
-                pre_tokens: 0,
-                post_tokens_estimate: 0,
-                messages_removed: 0,
-                tokens_freed: 0,
-                timestamp: Utc::now(),
+        if let Some(events) = crate::turn::manual_compact::build_manual_compact_events(
+            crate::turn::manual_compact::ManualCompactRequest {
+                gateway: self.kernel.gateway(),
+                prompt_facts_provider: self.prompt_facts_provider.as_ref(),
+                session_state: actor.state(),
+                session_id: session_id.as_str(),
+                working_dir: Path::new(actor.working_dir()),
+                runtime: &runtime,
             },
-        };
-        append_and_broadcast(actor.state(), &event, &mut translator).await?;
+        )
+        .await?
+        {
+            for event in &events {
+                append_and_broadcast(actor.state(), event, &mut translator).await?;
+            }
+        }
         Ok(false)
     }
 

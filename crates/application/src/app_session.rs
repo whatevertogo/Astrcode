@@ -120,9 +120,16 @@ impl App {
                 ));
             }
         }
+        let working_dir = self
+            .session_runtime
+            .get_session_working_dir(session_id)
+            .await?;
+        let runtime = self
+            .config_service
+            .load_resolved_runtime_config(Some(Path::new(&working_dir)))?;
         let deferred = self
             .session_runtime
-            .compact_session(session_id)
+            .compact_session(session_id, runtime)
             .await
             .map_err(ApplicationError::from)?;
         Ok(CompactSessionAccepted { deferred })

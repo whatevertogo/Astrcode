@@ -21,6 +21,9 @@ use astrcode_core::{LlmMessage, LlmUsage, ModelLimits, UserMessageOrigin};
 
 use crate::heuristics::{MESSAGE_BASE_TOKENS, SUMMARY_RESERVE_TOKENS, TOOL_CALL_BASE_TOKENS};
 
+const REQUEST_ESTIMATE_PADDING_NUMERATOR: usize = 4;
+const REQUEST_ESTIMATE_PADDING_DENOMINATOR: usize = 3;
+
 /// Prompt token 使用快照。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PromptTokenSnapshot {
@@ -106,7 +109,10 @@ pub fn should_compact(snapshot: PromptTokenSnapshot) -> bool {
 /// 估算完整 LLM 请求的 token 数（messages + system prompt）。
 pub fn estimate_request_tokens(messages: &[LlmMessage], system_prompt: Option<&str>) -> usize {
     let system_tokens = system_prompt.map_or(0, estimate_text_tokens);
-    system_tokens + messages.iter().map(estimate_message_tokens).sum::<usize>()
+    let raw_total = system_tokens + messages.iter().map(estimate_message_tokens).sum::<usize>();
+    raw_total
+        .saturating_mul(REQUEST_ESTIMATE_PADDING_NUMERATOR)
+        .div_ceil(REQUEST_ESTIMATE_PADDING_DENOMINATOR)
 }
 
 /// 估算单条消息的 token 数。

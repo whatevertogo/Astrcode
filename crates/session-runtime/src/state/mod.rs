@@ -20,7 +20,8 @@ use std::{
 
 use astrcode_core::{
     AgentEvent, AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventTranslator,
-    MailboxProjection, Phase, Result, SessionEventRecord, SessionTurnLease, StoredEvent,
+    LlmMessage, MailboxProjection, Phase, ResolvedRuntimeConfig, Result, SessionEventRecord,
+    SessionTurnLease, StorageEventPayload, StoredEvent, UserMessageOrigin,
     support::{self},
 };
 use cache::{RecentSessionEvents, RecentStoredEvents};
@@ -56,6 +57,8 @@ pub struct SessionState {
     pub active_turn_id: StdMutex<Option<String>>,
     pub turn_lease: StdMutex<Option<Box<dyn SessionTurnLease>>>,
     pub pending_manual_compact: StdMutex<bool>,
+    pub pending_manual_compact_runtime: StdMutex<Option<ResolvedRuntimeConfig>>,
+    pending_reactivation_messages: StdMutex<Vec<LlmMessage>>,
     pub compact_failure_count: StdMutex<u32>,
     pub broadcaster: broadcast::Sender<SessionEventRecord>,
     live_broadcaster: broadcast::Sender<AgentEvent>,
@@ -101,6 +104,8 @@ impl SessionState {
         cached_stored.replace(recent_stored.clone());
         let child_nodes = rebuild_child_nodes(&recent_stored);
         let mailbox_projection_index = MailboxProjection::replay_index(&recent_stored);
+        let pending_reactivation_messages =
+            pending_reactivation_messages_from_stored(&recent_stored);
         Self {
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
@@ -108,6 +113,8 @@ impl SessionState {
             active_turn_id: StdMutex::new(None),
             turn_lease: StdMutex::new(None),
             pending_manual_compact: StdMutex::new(false),
+            pending_manual_compact_runtime: StdMutex::new(None),
+            pending_reactivation_messages: StdMutex::new(pending_reactivation_messages),
             compact_failure_count: StdMutex::new(0),
             broadcaster,
             live_broadcaster,
@@ -161,24 +168,49 @@ impl SessionState {
         });
     }
 
-    pub fn request_manual_compact(&self) -> Result<bool> {
+    pub fn request_manual_compact(&self, runtime: ResolvedRuntimeConfig) -> Result<bool> {
         let mut guard = support::lock_anyhow(
             &self.pending_manual_compact,
             "session pending manual compact",
+        )?;
+        let mut runtime_guard = support::lock_anyhow(
+            &self.pending_manual_compact_runtime,
+            "session pending manual compact runtime",
         )?;
         let already_pending = *guard;
         *guard = true;
+        *runtime_guard = Some(runtime);
         Ok(!already_pending)
     }
 
-    pub fn take_pending_manual_compact(&self) -> Result<bool> {
+    pub fn take_pending_manual_compact(&self) -> Result<Option<ResolvedRuntimeConfig>> {
         let mut guard = support::lock_anyhow(
             &self.pending_manual_compact,
             "session pending manual compact",
         )?;
-        let pending = *guard;
+        let mut runtime_guard = support::lock_anyhow(
+            &self.pending_manual_compact_runtime,
+            "session pending manual compact runtime",
+        )?;
+        let pending = if *guard { runtime_guard.take() } else { None };
         *guard = false;
         Ok(pending)
+    }
+
+    pub fn take_pending_reactivation_messages(&self) -> Result<Vec<LlmMessage>> {
+        let mut guard = support::lock_anyhow(
+            &self.pending_reactivation_messages,
+            "session pending reactivation messages",
+        )?;
+        Ok(std::mem::take(&mut *guard))
+    }
+
+    pub fn pending_reactivation_messages(&self) -> Result<Vec<LlmMessage>> {
+        Ok(support::lock_anyhow(
+            &self.pending_reactivation_messages,
+            "session pending reactivation messages",
+        )?
+        .clone())
     }
 
     pub fn translate_store_and_cache(
@@ -199,7 +231,32 @@ impl SessionState {
             self.upsert_child_session_node(node)?;
         }
         self.apply_mailbox_event(stored);
+        self.apply_reactivation_event(stored)?;
         Ok(records)
+    }
+
+    fn apply_reactivation_event(&self, stored: &StoredEvent) -> Result<()> {
+        let mut guard = support::lock_anyhow(
+            &self.pending_reactivation_messages,
+            "session pending reactivation messages",
+        )?;
+        match &stored.event.payload {
+            StorageEventPayload::CompactApplied { .. } => guard.clear(),
+            StorageEventPayload::UserMessage {
+                content,
+                origin: UserMessageOrigin::ReactivationPrompt,
+                ..
+            } => guard.push(LlmMessage::User {
+                content: content.clone(),
+                origin: UserMessageOrigin::ReactivationPrompt,
+            }),
+            StorageEventPayload::UserMessage {
+                origin: UserMessageOrigin::User,
+                ..
+            } => guard.clear(),
+            _ => {},
+        }
+        Ok(())
     }
 
     pub fn recent_records_after(
@@ -217,17 +274,44 @@ impl SessionState {
     }
 }
 
+fn pending_reactivation_messages_from_stored(stored_events: &[StoredEvent]) -> Vec<LlmMessage> {
+    let mut pending = Vec::new();
+    for stored in stored_events {
+        match &stored.event.payload {
+            StorageEventPayload::CompactApplied { .. } => pending.clear(),
+            StorageEventPayload::UserMessage {
+                content,
+                origin: UserMessageOrigin::ReactivationPrompt,
+                ..
+            } => pending.push(LlmMessage::User {
+                content: content.clone(),
+                origin: UserMessageOrigin::ReactivationPrompt,
+            }),
+            StorageEventPayload::UserMessage {
+                origin: UserMessageOrigin::User,
+                ..
+            } => pending.clear(),
+            _ => {},
+        }
+    }
+    pending
+}
+
 // ── 辅助函数 ──────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, InvocationKind, Phase, StorageEventPayload, SubRunStorageMode,
-        UserMessageOrigin,
+        AgentEventContext, CompactTrigger, InvocationKind, LlmMessage, Phase, StorageEventPayload,
+        SubRunStorageMode, UserMessageOrigin,
     };
+    use chrono::Utc;
 
-    use super::test_support::{
-        event, independent_session_sub_run_agent, root_agent, stored, test_session_state,
+    use super::{
+        pending_reactivation_messages_from_stored,
+        test_support::{
+            event, independent_session_sub_run_agent, root_agent, stored, test_session_state,
+        },
     };
 
     #[test]
@@ -377,5 +461,125 @@ mod tests {
             .expect_err("invalid stored event should be rejected");
 
         assert!(error.to_string().contains("child_session_id"));
+    }
+
+    #[test]
+    fn pending_reactivation_messages_restore_until_next_real_user_turn() {
+        let stored_events = vec![
+            stored(
+                1,
+                event(
+                    None,
+                    root_agent(),
+                    StorageEventPayload::CompactApplied {
+                        trigger: CompactTrigger::Manual,
+                        summary: "summary".into(),
+                        preserved_recent_turns: 1,
+                        pre_tokens: 100,
+                        post_tokens_estimate: 40,
+                        messages_removed: 2,
+                        tokens_freed: 60,
+                        timestamp: Utc::now(),
+                    },
+                ),
+            ),
+            stored(
+                2,
+                event(
+                    None,
+                    root_agent(),
+                    StorageEventPayload::UserMessage {
+                        content: "Recovered file context".into(),
+                        origin: UserMessageOrigin::ReactivationPrompt,
+                        timestamp: Utc::now(),
+                    },
+                ),
+            ),
+        ];
+
+        assert_eq!(
+            pending_reactivation_messages_from_stored(&stored_events),
+            vec![LlmMessage::User {
+                content: "Recovered file context".into(),
+                origin: UserMessageOrigin::ReactivationPrompt,
+            }]
+        );
+
+        let mut consumed_events = stored_events.clone();
+        consumed_events.push(stored(
+            3,
+            event(
+                Some("turn-2"),
+                root_agent(),
+                StorageEventPayload::UserMessage {
+                    content: "next prompt".into(),
+                    origin: UserMessageOrigin::User,
+                    timestamp: Utc::now(),
+                },
+            ),
+        ));
+        assert!(
+            pending_reactivation_messages_from_stored(&consumed_events).is_empty(),
+            "once a real user turn starts, prior post-compact recovery prompts should be marked \
+             consumed"
+        );
+    }
+
+    #[test]
+    fn translate_store_and_cache_tracks_pending_reactivation_messages() {
+        let session = test_session_state();
+        let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
+        let compact = stored(
+            1,
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::CompactApplied {
+                    trigger: CompactTrigger::Manual,
+                    summary: "summary".into(),
+                    preserved_recent_turns: 1,
+                    pre_tokens: 100,
+                    post_tokens_estimate: 40,
+                    messages_removed: 2,
+                    tokens_freed: 60,
+                    timestamp: Utc::now(),
+                },
+            ),
+        );
+        let recovery = stored(
+            2,
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::UserMessage {
+                    content: "Recovered file context".into(),
+                    origin: UserMessageOrigin::ReactivationPrompt,
+                    timestamp: Utc::now(),
+                },
+            ),
+        );
+
+        session
+            .translate_store_and_cache(&compact, &mut translator)
+            .expect("compact event should apply");
+        session
+            .translate_store_and_cache(&recovery, &mut translator)
+            .expect("reactivation event should apply");
+
+        assert_eq!(
+            session
+                .take_pending_reactivation_messages()
+                .expect("pending reactivation messages should be readable"),
+            vec![LlmMessage::User {
+                content: "Recovered file context".into(),
+                origin: UserMessageOrigin::ReactivationPrompt,
+            }]
+        );
+        assert!(
+            session
+                .take_pending_reactivation_messages()
+                .expect("pending reactivation messages should be drained")
+                .is_empty()
+        );
     }
 }

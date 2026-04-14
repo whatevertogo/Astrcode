@@ -8,6 +8,7 @@ mod compaction_cycle;
 mod events;
 mod interrupt;
 pub mod llm_cycle;
+pub(crate) mod manual_compact;
 mod replay;
 mod request;
 mod runner;

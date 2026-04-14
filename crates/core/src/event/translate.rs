@@ -176,16 +176,16 @@ impl EventTranslator {
                     } else if !content.is_empty() {
                         warn_missing_turn_id(stored.storage_seq, "userMessage");
                     }
+                    if self.phase_tracker.current() != Phase::Thinking {
+                        push(AgentEvent::PhaseChanged {
+                            turn_id: turn_id.clone(),
+                            agent: agent.clone(),
+                            phase: Phase::Thinking,
+                        });
+                    }
+                    self.phase_tracker
+                        .force_to(Phase::Thinking, turn_id.clone(), agent.clone());
                 }
-                if self.phase_tracker.current() != Phase::Thinking {
-                    push(AgentEvent::PhaseChanged {
-                        turn_id: turn_id.clone(),
-                        agent: agent.clone(),
-                        phase: Phase::Thinking,
-                    });
-                }
-                self.phase_tracker
-                    .force_to(Phase::Thinking, turn_id.clone(), agent.clone());
             },
             StorageEventPayload::PromptMetrics { metrics, .. } => {
                 push(AgentEvent::PromptMetrics {
@@ -512,14 +512,10 @@ mod tests {
             None,
         );
 
-        assert_eq!(records.len(), 1);
-        assert!(matches!(
-            records[0].event,
-            AgentEvent::PhaseChanged {
-                phase: Phase::Thinking,
-                ..
-            }
-        ));
+        assert!(
+            records.is_empty(),
+            "internal reactivation prompts should not emit replay-visible events or phase changes"
+        );
     }
 
     #[test]
@@ -541,10 +537,8 @@ mod tests {
         );
 
         assert!(
-            records
-                .iter()
-                .all(|record| !matches!(record.event, AgentEvent::UserMessage { .. })),
-            "internal prompt-side context must not leak into replayed user-visible history"
+            records.is_empty(),
+            "internal prompt-side context must not leak into replayed history or phase changes"
         );
     }
 

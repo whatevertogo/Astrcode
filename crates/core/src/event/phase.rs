@@ -11,13 +11,21 @@
 //! - `CallingTool`: 正在调用工具
 //! - `Interrupted`: 被用户中断
 
-use crate::{AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload};
+use crate::{
+    AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload, UserMessageOrigin,
+};
 
 /// Determines the target phase for a storage event.
 pub fn target_phase(event: &StorageEvent) -> Phase {
     match &event.payload {
         StorageEventPayload::SessionStart { .. } => Phase::Idle,
-        StorageEventPayload::UserMessage { .. } => Phase::Thinking,
+        StorageEventPayload::UserMessage { origin, .. } => {
+            if matches!(origin, UserMessageOrigin::User) {
+                Phase::Thinking
+            } else {
+                Phase::Idle
+            }
+        },
         StorageEventPayload::PromptMetrics { .. }
         | StorageEventPayload::CompactApplied { .. }
         | StorageEventPayload::SubRunStarted { .. }
@@ -79,6 +87,15 @@ impl PhaseTracker {
     ) -> Option<AgentEvent> {
         if matches!(
             &event.payload,
+            StorageEventPayload::UserMessage {
+                origin: UserMessageOrigin::ReactivationPrompt | UserMessageOrigin::CompactSummary,
+                ..
+            }
+        ) {
+            return None;
+        }
+        if matches!(
+            &event.payload,
             StorageEventPayload::PromptMetrics { .. }
                 | StorageEventPayload::CompactApplied { .. }
                 | StorageEventPayload::SubRunStarted { .. }
@@ -131,8 +148,20 @@ impl PhaseTracker {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_recovered_phase;
-    use crate::Phase;
+    use super::{PhaseTracker, normalize_recovered_phase, target_phase};
+    use crate::{AgentEventContext, Phase, StorageEvent, StorageEventPayload, UserMessageOrigin};
+
+    fn user_message(origin: UserMessageOrigin) -> StorageEvent {
+        StorageEvent {
+            turn_id: Some("turn-1".to_string()),
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::UserMessage {
+                content: "message".to_string(),
+                origin,
+                timestamp: chrono::Utc::now(),
+            },
+        }
+    }
 
     #[test]
     fn normalize_recovered_phase_maps_transient_runtime_states_to_interrupted() {
@@ -158,5 +187,32 @@ mod tests {
             Phase::Interrupted
         );
         assert_eq!(normalize_recovered_phase(Phase::Done), Phase::Done);
+    }
+
+    #[test]
+    fn internal_user_origins_do_not_request_thinking_phase() {
+        assert_eq!(
+            target_phase(&user_message(UserMessageOrigin::ReactivationPrompt)),
+            Phase::Idle
+        );
+        assert_eq!(
+            target_phase(&user_message(UserMessageOrigin::CompactSummary)),
+            Phase::Idle
+        );
+    }
+
+    #[test]
+    fn phase_tracker_ignores_internal_user_origins() {
+        let mut tracker = PhaseTracker::new(Phase::Idle);
+        assert!(
+            tracker
+                .on_event(
+                    &user_message(UserMessageOrigin::ReactivationPrompt),
+                    Some("turn-1".to_string()),
+                    AgentEventContext::default(),
+                )
+                .is_none()
+        );
+        assert_eq!(tracker.current(), Phase::Idle);
     }
 }

@@ -164,6 +164,9 @@ fn append_assistant_output(
         tool_calls: output.tool_calls.clone(),
         reasoning: output.reasoning.clone(),
     });
+    execution
+        .micro_compact_state
+        .record_assistant_activity(Instant::now());
     execution.events.push(assistant_final_event(
         resources.turn_id,
         resources.agent,
@@ -251,6 +254,9 @@ impl StepDriver for RuntimeStepDriver {
         })
         .await?;
         execution.messages = assembled.messages.clone();
+        if assembled.auto_compacted {
+            execution.auto_compaction_count += 1;
+        }
         execution.events.extend(assembled.events.iter().cloned());
         Ok(assembled)
     }
@@ -451,6 +457,7 @@ mod tests {
                 },
                 0,
             )],
+            auto_compacted: false,
         }
     }
 
@@ -494,7 +501,7 @@ mod tests {
             &prompt_facts_provider,
         );
         let mut execution =
-            TurnExecutionContext::new(&resources, vec![user_message("hello from user")]);
+            TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
         let driver = ScriptedStepDriver {
             counts: DriverCallCounts::default(),
             assemble_result: Mutex::new(Some(Ok(assembled_prompt(vec![user_message("hello")])))),
@@ -549,7 +556,7 @@ mod tests {
             &prompt_facts_provider,
         );
         let mut execution =
-            TurnExecutionContext::new(&resources, vec![user_message("hello from user")]);
+            TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
         let driver = ScriptedStepDriver {
             counts: DriverCallCounts::default(),
             assemble_result: Mutex::new(Some(Ok(assembled_prompt(vec![user_message("hello")])))),
@@ -599,7 +606,7 @@ mod tests {
             &prompt_facts_provider,
         );
         let original_messages = vec![user_message("message before compact")];
-        let mut execution = TurnExecutionContext::new(&resources, original_messages);
+        let mut execution = TurnExecutionContext::new(&resources, original_messages, None);
         let recovered_messages = vec![
             user_message("compacted summary"),
             LlmMessage::Assistant {

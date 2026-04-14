@@ -31,6 +31,7 @@ use astrcode_core::{
     StorageEvent, StorageEventPayload, ToolDefinition,
 };
 use astrcode_kernel::Kernel;
+use chrono::{DateTime, Utc};
 use step::{StepOutcome, run_single_step};
 
 use super::{
@@ -56,6 +57,7 @@ pub struct TurnRunRequest {
     pub working_dir: String,
     pub turn_id: String,
     pub messages: Vec<LlmMessage>,
+    pub last_assistant_at: Option<DateTime<Utc>>,
     pub session_state: Arc<SessionState>,
     pub runtime: ResolvedRuntimeConfig,
     pub cancel: CancelToken,
@@ -108,6 +110,7 @@ struct TurnExecutionContext {
     token_tracker: TokenUsageTracker,
     total_cache_read_tokens: u64,
     total_cache_creation_tokens: u64,
+    auto_compaction_count: usize,
     micro_compact_state: MicroCompactState,
     file_access_tracker: FileAccessTracker,
     step_index: usize,
@@ -142,13 +145,19 @@ impl<'a> TurnExecutionResources<'a> {
 }
 
 impl TurnExecutionContext {
-    fn new(resources: &TurnExecutionResources<'_>, messages: Vec<LlmMessage>) -> Self {
+    fn new(
+        resources: &TurnExecutionResources<'_>,
+        messages: Vec<LlmMessage>,
+        last_assistant_at: Option<DateTime<Utc>>,
+    ) -> Self {
+        let now = Instant::now();
         Self {
-            turn_started_at: Instant::now(),
+            turn_started_at: now,
             micro_compact_state: MicroCompactState::seed_from_messages(
                 &messages,
                 resources.settings.micro_compact_config(),
-                Instant::now(),
+                now,
+                last_assistant_at,
             ),
             file_access_tracker: FileAccessTracker::seed_from_messages(
                 &messages,
@@ -160,6 +169,7 @@ impl TurnExecutionContext {
             token_tracker: TokenUsageTracker::default(),
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
+            auto_compaction_count: 0,
             step_index: 0,
             reactive_compact_attempts: 0,
         }
@@ -182,7 +192,7 @@ impl TurnExecutionContext {
                 total_tokens_used: self.token_tracker.budget_tokens(0) as u64,
                 cache_read_input_tokens: self.total_cache_read_tokens,
                 cache_creation_input_tokens: self.total_cache_creation_tokens,
-                auto_compaction_count: 0,
+                auto_compaction_count: self.auto_compaction_count,
                 reactive_compact_count: self.reactive_compact_attempts,
                 collaboration: turn_collaboration_summary(
                     resources.session_state,
@@ -203,6 +213,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         working_dir,
         turn_id,
         messages,
+        last_assistant_at,
         session_state,
         runtime,
         cancel,
@@ -223,7 +234,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
             agent: &agent,
         },
     );
-    let mut execution = TurnExecutionContext::new(&resources, messages);
+    let mut execution = TurnExecutionContext::new(&resources, messages, last_assistant_at);
 
     loop {
         if resources.cancel.is_cancelled() {

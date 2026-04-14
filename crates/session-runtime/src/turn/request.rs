@@ -46,6 +46,7 @@ pub struct AssemblePromptResult {
     pub llm_request: LlmRequest,
     pub messages: Vec<LlmMessage>,
     pub events: Vec<StorageEvent>,
+    pub auto_compacted: bool,
 }
 
 /// Why: request assembly 要回答“最终如何形成一次 LLM 请求”，
@@ -55,6 +56,7 @@ pub async fn assemble_prompt_request(
 ) -> Result<AssemblePromptResult> {
     let now = Instant::now();
     let mut events = Vec::new();
+    let mut auto_compacted = false;
 
     let micro_outcome = request.micro_compact_state.apply_if_idle(
         &request.messages,
@@ -105,6 +107,7 @@ pub async fn assemble_prompt_request(
             .await?
             {
                 messages = compaction.messages;
+                auto_compacted = true;
                 messages.extend(request.file_access_tracker.build_recovery_messages(
                     FileRecoveryConfig {
                         max_tracked_files: request.settings.max_tracked_files,
@@ -174,6 +177,7 @@ pub async fn assemble_prompt_request(
         llm_request,
         messages,
         events,
+        auto_compacted,
     })
 }
 

@@ -13,7 +13,7 @@ use crate::{
     query::current_turn_messages,
     run_turn,
     state::{append_and_broadcast, complete_session_execution},
-    turn::events::{CompactAppliedStats, compact_applied_event, error_event, user_message_event},
+    turn::events::{error_event, user_message_event},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,8 @@ struct TurnExecutionTask {
 }
 
 struct TurnFinalizeContext {
+    kernel: Arc<astrcode_kernel::Kernel>,
+    prompt_facts_provider: Arc<dyn astrcode_core::PromptFactsProvider>,
     metrics: Arc<dyn RuntimeMetricsRecorder>,
     actor: Arc<SessionActor>,
     session_id: String,
@@ -100,14 +102,24 @@ async fn finalize_turn_execution(
     }
 
     complete_session_execution(finalize.actor.state(), terminal_phase);
-    if terminal_phase == Phase::Idle
-        && finalize
+    if terminal_phase == Phase::Idle {
+        let pending_runtime = finalize
             .actor
             .state()
             .take_pending_manual_compact()
-            .unwrap_or(false)
-    {
-        persist_deferred_manual_compact(finalize.actor.state(), &finalize.session_id).await;
+            .ok()
+            .flatten();
+        if let Some(runtime) = pending_runtime {
+            persist_deferred_manual_compact(
+                finalize.kernel.gateway(),
+                finalize.prompt_facts_provider.as_ref(),
+                finalize.actor.working_dir(),
+                finalize.actor.state(),
+                &finalize.session_id,
+                &runtime,
+            )
+            .await;
+        }
     }
 }
 
@@ -158,56 +170,49 @@ async fn persist_turn_failure(
 }
 
 async fn persist_deferred_manual_compact(
+    gateway: &astrcode_kernel::KernelGateway,
+    prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
+    working_dir: &str,
     session_state: &Arc<crate::SessionState>,
     session_id: &str,
+    runtime: &ResolvedRuntimeConfig,
 ) {
-    let projected = match session_state.snapshot_projected_state() {
-        Ok(projected) => projected,
+    let events = match crate::turn::manual_compact::build_manual_compact_events(
+        crate::turn::manual_compact::ManualCompactRequest {
+            gateway,
+            prompt_facts_provider,
+            session_state,
+            session_id,
+            working_dir: std::path::Path::new(working_dir),
+            runtime,
+        },
+    )
+    .await
+    {
+        Ok(Some(events)) => events,
+        Ok(None) => return,
         Err(error) => {
             log::warn!(
-                "failed to snapshot session '{}' for deferred compact: {}",
+                "failed to build deferred compact for session '{}': {}",
                 session_id,
                 error
             );
             return;
         },
     };
-    let summary = projected
-        .messages
-        .iter()
-        .rev()
-        .find_map(|message| match message {
-            astrcode_core::LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => {
-                Some(content.clone())
-            },
-            astrcode_core::LlmMessage::User { content, .. } if !content.trim().is_empty() => {
-                Some(content.clone())
-            },
-            _ => None,
-        })
-        .unwrap_or_else(|| "compacted".to_string());
-    let event = compact_applied_event(
-        None,
-        &AgentEventContext::default(),
-        astrcode_core::CompactTrigger::Manual,
-        summary,
-        CompactAppliedStats {
-            preserved_recent_turns: 1,
-            pre_tokens: 0,
-            post_tokens_estimate: 0,
-            messages_removed: 0,
-            tokens_freed: 0,
-        },
-        Utc::now(),
-    );
     let mut compact_translator =
         EventTranslator::new(session_state.current_phase().unwrap_or(Phase::Idle));
-    if let Err(error) = append_and_broadcast(session_state, &event, &mut compact_translator).await {
-        log::warn!(
-            "failed to persist deferred compact for session '{}': {}",
-            session_id,
-            error
-        );
+    for event in &events {
+        if let Err(error) =
+            append_and_broadcast(session_state, event, &mut compact_translator).await
+        {
+            log::warn!(
+                "failed to persist deferred compact for session '{}': {}",
+                session_id,
+                error
+            );
+            break;
+        }
     }
 }
 
@@ -323,6 +328,11 @@ impl SessionRuntime {
             return Ok(None);
         };
 
+        let pending_reactivation_messages = submit_target
+            .actor
+            .state()
+            .pending_reactivation_messages()?;
+
         let user_message = user_message_event(
             turn_id.as_str(),
             &agent,
@@ -347,7 +357,11 @@ impl SessionRuntime {
 
         let mut translator = EventTranslator::new(submit_target.actor.state().current_phase()?);
         append_and_broadcast(submit_target.actor.state(), &user_message, &mut translator).await?;
-        let messages = current_turn_messages(submit_target.actor.state())?;
+        let mut messages = current_turn_messages(submit_target.actor.state())?;
+        if !pending_reactivation_messages.is_empty() {
+            let insert_at = messages.len().saturating_sub(1);
+            messages.splice(insert_at..insert_at, pending_reactivation_messages);
+        }
 
         tokio::spawn(execute_turn_and_finalize(TurnExecutionTask {
             kernel: Arc::clone(&self.kernel),
@@ -356,6 +370,11 @@ impl SessionRuntime {
                 working_dir: submit_target.actor.working_dir().to_string(),
                 turn_id: turn_id.to_string(),
                 messages,
+                last_assistant_at: submit_target
+                    .actor
+                    .state()
+                    .snapshot_projected_state()?
+                    .last_assistant_at,
                 session_state: Arc::clone(submit_target.actor.state()),
                 runtime,
                 cancel: cancel.clone(),
@@ -363,6 +382,8 @@ impl SessionRuntime {
                 prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
             },
             finalize: TurnFinalizeContext {
+                kernel: Arc::clone(&self.kernel),
+                prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
                 metrics: Arc::clone(&self.metrics),
                 actor: Arc::clone(&submit_target.actor),
                 session_id: submit_target.session_id.to_string(),
@@ -383,28 +404,144 @@ impl SessionRuntime {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
-    use astrcode_core::StorageEventPayload;
+    use astrcode_core::{
+        LlmFinishReason, LlmMessage, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
+        PromptBuildOutput, PromptBuildRequest, PromptProvider, ResourceProvider,
+        ResourceReadResult, ResourceRequestContext, StorageEventPayload, UserMessageOrigin,
+    };
+    use astrcode_kernel::Kernel;
+    use async_trait::async_trait;
 
     use super::*;
     use crate::{
         TurnCollaborationSummary, TurnFinishReason, TurnRunResult, TurnSummary,
         turn::test_support::{
             BranchingTestEventStore, NoopMetrics, append_root_turn_event_to_actor,
-            assert_contains_compact_summary, assert_contains_error_message, test_actor,
-            test_runtime,
+            assert_contains_compact_summary, assert_contains_error_message,
+            root_compact_applied_event, test_actor, test_runtime,
         },
     };
 
+    #[derive(Debug)]
+    struct SummaryLlmProvider;
+
+    #[async_trait]
+    impl LlmProvider for SummaryLlmProvider {
+        async fn generate(
+            &self,
+            _request: LlmRequest,
+            _sink: Option<astrcode_core::LlmEventSink>,
+        ) -> Result<LlmOutput> {
+            Ok(LlmOutput {
+                content: "<analysis>ok</analysis><summary>manual compact summary</summary>"
+                    .to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+                usage: None,
+                finish_reason: LlmFinishReason::Stop,
+            })
+        }
+
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                context_window: 64_000,
+                max_output_tokens: 8_000,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestPromptProvider;
+
+    #[async_trait]
+    impl PromptProvider for TestPromptProvider {
+        async fn build_prompt(&self, _request: PromptBuildRequest) -> Result<PromptBuildOutput> {
+            Ok(PromptBuildOutput {
+                system_prompt: "noop".to_string(),
+                system_prompt_blocks: Vec::new(),
+                metadata: serde_json::Value::Null,
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestResourceProvider;
+
+    #[async_trait]
+    impl ResourceProvider for TestResourceProvider {
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _context: &ResourceRequestContext,
+        ) -> Result<ResourceReadResult> {
+            Ok(ResourceReadResult {
+                uri: "noop://resource".to_string(),
+                content: serde_json::Value::Null,
+                metadata: serde_json::Value::Null,
+            })
+        }
+    }
+
+    fn summary_kernel() -> Arc<Kernel> {
+        Arc::new(
+            Kernel::builder()
+                .with_capabilities(astrcode_kernel::CapabilityRouter::empty())
+                .with_llm_provider(Arc::new(SummaryLlmProvider))
+                .with_prompt_provider(Arc::new(TestPromptProvider))
+                .with_resource_provider(Arc::new(TestResourceProvider))
+                .build()
+                .expect("kernel should build"),
+        )
+    }
+
     fn finalize_context(actor: Arc<SessionActor>) -> TurnFinalizeContext {
         TurnFinalizeContext {
+            kernel: summary_kernel(),
+            prompt_facts_provider: Arc::new(crate::turn::test_support::NoopPromptFactsProvider),
             metrics: Arc::new(NoopMetrics),
             actor,
             session_id: "session-1".to_string(),
             turn_id: "turn-1".to_string(),
             agent: AgentEventContext::default(),
             turn_started_at: Instant::now(),
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingLlmProvider {
+        requests: Arc<Mutex<Vec<Vec<LlmMessage>>>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for RecordingLlmProvider {
+        async fn generate(
+            &self,
+            request: LlmRequest,
+            _sink: Option<astrcode_core::LlmEventSink>,
+        ) -> Result<LlmOutput> {
+            self.requests
+                .lock()
+                .expect("recorded requests lock should work")
+                .push(request.messages.clone());
+            Ok(LlmOutput {
+                content: "answer".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+                usage: None,
+                finish_reason: LlmFinishReason::Stop,
+            })
+        }
+
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                context_window: 64_000,
+                max_output_tokens: 8_000,
+            }
         }
     }
 
@@ -466,7 +603,7 @@ mod tests {
         .await;
         actor
             .state()
-            .request_manual_compact()
+            .request_manual_compact(ResolvedRuntimeConfig::default())
             .expect("manual compact flag should set");
 
         finalize_turn_execution(
@@ -486,7 +623,7 @@ mod tests {
             .state()
             .snapshot_recent_stored_events()
             .expect("stored events should be available");
-        assert_contains_compact_summary(&stored, "latest answer");
+        assert_contains_compact_summary(&stored, "manual compact summary");
     }
 
     #[tokio::test]
@@ -580,5 +717,131 @@ mod tests {
             )
             .await
             .expect("background turn should settle before test exits");
+    }
+
+    #[tokio::test]
+    async fn submit_prompt_inner_injects_pending_reactivation_only_once() {
+        let requests = Arc::new(Mutex::new(Vec::<Vec<LlmMessage>>::new()));
+        let kernel = Arc::new(
+            Kernel::builder()
+                .with_capabilities(astrcode_kernel::CapabilityRouter::empty())
+                .with_llm_provider(Arc::new(RecordingLlmProvider {
+                    requests: Arc::clone(&requests),
+                }))
+                .with_prompt_provider(Arc::new(TestPromptProvider))
+                .with_resource_provider(Arc::new(TestResourceProvider))
+                .build()
+                .expect("kernel should build"),
+        );
+        let event_store = Arc::new(BranchingTestEventStore::default());
+        let runtime = SessionRuntime::new(
+            kernel,
+            Arc::new(crate::turn::test_support::NoopPromptFactsProvider),
+            event_store,
+            Arc::new(NoopMetrics),
+        );
+        let session = runtime
+            .create_session(".")
+            .await
+            .expect("test session should be created");
+        let session_state = runtime
+            .get_session_state(&SessionId::from(session.session_id.clone()))
+            .await
+            .expect("session state should load");
+        let mut translator = EventTranslator::new(session_state.current_phase().expect("phase"));
+
+        append_and_broadcast(
+            &session_state,
+            &crate::turn::test_support::root_user_message_event("turn-0", "older question"),
+            &mut translator,
+        )
+        .await
+        .expect("older user event should append");
+        append_and_broadcast(
+            &session_state,
+            &crate::turn::test_support::root_assistant_final_event("turn-0", "older answer"),
+            &mut translator,
+        )
+        .await
+        .expect("older assistant event should append");
+        append_and_broadcast(
+            &session_state,
+            &root_compact_applied_event("turn-compact", "history summary", 1, 100, 40, 2, 60),
+            &mut translator,
+        )
+        .await
+        .expect("compact event should append");
+        append_and_broadcast(
+            &session_state,
+            &crate::turn::events::user_message_event(
+                "turn-compact",
+                &AgentEventContext::default(),
+                "Recovered file context".to_string(),
+                UserMessageOrigin::ReactivationPrompt,
+                Utc::now(),
+            ),
+            &mut translator,
+        )
+        .await
+        .expect("reactivation event should append");
+
+        let accepted = runtime
+            .submit_prompt_inner(
+                &session.session_id,
+                None,
+                "first after compact".to_string(),
+                ResolvedRuntimeConfig::default(),
+                AgentEventContext::default(),
+                SubmitBusyPolicy::RejectOnBusy,
+            )
+            .await
+            .expect("submit should not error")
+            .expect("submit should be accepted");
+        runtime
+            .wait_for_turn_terminal_snapshot(
+                accepted.session_id.as_str(),
+                accepted.turn_id.as_str(),
+            )
+            .await
+            .expect("first turn should finish");
+
+        let second = runtime
+            .submit_prompt_inner(
+                &session.session_id,
+                None,
+                "second turn".to_string(),
+                ResolvedRuntimeConfig::default(),
+                AgentEventContext::default(),
+                SubmitBusyPolicy::RejectOnBusy,
+            )
+            .await
+            .expect("second submit should not error")
+            .expect("second submit should be accepted");
+        runtime
+            .wait_for_turn_terminal_snapshot(second.session_id.as_str(), second.turn_id.as_str())
+            .await
+            .expect("second turn should finish");
+
+        let requests = requests.lock().expect("recorded requests lock should work");
+        assert_eq!(requests.len(), 2, "expected two model requests");
+
+        assert!(matches!(
+            requests[0].as_slice(),
+            [
+                LlmMessage::User { origin: UserMessageOrigin::CompactSummary, .. },
+                LlmMessage::User { origin: UserMessageOrigin::ReactivationPrompt, content },
+                LlmMessage::User { origin: UserMessageOrigin::User, content: user_content },
+            ] if content == "Recovered file context" && user_content == "first after compact"
+        ));
+        assert!(
+            requests[1].iter().all(|message| !matches!(
+                message,
+                LlmMessage::User {
+                    origin: UserMessageOrigin::ReactivationPrompt,
+                    ..
+                }
+            )),
+            "reactivation prompt should only be injected into the first post-compact turn"
+        );
     }
 }

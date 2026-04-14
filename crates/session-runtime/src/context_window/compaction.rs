@@ -14,13 +14,13 @@
 //! 最多重试 3 次。
 
 use astrcode_core::{
-    AstrError, CancelToken, LlmMessage, LlmRequest, Result, UserMessageOrigin,
+    AstrError, CancelToken, LlmMessage, LlmRequest, ModelLimits, Result, UserMessageOrigin,
     format_compact_summary, parse_compact_summary_message,
 };
 use astrcode_kernel::KernelGateway;
 use chrono::{DateTime, Utc};
 
-use super::token_usage::estimate_request_tokens;
+use super::token_usage::{effective_context_window, estimate_request_tokens};
 
 const BASE_COMPACT_PROMPT_TEMPLATE: &str = include_str!("templates/compact/base.md");
 const INCREMENTAL_COMPACT_PROMPT_TEMPLATE: &str = include_str!("templates/compact/incremental.md");
@@ -103,6 +103,16 @@ pub async fn auto_compact(
     let pre_tokens = estimate_request_tokens(messages, compact_prompt_context);
     let mut attempts = 0usize;
     let summary = loop {
+        if !trim_prefix_until_compact_request_fits(
+            &mut split.prefix,
+            compact_prompt_context,
+            gateway.model_limits(),
+        ) {
+            return Err(AstrError::Internal(
+                "compact request could not fit within summarization window".to_string(),
+            ));
+        }
+
         let request_messages = compact_input_messages(&split.prefix);
         if request_messages.is_empty() {
             return Ok(None);
@@ -194,25 +204,20 @@ struct CompactionSplit {
 }
 
 fn compact_input_messages(messages: &[LlmMessage]) -> Vec<LlmMessage> {
-    let mut filtered = Vec::with_capacity(messages.len());
-    for message in messages {
-        match message {
-            LlmMessage::User {
-                origin: UserMessageOrigin::CompactSummary,
-                ..
-            }
-            | LlmMessage::User {
-                origin: UserMessageOrigin::ReactivationPrompt,
-                ..
-            }
-            | LlmMessage::User {
-                origin: UserMessageOrigin::User,
-                ..
-            } => filtered.push(message.clone()),
-            _ => filtered.push(message.clone()),
-        }
-    }
-    filtered
+    messages
+        .iter()
+        .filter(|message| {
+            !matches!(
+                message,
+                LlmMessage::User {
+                    origin: UserMessageOrigin::CompactSummary
+                        | UserMessageOrigin::ReactivationPrompt,
+                    ..
+                }
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 fn latest_previous_summary(messages: &[LlmMessage]) -> Option<String> {
@@ -323,6 +328,40 @@ fn drop_oldest_compaction_unit(prefix: &mut Vec<LlmMessage>) -> bool {
 
     prefix.drain(..next_start);
     !prefix.is_empty()
+}
+
+fn trim_prefix_until_compact_request_fits(
+    prefix: &mut Vec<LlmMessage>,
+    compact_prompt_context: Option<&str>,
+    limits: ModelLimits,
+) -> bool {
+    loop {
+        let request_messages = compact_input_messages(prefix);
+        if request_messages.is_empty() {
+            return false;
+        }
+
+        let prompt_mode = latest_previous_summary(prefix)
+            .map(|previous_summary| CompactPromptMode::Incremental { previous_summary })
+            .unwrap_or(CompactPromptMode::Fresh);
+        let system_prompt = render_compact_system_prompt(compact_prompt_context, prompt_mode);
+        if compact_request_fits_window(&request_messages, &system_prompt, limits) {
+            return true;
+        }
+
+        if !drop_oldest_compaction_unit(prefix) {
+            return false;
+        }
+    }
+}
+
+fn compact_request_fits_window(
+    request_messages: &[LlmMessage],
+    system_prompt: &str,
+    limits: ModelLimits,
+) -> bool {
+    estimate_request_tokens(request_messages, Some(system_prompt))
+        <= effective_context_window(limits)
 }
 
 fn compacted_messages(summary: &str, suffix: Vec<LlmMessage>) -> Vec<LlmMessage> {
@@ -505,6 +544,33 @@ mod tests {
     }
 
     #[test]
+    fn compact_input_messages_skips_synthetic_user_messages() {
+        let filtered = compact_input_messages(&[
+            LlmMessage::User {
+                content: "summary".to_string(),
+                origin: UserMessageOrigin::CompactSummary,
+            },
+            LlmMessage::User {
+                content: "wake up".to_string(),
+                origin: UserMessageOrigin::ReactivationPrompt,
+            },
+            LlmMessage::User {
+                content: "real user".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+        ]);
+
+        assert_eq!(filtered.len(), 1);
+        assert!(matches!(
+            &filtered[0],
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::User
+            } if content == "real user"
+        ));
+    }
+
+    #[test]
     fn drop_oldest_compaction_unit_is_deterministic() {
         let mut prefix = vec![
             LlmMessage::User {
@@ -527,6 +593,41 @@ mod tests {
         assert!(matches!(
             &prefix[0],
             LlmMessage::Assistant { content, .. } if content == "step-1"
+        ));
+    }
+
+    #[test]
+    fn trim_prefix_until_compact_request_fits_drops_oldest_units_before_calling_llm() {
+        let mut prefix = vec![
+            LlmMessage::User {
+                content: "very old request ".repeat(1200),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "first step".repeat(1200),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+            LlmMessage::Assistant {
+                content: "latest step".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+        ];
+
+        let trimmed = trim_prefix_until_compact_request_fits(
+            &mut prefix,
+            None,
+            ModelLimits {
+                context_window: 23_000,
+                max_output_tokens: 2_000,
+            },
+        );
+
+        assert!(trimmed);
+        assert!(matches!(
+            prefix.as_slice(),
+            [LlmMessage::Assistant { content, .. }] if content == "latest step"
         ));
     }
 

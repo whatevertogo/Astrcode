@@ -9,6 +9,7 @@ use std::{
 };
 
 use astrcode_core::LlmMessage;
+use chrono::{DateTime, Utc};
 
 use super::tool_results::tool_call_name_map;
 
@@ -38,7 +39,7 @@ struct TrackedToolResult {
 #[derive(Debug, Clone, Default)]
 pub struct MicroCompactState {
     tracked_results: VecDeque<TrackedToolResult>,
-    last_tool_activity: Option<Instant>,
+    last_prompt_activity: Option<Instant>,
 }
 
 impl MicroCompactState {
@@ -46,11 +47,22 @@ impl MicroCompactState {
         messages: &[LlmMessage],
         config: MicroCompactConfig,
         now: Instant,
+        last_assistant_at: Option<DateTime<Utc>>,
     ) -> Self {
         let mut state = Self::default();
         let stale_at = now.checked_sub(config.gap_threshold).unwrap_or(now);
+        let restored_activity = last_assistant_at
+            .and_then(|timestamp| instant_from_timestamp(now, timestamp))
+            .unwrap_or(stale_at);
 
         for message in messages {
+            match message {
+                LlmMessage::Assistant { .. } | LlmMessage::Tool { .. } => {
+                    state.last_prompt_activity = Some(restored_activity);
+                },
+                _ => {},
+            }
+
             let LlmMessage::Tool { tool_call_id, .. } = message else {
                 continue;
             };
@@ -58,10 +70,6 @@ impl MicroCompactState {
                 tool_call_id: tool_call_id.clone(),
                 recorded_at: stale_at,
             });
-        }
-
-        if !state.tracked_results.is_empty() {
-            state.last_tool_activity = Some(stale_at);
         }
 
         state
@@ -75,7 +83,11 @@ impl MicroCompactState {
             tool_call_id,
             recorded_at: now,
         });
-        self.last_tool_activity = Some(now);
+        self.last_prompt_activity = Some(now);
+    }
+
+    pub fn record_assistant_activity(&mut self, now: Instant) {
+        self.last_prompt_activity = Some(now);
     }
 
     pub fn apply_if_idle(
@@ -87,7 +99,7 @@ impl MicroCompactState {
     ) -> MicroCompactOutcome {
         self.retain_live_tool_results(messages);
 
-        let Some(last_activity) = self.last_tool_activity else {
+        let Some(last_activity) = self.last_prompt_activity else {
             return MicroCompactOutcome {
                 messages: messages.to_vec(),
                 stats: MicroCompactStats::default(),
@@ -182,14 +194,16 @@ impl MicroCompactState {
             .collect::<HashSet<_>>();
         self.tracked_results
             .retain(|entry| live_tool_ids.contains(entry.tool_call_id.as_str()));
-        if self.tracked_results.is_empty() {
-            self.last_tool_activity = None;
-        }
     }
 }
 
 fn is_micro_compacted(content: &str) -> bool {
     content.contains("[micro-compacted stale tool result")
+}
+
+fn instant_from_timestamp(now: Instant, timestamp: DateTime<Utc>) -> Option<Instant> {
+    let elapsed = (Utc::now() - timestamp).to_std().ok()?;
+    now.checked_sub(elapsed).or(Some(now))
 }
 
 #[cfg(test)]
@@ -237,7 +251,7 @@ mod tests {
             },
         ];
 
-        let mut state = MicroCompactState::seed_from_messages(&messages, config, now);
+        let mut state = MicroCompactState::seed_from_messages(&messages, config, now, None);
         state.record_tool_result("call-2", now);
 
         let mut clearable_tools = HashSet::new();
@@ -297,5 +311,123 @@ mod tests {
 
         assert_eq!(outcome.stats.cleared_tool_results, 0);
         assert_eq!(outcome.messages, messages);
+    }
+
+    #[test]
+    fn micro_compact_uses_recent_assistant_activity_as_idle_anchor() {
+        let now = Instant::now();
+        let config = MicroCompactConfig {
+            gap_threshold: Duration::from_secs(30),
+            keep_recent_results: 1,
+        };
+        let messages = vec![
+            LlmMessage::Assistant {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call-1".to_string(),
+                        name: "readFile".to_string(),
+                        args: json!({"path":"src/old.rs"}),
+                    },
+                    ToolCallRequest {
+                        id: "call-2".to_string(),
+                        name: "readFile".to_string(),
+                        args: json!({"path":"src/new.rs"}),
+                    },
+                ],
+                reasoning: None,
+            },
+            LlmMessage::Tool {
+                tool_call_id: "call-1".to_string(),
+                content: "old".to_string(),
+            },
+            LlmMessage::Tool {
+                tool_call_id: "call-2".to_string(),
+                content: "new".to_string(),
+            },
+        ];
+
+        let mut state = MicroCompactState::default();
+        state.record_tool_result("call-1", now);
+        state.record_tool_result("call-2", now);
+        state.record_assistant_activity(now + Duration::from_secs(10));
+
+        let mut clearable_tools = HashSet::new();
+        clearable_tools.insert("readFile".to_string());
+
+        let early = state.apply_if_idle(
+            &messages,
+            &clearable_tools,
+            config,
+            now + Duration::from_secs(35),
+        );
+        assert_eq!(early.stats.cleared_tool_results, 0);
+
+        let late = state.apply_if_idle(
+            &messages,
+            &clearable_tools,
+            config,
+            now + Duration::from_secs(41),
+        );
+        assert_eq!(late.stats.cleared_tool_results, 1);
+    }
+
+    #[test]
+    fn micro_compact_seed_uses_last_assistant_timestamp_when_available() {
+        let now = Instant::now();
+        let config = MicroCompactConfig {
+            gap_threshold: Duration::from_secs(30),
+            keep_recent_results: 1,
+        };
+        let messages = vec![
+            LlmMessage::Assistant {
+                content: String::new(),
+                tool_calls: vec![
+                    ToolCallRequest {
+                        id: "call-1".to_string(),
+                        name: "readFile".to_string(),
+                        args: json!({"path":"src/old.rs"}),
+                    },
+                    ToolCallRequest {
+                        id: "call-2".to_string(),
+                        name: "readFile".to_string(),
+                        args: json!({"path":"src/new.rs"}),
+                    },
+                ],
+                reasoning: None,
+            },
+            LlmMessage::Tool {
+                tool_call_id: "call-1".to_string(),
+                content: "old".to_string(),
+            },
+            LlmMessage::Tool {
+                tool_call_id: "call-2".to_string(),
+                content: "new".to_string(),
+            },
+        ];
+        let assistant_at = Utc::now() - chrono::Duration::seconds(10);
+        let state =
+            MicroCompactState::seed_from_messages(&messages, config, now, Some(assistant_at));
+
+        let mut clearable_tools = HashSet::new();
+        clearable_tools.insert("readFile".to_string());
+
+        let mut early_state = state.clone();
+        let early = early_state.apply_if_idle(
+            &messages,
+            &clearable_tools,
+            config,
+            now + Duration::from_secs(15),
+        );
+        assert_eq!(early.stats.cleared_tool_results, 0);
+
+        let mut late_state = state;
+        let late = late_state.apply_if_idle(
+            &messages,
+            &clearable_tools,
+            config,
+            now + Duration::from_secs(25),
+        );
+        assert_eq!(late.stats.cleared_tool_results, 1);
     }
 }
