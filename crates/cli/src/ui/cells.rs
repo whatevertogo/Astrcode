@@ -213,11 +213,7 @@ fn prefixed_line(
     capabilities: TerminalCapabilities,
     width: usize,
 ) -> WrappedLine {
-    let prefix = if matches!(style, WrappedLineStyle::Header | WrappedLineStyle::Accent) {
-        "  "
-    } else {
-        "  "
-    };
+    let prefix = "  ";
     let available = width.saturating_sub(display_width(prefix, capabilities));
     let text = truncate_to_width(content, available.max(1), capabilities);
     WrappedLine {

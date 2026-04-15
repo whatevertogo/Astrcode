@@ -39,7 +39,7 @@ node scripts/check-crate-boundaries.mjs --strict  # 严格模式
 
 - `server` 是唯一组合根，通过 `bootstrap_server_runtime()` 组装所有组件
 - `application` 不依赖任何 `adapter-*`，只依赖 `core` + `kernel` + `session-runtime`
-- 治理层使用 `AppGovernance`（`astrcode-application`），不使用旧 `RuntimeGovernance`（`astrcode-runtime`）
+- 治理层使用 `AppGovernance`（`astrcode-application`）
 - 能力语义统一使用 `CapabilitySpec`（`astrcode-core`），传输层使用 `CapabilityDescriptor`（`astrcode-protocol`）
 
 ## 代码规范
@@ -50,12 +50,18 @@ node scripts/check-crate-boundaries.mjs --strict  # 严格模式
 
 ## 提交前验证
 
-每次提交前按顺序执行：
+改了后端rust代码每次提交前按顺序执行：
 
 1. `cargo fmt --all` — 格式化代码
 2. `cargo clippy --all-targets --all-features -- -D warnings` — 修复所有警告
 3. `cargo test --workspace` — 确保所有测试通过
 4. 确认变更内容后写出描述性提交信息
+
+改了前端代码每次提交前按顺序执行：
+1. `npm run format` — 格式化代码
+2. `npm run lint` — 修复所有 lint 错误
+3. `npm run typecheck` — 确保没有类型错误
+4. `npm run format:check` — 确保格式正确
 
 ## Gotchas
 

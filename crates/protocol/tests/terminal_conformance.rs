@@ -90,6 +90,7 @@ fn terminal_snapshot_fixture_freezes_v1_hydration_shape() {
                 status: TerminalBlockStatusDto::Complete,
                 input: Some(json!({ "command": "rg terminal" })),
                 summary: Some("读取 protocol 上下文".to_string()),
+                metadata: None,
             }),
             TerminalBlockDto::ToolStream(TerminalToolStreamBlockDto {
                 id: "block-tool-stream-1".to_string(),
