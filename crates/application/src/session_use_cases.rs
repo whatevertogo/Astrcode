@@ -181,7 +181,7 @@ impl App {
             astrcode_session_runtime::normalize_session_id(session_id),
         );
         self.session_runtime
-            .replay_stored_events(&session_id)
+            .session_stored_events(&session_id)
             .await
             .map_err(ApplicationError::from)
     }

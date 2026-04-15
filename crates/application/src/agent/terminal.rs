@@ -225,7 +225,7 @@ impl AgentOrchestrationService {
     ) -> Result<bool, AgentOrchestrationError> {
         let stored = self
             .session_runtime
-            .replay_stored_events(&astrcode_core::SessionId::from(
+            .session_stored_events(&astrcode_core::SessionId::from(
                 watch.parent_session_id.clone(),
             ))
             .await

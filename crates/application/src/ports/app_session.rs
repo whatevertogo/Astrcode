@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use astrcode_core::{
     ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionId,
     SessionMeta, StoredEvent,
 };
 use astrcode_session_runtime::{
     AgentPromptSubmission, SessionCatalogEvent, SessionControlStateSnapshot, SessionReplay,
-    SessionRuntime, SessionState, SessionTranscriptSnapshot,
+    SessionRuntime, SessionTranscriptSnapshot,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -49,14 +47,10 @@ pub trait AppSessionPort: Send + Sync {
         &self,
         session_id: &str,
     ) -> astrcode_core::Result<Vec<ChildSessionNode>>;
-    async fn replay_stored_events(
+    async fn session_stored_events(
         &self,
         session_id: &SessionId,
     ) -> astrcode_core::Result<Vec<StoredEvent>>;
-    async fn get_session_state(
-        &self,
-        session_id: &SessionId,
-    ) -> astrcode_core::Result<Arc<SessionState>>;
     async fn session_replay(
         &self,
         session_id: &str,
@@ -137,18 +131,11 @@ impl AppSessionPort for SessionRuntime {
         self.session_child_nodes(session_id).await
     }
 
-    async fn replay_stored_events(
+    async fn session_stored_events(
         &self,
         session_id: &SessionId,
     ) -> astrcode_core::Result<Vec<StoredEvent>> {
         self.replay_stored_events(session_id).await
-    }
-
-    async fn get_session_state(
-        &self,
-        session_id: &SessionId,
-    ) -> astrcode_core::Result<Arc<SessionState>> {
-        self.get_session_state(session_id).await
     }
 
     async fn session_replay(

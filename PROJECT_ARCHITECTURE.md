@@ -174,13 +174,15 @@ agent delegation experience 也遵循同样的分层边界：
 
 1. **优先 Event Log，再做投影**
    - 长期目标是把 session 视为 append-only event log，而不是一组可变字段。
-   - `SessionState`、`history view`、`context window`、`branch snapshot` 都应是 log 的投影结果。
+   - durable 真相来自 `SessionLog`；`history view`、`branch snapshot`、mailbox replay 等读模型都应以 log 投影为准。
+   - `SessionState` 不是“纯 log projection”，而是 `projection cache + live execution control`：例如 `running`、`cancel token`、turn lease、待执行 compact 请求这类运行态协调信息允许只存在于 live state。
    - 当前项目已经部分符合这个方向：`EventStore.append/replay`、`SessionState` 内部 projector、`history/replay` 查询都建立在事件回放之上。
-   - 但长期仍应继续收口：减少“字段即真相”的写法，让 `SessionLog -> Projection` 成为更显式的建模方式。
+   - 长期仍应继续收口：减少“字段即 durable 真相”的写法，让 `SessionLog -> Projection` 与 `LiveControlState` 的边界都显式可见。
 
 2. **Turn 优先建模为状态机，而不是散落的过程分支**
-   - 合法状态转换应尽可能体现在类型或清晰枚举上，例如 pending / running / waiting_tool / completed / interrupted。
+   - 合法状态转换应尽可能体现在类型或清晰枚举上，例如 pending / running / waiting_tool / streaming / completed / cancelled / failed。
    - 当前项目的 `run_turn` 已经把 LLM、tool、compaction 拆成 step loop，但 turn 本身仍更接近过程编排，而不是显式状态机。
+   - `TurnState` 与 `SessionPhase` 不是同一个状态机：前者表达单次 turn 生命周期，后者表达 session 对外控制态；`SessionPhase` 只应是 `TurnState` 与 live runtime 情况共同投影出的外部视图。
    - 长期方向不是把所有逻辑塞进一个巨大 enum，而是把“哪些转换合法”从运行时 if/guard 逐步提升为结构化状态转换。
 
 3. **Context Window 优先建模为 budget 分配问题**
@@ -193,14 +195,14 @@ agent delegation experience 也遵循同样的分层边界：
 
 4. **Mailbox / child delivery 优先使用类型化消息契约**
    - child delivery、interrupt、observe、wake、close 这些能力，长期应尽量通过明确的消息类型表达，而不是靠共享可变状态和隐式约定拼接。
-   - 当前项目已经有 durable mailbox 事件和投影，但 `SessionActor` 还不是一个以 typed channel 驱动的真正 actor loop。
-   - 如果后续 child delivery / subrun 控制继续增长，typed mailbox 是优先级很高的收口方向。
+   - 当前项目已经有 durable mailbox 事件、Envelope DTO 与投影；这部分是 durable contract，不应再重复包装出第二套“伪类型化 mailbox”。
+   - 后续真正需要继续 typed 化的是 `SessionActor` / wake / interrupt / close 的 live command path，让 actor loop 按明确消息处理运行态协调，而不是继续扩张共享状态与隐式约定。
 
 5. **Query 与 Command 逻辑继续分离**
    - 写侧负责追加事件、推进 turn、驱动 mailbox。
    - 读侧负责 transcript snapshot、stream replay、context view 等投影查询。
-   - 当前项目已经开始分离：有 `query/` 模块，也有只读快照类型。
-   - 但 `SessionRuntime` 仍同时暴露较多 command/query 方法；长期可以继续向轻量 CQRS 靠拢，让只读查询尽量不被写侧执行路径阻塞。
+   - 当前项目已经开始分离：有 `query/` 模块，也有 `SessionQueries` / `SessionCommands` 这类内部 helper。
+   - `SessionRuntime` 对外仍是过渡 façade，但应只承担构造和薄委托；新增读写能力时，优先落到 `query` 或 `command` 子域，再由 façade 暴露稳定入口。
 
 当前 `session-runtime` 子域的 allowed / forbidden responsibilities 进一步固定为：
 

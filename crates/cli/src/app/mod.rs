@@ -1,3 +1,6 @@
+mod coordinator;
+mod reducer;
+
 use std::{
     env, io,
     path::{Path, PathBuf},
@@ -11,11 +14,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use astrcode_client::{
-    AstrcodeClient, AstrcodeClientError, AstrcodeClientErrorKind, AstrcodeClientTransport,
-    AstrcodeCompactSessionRequest, AstrcodeConversationBannerErrorCodeDto,
-    AstrcodeConversationErrorEnvelopeDto, AstrcodeConversationSlashCandidatesResponseDto,
-    AstrcodeCreateSessionRequest, AstrcodeExecutionControlDto, AstrcodePromptRequest,
-    AstrcodeReqwestTransport, AstrcodeSessionListItem, ClientConfig, ConversationStreamItem,
+    AstrcodeClient, AstrcodeClientError, AstrcodeClientTransport,
+    AstrcodeConversationSlashCandidatesResponseDto, AstrcodeConversationSnapshotResponseDto,
+    AstrcodeCreateSessionRequest, AstrcodePromptAcceptedResponse, AstrcodeReqwestTransport,
+    AstrcodeSessionListItem, ClientConfig, ConversationStreamItem,
 };
 use clap::Parser;
 use crossterm::{
@@ -35,7 +37,7 @@ use tokio::{
 
 use crate::{
     capability::TerminalCapabilities,
-    command::{Command, InputAction, OverlayAction, classify_input, overlay_action},
+    command::overlay_action,
     launcher::{LaunchOptions, Launcher, LauncherSession, SystemManagedServer},
     render,
     state::{CliState, OverlayState, PaneFocus, StreamRenderMode},
@@ -70,7 +72,7 @@ enum Action {
     SessionCreated(Result<AstrcodeSessionListItem, AstrcodeClientError>),
     SnapshotLoaded {
         session_id: String,
-        result: Result<astrcode_client::AstrcodeTerminalSnapshotResponseDto, AstrcodeClientError>,
+        result: Result<AstrcodeConversationSnapshotResponseDto, AstrcodeClientError>,
     },
     StreamBatch {
         session_id: String,
@@ -82,7 +84,7 @@ enum Action {
     },
     PromptSubmitted {
         session_id: String,
-        result: Result<astrcode_client::AstrcodePromptAcceptedResponse, AstrcodeClientError>,
+        result: Result<AstrcodePromptAcceptedResponse, AstrcodeClientError>,
     },
     CompactRequested {
         session_id: String,
@@ -145,13 +147,13 @@ async fn run_terminal_loop(
 ) -> Result<()> {
     enable_raw_mode().context("enable raw mode failed")?;
     let mut stdout = io::stdout();
-    if controller.state.capabilities.alt_screen {
+    if controller.state.shell.capabilities.alt_screen {
         execute!(stdout, EnterAlternateScreen).context("enter alternate screen failed")?;
     }
-    if controller.state.capabilities.mouse {
+    if controller.state.shell.capabilities.mouse {
         execute!(stdout, EnableMouseCapture).context("enable mouse capture failed")?;
     }
-    if controller.state.capabilities.bracketed_paste {
+    if controller.state.shell.capabilities.bracketed_paste {
         execute!(stdout, EnableBracketedPaste).context("enable bracketed paste failed")?;
     }
 
@@ -167,15 +169,15 @@ async fn run_terminal_loop(
     tick_handle.abort();
 
     disable_raw_mode().context("disable raw mode failed")?;
-    if controller.state.capabilities.bracketed_paste {
+    if controller.state.shell.capabilities.bracketed_paste {
         execute!(terminal.backend_mut(), DisableBracketedPaste)
             .context("disable bracketed paste failed")?;
     }
-    if controller.state.capabilities.mouse {
+    if controller.state.shell.capabilities.mouse {
         execute!(terminal.backend_mut(), DisableMouseCapture)
             .context("disable mouse capture failed")?;
     }
-    if controller.state.capabilities.alt_screen {
+    if controller.state.shell.capabilities.alt_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)
             .context("leave alternate screen failed")?;
     }
@@ -304,7 +306,7 @@ where
         self.state.update_sessions(sessions.clone());
 
         let session_id = if let Some(session) =
-            choose_initial_session(&sessions, self.state.working_dir.as_deref())
+            choose_initial_session(&sessions, self.state.shell.working_dir.as_deref())
         {
             session.session_id.clone()
         } else {
@@ -348,7 +350,7 @@ where
             Action::SessionCreated(result) => match result {
                 Ok(session) => {
                     let session_id = session.session_id.clone();
-                    let mut sessions = self.state.sessions.clone();
+                    let mut sessions = self.state.conversation.sessions.clone();
                     sessions.push(session);
                     sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
                     self.state.update_sessions(sessions);
@@ -357,7 +359,7 @@ where
                 Err(error) => self.apply_status_error(error),
             },
             Action::SnapshotLoaded { session_id, result } => {
-                if self.pending_session_id.as_deref() != Some(session_id.as_str()) {
+                if !self.pending_session_matches(session_id.as_str()) {
                     return Ok(());
                 }
                 match result {
@@ -376,7 +378,7 @@ where
             },
             Action::StreamBatch { session_id, items } => {
                 let batch_len = items.len();
-                if self.state.active_session_id.as_deref() != Some(session_id.as_str()) {
+                if !self.active_session_matches(session_id.as_str()) {
                     self.stream_pacer.note_consumed(batch_len);
                     return Ok(());
                 }
@@ -388,7 +390,7 @@ where
                 self.state.set_stream_mode(mode, pending, oldest);
             },
             Action::SlashCandidatesLoaded { query, result } => {
-                let OverlayState::SlashPalette(palette) = &self.state.overlay else {
+                let OverlayState::SlashPalette(palette) = &self.state.interaction.overlay else {
                     return Ok(());
                 };
                 if palette.query != query {
@@ -403,7 +405,7 @@ where
                 }
             },
             Action::PromptSubmitted { session_id, result } => {
-                if self.state.active_session_id.as_deref() != Some(session_id.as_str()) {
+                if !self.active_session_matches(session_id.as_str()) {
                     return Ok(());
                 }
                 match result {
@@ -415,7 +417,7 @@ where
                 }
             },
             Action::CompactRequested { session_id, result } => {
-                if self.state.active_session_id.as_deref() != Some(session_id.as_str()) {
+                if !self.active_session_matches(session_id.as_str()) {
                     return Ok(());
                 }
                 match result {
@@ -444,30 +446,30 @@ where
         match key.code {
             KeyCode::Esc => self.state.close_overlay(),
             KeyCode::Left => {
-                if !matches!(self.state.overlay, OverlayState::None) {
+                if !matches!(self.state.interaction.overlay, OverlayState::None) {
                     return Ok(());
                 }
                 self.state.cycle_focus_backward();
             },
             KeyCode::Right => {
-                if !matches!(self.state.overlay, OverlayState::None) {
+                if !matches!(self.state.interaction.overlay, OverlayState::None) {
                     return Ok(());
                 }
                 self.state.cycle_focus_forward();
             },
             KeyCode::Up => {
-                if !matches!(self.state.overlay, OverlayState::None) {
+                if !matches!(self.state.interaction.overlay, OverlayState::None) {
                     self.state.overlay_prev();
-                } else if matches!(self.state.pane_focus, PaneFocus::ChildPane) {
+                } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
                     self.state.child_prev();
                 } else {
                     self.state.scroll_up();
                 }
             },
             KeyCode::Down => {
-                if !matches!(self.state.overlay, OverlayState::None) {
+                if !matches!(self.state.interaction.overlay, OverlayState::None) {
                     self.state.overlay_next();
-                } else if matches!(self.state.pane_focus, PaneFocus::ChildPane) {
+                } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
                     self.state.child_next();
                 } else {
                     self.state.scroll_down();
@@ -477,14 +479,14 @@ where
                 if let Some(selection) = self.state.selected_overlay() {
                     self.execute_overlay_action(overlay_action(selection))
                         .await?;
-                } else if matches!(self.state.pane_focus, PaneFocus::ChildPane) {
+                } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
                     self.state.toggle_child_focus();
                 } else {
                     self.submit_current_input().await;
                 }
             },
             KeyCode::Backspace => {
-                if matches!(self.state.overlay, OverlayState::None) {
+                if matches!(self.state.interaction.overlay, OverlayState::None) {
                     self.state.pop_input();
                 } else {
                     self.state.overlay_query_pop();
@@ -492,11 +494,11 @@ where
                 }
             },
             KeyCode::Tab => {
-                let query = slash_query_from_input(self.state.composer.input.as_str());
+                let query = self.slash_query_for_current_input();
                 self.open_slash_palette(query).await;
             },
             KeyCode::Char(ch) => {
-                if matches!(self.state.overlay, OverlayState::None) {
+                if matches!(self.state.interaction.overlay, OverlayState::None) {
                     self.state.push_input(ch);
                 } else {
                     self.state.overlay_query_push(ch);
@@ -509,313 +511,12 @@ where
         Ok(())
     }
 
-    async fn submit_current_input(&mut self) {
-        let input = self.state.take_input();
-        match classify_input(input.as_str()) {
-            InputAction::Empty => {},
-            InputAction::SubmitPrompt { text } => {
-                let Some(session_id) = self.state.active_session_id.clone() else {
-                    self.state.set_error_status("no active session");
-                    return;
-                };
-                self.state.set_status("submitting prompt");
-                let client = self.client.clone();
-                let sender = self.actions_tx.clone();
-                tokio::spawn(async move {
-                    let result = client
-                        .submit_prompt(
-                            &session_id,
-                            AstrcodePromptRequest {
-                                text,
-                                control: None,
-                            },
-                        )
-                        .await;
-                    let _ = sender.send(Action::PromptSubmitted { session_id, result });
-                });
-            },
-            InputAction::RunCommand(command) => {
-                self.execute_command(command).await;
-            },
-        }
+    fn active_session_matches(&self, session_id: &str) -> bool {
+        self.state.conversation.active_session_id.as_deref() == Some(session_id)
     }
 
-    async fn execute_overlay_action(&mut self, action: OverlayAction) -> Result<()> {
-        match action {
-            OverlayAction::SwitchSession { session_id } => {
-                self.state.close_overlay();
-                self.begin_session_hydration(session_id).await;
-            },
-            OverlayAction::ReplaceInput { text } => {
-                self.state.close_overlay();
-                self.state.replace_input(text);
-            },
-            OverlayAction::RunCommand(command) => {
-                self.state.close_overlay();
-                self.execute_command(command).await;
-            },
-        }
-        Ok(())
-    }
-
-    async fn execute_command(&mut self, command: Command) {
-        match command {
-            Command::New => {
-                let working_dir = match required_working_dir(&self.state) {
-                    Ok(path) => path.display().to_string(),
-                    Err(error) => {
-                        self.state.set_error_status(error.to_string());
-                        return;
-                    },
-                };
-                let client = self.client.clone();
-                let sender = self.actions_tx.clone();
-                self.state.set_status("creating session");
-                tokio::spawn(async move {
-                    let result = client
-                        .create_session(AstrcodeCreateSessionRequest { working_dir })
-                        .await;
-                    let _ = sender.send(Action::SessionCreated(result));
-                });
-            },
-            Command::Resume { query } => {
-                let query = query.unwrap_or_default();
-                let items = filter_resume_sessions(&self.state.sessions, query.as_str());
-                self.state.set_resume_query(query, items);
-                self.refresh_sessions().await;
-            },
-            Command::Compact => {
-                let Some(session_id) = self.state.active_session_id.clone() else {
-                    self.state.set_error_status("no active session");
-                    return;
-                };
-                if self
-                    .state
-                    .control
-                    .as_ref()
-                    .is_some_and(|control| !control.can_request_compact)
-                {
-                    self.state
-                        .set_error_status("compact is not available right now");
-                    return;
-                }
-                let client = self.client.clone();
-                let sender = self.actions_tx.clone();
-                self.state.set_status("requesting compact");
-                tokio::spawn(async move {
-                    let result = client
-                        .request_compact(
-                            &session_id,
-                            AstrcodeCompactSessionRequest {
-                                control: Some(AstrcodeExecutionControlDto {
-                                    max_steps: None,
-                                    manual_compact: Some(true),
-                                }),
-                            },
-                        )
-                        .await;
-                    let _ = sender.send(Action::CompactRequested { session_id, result });
-                });
-            },
-            Command::Skill { query } => {
-                self.open_slash_palette(query.unwrap_or_default()).await;
-            },
-            Command::Unknown { raw } => {
-                self.state
-                    .set_error_status(format!("unknown slash command: {raw}"));
-            },
-        }
-    }
-
-    async fn begin_session_hydration(&mut self, session_id: String) {
-        self.pending_session_id = Some(session_id.clone());
-        if let Some(stream_task) = self.stream_task.take() {
-            stream_task.abort();
-        }
-        self.stream_pacer.reset();
-        self.state
-            .set_status(format!("hydrating session {}", session_id));
-        let client = self.client.clone();
-        let sender = self.actions_tx.clone();
-        tokio::spawn(async move {
-            let result = client.fetch_conversation_snapshot(&session_id, None).await;
-            let _ = sender.send(Action::SnapshotLoaded { session_id, result });
-        });
-    }
-
-    async fn open_stream_for_active_session(&mut self) {
-        if let Some(stream_task) = self.stream_task.take() {
-            stream_task.abort();
-        }
-        self.stream_pacer.reset();
-        let Some(session_id) = self.state.active_session_id.clone() else {
-            return;
-        };
-        let cursor = self.state.cursor.clone();
-        match self
-            .client
-            .stream_conversation(&session_id, cursor.as_ref(), None)
-            .await
-        {
-            Ok(mut stream) => {
-                let sender = self.actions_tx.clone();
-                let pacer = self.stream_pacer.clone();
-                self.stream_task = Some(tokio::spawn(async move {
-                    while let Ok(Some(item)) = stream.recv().await {
-                        let mut items = vec![item];
-                        if matches!(pacer.mode(), StreamRenderMode::CatchUp) {
-                            while items.len() < 6 {
-                                match tokio::time::timeout(Duration::from_millis(2), stream.recv())
-                                    .await
-                                {
-                                    Ok(Ok(Some(next))) => items.push(next),
-                                    _ => break,
-                                }
-                            }
-                        }
-                        pacer.note_enqueued(items.len());
-                        if sender
-                            .send(Action::StreamBatch {
-                                session_id: session_id.clone(),
-                                items,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }));
-            },
-            Err(error) => self.apply_banner_error(error),
-        }
-    }
-
-    async fn refresh_sessions(&self) {
-        let client = self.client.clone();
-        let sender = self.actions_tx.clone();
-        tokio::spawn(async move {
-            let result = client.list_sessions().await;
-            let _ = sender.send(Action::SessionsRefreshed(result));
-        });
-    }
-
-    async fn open_slash_palette(&mut self, query: String) {
-        let items = if query.trim().is_empty() {
-            self.state.slash_candidates.clone()
-        } else {
-            crate::command::filter_slash_candidates(&self.state.slash_candidates, &query)
-        };
-        self.state.set_slash_query(query.clone(), items);
-        self.refresh_slash_candidates(query).await;
-    }
-
-    async fn refresh_slash_candidates(&self, query: String) {
-        let Some(session_id) = self.state.active_session_id.clone() else {
-            return;
-        };
-        let client = self.client.clone();
-        let sender = self.actions_tx.clone();
-        tokio::spawn(async move {
-            let result = client
-                .list_conversation_slash_candidates(&session_id, Some(query.as_str()))
-                .await;
-            let _ = sender.send(Action::SlashCandidatesLoaded { query, result });
-        });
-    }
-
-    async fn refresh_overlay_query(&mut self) {
-        match &self.state.overlay {
-            OverlayState::Resume(resume) => {
-                let items = filter_resume_sessions(&self.state.sessions, resume.query.as_str());
-                self.state.set_resume_query(resume.query.clone(), items);
-            },
-            OverlayState::SlashPalette(palette) => {
-                self.refresh_slash_candidates(palette.query.clone()).await;
-            },
-            OverlayState::None => {},
-        }
-    }
-
-    fn refresh_resume_overlay(&mut self) {
-        let OverlayState::Resume(resume) = &self.state.overlay else {
-            return;
-        };
-        let items = filter_resume_sessions(&self.state.sessions, resume.query.as_str());
-        self.state.set_resume_query(resume.query.clone(), items);
-    }
-
-    fn apply_status_error(&mut self, error: AstrcodeClientError) {
-        self.state.set_error_status(error.message);
-    }
-
-    fn apply_hydration_error(&mut self, error: AstrcodeClientError) {
-        match error.kind {
-            AstrcodeClientErrorKind::AuthExpired
-            | AstrcodeClientErrorKind::CursorExpired
-            | AstrcodeClientErrorKind::StreamDisconnected
-            | AstrcodeClientErrorKind::TransportUnavailable
-            | AstrcodeClientErrorKind::UnexpectedResponse => self.apply_banner_error(error),
-            _ => self.apply_status_error(error),
-        }
-    }
-
-    fn apply_banner_error(&mut self, error: AstrcodeClientError) {
-        self.state
-            .set_banner_error(AstrcodeConversationErrorEnvelopeDto {
-                code: match error.kind {
-                    AstrcodeClientErrorKind::AuthExpired => {
-                        AstrcodeConversationBannerErrorCodeDto::AuthExpired
-                    },
-                    AstrcodeClientErrorKind::CursorExpired => {
-                        AstrcodeConversationBannerErrorCodeDto::CursorExpired
-                    },
-                    AstrcodeClientErrorKind::StreamDisconnected
-                    | AstrcodeClientErrorKind::TransportUnavailable
-                    | AstrcodeClientErrorKind::PermissionDenied
-                    | AstrcodeClientErrorKind::Validation
-                    | AstrcodeClientErrorKind::NotFound
-                    | AstrcodeClientErrorKind::Conflict
-                    | AstrcodeClientErrorKind::UnexpectedResponse => {
-                        AstrcodeConversationBannerErrorCodeDto::StreamDisconnected
-                    },
-                },
-                message: error.message.clone(),
-                rehydrate_required: matches!(error.kind, AstrcodeClientErrorKind::CursorExpired),
-                details: error.details,
-            });
-        self.state.set_error_status(error.message);
-    }
-
-    async fn apply_stream_event(&mut self, session_id: &str, item: ConversationStreamItem) {
-        match item {
-            ConversationStreamItem::Delta(envelope) => {
-                self.state.clear_banner();
-                self.state.apply_stream_envelope(*envelope);
-            },
-            ConversationStreamItem::RehydrateRequired(error) => {
-                self.state.set_banner_error(error);
-                self.begin_session_hydration(session_id.to_string()).await;
-            },
-            ConversationStreamItem::Lagged { skipped } => {
-                self.state
-                    .set_banner_error(AstrcodeConversationErrorEnvelopeDto {
-                        code: AstrcodeConversationBannerErrorCodeDto::CursorExpired,
-                        message: format!("stream lagged by {skipped} events, rehydrating"),
-                        rehydrate_required: true,
-                        details: None,
-                    });
-                self.begin_session_hydration(session_id.to_string()).await;
-            },
-            ConversationStreamItem::Disconnected { message } => {
-                self.state
-                    .set_banner_error(AstrcodeConversationErrorEnvelopeDto {
-                        code: AstrcodeConversationBannerErrorCodeDto::StreamDisconnected,
-                        message,
-                        rehydrate_required: false,
-                        details: None,
-                    });
-            },
-        }
+    fn pending_session_matches(&self, session_id: &str) -> bool {
+        self.pending_session_id.as_deref() == Some(session_id)
     }
 }
 
@@ -888,6 +589,7 @@ fn resolve_working_dir(cli_value: Option<PathBuf>) -> Result<PathBuf> {
 
 fn required_working_dir(state: &CliState) -> Result<&Path> {
     state
+        .shell
         .working_dir
         .as_deref()
         .context("working directory is required for /new")
@@ -958,7 +660,10 @@ mod tests {
     use tokio::{sync::mpsc, time::timeout};
 
     use super::*;
-    use crate::capability::{ColorLevel, GlyphMode, TerminalCapabilities};
+    use crate::{
+        capability::{ColorLevel, GlyphMode, TerminalCapabilities},
+        command::Command,
+    };
 
     fn session(
         session_id: &str,
@@ -1276,11 +981,11 @@ mod tests {
             .await;
         handle_next_action(&mut controller).await;
         assert_eq!(
-            controller.state.active_session_id.as_deref(),
+            controller.state.conversation.active_session_id.as_deref(),
             Some("session-1")
         );
         assert_eq!(
-            controller.state.transcript.len(),
+            controller.state.conversation.transcript.len(),
             1,
             "session one should hydrate one transcript block"
         );
@@ -1291,7 +996,7 @@ mod tests {
             })
             .await;
         handle_next_action(&mut controller).await;
-        let OverlayState::SlashPalette(palette) = &controller.state.overlay else {
+        let OverlayState::SlashPalette(palette) = &controller.state.interaction.overlay else {
             panic!("skill command should open slash palette");
         };
         assert_eq!(palette.query, "review");
@@ -1299,14 +1004,17 @@ mod tests {
 
         controller.execute_command(Command::Compact).await;
         handle_next_action(&mut controller).await;
-        assert_eq!(controller.state.status.message, "手动 compact 已执行。");
+        assert_eq!(
+            controller.state.interaction.status.message,
+            "手动 compact 已执行。"
+        );
 
         controller
             .execute_command(Command::Resume {
                 query: Some("repo-b".to_string()),
             })
             .await;
-        let OverlayState::Resume(resume) = &controller.state.overlay else {
+        let OverlayState::Resume(resume) = &controller.state.interaction.overlay else {
             panic!("resume command should open resume overlay");
         };
         assert_eq!(resume.query, "repo-b");
@@ -1321,35 +1029,40 @@ mod tests {
             .expect("resume selection should switch session");
         handle_next_action(&mut controller).await;
         assert_eq!(
-            controller.state.active_session_id.as_deref(),
+            controller.state.conversation.active_session_id.as_deref(),
             Some("session-2")
         );
         assert!(
-            controller.state.transcript.iter().any(|block| matches!(
-                block,
-                astrcode_client::AstrcodeTerminalBlockDto::Assistant(block)
-                    if block.id == "assistant:session-2"
-            )),
+            controller
+                .state
+                .conversation
+                .transcript
+                .iter()
+                .any(|block| matches!(
+                    block,
+                    astrcode_client::AstrcodeConversationBlockDto::Assistant(block)
+                        if block.id == "assistant:session-2"
+                )),
             "session two snapshot should replace transcript"
         );
 
-        let transcript_before = controller.state.transcript.clone();
+        let transcript_before = controller.state.conversation.transcript.clone();
         controller
             .handle_action(Action::StreamBatch {
                 session_id: "session-1".to_string(),
                 items: vec![ConversationStreamItem::Delta(Box::new(
-                    astrcode_client::AstrcodeTerminalStreamEnvelopeDto {
+                    astrcode_client::AstrcodeConversationStreamEnvelopeDto {
                         session_id: "session-1".to_string(),
                         cursor: astrcode_client::AstrcodeConversationCursorDto(
                             "cursor:old".to_string(),
                         ),
-                        delta: astrcode_client::AstrcodeTerminalDeltaDto::AppendBlock {
-                            block: astrcode_client::AstrcodeTerminalBlockDto::Assistant(
-                                astrcode_client::AstrcodeTerminalAssistantBlockDto {
+                        delta: astrcode_client::AstrcodeConversationDeltaDto::AppendBlock {
+                            block: astrcode_client::AstrcodeConversationBlockDto::Assistant(
+                                astrcode_client::AstrcodeConversationAssistantBlockDto {
                                     id: "assistant:stale".to_string(),
                                     turn_id: None,
                                     status:
-                                        astrcode_client::AstrcodeTerminalBlockStatusDto::Complete,
+                                        astrcode_client::AstrcodeConversationBlockStatusDto::Complete,
                                     markdown: "stale".to_string(),
                                 },
                             ),
@@ -1360,7 +1073,7 @@ mod tests {
             .await
             .expect("stale batch should be ignored");
         assert_eq!(
-            controller.state.transcript, transcript_before,
+            controller.state.conversation.transcript, transcript_before,
             "single active stream mode should ignore deltas from inactive sessions"
         );
 

@@ -5,12 +5,14 @@
 
 pub mod agent;
 pub mod mailbox;
+mod service;
 pub mod terminal;
 pub mod transcript;
 pub mod turn;
 
 pub use agent::{AgentObserveSnapshot, build_agent_observe_snapshot};
 pub use mailbox::recoverable_parent_deliveries;
+pub use service::SessionQueries;
 pub use terminal::SessionControlStateSnapshot;
 pub use transcript::{SessionReplay, SessionTranscriptSnapshot, current_turn_messages};
 pub use turn::{

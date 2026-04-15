@@ -234,8 +234,8 @@ async fn config_reload_rejects_when_session_is_running() {
         .await
         .expect("session should be created");
     let session_state = state
-        .app
-        .session_runtime()
+        ._runtime_handles
+        .session_runtime
         .get_session_state(&session.session_id.clone().into())
         .await
         .expect("session state should load");
@@ -272,8 +272,8 @@ async fn compact_route_defers_when_session_is_busy() {
         .await
         .expect("session should be created");
     let session_state = state
-        .app
-        .session_runtime()
+        ._runtime_handles
+        .session_runtime
         .get_session_state(&session.session_id.clone().into())
         .await
         .expect("session state should load");
@@ -400,8 +400,8 @@ async fn prompt_submission_registers_session_root_agent_context() {
     assert_eq!(root_status.agent_profile, "default");
 
     let events = state
-        .app
-        .session_runtime()
+        ._runtime_handles
+        .session_runtime
         .replay_stored_events(&SessionId::from(session.session_id.clone()))
         .await
         .expect("events should replay");

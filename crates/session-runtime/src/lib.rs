@@ -1,25 +1,24 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentId, AgentLifecycleStatus, ChildSessionNode,
-    ChildSessionNotification, DeleteProjectResult, EventStore, EventTranslator,
-    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
-    MailboxQueuedPayload, Phase, PromptFactsProvider, ResolvedRuntimeConfig, Result,
-    RuntimeMetricsRecorder, SessionId, SessionMeta, StorageEvent, StorageEventPayload, StoredEvent,
-    event::generate_session_id,
+    ChildSessionNotification, DeleteProjectResult, EventStore, MailboxBatchAckedPayload,
+    MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload, Phase,
+    PromptFactsProvider, ResolvedRuntimeConfig, Result, RuntimeMetricsRecorder, SessionId,
+    SessionMeta, StoredEvent, event::generate_session_id,
 };
 use astrcode_kernel::{Kernel, PendingParentDelivery};
 use chrono::Utc;
 use dashmap::DashMap;
 use thiserror::Error;
-use tokio::{sync::broadcast, time::sleep};
+use tokio::sync::broadcast;
 
 pub mod actor;
 pub mod catalog;
+pub mod command;
 pub mod context;
 pub mod context_window;
 pub mod factory;
@@ -31,6 +30,7 @@ pub mod turn;
 
 use actor::SessionActor;
 pub use catalog::SessionCatalogEvent;
+pub use command::SessionCommands;
 pub use context::ResolvedContextSnapshot;
 use observe::SessionObserveSnapshot;
 pub use observe::{
@@ -96,11 +96,11 @@ impl From<SessionRuntimeError> for astrcode_core::AstrError {
 
 /// 单 session 真相面。
 pub struct SessionRuntime {
-    kernel: Arc<Kernel>,
-    prompt_facts_provider: Arc<dyn PromptFactsProvider>,
+    pub(crate) kernel: Arc<Kernel>,
+    pub(crate) prompt_facts_provider: Arc<dyn PromptFactsProvider>,
     metrics: Arc<dyn RuntimeMetricsRecorder>,
     sessions: DashMap<SessionId, Arc<LoadedSession>>,
-    event_store: Arc<dyn EventStore>,
+    pub(crate) event_store: Arc<dyn EventStore>,
     catalog_events: broadcast::Sender<SessionCatalogEvent>,
 }
 
@@ -124,6 +124,14 @@ impl SessionRuntime {
 
     pub fn subscribe_catalog_events(&self) -> broadcast::Receiver<SessionCatalogEvent> {
         self.catalog_events.subscribe()
+    }
+
+    pub(crate) fn query(&self) -> query::SessionQueries<'_> {
+        query::SessionQueries::new(self)
+    }
+
+    pub(crate) fn command(&self) -> command::SessionCommands<'_> {
+        command::SessionCommands::new(self)
     }
 
     /// 返回当前已加载到内存中的 session ID。
@@ -242,10 +250,7 @@ impl SessionRuntime {
     }
 
     pub async fn observe(&self, session_id: &SessionId) -> Result<SessionObserveSnapshot> {
-        let actor = self.ensure_loaded_session(session_id).await?;
-        Ok(SessionObserveSnapshot {
-            state: actor.snapshot(),
-        })
+        self.query().observe(session_id).await
     }
 
     /// 按需加载 session 并返回内部状态引用。
@@ -253,44 +258,32 @@ impl SessionRuntime {
     /// 用于 agent 编排层需要直接操作 SessionState 的场景
     /// （如 mailbox 追加、对话投影读取等）。
     pub async fn get_session_state(&self, session_id: &SessionId) -> Result<Arc<SessionState>> {
-        let actor = self.ensure_loaded_session(session_id).await?;
-        Ok(Arc::clone(actor.state()))
+        self.query().session_state(session_id).await
     }
 
-    /// 读取会话控制态快照，供 application / terminal surface 编排使用。
+    /// 读取会话控制态快照，供 application / conversation surface 编排使用。
     pub async fn session_control_state(
         &self,
         session_id: &str,
     ) -> Result<SessionControlStateSnapshot> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let actor = self.ensure_loaded_session(&session_id).await?;
-        Ok(SessionControlStateSnapshot {
-            phase: actor.state().current_phase()?,
-            active_turn_id: actor.state().active_turn_id_snapshot()?,
-            manual_compact_pending: actor.state().manual_compact_pending()?,
-        })
+        self.query().session_control_state(session_id).await
     }
 
     /// 返回当前 session durable 可见的 direct child lineage 节点。
     pub async fn session_child_nodes(&self, session_id: &str) -> Result<Vec<ChildSessionNode>> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let actor = self.ensure_loaded_session(&session_id).await?;
-        actor.state().list_child_session_nodes()
+        self.query().session_child_nodes(session_id).await
     }
 
     /// 读取指定 session 的工作目录。
     pub async fn get_session_working_dir(&self, session_id: &str) -> Result<String> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let actor = self.ensure_loaded_session(&session_id).await?;
-        Ok(actor.working_dir().to_string())
+        self.query().session_working_dir(session_id).await
     }
 
     /// 回放指定 session 的全部持久化事件。
     ///
     /// 用于 agent 编排层需要从 durable 事件中提取 mailbox 信封等场景。
     pub async fn replay_stored_events(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
-        self.ensure_session_exists(session_id).await?;
-        self.event_store.replay(session_id).await
+        self.query().stored_events(session_id).await
     }
 
     /// 等待指定 turn 进入可判定终态，并返回该 turn 的 durable 事件快照。
@@ -299,23 +292,9 @@ impl SessionRuntime {
         session_id: &str,
         turn_id: &str,
     ) -> Result<TurnTerminalSnapshot> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        loop {
-            let state = self.get_session_state(&session_id).await?;
-            let phase = state.current_phase()?;
-            if matches!(phase, Phase::Idle | Phase::Interrupted | Phase::Done) {
-                let events = self
-                    .replay_stored_events(&session_id)
-                    .await?
-                    .into_iter()
-                    .filter(|stored| stored.event.turn_id() == Some(turn_id))
-                    .collect::<Vec<_>>();
-                if has_terminal_turn_signal(&events) || matches!(phase, Phase::Interrupted) {
-                    return Ok(TurnTerminalSnapshot { phase, events });
-                }
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
+        self.query()
+            .wait_for_turn_terminal_snapshot(session_id, turn_id)
+            .await
     }
 
     /// 生成面向 agent 编排的单 session observe 快照。
@@ -325,18 +304,9 @@ impl SessionRuntime {
         target_agent_id: &str,
         lifecycle_status: AgentLifecycleStatus,
     ) -> Result<AgentObserveSnapshot> {
-        let session_id = SessionId::from(normalize_session_id(open_session_id));
-        let session_state = self.get_session_state(&session_id).await?;
-        let projected = session_state.snapshot_projected_state()?;
-        let mailbox_projection = session_state.mailbox_projection_for_agent(target_agent_id)?;
-        let stored_events = self.replay_stored_events(&session_id).await?;
-        Ok(build_agent_observe_snapshot(
-            lifecycle_status,
-            &projected,
-            &mailbox_projection,
-            &stored_events,
-            target_agent_id,
-        ))
+        self.query()
+            .observe_agent_session(open_session_id, target_agent_id, lifecycle_status)
+            .await
     }
 
     /// 读取指定 agent 当前 mailbox durable 投影中的待处理 delivery id。
@@ -345,11 +315,9 @@ impl SessionRuntime {
         session_id: &str,
         agent_id: &str,
     ) -> Result<Vec<String>> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let session_state = self.get_session_state(&session_id).await?;
-        Ok(session_state
-            .mailbox_projection_for_agent(agent_id)?
-            .pending_delivery_ids)
+        self.query()
+            .pending_delivery_ids_for_agent(session_id, agent_id)
+            .await
     }
 
     pub async fn append_agent_mailbox_queued(
@@ -359,13 +327,9 @@ impl SessionRuntime {
         agent: AgentEventContext,
         payload: MailboxQueuedPayload,
     ) -> Result<StoredEvent> {
-        self.append_agent_mailbox_event(
-            session_id,
-            turn_id,
-            agent,
-            MailboxEventAppend::Queued(payload),
-        )
-        .await
+        self.command()
+            .append_agent_mailbox_queued(session_id, turn_id, agent, payload)
+            .await
     }
 
     pub async fn append_agent_mailbox_discarded(
@@ -375,13 +339,9 @@ impl SessionRuntime {
         agent: AgentEventContext,
         payload: MailboxDiscardedPayload,
     ) -> Result<StoredEvent> {
-        self.append_agent_mailbox_event(
-            session_id,
-            turn_id,
-            agent,
-            MailboxEventAppend::Discarded(payload),
-        )
-        .await
+        self.command()
+            .append_agent_mailbox_discarded(session_id, turn_id, agent, payload)
+            .await
     }
 
     pub async fn append_agent_mailbox_batch_started(
@@ -391,13 +351,9 @@ impl SessionRuntime {
         agent: AgentEventContext,
         payload: MailboxBatchStartedPayload,
     ) -> Result<StoredEvent> {
-        self.append_agent_mailbox_event(
-            session_id,
-            turn_id,
-            agent,
-            MailboxEventAppend::BatchStarted(payload),
-        )
-        .await
+        self.command()
+            .append_agent_mailbox_batch_started(session_id, turn_id, agent, payload)
+            .await
     }
 
     pub async fn append_agent_mailbox_batch_acked(
@@ -407,26 +363,9 @@ impl SessionRuntime {
         agent: AgentEventContext,
         payload: MailboxBatchAckedPayload,
     ) -> Result<StoredEvent> {
-        self.append_agent_mailbox_event(
-            session_id,
-            turn_id,
-            agent,
-            MailboxEventAppend::BatchAcked(payload),
-        )
-        .await
-    }
-
-    async fn append_agent_mailbox_event(
-        &self,
-        session_id: &str,
-        turn_id: &str,
-        agent: AgentEventContext,
-        event: MailboxEventAppend,
-    ) -> Result<StoredEvent> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let session_state = self.get_session_state(&session_id).await?;
-        let mut translator = EventTranslator::new(session_state.current_phase()?);
-        append_mailbox_event(&session_state, turn_id, agent, event, &mut translator).await
+        self.command()
+            .append_agent_mailbox_batch_acked(session_id, turn_id, agent, payload)
+            .await
     }
 
     /// 向指定父 session 追加 `ChildSessionNotification` durable 事件。
@@ -437,22 +376,9 @@ impl SessionRuntime {
         agent: AgentEventContext,
         notification: ChildSessionNotification,
     ) -> Result<StoredEvent> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let session_state = self.get_session_state(&session_id).await?;
-        let mut translator = EventTranslator::new(session_state.current_phase()?);
-        append_and_broadcast(
-            &session_state,
-            &StorageEvent {
-                turn_id: Some(turn_id.to_string()),
-                agent,
-                payload: StorageEventPayload::ChildSessionNotification {
-                    notification,
-                    timestamp: Some(Utc::now()),
-                },
-            },
-            &mut translator,
-        )
-        .await
+        self.command()
+            .append_child_session_notification(session_id, turn_id, agent, notification)
+            .await
     }
 
     /// 向指定 session 追加 agent collaboration durable 事实。
@@ -463,22 +389,9 @@ impl SessionRuntime {
         agent: AgentEventContext,
         fact: AgentCollaborationFact,
     ) -> Result<StoredEvent> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let session_state = self.get_session_state(&session_id).await?;
-        let mut translator = EventTranslator::new(session_state.current_phase()?);
-        append_and_broadcast(
-            &session_state,
-            &StorageEvent {
-                turn_id: Some(turn_id.to_string()),
-                agent,
-                payload: StorageEventPayload::AgentCollaborationFact {
-                    fact,
-                    timestamp: Some(Utc::now()),
-                },
-            },
-            &mut translator,
-        )
-        .await
+        self.command()
+            .append_agent_collaboration_fact(session_id, turn_id, agent, fact)
+            .await
     }
 
     /// 从 durable mailbox + child notification 中恢复仍可重试的父级 delivery。
@@ -486,9 +399,9 @@ impl SessionRuntime {
         &self,
         parent_session_id: &str,
     ) -> Result<Vec<PendingParentDelivery>> {
-        let session_id = SessionId::from(normalize_session_id(parent_session_id));
-        let events = self.replay_stored_events(&session_id).await?;
-        Ok(recoverable_parent_deliveries(&events))
+        self.query()
+            .recoverable_parent_deliveries(parent_session_id)
+            .await
     }
 
     /// 基于单 session terminal 事件投影出结构化 turn outcome。
@@ -497,10 +410,7 @@ impl SessionRuntime {
         session_id: &str,
         turn_id: &str,
     ) -> Result<ProjectedTurnOutcome> {
-        let terminal = self
-            .wait_for_turn_terminal_snapshot(session_id, turn_id)
-            .await?;
-        Ok(project_turn_outcome(terminal.phase, &terminal.events))
+        self.query().project_turn_outcome(session_id, turn_id).await
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -548,34 +458,7 @@ impl SessionRuntime {
         session_id: &str,
         runtime: ResolvedRuntimeConfig,
     ) -> Result<bool> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
-        let actor = self.ensure_loaded_session(&session_id).await?;
-        if actor
-            .state()
-            .running
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            actor.state().request_manual_compact(runtime)?;
-            return Ok(true);
-        }
-        let mut translator = EventTranslator::new(actor.state().current_phase()?);
-        if let Some(events) = crate::turn::manual_compact::build_manual_compact_events(
-            crate::turn::manual_compact::ManualCompactRequest {
-                gateway: self.kernel.gateway(),
-                prompt_facts_provider: self.prompt_facts_provider.as_ref(),
-                session_state: actor.state(),
-                session_id: session_id.as_str(),
-                working_dir: Path::new(actor.working_dir()),
-                runtime: &runtime,
-            },
-        )
-        .await?
-        {
-            for event in &events {
-                append_and_broadcast(actor.state(), event, &mut translator).await?;
-            }
-        }
-        Ok(false)
+        self.command().compact_session(session_id, &runtime).await
     }
 
     async fn session_phase(&self, session_id: &SessionId) -> Result<Phase> {
@@ -592,7 +475,10 @@ impl SessionRuntime {
         Ok(meta.phase)
     }
 
-    async fn ensure_loaded_session(&self, session_id: &SessionId) -> Result<Arc<SessionActor>> {
+    pub(crate) async fn ensure_loaded_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Arc<SessionActor>> {
         if let Some(entry) = self.sessions.get(session_id) {
             return Ok(Arc::clone(&entry.actor));
         }
@@ -623,7 +509,7 @@ impl SessionRuntime {
         }
     }
 
-    async fn ensure_session_exists(&self, session_id: &SessionId) -> Result<()> {
+    pub(crate) async fn ensure_session_exists(&self, session_id: &SessionId) -> Result<()> {
         if self.sessions.contains_key(session_id) {
             return Ok(());
         }

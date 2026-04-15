@@ -1,4 +1,6 @@
-use astrcode_client::{AstrcodeTerminalSlashActionKindDto, AstrcodeTerminalSlashCandidateDto};
+use astrcode_client::{
+    AstrcodeConversationSlashActionKindDto, AstrcodeConversationSlashCandidateDto,
+};
 
 use crate::state::OverlaySelection;
 
@@ -44,10 +46,10 @@ pub fn overlay_action(selection: OverlaySelection) -> OverlayAction {
     match selection {
         OverlaySelection::ResumeSession(session_id) => OverlayAction::SwitchSession { session_id },
         OverlaySelection::SlashCandidate(candidate) => match candidate.action_kind {
-            AstrcodeTerminalSlashActionKindDto::InsertText => OverlayAction::ReplaceInput {
+            AstrcodeConversationSlashActionKindDto::InsertText => OverlayAction::ReplaceInput {
                 text: candidate.action_value,
             },
-            AstrcodeTerminalSlashActionKindDto::ExecuteCommand => {
+            AstrcodeConversationSlashActionKindDto::ExecuteCommand => {
                 OverlayAction::RunCommand(parse_command(candidate.action_value.as_str()))
             },
         },
@@ -76,9 +78,9 @@ pub fn parse_command(command: &str) -> Command {
 }
 
 pub fn filter_slash_candidates(
-    candidates: &[AstrcodeTerminalSlashCandidateDto],
+    candidates: &[AstrcodeConversationSlashCandidateDto],
     query: &str,
-) -> Vec<AstrcodeTerminalSlashCandidateDto> {
+) -> Vec<AstrcodeConversationSlashCandidateDto> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return candidates.to_vec();

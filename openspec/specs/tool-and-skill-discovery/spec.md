@@ -2,7 +2,7 @@
 
 ### Requirement: Discovery Uses Current Capability And Skill Facts
 
-系统 SHALL 仅基于当前 capability surface、capability semantic model 与 skill catalog 提供工具、技能与 slash suggestion 发现能力。桌面端、浏览器端与终端端 MUST 消费同一事实源，而不是各自维护平行 discovery cache、命令目录或本地 skill 注册表。
+系统 SHALL 仅基于当前 capability surface、capability semantic model 与 skill catalog 提供工具、技能与 slash suggestion 发现能力。桌面端、浏览器端与消费 conversation surface 的终端前端 MUST 消费同一事实源，而不是各自维护平行 discovery cache、命令目录或本地 skill 注册表。
 
 #### Scenario: Query tool discovery
 
@@ -18,7 +18,7 @@
 
 #### Scenario: Query slash suggestions
 
-- **WHEN** 终端客户端或其他交互式 surface 请求 slash command / skill suggestion
+- **WHEN** 终端前端或其他交互式 surface 请求 slash command / skill suggestion
 - **THEN** 系统 SHALL 基于当前 capability 与 skill 事实返回可用候选
 - **AND** MUST NOT 让客户端自行拼出另一套脱离事实源的候选集合
 

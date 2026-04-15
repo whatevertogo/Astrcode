@@ -14,37 +14,37 @@ const checks = [
     args: ["test", "-p", "astrcode-cli", "spawns_local_server_when_run_info_is_missing", "--", "--nocapture"],
   },
   {
-    name: "server snapshot contract",
+    name: "server conversation snapshot contract",
     command: "cargo",
     args: ["test", "-p", "astrcode-server", "conversation_snapshot_contract_rejects_invalid_focus", "--", "--nocapture"],
   },
   {
-    name: "server compact contract",
+    name: "server conversation compact contract",
     command: "cargo",
     args: ["test", "-p", "astrcode-server", "compact_route_defers_when_session_is_busy", "--", "--nocapture"],
   },
   {
-    name: "server skill discovery contract",
+    name: "server conversation skill discovery contract",
     command: "cargo",
     args: ["test", "-p", "astrcode-server", "composer_options_expose_session_scoped_skill_entries", "--", "--nocapture"],
   },
   {
-    name: "client snapshot contract",
+    name: "client conversation snapshot contract",
     command: "cargo",
     args: ["test", "-p", "astrcode-client", "fetch_conversation_snapshot_uses_cached_auth_and_decodes_payload", "--", "--nocapture"],
   },
   {
-    name: "client stream contract",
+    name: "client conversation stream contract",
     command: "cargo",
     args: ["test", "-p", "astrcode-client", "stream_conversation_surfaces_delta_rehydrate_and_disconnect_events", "--", "--nocapture"],
   },
   {
-    name: "client slash contract",
+    name: "client conversation slash contract",
     command: "cargo",
     args: ["test", "-p", "astrcode-client", "list_conversation_slash_candidates_uses_conversation_surface_contract", "--", "--nocapture"],
   },
   {
-    name: "client compact contract",
+    name: "client conversation compact contract",
     command: "cargo",
     args: ["test", "-p", "astrcode-client", "request_compact_preserves_existing_compact_contract", "--", "--nocapture"],
   },
@@ -66,4 +66,4 @@ for (const check of checks) {
   }
 }
 
-console.log("\nterminal conversation acceptance passed");
+console.log("\nconversation surface acceptance passed");

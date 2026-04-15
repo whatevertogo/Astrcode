@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Flex, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
@@ -11,6 +11,8 @@ use crate::{
     ui,
 };
 
+const BRAND_WORDMARK: &str = " Astrcode ";
+
 pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
     state.set_viewport_size(frame.area().width, frame.area().height);
     let layout = Layout::default()
@@ -18,14 +20,15 @@ pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(1),
-            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(frame.area());
 
-    let header = Paragraph::new(format!("Astrcode Terminal | {}", state.connection_origin));
-    frame.render_widget(header, layout[0]);
+    frame.render_widget(brand_rule(state, layout[0]), layout[0]);
 
-    let body = if state.child_summaries.is_empty() {
+    let body = if state.conversation.child_summaries.is_empty() {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(1)])
@@ -33,11 +36,15 @@ pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+            .constraints([
+                Constraint::Percentage(72),
+                Constraint::Length(2),
+                Constraint::Percentage(28),
+            ])
             .split(layout[1])
     };
 
-    let transcript_width = body[0].width.saturating_sub(2);
+    let transcript_width = body[0].width;
     let transcript_lines = if state.render.transcript_cache.width == transcript_width
         && state.render.transcript_cache.revision == state.render.transcript_revision
     {
@@ -50,28 +57,22 @@ pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
     let transcript = Paragraph::new(
         transcript_lines
             .iter()
-            .map(|line| ui::line_to_ratatui(line, state.capabilities))
+            .map(|line| ui::line_to_ratatui(line, state.shell.capabilities))
             .collect::<Vec<_>>(),
     )
-    .block(
-        Block::default()
-            .title(ui::pane_title(
-                "Transcript",
-                state.pane_focus,
-                PaneFocus::Transcript,
-            ))
-            .borders(Borders::ALL)
-            .border_style(focus_style(state, PaneFocus::Transcript)),
-    )
     .wrap(Wrap { trim: false })
-    .scroll((state.scroll_anchor, 0));
+    .scroll((state.interaction.scroll_anchor, 0));
     frame.render_widget(transcript, body[0]);
 
     if body.len() > 1 {
+        frame.render_widget(
+            Paragraph::new(vertical_divider(state, body[1].height)).style(separator_style(state)),
+            body[1],
+        );
         let child_items = ui::child_pane_lines(state)
             .into_iter()
             .map(|line| {
-                ListItem::new(ui::line_to_ratatui(&line, state.capabilities)).style(
+                ListItem::new(ui::line_to_ratatui(&line, state.shell.capabilities)).style(
                     match line.style {
                         WrappedLineStyle::Error => Style::default().fg(Color::Red),
                         _ => Style::default(),
@@ -79,48 +80,25 @@ pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
                 )
             })
             .collect::<Vec<_>>();
-        let child_pane = List::new(child_items).block(
-            Block::default()
-                .title(ui::pane_title(
-                    "Children",
-                    state.pane_focus,
-                    PaneFocus::ChildPane,
-                ))
-                .borders(Borders::ALL)
-                .border_style(focus_style(state, PaneFocus::ChildPane)),
-        );
-        frame.render_widget(child_pane, body[1]);
+        let child_pane = List::new(child_items);
+        frame.render_widget(child_pane, body[2]);
     }
 
-    let composer = Paragraph::new(state.composer.input.as_str()).block(
-        Block::default()
-            .title(ui::pane_title(
-                "Composer",
-                state.pane_focus,
-                PaneFocus::Composer,
-            ))
-            .borders(Borders::ALL)
-            .border_style(focus_style(state, PaneFocus::Composer)),
-    );
-    frame.render_widget(composer, layout[2]);
-
-    let status_style = if state.status.is_error {
+    let status_style = if state.interaction.status.is_error {
         Style::default().fg(Color::Red)
+    } else if state.interaction.pane_focus == PaneFocus::Overlay {
+        Style::default().fg(Color::Yellow)
     } else {
-        Style::default()
-    };
-    let status_area = Rect {
-        x: layout[2].x,
-        y: layout[2].y.saturating_sub(1),
-        width: layout[2].width,
-        height: 1,
+        Style::default().fg(Color::DarkGray)
     };
     frame.render_widget(
         Paragraph::new(ui::status_line(state)).style(status_style),
-        status_area,
+        layout[2],
     );
+    frame.render_widget(composer_line(state), layout[3]);
+    frame.render_widget(bottom_rule(state), layout[4]);
 
-    if let Some(banner) = &state.banner {
+    if let Some(banner) = &state.conversation.banner {
         let banner_area = centered_rect(72, 5, frame.area());
         let banner_widget = Paragraph::new(banner.error.message.as_str())
             .block(
@@ -139,23 +117,13 @@ pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
         let overlay = Paragraph::new(
             ui::overlay_lines(state)
                 .iter()
-                .map(|line| ui::line_to_ratatui(line, state.capabilities))
+                .map(|line| ui::line_to_ratatui(line, state.shell.capabilities))
                 .collect::<Vec<_>>(),
         )
         .block(Block::default().title(title).borders(Borders::ALL))
         .wrap(Wrap { trim: false });
         frame.render_widget(Clear, overlay_area);
         frame.render_widget(overlay, overlay_area);
-    }
-}
-
-fn focus_style(state: &CliState, pane: PaneFocus) -> Style {
-    if state.pane_focus != pane {
-        return Style::default();
-    }
-    match state.capabilities.color {
-        ColorLevel::None => Style::default(),
-        ColorLevel::Ansi16 | ColorLevel::TrueColor => Style::default().fg(Color::Cyan),
     }
 }
 
@@ -174,6 +142,73 @@ fn centered_rect(width_percent: u16, height: u16, area: Rect) -> Rect {
         .constraints([Constraint::Percentage(width_percent)])
         .flex(Flex::Center)
         .split(vertical[1])[0]
+}
+
+fn brand_rule(state: &CliState, area: Rect) -> Paragraph<'static> {
+    let glyph = rule_glyph(state);
+    let label = BRAND_WORDMARK;
+    let width = area.width as usize;
+    let label_width = label.chars().count();
+    let left_width = width.saturating_sub(label_width) / 2;
+    let right_width = width.saturating_sub(label_width + left_width);
+    let line = format!(
+        "{}{}{}",
+        glyph.repeat(left_width),
+        label,
+        glyph.repeat(right_width)
+    );
+    Paragraph::new(line).style(Style::default().add_modifier(Modifier::DIM))
+}
+
+fn composer_line(state: &CliState) -> Paragraph<'static> {
+    let prompt = if state.interaction.composer.input.is_empty() {
+        if state.interaction.pane_focus == PaneFocus::Composer {
+            "› 开始聊天，Enter 提交，/ 查看命令".to_string()
+        } else {
+            "  开始聊天，Tab 可切换 focus".to_string()
+        }
+    } else if state.interaction.pane_focus == PaneFocus::Composer {
+        format!("› {}", state.interaction.composer.input)
+    } else {
+        format!("  {}", state.interaction.composer.input)
+    };
+    Paragraph::new(prompt).style(if state.interaction.pane_focus == PaneFocus::Composer {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    })
+}
+
+fn bottom_rule(state: &CliState) -> Paragraph<'static> {
+    Paragraph::new(rule_glyph(state).repeat(usize::from(state.render.viewport_width.max(1))))
+        .style(separator_style(state))
+}
+
+fn vertical_divider(state: &CliState, height: u16) -> String {
+    let glyph = if state.shell.capabilities.ascii_only() {
+        "|"
+    } else {
+        "│"
+    };
+    std::iter::repeat_n(glyph, height as usize)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn rule_glyph(state: &CliState) -> &'static str {
+    if state.shell.capabilities.ascii_only() {
+        "-"
+    } else {
+        "─"
+    }
+}
+
+fn separator_style(state: &CliState) -> Style {
+    let style = Style::default().add_modifier(Modifier::DIM);
+    match state.shell.capabilities.color {
+        ColorLevel::None => style,
+        ColorLevel::Ansi16 | ColorLevel::TrueColor => style.fg(Color::DarkGray),
+    }
 }
 
 #[cfg(test)]
@@ -216,13 +251,12 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
 
-        assert!(text.contains("Transcript"));
-        assert!(text.contains("Composer"));
-        assert_eq!(state.render.transcript_cache.lines.len(), 1);
+        assert!(text.contains("Astrcode"));
+        assert_eq!(state.render.transcript_cache.lines.len(), 3);
         assert!(
             state.render.transcript_cache.lines[0]
                 .content
-                .contains("暂无 transcript")
+                .contains("Astrcode 已准备好")
         );
     }
 
@@ -235,7 +269,7 @@ mod tests {
             None,
             capabilities(GlyphMode::Ascii),
         );
-        state.status.message = "ready".to_string();
+        state.interaction.status.message = "ready".to_string();
 
         terminal
             .draw(|frame| render(frame, &mut state))
@@ -247,7 +281,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("ascii"));
+        assert!(text.contains("Astrcode"));
+        assert!(text.contains("-"));
     }
 
     #[test]
@@ -259,17 +294,17 @@ mod tests {
             None,
             capabilities(GlyphMode::Unicode),
         );
-        state
-            .child_summaries
-            .push(astrcode_client::AstrcodeTerminalChildSummaryDto {
+        state.conversation.child_summaries.push(
+            astrcode_client::AstrcodeConversationChildSummaryDto {
                 child_session_id: "child-1".to_string(),
                 child_agent_id: "agent-1".to_string(),
                 title: "Repo inspector".to_string(),
                 lifecycle: astrcode_client::AstrcodeConversationAgentLifecycleDto::Running,
                 latest_output_summary: Some("checking repo".to_string()),
                 child_ref: None,
-            });
-        state.pane_focus = PaneFocus::ChildPane;
+            },
+        );
+        state.interaction.pane_focus = PaneFocus::ChildPane;
 
         terminal
             .draw(|frame| render(frame, &mut state))
@@ -281,7 +316,6 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("Children"));
         assert!(text.contains("Repo inspector"));
     }
 }

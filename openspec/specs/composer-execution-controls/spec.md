@@ -5,7 +5,7 @@ TBD - created by archiving change modernize-composer-execution-controls. Update 
 ## Requirements
 ### Requirement: Composer SHALL submit explicit execution controls
 
-所有交互式 compose surface，包括桌面端、浏览器端和正式终端客户端，MUST 通过稳定 API 合同提交执行控制，而不是把控制语义停留在本地 TODO、隐式文本约定、slash 命令分支或零散条件分支中。
+所有交互式 compose surface，包括桌面端、浏览器端和消费 conversation surface 的正式终端客户端，MUST 通过稳定 API 合同提交执行控制，而不是把控制语义停留在本地 TODO、隐式文本约定、slash 命令分支或零散条件分支中。
 
 #### Scenario: Composer submits execution options
 
@@ -22,7 +22,7 @@ TBD - created by archiving change modernize-composer-execution-controls. Update 
 #### Scenario: Terminal slash command maps to explicit control contract
 
 - **WHEN** 终端用户通过 `/compact` 或其他 execution command 触发控制请求
-- **THEN** 终端客户端 SHALL 把该请求映射到与图形前端一致的显式执行控制合同
+- **THEN** 终端前端 SHALL 把该请求映射到与图形前端一致的显式执行控制合同
 - **AND** MUST NOT 通过本地文本替换、隐藏 prompt 注入或旁路接口伪造控制语义
 
 ### Requirement: Busy-session control requests SHALL have stable handling

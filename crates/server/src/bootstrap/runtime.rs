@@ -50,6 +50,10 @@ pub struct ServerRuntime {
 }
 
 pub struct ServerRuntimeHandles {
+    // Why: server 集成测试需要直接操纵底层 session-runtime，避免把原始状态访问重新暴露给
+    // application 端口；生产路径只把它当作资源守卫持有。
+    #[allow(dead_code)]
+    pub(crate) session_runtime: Arc<SessionRuntime>,
     _profile_watch_runtime: Option<super::watch::ProfileWatchRuntime>,
     _mcp_warmup_runtime: McpWarmupRuntime,
 }
@@ -252,6 +256,7 @@ pub async fn bootstrap_server_runtime_with_options(
         mcp_service,
         agent_service,
     ));
+    let session_runtime_handle = Arc::clone(&session_runtime);
     let governance = build_app_governance(GovernanceBuildInput {
         session_runtime,
         config_service: config_service.clone(),
@@ -289,6 +294,7 @@ pub async fn bootstrap_server_runtime_with_options(
         app,
         governance,
         handles: Arc::new(ServerRuntimeHandles {
+            session_runtime: session_runtime_handle,
             _profile_watch_runtime: profile_watch_runtime,
             _mcp_warmup_runtime: mcp_warmup_runtime,
         }),

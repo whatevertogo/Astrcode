@@ -83,20 +83,20 @@
 - **THEN** 服务端 SHALL 明确拒绝继续增量补发并要求客户端重新获取 hydration snapshot
 - **AND** MUST NOT 发送可能导致终端状态错乱的部分增量
 
-### Requirement: terminal snapshot 与 stream SHALL 成为 authoritative read surface
+### Requirement: conversation surface SHALL 成为终端前端的 authoritative read surface
 
-terminal v1 的 snapshot 与 stream MUST 是终端 surface 的 authoritative hydration / delta 合同。旧 `/view`、`/history` 与 `/events` 可以继续存在，但不得再被定义为 terminal 的 hydration 或 live delta 来源。
+`conversation v1` 的 snapshot 与 stream MUST 是终端前端消费的 authoritative hydration / delta 合同。旧 `/view`、`/history` 与 `/events` 可以继续存在，但不得再被定义为终端前端的 hydration 或 live delta 来源。
 
-#### Scenario: terminal 使用 snapshot 进行 hydration
+#### Scenario: 终端前端使用 conversation snapshot 进行 hydration
 
 - **WHEN** 终端客户端进入某个 session
-- **THEN** 它 SHALL 使用 terminal snapshot 作为 authoritative hydration 来源
+- **THEN** 它 SHALL 使用 conversation snapshot 作为 authoritative hydration 来源
 - **AND** MUST NOT 依赖 legacy `/view` 或 `/history` 来重建 terminal 初始状态
 
-#### Scenario: terminal 使用专属 stream 消费增量
+#### Scenario: 终端前端使用 conversation stream 消费增量
 
 - **WHEN** 终端客户端需要消费 live delta
-- **THEN** 它 SHALL 订阅 terminal 专属 stream
+- **THEN** 它 SHALL 订阅 conversation surface 暴露的专属 stream
 - **AND** MUST NOT 把 legacy `/events` 解释为 terminal block 语义
 
 ### Requirement: 终端读模型 SHALL 提供会话导航与 child 摘要投影

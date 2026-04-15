@@ -58,6 +58,8 @@ pub use astrcode_protocol::http::{
     },
 };
 
+// Compatibility aliases for older terminal-oriented call sites.
+// New code should prefer the `AstrcodeConversation*` names above.
 pub type AstrcodeTerminalAssistantBlockDto = AstrcodeConversationAssistantBlockDto;
 pub type AstrcodeTerminalBannerDto = AstrcodeConversationBannerDto;
 pub type AstrcodeTerminalBannerErrorCodeDto = AstrcodeConversationBannerErrorCodeDto;
@@ -360,7 +362,7 @@ where
                             Err(error) => {
                                 let _ = sender.send(TerminalStreamItem::Disconnected {
                                     message: format!(
-                                        "failed to decode terminal sse payload: {error}"
+                                        "failed to decode conversation sse payload: {error}"
                                     ),
                                 });
                                 break;
