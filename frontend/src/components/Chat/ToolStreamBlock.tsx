@@ -37,9 +37,8 @@ function statusLabel(status: ToolStreamMessage['status']): string {
 }
 
 function ToolStreamBlock({ message }: ToolStreamBlockProps) {
-  const structuredResult = message.stream === 'stdout'
-    ? extractStructuredJsonOutput(message.content)
-    : null;
+  const structuredResult =
+    message.stream === 'stdout' ? extractStructuredJsonOutput(message.content) : null;
 
   return (
     <div className="mb-2 ml-[var(--chat-assistant-content-offset)] min-w-0 max-w-full animate-block-enter motion-reduce:animate-none">

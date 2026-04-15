@@ -11,11 +11,7 @@ import {
   expandableBody,
   ghostIconButton,
 } from '../../lib/styles';
-import {
-  calculateCacheHitRatePercent,
-  calculatePromptReuseRatePercent,
-  cn,
-} from '../../lib/utils';
+import { calculateCacheHitRatePercent, calculatePromptReuseRatePercent, cn } from '../../lib/utils';
 
 interface AssistantMessageProps {
   message: AssistantMessageType;
@@ -215,10 +211,14 @@ function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
   const providerHitRate = calculateCacheHitRatePercent(metrics);
   if (providerHitRate !== null) {
     if (providerHitRate >= 80) {
-      return <span className="ml-2 font-medium text-cache-high">🟢 KV 缓存 {providerHitRate}%</span>;
+      return (
+        <span className="ml-2 font-medium text-cache-high">🟢 KV 缓存 {providerHitRate}%</span>
+      );
     }
     if (providerHitRate >= 30) {
-      return <span className="ml-2 font-medium text-cache-medium">🟡 KV 缓存 {providerHitRate}%</span>;
+      return (
+        <span className="ml-2 font-medium text-cache-medium">🟡 KV 缓存 {providerHitRate}%</span>
+      );
     }
     if (providerHitRate > 0) {
       return <span className="ml-2 font-medium text-cache-low">🟠 KV 缓存 {providerHitRate}%</span>;
@@ -230,7 +230,9 @@ function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
   if (promptReuseRate === null) {
     return null;
   }
-  return <span className="ml-2 font-medium text-cache-medium">🧩 Prompt 复用 {promptReuseRate}%</span>;
+  return (
+    <span className="ml-2 font-medium text-cache-medium">🧩 Prompt 复用 {promptReuseRate}%</span>
+  );
 }
 
 function AssistantMessage({

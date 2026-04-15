@@ -411,7 +411,6 @@ export default function MessageList({
         const subRunView = subRunViews.get(item.subRunId);
         if (!subRunView) {
           rendered.push(
-            (
             <div
               key={`subrun-missing-${item.subRunId}`}
               className={
@@ -425,7 +424,6 @@ export default function MessageList({
                 <div className="mb-2 text-xs text-danger/70">subRunId: {item.subRunId}</div>
               </div>
             </div>
-            )
           );
           continue;
         }
@@ -455,7 +453,6 @@ export default function MessageList({
         );
 
         rendered.push(
-          (
           <div key={`subrun-${subRunView.subRunId}`} className={rowClass}>
             {boundaryMessage ? (
               <MessageBoundary message={boundaryMessage}>{subRunBlock}</MessageBoundary>
@@ -463,7 +460,6 @@ export default function MessageList({
               subRunBlock
             )}
           </div>
-          )
         );
       }
 

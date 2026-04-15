@@ -161,10 +161,7 @@ function remapMessageReference(
   return next;
 }
 
-function sameSpawnedAgentRef(
-  left: SpawnedAgentRef | null,
-  right: SpawnedAgentRef | null
-): boolean {
+function sameSpawnedAgentRef(left: SpawnedAgentRef | null, right: SpawnedAgentRef | null): boolean {
   if (left === right) {
     return true;
   }
@@ -497,12 +494,10 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     if (!record.childSessionId && spawnedAgentRef.childSessionId) {
       record.childSessionId = spawnedAgentRef.childSessionId;
     }
-    const parentSubRunId = message.subRunId ? aliases.get(message.subRunId) ?? message.subRunId : null;
-    if (
-      !record.parentSubRunId &&
-      parentSubRunId &&
-      parentSubRunId !== canonicalSubRunId
-    ) {
+    const parentSubRunId = message.subRunId
+      ? (aliases.get(message.subRunId) ?? message.subRunId)
+      : null;
+    if (!record.parentSubRunId && parentSubRunId && parentSubRunId !== canonicalSubRunId) {
       record.parentSubRunId = parentSubRunId;
     }
   });

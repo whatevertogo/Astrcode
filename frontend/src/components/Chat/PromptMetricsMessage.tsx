@@ -2,10 +2,7 @@ import { memo } from 'react';
 
 import type { PromptMetricsMessage as PromptMetricsMessageType } from '../../types';
 import { pillInfo } from '../../lib/styles';
-import {
-  calculateCacheHitRatePercent,
-  calculatePromptReuseRatePercent,
-} from '../../lib/utils';
+import { calculateCacheHitRatePercent, calculatePromptReuseRatePercent } from '../../lib/utils';
 
 interface PromptMetricsMessageProps {
   message: PromptMetricsMessageType;

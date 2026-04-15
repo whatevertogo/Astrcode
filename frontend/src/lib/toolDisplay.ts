@@ -226,9 +226,7 @@ export function extractToolMetadataSummary(metadata: unknown): ToolMetadataSumma
   return { message: message ?? undefined, pills };
 }
 
-export function extractToolChildSessionTarget(
-  metadata: unknown
-): ToolChildSessionTarget | null {
+export function extractToolChildSessionTarget(metadata: unknown): ToolChildSessionTarget | null {
   const container = asRecord(metadata);
   if (!container) {
     return null;

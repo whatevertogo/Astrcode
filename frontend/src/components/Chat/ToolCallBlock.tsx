@@ -9,13 +9,7 @@ import {
   extractToolShellDisplay,
   formatToolCallSummary,
 } from '../../lib/toolDisplay';
-import {
-  chevronIcon,
-  infoButton,
-  pillDanger,
-  pillNeutral,
-  pillSuccess,
-} from '../../lib/styles';
+import { chevronIcon, infoButton, pillDanger, pillNeutral, pillSuccess } from '../../lib/styles';
 import { cn } from '../../lib/utils';
 import { useChatScreenContext } from './ChatScreenContext';
 import ToolCodePanel from './ToolCodePanel';
@@ -53,7 +47,11 @@ function streamBadge(stream: ToolStreamMessage['stream']): string {
   return stream === 'stderr' ? pillDanger : pillNeutral;
 }
 
-function streamTitle(toolName: string, stream: ToolStreamMessage['stream'], hasShellCommand: boolean): string {
+function streamTitle(
+  toolName: string,
+  stream: ToolStreamMessage['stream'],
+  hasShellCommand: boolean
+): string {
   if (hasShellCommand && stream === 'stdout') {
     return 'Shell';
   }
@@ -249,7 +247,9 @@ function ToolCallBlock({ message, streams = [] }: ToolCallBlockProps) {
           </details>
         )}
 
-        {(metadataSummary?.pills?.length || message.durationMs !== undefined || message.truncated) && (
+        {(metadataSummary?.pills?.length ||
+          message.durationMs !== undefined ||
+          message.truncated) && (
           <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-text-secondary">
             {metadataSummary?.pills.map((pill) => (
               <span key={pill} className={pillNeutral}>
