@@ -24,8 +24,9 @@ use std::{
 
 use astrcode_core::{
     AgentInboxEnvelope, AgentLifecycleStatus, AgentProfile, AgentTurnOutcome, AstrError,
-    CancelToken, LiveSubRunControlBoundary, ResolvedExecutionLimitsSnapshot, SessionId,
-    SpawnAgentParams, SubRunHandle, SubRunResult, SubRunStorageMode, ToolContext,
+    CancelToken, ChildSessionLineageKind, LiveSubRunControlBoundary,
+    ResolvedExecutionLimitsSnapshot, SessionId, SpawnAgentParams, SubRunHandle, SubRunResult,
+    SubRunStorageMode, ToolContext,
 };
 use async_trait::async_trait;
 use delivery_queue::{
@@ -298,6 +299,7 @@ impl AgentControl {
             parent_turn_id,
             parent_agent_id: parent_agent_id.clone(),
             parent_sub_run_id,
+            lineage_kind: ChildSessionLineageKind::Spawn,
             agent_profile: profile.id.clone(),
             storage_mode,
             lifecycle: AgentLifecycleStatus::Pending,
@@ -366,6 +368,7 @@ impl AgentControl {
             parent_turn_id: String::new(),
             parent_agent_id: None,
             parent_sub_run_id: None,
+            lineage_kind: ChildSessionLineageKind::Spawn,
             agent_profile: profile_id,
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
@@ -529,7 +532,11 @@ impl AgentControl {
     /// 只有 Completed/Failed/Cancelled 状态的 Agent 可以被恢复。
     /// 恢复不会篡改旧执行实例，而是为同一个 agent mint 一个新的 `sub_run_id`，
     /// 这样 child session 可以沿用稳定身份，同时把新的执行实例显式暴露出来。
-    pub async fn resume(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
+    pub async fn resume(
+        &self,
+        sub_run_or_agent_id: &str,
+        parent_turn_id: impl Into<String>,
+    ) -> Option<SubRunHandle> {
         let mut state = self.state.write().await;
         let key = resolve_entry_key(&state, sub_run_or_agent_id)?.to_string();
 
@@ -551,6 +558,8 @@ impl AgentControl {
         let new_sub_run_id = format!("subrun-{next_id}");
         let mut new_handle = old_handle.clone();
         new_handle.sub_run_id = new_sub_run_id.clone();
+        new_handle.parent_turn_id = parent_turn_id.into();
+        new_handle.lineage_kind = ChildSessionLineageKind::Resume;
         new_handle.lifecycle = AgentLifecycleStatus::Running;
         new_handle.last_turn_outcome = None;
 

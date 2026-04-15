@@ -646,6 +646,9 @@ pub struct SubRunHandle {
     /// 触发该子会话的父 sub-run。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_sub_run_id: Option<String>,
+    /// 当前执行实例的谱系来源。
+    #[serde(default = "default_child_session_lineage_kind")]
+    pub lineage_kind: ChildSessionLineageKind,
     /// 该实例绑定的 profile ID。
     pub agent_profile: String,
     /// 当前存储模式。
@@ -670,6 +673,10 @@ pub enum ChildSessionLineageKind {
     Spawn,
     Fork,
     Resume,
+}
+
+fn default_child_session_lineage_kind() -> ChildSessionLineageKind {
+    ChildSessionLineageKind::Spawn
 }
 
 /// 子会话状态来源。

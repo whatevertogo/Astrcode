@@ -15,7 +15,8 @@ use super::AppKernelPort;
 pub trait AgentKernelPort: AppKernelPort {
     async fn get_lifecycle(&self, sub_run_or_agent_id: &str) -> Option<AgentLifecycleStatus>;
     async fn get_turn_outcome(&self, sub_run_or_agent_id: &str) -> Option<AgentTurnOutcome>;
-    async fn resume(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle>;
+    async fn resume(&self, sub_run_or_agent_id: &str, parent_turn_id: &str)
+    -> Option<SubRunHandle>;
     async fn spawn_independent_child(
         &self,
         profile: &astrcode_core::AgentProfile,
@@ -76,8 +77,14 @@ impl AgentKernelPort for Kernel {
         self.agent().get_turn_outcome(sub_run_or_agent_id).await
     }
 
-    async fn resume(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
-        self.agent().resume(sub_run_or_agent_id).await
+    async fn resume(
+        &self,
+        sub_run_or_agent_id: &str,
+        parent_turn_id: &str,
+    ) -> Option<SubRunHandle> {
+        self.agent()
+            .resume(sub_run_or_agent_id, parent_turn_id)
+            .await
     }
 
     async fn spawn_independent_child(

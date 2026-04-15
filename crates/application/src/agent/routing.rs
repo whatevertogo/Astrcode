@@ -5,11 +5,11 @@
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentInboxEnvelope,
-    AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
-    ChildSessionNotificationKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
-    InboxEnvelopeKind, MailboxDiscardedPayload, MailboxQueuedPayload, ParentDelivery,
-    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics, SendAgentParams,
-    SendToChildParams, SendToParentParams, SubRunHandle,
+    AgentLifecycleStatus, ChildAgentRef, ChildSessionNotification, ChildSessionNotificationKind,
+    CloseAgentParams, CollaborationResult, CollaborationResultKind, InboxEnvelopeKind,
+    MailboxDiscardedPayload, MailboxQueuedPayload, ParentDelivery, ParentDeliveryOrigin,
+    ParentDeliveryPayload, ParentDeliveryTerminalSemantics, SendAgentParams, SendToChildParams,
+    SendToParentParams, SubRunHandle,
 };
 
 use super::{
@@ -454,7 +454,7 @@ impl AgentOrchestrationService {
                 sub_run_id: child.sub_run_id.clone(),
                 parent_agent_id: child.parent_agent_id.clone(),
                 parent_sub_run_id: child.parent_sub_run_id.clone(),
-                lineage_kind: ChildSessionLineageKind::Spawn,
+                lineage_kind: child.lineage_kind,
                 status,
                 open_session_id: super::child_open_session_id(child),
             },
@@ -549,22 +549,13 @@ impl AgentOrchestrationService {
 
     /// 从 SubRunHandle 构造 ChildAgentRef。
     pub(super) async fn build_child_ref_from_handle(&self, handle: &SubRunHandle) -> ChildAgentRef {
-        self.build_child_ref_with_lineage(handle, ChildSessionLineageKind::Spawn)
-            .await
-    }
-
-    async fn build_child_ref_with_lineage(
-        &self,
-        handle: &SubRunHandle,
-        lineage_kind: ChildSessionLineageKind,
-    ) -> ChildAgentRef {
         ChildAgentRef {
             agent_id: handle.agent_id.clone(),
             session_id: handle.session_id.clone(),
             sub_run_id: handle.sub_run_id.clone(),
             parent_agent_id: handle.parent_agent_id.clone(),
             parent_sub_run_id: handle.parent_sub_run_id.clone(),
-            lineage_kind,
+            lineage_kind: handle.lineage_kind,
             status: handle.lifecycle,
             open_session_id: handle
                 .child_session_id
@@ -631,8 +622,13 @@ impl AgentOrchestrationService {
             .await
             .unwrap_or_default();
         let resume_message = compose_reusable_child_message(&pending, params);
+        let current_parent_turn_id = ctx.turn_id().unwrap_or(&child.parent_turn_id).to_string();
 
-        let Some(reused_handle) = self.kernel.resume(&params.agent_id).await else {
+        let Some(reused_handle) = self
+            .kernel
+            .resume(&params.agent_id, &current_parent_turn_id)
+            .await
+        else {
             self.restore_pending_inbox(&child.agent_id, pending).await;
             return Ok(None);
         };
@@ -731,9 +727,7 @@ impl AgentOrchestrationService {
             accepted.session_id.to_string(),
             accepted.turn_id.to_string(),
             ctx.session_id().to_string(),
-            ctx.turn_id()
-                .unwrap_or(&reused_handle.parent_turn_id)
-                .to_string(),
+            current_parent_turn_id,
             ctx.tool_call_id().map(ToString::to_string),
         );
 
@@ -1270,6 +1264,31 @@ mod tests {
             Some("检查 crates"),
             "resumed child should keep the original responsibility branch metadata"
         );
+        assert_eq!(
+            result
+                .agent_ref
+                .as_ref()
+                .map(|child_ref| child_ref.lineage_kind),
+            Some(astrcode_core::ChildSessionLineageKind::Resume),
+            "resumed child projection should expose resume lineage instead of masquerading as \
+             spawn"
+        );
+        let resumed_child = harness
+            .kernel
+            .get_handle(
+                result
+                    .agent_ref
+                    .as_ref()
+                    .map(|child_ref| child_ref.agent_id.as_str())
+                    .expect("child ref should exist"),
+            )
+            .await
+            .expect("resumed child handle should exist");
+        assert_eq!(resumed_child.parent_turn_id, "turn-parent-2");
+        assert_eq!(
+            resumed_child.lineage_kind,
+            astrcode_core::ChildSessionLineageKind::Resume
+        );
     }
 
     #[tokio::test]
@@ -1384,6 +1403,104 @@ mod tests {
                     && fact.outcome == AgentCollaborationOutcomeKind::Rejected
                     && fact.reason_code.as_deref() == Some("missing_direct_parent")
         )));
+    }
+
+    #[tokio::test]
+    async fn send_to_parent_from_resumed_child_routes_to_current_parent_turn() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let (child_agent_id, parent_session_id) =
+            spawn_direct_child(&harness, &parent.session_id, project.path()).await;
+        let parent_ctx = ToolContext::new(
+            parent_session_id.into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-parent-2")
+        .with_agent_context(root_execution_event_context("root-agent", "root-profile"));
+
+        harness
+            .service
+            .send(
+                SendAgentParams::ToChild(SendToChildParams {
+                    agent_id: child_agent_id.clone(),
+                    message: "继续整理并向我汇报".to_string(),
+                    context: None,
+                }),
+                &parent_ctx,
+            )
+            .await
+            .expect("send should resume idle child");
+
+        let resumed_child = harness
+            .kernel
+            .get_handle(&child_agent_id)
+            .await
+            .expect("resumed child handle should exist");
+        let child_ctx = ToolContext::new(
+            resumed_child
+                .child_session_id
+                .clone()
+                .expect("child session id should exist")
+                .into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-child-report-2")
+        .with_agent_context(subrun_event_context(&resumed_child));
+
+        let result = harness
+            .service
+            .send(
+                SendAgentParams::ToParent(SendToParentParams {
+                    payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                        message: "继续推进后的显式上报".to_string(),
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    }),
+                }),
+                &child_ctx,
+            )
+            .await
+            .expect("resumed child should be able to send upward");
+
+        assert!(result.delivery_id.is_some());
+        let parent_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent events should replay");
+        assert!(parent_events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::ChildSessionNotification { notification, .. }
+                if stored.event.turn_id.as_deref() == Some("turn-parent-2")
+                    && notification.child_ref.sub_run_id == resumed_child.sub_run_id
+                    && notification.child_ref.lineage_kind
+                        == astrcode_core::ChildSessionLineageKind::Resume
+                    && notification.delivery.as_ref().is_some_and(|delivery| {
+                        delivery.payload.message() == "继续推进后的显式上报"
+                    })
+        )));
+        assert!(
+            !parent_events.iter().any(|stored| matches!(
+                &stored.event.payload,
+                StorageEventPayload::ChildSessionNotification { notification, .. }
+                    if stored.event.turn_id.as_deref() == Some("turn-parent")
+                        && notification.delivery.as_ref().is_some_and(|delivery| {
+                            delivery.payload.message() == "继续推进后的显式上报"
+                        })
+            )),
+            "resumed child delivery must target the current parent turn instead of the stale \
+             spawn turn"
+        );
     }
 
     #[tokio::test]

@@ -44,6 +44,7 @@ interface SubRunRecord {
 interface SubRunIndex {
   records: Map<string, SubRunRecord>;
   rootEntries: IndexedMessage[];
+  aliases: Map<string, string>;
 }
 
 function wouldCreateSubRunCycle(
@@ -271,9 +272,65 @@ function pickChildSessionIdFromEntries(entries: IndexedMessage[]): string | unde
   return undefined;
 }
 
+function buildStableSubRunIdentity(agentId?: string, childSessionId?: string): string | undefined {
+  if (agentId) {
+    return `agent:${agentId}`;
+  }
+  if (childSessionId) {
+    return `child-session:${childSessionId}`;
+  }
+  return undefined;
+}
+
+function registerSubRunAlias(
+  aliases: Map<string, string>,
+  stableOwners: Map<string, string>,
+  ref: SpawnedAgentRef
+): string {
+  const stableIdentity = buildStableSubRunIdentity(ref.agentId, ref.childSessionId);
+  const canonicalSubRunId =
+    (stableIdentity ? stableOwners.get(stableIdentity) : undefined) ??
+    aliases.get(ref.subRunId) ??
+    ref.subRunId;
+
+  aliases.set(ref.subRunId, canonicalSubRunId);
+  if (stableIdentity && !stableOwners.has(stableIdentity)) {
+    stableOwners.set(stableIdentity, canonicalSubRunId);
+  }
+
+  return canonicalSubRunId;
+}
+
+function pickStableSubRunRef(message: Message): SpawnedAgentRef | null {
+  if (!message.subRunId) {
+    return null;
+  }
+
+  return {
+    subRunId: message.subRunId,
+    agentId:
+      message.agentId ??
+      (message.kind === 'childSessionNotification' ? message.childRef.agentId : undefined),
+    childSessionId: pickOpenableChildSessionId(message),
+  };
+}
+
 function buildSubRunIndex(messages: Message[]): SubRunIndex {
   const records = new Map<string, SubRunRecord>();
   const rootEntries: IndexedMessage[] = [];
+  const aliases = new Map<string, string>();
+  const stableOwners = new Map<string, string>();
+
+  messages.forEach((message) => {
+    const stableRef = pickStableSubRunRef(message);
+    if (stableRef) {
+      registerSubRunAlias(aliases, stableOwners, stableRef);
+    }
+    const spawnedAgentRef = pickSpawnedAgentRef(message);
+    if (spawnedAgentRef) {
+      registerSubRunAlias(aliases, stableOwners, spawnedAgentRef);
+    }
+  });
 
   // 推导 subRun 嵌套关系需要两步：
   // 第一遍：从 body 消息（非 start/finish）收集 turnId → subRunId 映射
@@ -282,7 +339,7 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     if (!message.subRunId) continue;
     if (message.kind === 'subRunStart' || message.kind === 'subRunFinish') continue;
     if (message.turnId) {
-      turnToSubRun.set(message.turnId, message.subRunId);
+      turnToSubRun.set(message.turnId, aliases.get(message.subRunId) ?? message.subRunId);
     }
   }
 
@@ -295,13 +352,19 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
       return;
     }
 
-    const record = getOrCreateRecord(records, message.subRunId, index);
+    const subRunId = aliases.get(message.subRunId) ?? message.subRunId;
+    const record = getOrCreateRecord(records, subRunId, index);
     if (message.agentId && !record.agentId) {
       record.agentId = message.agentId;
     }
+    const childSessionId = pickOpenableChildSessionId(message);
+    if (childSessionId && !record.childSessionId) {
+      record.childSessionId = childSessionId;
+    }
 
     if (isSubRunStartMessage(message)) {
-      record.startMessage ??= message;
+      record.startMessage = message;
+      record.finishMessage = undefined;
       record.startIndex = Math.min(record.startIndex, index);
       if (message.parentTurnId) {
         record.hasDescriptorLineage = true;
@@ -309,14 +372,14 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
 
       // 父关系推导：先从 turnToSubRun 精确匹配，再退化到栈
       const turnParent = turnToSubRun.get(message.turnId ?? '') ?? null;
-      if (!record.parentSubRunId && turnParent && turnParent !== message.subRunId) {
+      if (!record.parentSubRunId && turnParent && turnParent !== subRunId) {
         record.parentSubRunId = turnParent;
       }
       // 栈退化：turnToSubRun 未命中时，检查栈顶 start 的 turnId 判断兄弟还是父子
       if (!record.parentSubRunId && subRunStack.length > 0) {
         const stackTopId = subRunStack[subRunStack.length - 1];
         const stackTopRecord = records.get(stackTopId);
-        if (stackTopId !== message.subRunId) {
+        if (stackTopId !== subRunId) {
           if (stackTopRecord?.startMessage?.turnId === message.turnId) {
             // 相同 turnId → 兄弟关系，继承栈顶的父
             record.parentSubRunId = stackTopRecord?.parentSubRunId ?? null;
@@ -327,17 +390,17 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
         }
       }
 
-      subRunStack.push(message.subRunId);
+      subRunStack.push(subRunId);
       return;
     }
 
     if (isSubRunFinishMessage(message)) {
-      record.finishMessage ??= message;
+      record.finishMessage = message;
       if (message.parentTurnId) {
         record.hasDescriptorLineage = true;
       }
       // 从栈中移除已完成的 subRun（可能在栈的任意深度）
-      const stackIndex = subRunStack.lastIndexOf(message.subRunId);
+      const stackIndex = subRunStack.lastIndexOf(subRunId);
       if (stackIndex >= 0) {
         subRunStack.splice(stackIndex, 1);
       }
@@ -364,7 +427,8 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
 
     // Why: 历史回放偶发缺少 subRun lifecycle 时，spawn 的 agentRef 仍然能稳定标识子执行；
     // 用它补建占位记录，避免父会话把已启动的子 Agent 直接“吃掉”。
-    const record = getOrCreateRecord(records, spawnedAgentRef.subRunId, index);
+    const canonicalSubRunId = registerSubRunAlias(aliases, stableOwners, spawnedAgentRef);
+    const record = getOrCreateRecord(records, canonicalSubRunId, index);
     record.startIndex = Math.min(record.startIndex, index);
     if (!record.agentId && spawnedAgentRef.agentId) {
       record.agentId = spawnedAgentRef.agentId;
@@ -447,7 +511,7 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     });
   });
 
-  return { records, rootEntries };
+  return { records, rootEntries, aliases };
 }
 
 function buildThreadItems(
@@ -565,6 +629,16 @@ export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
         : `subRun:${item.subRunId}:${subRuns.get(item.subRunId)?.streamFingerprint ?? item.subRunId}`
     )
     .join('|');
+
+  index.aliases.forEach((canonicalSubRunId, aliasSubRunId) => {
+    if (aliasSubRunId === canonicalSubRunId) {
+      return;
+    }
+    const canonicalView = subRuns.get(canonicalSubRunId);
+    if (canonicalView) {
+      subRuns.set(aliasSubRunId, canonicalView);
+    }
+  });
 
   return { rootThreadItems, rootStreamFingerprint, subRuns };
 }

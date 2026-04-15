@@ -1198,6 +1198,151 @@ describe('buildSubRunView', () => {
     expect(view?.title).toBe('explore');
   });
 
+  it('merges resumed executions of the same child branch into one root view', () => {
+    const messages: Message[] = [
+      {
+        ...makeSubRunStartFixture({
+          id: 'subrun-1-start',
+          turnId: 'turn-root',
+          parentTurnId: 'turn-root',
+          agentId: 'agent-1',
+          subRunId: 'subrun-1',
+          agentProfile: 'explore',
+          depth: 1,
+          timestamp: 1,
+        }),
+      },
+      {
+        id: 'subrun-1-assistant',
+        kind: 'assistant',
+        turnId: 'turn-child-1',
+        parentTurnId: 'turn-root',
+        agentId: 'agent-1',
+        subRunId: 'subrun-1',
+        agentProfile: 'explore',
+        text: '第一轮结论',
+        streaming: false,
+        timestamp: 2,
+      },
+      {
+        id: 'subrun-1-finish',
+        kind: 'subRunFinish',
+        turnId: 'turn-root',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-1',
+        result: { status: 'completed' },
+        stepCount: 1,
+        estimatedTokens: 42,
+        timestamp: 3,
+      },
+      {
+        id: 'child-notify-1',
+        kind: 'childSessionNotification',
+        turnId: 'turn-root',
+        agentId: 'agent-1',
+        parentTurnId: 'turn-root',
+        agentProfile: 'explore',
+        subRunId: 'subrun-1',
+        childSessionId: 'session-child-1',
+        childRef: {
+          agentId: 'agent-1',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-1',
+          parentAgentId: 'root-agent',
+          lineageKind: 'spawn',
+          status: 'idle',
+          openSessionId: 'session-child-1',
+        },
+        notificationKind: 'delivered',
+        status: 'idle',
+        delivery: {
+          idempotencyKey: 'delivery-1',
+          origin: 'explicit',
+          terminalSemantics: 'terminal',
+          kind: 'completed',
+          payload: {
+            message: '第一轮交付',
+            findings: [],
+            artifacts: [],
+          },
+        },
+        timestamp: 4,
+      },
+      {
+        ...makeSubRunStartFixture({
+          id: 'subrun-2-start',
+          turnId: 'turn-root-2',
+          parentTurnId: 'turn-root-2',
+          agentId: 'agent-1',
+          subRunId: 'subrun-2',
+          agentProfile: 'explore',
+          depth: 1,
+          timestamp: 5,
+        }),
+      },
+      {
+        id: 'subrun-2-assistant',
+        kind: 'assistant',
+        turnId: 'turn-child-2',
+        parentTurnId: 'turn-root-2',
+        agentId: 'agent-1',
+        subRunId: 'subrun-2',
+        agentProfile: 'explore',
+        text: '第二轮继续推进',
+        streaming: false,
+        timestamp: 6,
+      },
+      {
+        id: 'child-notify-2',
+        kind: 'childSessionNotification',
+        turnId: 'turn-root-2',
+        agentId: 'agent-1',
+        parentTurnId: 'turn-root-2',
+        agentProfile: 'explore',
+        subRunId: 'subrun-2',
+        childSessionId: 'session-child-1',
+        childRef: {
+          agentId: 'agent-1',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-2',
+          parentAgentId: 'root-agent',
+          lineageKind: 'resume',
+          status: 'running',
+          openSessionId: 'session-child-1',
+        },
+        notificationKind: 'resumed',
+        status: 'running',
+        delivery: {
+          idempotencyKey: 'delivery-2',
+          origin: 'explicit',
+          terminalSemantics: 'non_terminal',
+          kind: 'progress',
+          payload: {
+            message: '第二轮已恢复',
+          },
+        },
+        timestamp: 7,
+      },
+    ];
+
+    const tree = buildSubRunThreadTree(messages);
+    const rootViews = listRootSubRunViews(tree);
+    const canonicalView = buildSubRunView(tree, 'subrun-1');
+    const resumedAliasView = buildSubRunView(tree, 'subrun-2');
+
+    expect(rootViews.map((view) => view.subRunId)).toEqual(['subrun-1']);
+    expect(canonicalView).not.toBeNull();
+    expect(resumedAliasView).toBe(canonicalView);
+    expect(canonicalView?.finishMessage).toBeUndefined();
+    expect(canonicalView?.latestNotification?.notificationKind).toBe('resumed');
+    expect(canonicalView?.childSessionId).toBe('session-child-1');
+    expect(
+      canonicalView?.bodyMessages
+        .filter((message) => message.kind === 'assistant')
+        .map((message) => message.text)
+    ).toEqual(['第一轮结论', '第二轮继续推进']);
+  });
+
   it('merges spawn fallback refs with real lifecycle records without duplication', () => {
     const messages: Message[] = [
       {

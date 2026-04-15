@@ -156,7 +156,7 @@ impl AgentOrchestrationService {
                 sub_run_id: watch.child.sub_run_id.clone(),
                 parent_agent_id: watch.child.parent_agent_id.clone(),
                 parent_sub_run_id: watch.child.parent_sub_run_id.clone(),
-                lineage_kind: ChildSessionLineageKind::Spawn,
+                lineage_kind: watch.child.lineage_kind,
                 status: delivery.status,
                 open_session_id: child_open_session_id(&watch.child),
             },
@@ -644,6 +644,98 @@ mod tests {
             metrics.execution_diagnostics.delivery_buffer_wake_succeeded,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn finalize_child_turn_preserves_resume_lineage_in_notification() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "父级已收到交付。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let child = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("child session should be created");
+        let root = harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should register");
+        let child_handle = harness
+            .kernel
+            .agent_control()
+            .spawn_with_storage(
+                &sample_profile("reviewer"),
+                parent.session_id.clone(),
+                Some(child.session_id.clone()),
+                "turn-parent".to_string(),
+                Some(root.agent_id.clone()),
+                SubRunStorageMode::IndependentSession,
+            )
+            .await
+            .expect("child handle should spawn");
+        harness
+            .kernel
+            .agent_control()
+            .set_lifecycle(&child_handle.agent_id, AgentLifecycleStatus::Running)
+            .await
+            .expect("child lifecycle should update");
+
+        let mut resumed_child_handle = child_handle.clone();
+        resumed_child_handle.lineage_kind = ChildSessionLineageKind::Resume;
+
+        let child_state = harness
+            .session_runtime
+            .get_session_state(&SessionId::from(child.session_id.clone()))
+            .await
+            .expect("child state should load");
+        let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
+        let child_agent = AgentEventContext::from(&resumed_child_handle);
+        for event in child_completion_events(child_agent, "turn-child-resume") {
+            append_and_broadcast(child_state.as_ref(), &event, &mut translator)
+                .await
+                .expect("child completion event should persist");
+        }
+        complete_session_execution(child_state.as_ref(), Phase::Idle);
+
+        harness
+            .service
+            .finalize_child_turn_when_done(ChildTurnTerminalContext::new(
+                resumed_child_handle,
+                child.session_id.clone(),
+                "turn-child-resume".to_string(),
+                parent.session_id.clone(),
+                "turn-parent".to_string(),
+                Some("tool-call-2".to_string()),
+            ))
+            .await
+            .expect("child finalize should succeed");
+
+        let parent_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent events should replay");
+        assert!(parent_events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::ChildSessionNotification { notification, .. }
+                if notification.child_ref.lineage_kind == ChildSessionLineageKind::Resume
+                    && notification.delivery.as_ref().is_some_and(|delivery| {
+                        delivery.source_turn_id.as_deref() == Some("turn-child-resume")
+                    })
+        )));
     }
 
     #[test]

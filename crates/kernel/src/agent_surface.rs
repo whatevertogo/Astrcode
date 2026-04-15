@@ -92,10 +92,14 @@ impl<'a> KernelAgentSurface<'a> {
     }
 
     /// 在 finalized 可复用节点上启动新的执行轮次。
-    pub async fn resume(&self, sub_run_or_agent_id: &str) -> Option<SubRunHandle> {
+    pub async fn resume(
+        &self,
+        sub_run_or_agent_id: &str,
+        parent_turn_id: impl Into<String>,
+    ) -> Option<SubRunHandle> {
         self.kernel
             .agent_control()
-            .resume(sub_run_or_agent_id)
+            .resume(sub_run_or_agent_id, parent_turn_id)
             .await
     }
 
@@ -213,6 +217,11 @@ impl<'a> KernelAgentSurface<'a> {
             .filter(|handle| {
                 handle.parent_turn_id == parent_turn_id
                     && handle.parent_agent_id.as_deref() == Some(parent_agent_id)
+                    && matches!(
+                        handle.lineage_kind,
+                        astrcode_core::ChildSessionLineageKind::Spawn
+                            | astrcode_core::ChildSessionLineageKind::Fork
+                    )
             })
             .count()
     }

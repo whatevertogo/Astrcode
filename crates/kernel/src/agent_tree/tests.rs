@@ -563,11 +563,13 @@ async fn resume_mints_new_execution_for_completed_agent() {
 
     // 恢复已完成的 agent
     let resumed = control
-        .resume(&handle.agent_id)
+        .resume(&handle.agent_id, "turn-2")
         .await
         .expect("resume should succeed");
     assert_eq!(resumed.lifecycle, AgentLifecycleStatus::Running);
     assert_eq!(resumed.agent_id, handle.agent_id);
+    assert_eq!(resumed.parent_turn_id, "turn-2");
+    assert_eq!(resumed.lineage_kind, ChildSessionLineageKind::Resume);
     assert_ne!(
         resumed.sub_run_id, handle.sub_run_id,
         "resume should mint a new execution id"
@@ -602,7 +604,7 @@ async fn resume_rejects_non_final_agent() {
         .await;
 
     // Running 状态的 agent 不能被恢复
-    let result = control.resume(&handle.agent_id).await;
+    let result = control.resume(&handle.agent_id, "turn-2").await;
     assert!(result.is_none(), "running agent should not be resumable");
 }
 
@@ -759,7 +761,7 @@ async fn resume_reoccupies_concurrency_slot() {
         .expect("third spawn should succeed after first completed");
 
     // 恢复 first 会重新占用槽位，此时已有 3 个活跃（first resumed + second + third）
-    let _ = control.resume(&first.agent_id).await;
+    let _ = control.resume(&first.agent_id, "turn-1b").await;
 
     let error = control
         .spawn(&explore_profile(), "session-4", "turn-4".to_string(), None)
@@ -1064,7 +1066,7 @@ async fn wait_for_inbox_returns_immediately_for_final_agent() {
     // wait_for_inbox 需要看到 is_final() 才立即返回。
     // 但 Idle 不是 final，所以先 terminate 使之成为 Terminated。
     // 先恢复为 Running 再 terminate
-    let _ = control.resume(&handle.agent_id).await;
+    let _ = control.resume(&handle.agent_id, "turn-2").await;
     control
         .terminate_subtree(&handle.agent_id)
         .await
