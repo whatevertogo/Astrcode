@@ -827,6 +827,30 @@ async fn send_agent_tool_rejects_empty_upstream_message() {
     );
 }
 
+#[test]
+fn send_agent_tool_schema_uses_openai_compatible_top_level_object() {
+    let tool = SendAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
+
+    let schema = tool.definition().parameters;
+
+    assert_eq!(
+        schema.get("type").and_then(|value| value.as_str()),
+        Some("object")
+    );
+    assert!(
+        schema
+            .get("properties")
+            .and_then(|value| value.as_object())
+            .is_some()
+    );
+    assert!(
+        schema
+            .get("oneOf")
+            .and_then(|value| value.as_array())
+            .is_some()
+    );
+}
+
 // ─── close ─────────────────────────────────────────────────
 
 #[tokio::test]

@@ -405,14 +405,23 @@ impl AgentOrchestrationService {
         child: &SubRunHandle,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<super::ToolCollaborationContext, super::AgentOrchestrationError> {
+        let parent_turn_id = match ctx.agent_context().parent_turn_id.clone() {
+            Some(id) => id,
+            None => {
+                log::warn!(
+                    "agent_tool_routing: child {} missing parent_turn_id in tool context, falling \
+                     back to handle value (may be stale)",
+                    child.agent_id
+                );
+                child.parent_turn_id.clone()
+            },
+        };
+
         Ok(super::ToolCollaborationContext::new(
             self.resolve_runtime_config_for_session(&child.session_id)
                 .await?,
             child.session_id.clone(),
-            ctx.agent_context()
-                .parent_turn_id
-                .clone()
-                .unwrap_or_else(|| child.parent_turn_id.clone()),
+            parent_turn_id,
             child.parent_agent_id.clone(),
             ctx.tool_call_id().map(ToString::to_string),
         ))

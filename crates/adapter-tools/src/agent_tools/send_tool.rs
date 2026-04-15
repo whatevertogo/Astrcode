@@ -40,107 +40,127 @@ Do not use `send` for status checks, vague reminders, sibling chat, or cross-tre
     }
 
     fn parameters_schema() -> Value {
+        let progress_payload = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "message": { "type": "string" }
+            },
+            "required": ["message"]
+        });
+        let completed_payload = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "message": { "type": "string" },
+                "findings": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "artifacts": {
+                    "type": "array",
+                    "items": { "type": "object" }
+                }
+            },
+            "required": ["message"]
+        });
+        let failed_payload = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "message": { "type": "string" },
+                "code": {
+                    "type": "string",
+                    "enum": ["transport", "provider_http", "stream_parse", "interrupted", "internal"]
+                },
+                "technicalMessage": { "type": "string" },
+                "retryable": { "type": "boolean" }
+            },
+            "required": ["message", "code", "retryable"]
+        });
+        let close_request_payload = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "message": { "type": "string" },
+                "reason": { "type": "string" }
+            },
+            "required": ["message"]
+        });
+
         json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "agentId": {
+                    "type": "string",
+                    "description": "Target direct child stable ID."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Concrete instruction for the child."
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Optional supplementary context."
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["progress", "completed", "failed", "close_request"]
+                },
+                "payload": {
+                    "type": "object",
+                    "description": "Typed upstream delivery payload selected by kind."
+                }
+            },
             "oneOf": [
                 {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "agentId": {
-                            "type": "string",
-                            "description": "Target direct child stable ID."
-                        },
-                        "message": {
-                            "type": "string",
-                            "description": "Concrete instruction for the child."
-                        },
-                        "context": {
-                            "type": "string",
-                            "description": "Optional supplementary context."
-                        }
-                    },
-                    "required": ["agentId", "message"]
+                    "required": ["agentId", "message"],
+                    "not": {
+                        "anyOf": [
+                            { "required": ["kind"] },
+                            { "required": ["payload"] }
+                        ]
+                    }
                 },
                 {
-                    "type": "object",
-                    "additionalProperties": false,
                     "oneOf": [
                         {
-                            "type": "object",
+                            "required": ["kind", "payload"],
                             "properties": {
                                 "kind": { "const": "progress" },
-                                "payload": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "properties": {
-                                        "message": { "type": "string" }
-                                    },
-                                    "required": ["message"]
-                                }
-                            },
-                            "required": ["kind", "payload"]
+                                "payload": progress_payload
+                            }
                         },
                         {
-                            "type": "object",
+                            "required": ["kind", "payload"],
                             "properties": {
                                 "kind": { "const": "completed" },
-                                "payload": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "properties": {
-                                        "message": { "type": "string" },
-                                        "findings": {
-                                            "type": "array",
-                                            "items": { "type": "string" }
-                                        },
-                                        "artifacts": {
-                                            "type": "array",
-                                            "items": { "type": "object" }
-                                        }
-                                    },
-                                    "required": ["message"]
-                                }
-                            },
-                            "required": ["kind", "payload"]
+                                "payload": completed_payload
+                            }
                         },
                         {
-                            "type": "object",
+                            "required": ["kind", "payload"],
                             "properties": {
                                 "kind": { "const": "failed" },
-                                "payload": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "properties": {
-                                        "message": { "type": "string" },
-                                        "code": {
-                                            "type": "string",
-                                            "enum": ["transport", "provider_http", "stream_parse", "interrupted", "internal"]
-                                        },
-                                        "technicalMessage": { "type": "string" },
-                                        "retryable": { "type": "boolean" }
-                                    },
-                                    "required": ["message", "code", "retryable"]
-                                }
-                            },
-                            "required": ["kind", "payload"]
+                                "payload": failed_payload
+                            }
                         },
                         {
-                            "type": "object",
+                            "required": ["kind", "payload"],
                             "properties": {
                                 "kind": { "const": "close_request" },
-                                "payload": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "properties": {
-                                        "message": { "type": "string" },
-                                        "reason": { "type": "string" }
-                                    },
-                                    "required": ["message"]
-                                }
-                            },
-                            "required": ["kind", "payload"]
+                                "payload": close_request_payload
+                            }
                         }
-                    ]
+                    ],
+                    "not": {
+                        "anyOf": [
+                            { "required": ["agentId"] },
+                            { "required": ["message"] },
+                            { "required": ["context"] }
+                        ]
+                    }
                 }
             ]
         })
