@@ -30,7 +30,7 @@ const TREND_CHART_WIDTH = 720;
 const TREND_CHART_HEIGHT = 168;
 
 function ratioTone(value?: number | null): string {
-  if (value == null) {
+  if (value === null || value === undefined) {
     return 'bg-surface text-text-secondary';
   }
   if (value >= 7_000) {
@@ -468,7 +468,7 @@ export default function DebugWorkbenchApp() {
                     type="button"
                     className={cn(
                       'rounded-2xl border px-3 py-3 text-left transition-colors',
-                      active
+                      active === true
                         ? 'border-accent bg-accent-soft/20'
                         : 'border-border bg-white/75 hover:bg-surface'
                     )}
@@ -593,7 +593,7 @@ export default function DebugWorkbenchApp() {
                 : '请在左侧选择会话'
             }
           >
-            {sessionLoading && trace == null ? (
+            {sessionLoading && trace === null ? (
               <div className="mb-3 text-xs text-text-secondary">正在同步当前会话 trace…</div>
             ) : null}
             {trace?.parentSessionId ? (

@@ -23,14 +23,15 @@ const chatContextValue: ChatScreenContextValue = {
   onSubmitPrompt: () => {},
   onInterrupt: () => {},
   onCancelSubRun: () => {},
-  listComposerOptions: async () => [],
+  listComposerOptions: () => Promise.resolve([]),
   modelRefreshKey: 0,
-  getCurrentModel: async () => ({
-    profileName: 'default',
-    model: 'test-model',
-    providerKind: 'openai',
-  }),
-  listAvailableModels: async () => [],
+  getCurrentModel: () =>
+    Promise.resolve({
+      profileName: 'default',
+      model: 'test-model',
+      providerKind: 'openai',
+    }),
+  listAvailableModels: () => Promise.resolve([]),
   setModel: async () => {},
 };
 

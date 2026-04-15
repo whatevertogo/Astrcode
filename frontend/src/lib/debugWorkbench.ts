@@ -13,7 +13,7 @@ export interface SparklinePoint {
 const GOVERNANCE_TREND_WINDOW_MS = 5 * 60 * 1000;
 
 export function formatRatioBps(value?: number | null): string {
-  if (value == null) {
+  if (value === null || value === undefined) {
     return '—';
   }
   return `${(value / 100).toFixed(2)}%`;
@@ -38,7 +38,7 @@ export function buildGovernanceSparklinePoints(
   return samples
     .map((sample) => {
       const value = selector(sample);
-      if (value == null) {
+      if (value === null || value === undefined) {
         return null;
       }
       const normalizedX =
