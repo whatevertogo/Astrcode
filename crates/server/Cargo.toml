@@ -46,4 +46,5 @@ tower-http.workspace = true
 [dev-dependencies]
 astrcode-core = { path = "../core", features = ["test-support"] }
 astrcode-adapter-storage = { path = "../adapter-storage" }
+reqwest.workspace = true
 tempfile.workspace = true

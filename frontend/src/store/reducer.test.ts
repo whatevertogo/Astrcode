@@ -3,63 +3,36 @@ import { describe, expect, it } from 'vitest';
 import { makeInitialState, reducer } from './reducer';
 import { createEmptySubRunThreadTree } from '../lib/subRunView';
 
-describe('app reducer user message sync', () => {
-  it('upserts a user message by turn id instead of duplicating it', () => {
-    const initial = {
-      ...makeInitialState(),
-      projects: [
-        {
-          id: 'project-1',
-          name: 'Project',
-          workingDir: 'D:/repo',
-          isExpanded: true,
-          sessions: [
-            {
-              id: 'session-1',
-              projectId: 'project-1',
-              title: '新会话',
-              createdAt: Date.now(),
-              subRunThreadTree: createEmptySubRunThreadTree(),
-              messages: [
-                {
-                  id: 'user-1',
-                  kind: 'user' as const,
-                  turnId: 'turn-1',
-                  text: 'hello',
-                  timestamp: 123,
-                },
-              ],
-            },
-          ],
-        },
-      ],
-      activeProjectId: 'project-1',
-      activeSessionId: 'session-1',
-    };
+function makeSessionState() {
+  return {
+    ...makeInitialState(),
+    projects: [
+      {
+        id: 'project-1',
+        name: 'Project',
+        workingDir: 'D:/repo',
+        isExpanded: true,
+        sessions: [
+          {
+            id: 'session-1',
+            projectId: 'project-1',
+            title: '新会话',
+            createdAt: Date.now(),
+            subRunThreadTree: createEmptySubRunThreadTree(),
+            messages: [],
+          },
+        ],
+      },
+    ],
+    activeProjectId: 'project-1',
+    activeSessionId: 'session-1',
+  };
+}
 
-    const next = reducer(initial, {
-      type: 'UPSERT_USER_MESSAGE',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      content: 'hello',
-    });
-
-    const messages = next.projects[0].sessions[0].messages;
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toMatchObject({
-      id: 'user-1',
-      kind: 'user',
-      turnId: 'turn-1',
-      text: 'hello',
-      timestamp: 123,
-    });
-  });
-
+describe('reducer', () => {
   it('clears focused sub-run when switching active session', () => {
     const initial = {
-      ...makeInitialState(),
-      activeProjectId: 'project-1',
-      activeSessionId: 'session-1',
+      ...makeSessionState(),
       activeSubRunPath: ['subrun-1', 'subrun-2'],
     };
 
@@ -92,274 +65,65 @@ describe('app reducer user message sync', () => {
     expect(popped.activeSubRunPath).toEqual(['subrun-1']);
   });
 
-  it('upserts prompt metrics by turn id and step index instead of duplicating the card', () => {
-    const initial = {
-      ...makeInitialState(),
-      projects: [
-        {
-          id: 'project-1',
-          name: 'Project',
-          workingDir: 'D:/repo',
-          isExpanded: true,
-          sessions: [
-            {
-              id: 'session-1',
-              projectId: 'project-1',
-              title: '新会话',
-              createdAt: Date.now(),
-              subRunThreadTree: createEmptySubRunThreadTree(),
-              messages: [
-                {
-                  id: 'metrics-1',
-                  kind: 'promptMetrics' as const,
-                  turnId: 'turn-1',
-                  stepIndex: 0,
-                  estimatedTokens: 1200,
-                  contextWindow: 200000,
-                  effectiveWindow: 180000,
-                  thresholdTokens: 162000,
-                  truncatedToolResults: 0,
-                  timestamp: 123,
-                },
-              ],
-            },
-          ],
-        },
-      ],
-      activeProjectId: 'project-1',
-      activeSessionId: 'session-1',
-    };
+  it('appends local messages and keeps the sub-run tree in sync', () => {
+    const initial = makeSessionState();
 
     const next = reducer(initial, {
-      type: 'UPSERT_PROMPT_METRICS',
+      type: 'ADD_MESSAGE',
       sessionId: 'session-1',
-      turnId: 'turn-1',
-      stepIndex: 0,
-      executionId: 'execution-1',
-      estimatedTokens: 1400,
-      contextWindow: 200000,
-      effectiveWindow: 180000,
-      thresholdTokens: 162000,
-      truncatedToolResults: 1,
-      providerInputTokens: 1000,
-      providerOutputTokens: 120,
-      cacheCreationInputTokens: 900,
-      cacheReadInputTokens: 800,
+      message: {
+        id: 'child-summary-1',
+        kind: 'childSessionNotification',
+        agentId: 'agent-child',
+        agentProfile: 'repo-inspector',
+        subRunId: 'subrun-1',
+        childSessionId: 'session-child',
+        childRef: {
+          agentId: 'agent-child',
+          sessionId: 'session-child',
+          subRunId: 'subrun-1',
+          lineageKind: 'spawn',
+          status: 'running',
+          openSessionId: 'session-child',
+        },
+        notificationKind: 'progress_summary',
+        status: 'running',
+        timestamp: 1,
+      },
     });
 
-    const messages = next.projects[0].sessions[0].messages;
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toMatchObject({
-      id: 'metrics-1',
-      kind: 'promptMetrics',
-      turnId: 'turn-1',
-      executionId: 'execution-1',
-      stepIndex: 0,
-      estimatedTokens: 1400,
-      truncatedToolResults: 1,
-      providerInputTokens: 1000,
-      providerOutputTokens: 120,
-      cacheCreationInputTokens: 900,
-      cacheReadInputTokens: 800,
-      timestamp: 123,
-    });
+    const session = next.projects[0].sessions[0];
+    expect(session.messages).toHaveLength(1);
+    expect(session.subRunThreadTree.subRuns.has('subrun-1')).toBe(true);
   });
 
-  it('preserves executionId across assistant and tool-call message updates', () => {
-    const initial = {
-      ...makeInitialState(),
-      projects: [
-        {
-          id: 'project-1',
-          name: 'Project',
-          workingDir: 'D:/repo',
-          isExpanded: true,
-          sessions: [
-            {
-              id: 'session-1',
-              projectId: 'project-1',
-              title: '新会话',
-              createdAt: Date.now(),
-              subRunThreadTree: createEmptySubRunThreadTree(),
-              messages: [],
-            },
-          ],
-        },
-      ],
-      activeProjectId: 'project-1',
-      activeSessionId: 'session-1',
-    };
-
-    const withAssistant = reducer(initial, {
-      type: 'APPEND_DELTA',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      delta: 'hello',
-      subRunId: 'subrun-1',
-      executionId: 'execution-1',
-    });
-    const withToolResult = reducer(withAssistant, {
-      type: 'UPDATE_TOOL_CALL',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      toolCallId: 'call-1',
-      toolName: 'readFile',
-      status: 'ok',
-      output: 'done',
-      durationMs: 10,
-      subRunId: 'subrun-1',
-      executionId: 'execution-1',
-    });
-
-    const messages = withToolResult.projects[0].sessions[0].messages;
-    expect(messages).toEqual([
-      expect.objectContaining({
-        kind: 'assistant',
-        turnId: 'turn-1',
-        subRunId: 'subrun-1',
-        executionId: 'execution-1',
-        text: 'hello',
-      }),
-      expect.objectContaining({
-        kind: 'toolCall',
-        turnId: 'turn-1',
-        subRunId: 'subrun-1',
-        executionId: 'execution-1',
-        toolCallId: 'call-1',
-        toolName: 'readFile',
-      }),
-    ]);
-  });
-
-  it('applies batched streaming actions once while keeping sub-run projection in sync', () => {
-    const initial = {
-      ...makeInitialState(),
-      projects: [
-        {
-          id: 'project-1',
-          name: 'Project',
-          workingDir: 'D:/repo',
-          isExpanded: true,
-          sessions: [
-            {
-              id: 'session-1',
-              projectId: 'project-1',
-              title: '新会话',
-              createdAt: Date.now(),
-              subRunThreadTree: createEmptySubRunThreadTree(),
-              messages: [],
-            },
-          ],
-        },
-      ],
-      activeProjectId: 'project-1',
-      activeSessionId: 'session-1',
-    };
+  it('replaces session messages with the authoritative conversation projection', () => {
+    const initial = makeSessionState();
 
     const next = reducer(initial, {
-      type: 'APPLY_AGENT_EVENTS_BATCH',
-      actions: [
+      type: 'REPLACE_SESSION_MESSAGES',
+      sessionId: 'session-1',
+      messages: [
         {
-          type: 'ADD_MESSAGE',
-          sessionId: 'session-1',
-          message: {
-            id: 'subrun-start-1',
-            kind: 'subRunStart',
-            turnId: 'turn-1',
-            subRunId: 'subrun-1',
-            resolvedOverrides: {
-              storageMode: 'independentSession',
-              inheritSystemInstructions: true,
-              inheritProjectInstructions: true,
-              inheritWorkingDir: true,
-              inheritPolicyUpperBound: true,
-              inheritCancelToken: true,
-              includeCompactSummary: true,
-              includeRecentTail: true,
-              includeRecoveryRefs: true,
-              includeParentFindings: true,
-            },
-            resolvedLimits: {
-              allowedTools: ['readFile'],
-            },
-            timestamp: 1,
-          },
-        },
-        {
-          type: 'APPEND_DELTA',
-          sessionId: 'session-1',
+          id: 'assistant-1',
+          kind: 'assistant',
           turnId: 'turn-1',
-          delta: 'hello',
-          subRunId: 'subrun-1',
-        },
-        {
-          type: 'APPEND_DELTA',
-          sessionId: 'session-1',
-          turnId: 'turn-1',
-          delta: ' world',
-          subRunId: 'subrun-1',
+          text: 'hello world',
+          reasoningText: 'thinking',
+          streaming: false,
+          timestamp: 1,
         },
       ],
     });
 
     const session = next.projects[0].sessions[0];
     expect(session.messages).toEqual([
-      expect.objectContaining({ kind: 'subRunStart', subRunId: 'subrun-1' }),
-      expect.objectContaining({ kind: 'assistant', text: 'hello world', subRunId: 'subrun-1' }),
+      expect.objectContaining({
+        kind: 'assistant',
+        turnId: 'turn-1',
+        text: 'hello world',
+      }),
     ]);
-    expect(session.subRunThreadTree.subRuns.has('subrun-1')).toBe(true);
-  });
-
-  it('keeps root thread items in sync when assistant delta updates existing messages', () => {
-    const initial = {
-      ...makeInitialState(),
-      projects: [
-        {
-          id: 'project-1',
-          name: 'Project',
-          workingDir: 'D:/repo',
-          isExpanded: true,
-          sessions: [
-            {
-              id: 'session-1',
-              projectId: 'project-1',
-              title: '新会话',
-              createdAt: Date.now(),
-              subRunThreadTree: createEmptySubRunThreadTree(),
-              messages: [],
-            },
-          ],
-        },
-      ],
-      activeProjectId: 'project-1',
-      activeSessionId: 'session-1',
-    };
-
-    const withFirstDelta = reducer(initial, {
-      type: 'APPEND_DELTA',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      delta: 'hello',
-    });
-    const withSecondDelta = reducer(withFirstDelta, {
-      type: 'APPEND_DELTA',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      delta: ' world',
-    });
-
-    const rootThreadItems =
-      withSecondDelta.projects[0].sessions[0].subRunThreadTree.rootThreadItems;
-    expect(rootThreadItems).toHaveLength(1);
-    const [firstItem] = rootThreadItems;
-    expect(firstItem.kind).toBe('message');
-    if (firstItem.kind !== 'message') {
-      throw new Error('expected root thread item to be a message');
-    }
-    expect(firstItem.message).toMatchObject({
-      kind: 'assistant',
-      turnId: 'turn-1',
-      text: 'hello world',
-    });
+    expect(session.subRunThreadTree.rootThreadItems).toHaveLength(1);
   });
 });

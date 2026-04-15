@@ -10,6 +10,8 @@ members = [
     "crates/adapter-prompt",
     "crates/adapter-skills",
     "crates/protocol",
+    "crates/client",
+    "crates/cli",
     "crates/plugin",
     "crates/sdk",
     "crates/adapter-tools",

@@ -5,7 +5,6 @@ import Chat from './components/Chat/index';
 import SettingsModal from './components/Settings/SettingsModal';
 import ConfirmDialog from './components/ConfirmDialog';
 import { useAgent } from './hooks/useAgent';
-import { useAgentEventHandler } from './hooks/useAgentEventHandler';
 import { useSessionCatalogEvents } from './hooks/useSessionCatalogEvents';
 import { useSidebarResize } from './hooks/useSidebarResize';
 import { useComposerActions, type ConfirmDialogState } from './hooks/app/useComposerActions';
@@ -31,8 +30,6 @@ export default function App() {
   const activeSubRunPathRef = useRef(state.activeSubRunPath);
   const subRunTitleCacheRef = useRef(new Map<string, string>());
   const phaseRef = useRef(state.phase);
-  const turnSessionMapRef = useRef<Record<string, string>>({});
-  const pendingSubmitSessionRef = useRef<string[]>([]);
   const sessionActivationGenerationRef = useRef(0);
   const {
     sidebarWidth,
@@ -44,14 +41,6 @@ export default function App() {
     handleSidebarResizeStart,
     handleSidebarResizeKeyDown,
   } = useSidebarResize();
-
-  const releasePendingSubmitSession = useCallback((sessionId: string) => {
-    const queue = pendingSubmitSessionRef.current;
-    const index = queue.indexOf(sessionId);
-    if (index >= 0) {
-      queue.splice(index, 1);
-    }
-  }, []);
 
   const bumpModelRefreshKey = useCallback(() => {
     setModelRefreshKey((value) => value + 1);
@@ -73,18 +62,10 @@ export default function App() {
     subRunTitleCacheRef.current.clear();
   }, [state.activeSessionId]);
 
-  const handleAgentEvent = useAgentEventHandler({
-    activeSessionIdRef,
-    pendingSubmitSessionRef,
-    turnSessionMapRef,
-    phaseRef,
-    dispatch,
-  });
-
   const {
     createSession,
     listSessionsWithMeta,
-    loadSessionView,
+    loadConversationView,
     connectSession,
     disconnectSession,
     submitPrompt,
@@ -104,7 +85,7 @@ export default function App() {
     openConfigInEditor,
     selectDirectory,
     hostBridge,
-  } = useAgent(handleAgentEvent);
+  } = useAgent();
 
   const { activeSubRunChildren, loadAndActivateSession, refreshSessions } = useSessionCoordinator({
     dispatch,
@@ -112,7 +93,7 @@ export default function App() {
     activeSubRunPathRef,
     phaseRef,
     sessionActivationGenerationRef,
-    loadSessionView,
+    loadConversationView,
     listSessionsWithMeta,
     connectSession,
     disconnectSession,
@@ -254,9 +235,6 @@ export default function App() {
     dispatch,
     phaseRef,
     activeSessionIdRef,
-    pendingSubmitSessionRef,
-    turnSessionMapRef,
-    releasePendingSubmitSession,
     setConfirmDialog,
     refreshSessions,
     createSession,

@@ -3,20 +3,12 @@
 //! Session and project CRUD operations.
 
 import type {
-  AgentEventPayload,
   AgentLifecycle,
   DeleteProjectResult,
   ExecutionControl,
-  Phase,
   SessionMeta,
-  SessionViewSnapshot,
 } from '../../types';
 import { request, requestJson } from './client';
-// 共享工具函数，消除与 lib/shared/index.ts 的重复定义
-import { asRecord, pickStringOrUndefined as pickString, pickOptionalString } from '../shared';
-import { normalizeAgentEvent } from '../agentEvent';
-import { buildSessionEventQueryString } from '../sessionView';
-import type { SessionEventFilterQuery } from '../sessionView';
 
 export interface PromptSubmission {
   turnId: string;
@@ -70,77 +62,6 @@ export async function createSession(workingDir: string): Promise<SessionMeta> {
 
 export async function listSessionsWithMeta(): Promise<SessionMeta[]> {
   return requestJson<SessionMeta[]>('/api/sessions');
-}
-
-export async function loadSession(
-  sessionId: string,
-  filter?: SessionEventFilterQuery
-): Promise<{
-  events: AgentEventPayload[];
-  cursor: string | null;
-  phase: Phase;
-}> {
-  const response = await request(
-    `/api/sessions/${encodeURIComponent(sessionId)}/history${buildSessionEventQueryString({ filter })}`
-  );
-  const payload = asRecord((await response.json()) as unknown);
-  if (!payload) {
-    throw new Error('invalid session history response');
-  }
-
-  const eventsRaw = Array.isArray(payload.events) ? payload.events : [];
-  const phase = pickString(payload, 'phase');
-  if (
-    phase !== 'idle' &&
-    phase !== 'thinking' &&
-    phase !== 'callingTool' &&
-    phase !== 'streaming' &&
-    phase !== 'interrupted' &&
-    phase !== 'done'
-  ) {
-    throw new Error(`invalid session phase: ${String(phase)}`);
-  }
-
-  return {
-    events: eventsRaw.map((event) => normalizeAgentEvent(event)),
-    cursor: pickOptionalString(payload, 'cursor') ?? null,
-    phase,
-  };
-}
-
-export async function loadSessionView(
-  sessionId: string,
-  filter?: SessionEventFilterQuery
-): Promise<SessionViewSnapshot> {
-  const response = await request(
-    `/api/sessions/${encodeURIComponent(sessionId)}/view${buildSessionEventQueryString({ filter })}`
-  );
-  const payload = asRecord((await response.json()) as unknown);
-  if (!payload) {
-    throw new Error('invalid session view response');
-  }
-
-  const phase = pickString(payload, 'phase');
-  if (
-    phase !== 'idle' &&
-    phase !== 'thinking' &&
-    phase !== 'callingTool' &&
-    phase !== 'streaming' &&
-    phase !== 'interrupted' &&
-    phase !== 'done'
-  ) {
-    throw new Error(`invalid session phase: ${String(phase)}`);
-  }
-
-  const normalizeEvents = (value: unknown): AgentEventPayload[] =>
-    Array.isArray(value) ? value.map((event) => normalizeAgentEvent(event)) : [];
-
-  return {
-    focusEvents: normalizeEvents(payload.focusEvents),
-    directChildrenEvents: normalizeEvents(payload.directChildrenEvents),
-    cursor: pickOptionalString(payload, 'cursor') ?? null,
-    phase: phase as Phase,
-  };
 }
 
 export async function submitPrompt(

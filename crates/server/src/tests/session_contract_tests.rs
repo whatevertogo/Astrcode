@@ -190,7 +190,7 @@ async fn session_routes_reject_invalid_session_id_format() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/sessions/bad.id/history")
+                .uri("/api/v1/conversation/sessions/bad.id/snapshot")
                 .header(AUTH_HEADER_NAME, "browser-token")
                 .body(Body::empty())
                 .expect("request should be valid"),
@@ -202,7 +202,7 @@ async fn session_routes_reject_invalid_session_id_format() {
 }
 
 #[tokio::test]
-async fn session_history_contract_rejects_scope_without_subrun_id() {
+async fn conversation_snapshot_contract_rejects_invalid_focus() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
@@ -216,35 +216,7 @@ async fn session_history_contract_rejects_scope_without_subrun_id() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/api/sessions/{}/history?scope=self",
-                    created.session_id
-                ))
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn session_events_contract_rejects_scope_without_subrun_id() {
-    let (state, _guard) = test_state(None).await;
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let created = state
-        .app
-        .create_session(temp_dir.path().display().to_string())
-        .await
-        .expect("session should be created");
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!(
-                    "/api/sessions/{}/events?scope=self",
+                    "/api/v1/conversation/sessions/{}/snapshot?focus=bad-focus",
                     created.session_id
                 ))
                 .header(AUTH_HEADER_NAME, "browser-token")
@@ -419,40 +391,5 @@ async fn close_agent_route_returns_not_found_for_unknown_agent() {
         response.status(),
         StatusCode::NOT_FOUND,
         "close for unknown agent should return 404"
-    );
-}
-
-// ─── Scope 参数过滤契约 ─────────────────────────────────────
-
-#[tokio::test]
-async fn scope_parameter_without_subrun_id_is_rejected() {
-    // Why: scope 参数只有在提供 subRunId 时才有意义
-    let (state, _guard) = test_state(None).await;
-    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let created = state
-        .app
-        .create_session(temp_dir.path().display().to_string())
-        .await
-        .expect("session should be created");
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!(
-                    "/api/sessions/{}/history?scope=directChildren",
-                    created.session_id
-                ))
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert!(
-        response.status().is_client_error(),
-        "scope without subRunId should be rejected, got: {}",
-        response.status()
     );
 }

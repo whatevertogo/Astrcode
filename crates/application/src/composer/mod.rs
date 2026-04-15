@@ -16,6 +16,12 @@ pub enum ComposerOptionKind {
     Capability,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ComposerOptionActionKind {
+    InsertText,
+    ExecuteCommand,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposerOptionsRequest {
     pub query: Option<String>,
@@ -40,6 +46,8 @@ pub struct ComposerOption {
     pub title: String,
     pub description: String,
     pub insert_text: String,
+    pub action_kind: ComposerOptionActionKind,
+    pub action_value: String,
     pub badges: Vec<String>,
     pub keywords: Vec<String>,
 }
@@ -83,6 +91,8 @@ impl ComposerService {
                 title: "压缩上下文".to_string(),
                 description: "压缩当前会话上下文".to_string(),
                 insert_text: "/compact".to_string(),
+                action_kind: ComposerOptionActionKind::ExecuteCommand,
+                action_value: "/compact".to_string(),
                 badges: vec!["built-in".to_string()],
                 keywords: vec!["compact".to_string(), "compress".to_string()],
             }],
@@ -111,6 +121,8 @@ impl ComposerService {
                     title: name_str.clone(),
                     description: spec.description.clone(),
                     insert_text: name_str.clone(),
+                    action_kind: ComposerOptionActionKind::InsertText,
+                    action_value: name_str.clone(),
                     badges: vec!["capability".to_string()],
                     keywords: vec![name_str.to_lowercase()],
                 });
@@ -150,6 +162,8 @@ fn skill_summary_to_option(skill: ComposerSkillSummary) -> ComposerOption {
         kind: ComposerOptionKind::Skill,
         title: humanize_skill_title(&skill.id),
         insert_text: format!("/{}", skill.id),
+        action_kind: ComposerOptionActionKind::InsertText,
+        action_value: format!("/{}", skill.id),
         badges: vec!["skill".to_string()],
         keywords,
         id: skill.id,

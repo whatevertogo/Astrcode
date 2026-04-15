@@ -24,6 +24,17 @@ fn to_execution_control(
     })
 }
 
+fn normalize_compact_control(control: Option<ExecutionControlDto>) -> ExecutionControlDto {
+    let mut control = control.unwrap_or(ExecutionControlDto {
+        max_steps: None,
+        manual_compact: None,
+    });
+    if control.manual_compact.is_none() {
+        control.manual_compact = Some(true);
+    }
+    control
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeleteProjectQuery {
@@ -95,12 +106,10 @@ pub(crate) async fn compact_session(
 ) -> Result<(StatusCode, Json<CompactSessionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
+    let control = normalize_compact_control(request.and_then(|request| request.0.control));
     let accepted = state
         .app
-        .compact_session_with_control(
-            &session_id,
-            to_execution_control(request.and_then(|request| request.0.control)),
-        )
+        .compact_session_with_control(&session_id, to_execution_control(Some(control)))
         .await
         .map_err(ApiError::from)?;
     Ok((

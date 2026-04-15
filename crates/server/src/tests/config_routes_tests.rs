@@ -26,7 +26,7 @@ async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Respons
 #[tokio::test]
 async fn config_reload_returns_runtime_status_when_idle() {
     let (state, _guard) = test_state(None).await;
-    let app = build_api_router().with_state(state);
+    let app = build_api_router().with_state(state.clone());
 
     let response = app
         .oneshot(
@@ -50,7 +50,7 @@ async fn config_reload_returns_runtime_status_when_idle() {
 #[tokio::test]
 async fn debug_runtime_overview_route_returns_workbench_overview() {
     let (state, _guard) = test_state(None).await;
-    let app = build_api_router().with_state(state);
+    let app = build_api_router().with_state(state.clone());
 
     let response = app
         .oneshot(
@@ -122,7 +122,7 @@ async fn debug_session_trace_route_is_scoped_to_requested_session() {
         )
         .await
         .expect("session should be created");
-    let app = build_api_router().with_state(state);
+    let app = build_api_router().with_state(state.clone());
 
     let response = app
         .oneshot(
@@ -278,7 +278,7 @@ async fn compact_route_defers_when_session_is_busy() {
         .await
         .expect("session state should load");
     session_state.running.store(true, Ordering::SeqCst);
-    let app = build_api_router().with_state(state);
+    let app = build_api_router().with_state(state.clone());
 
     let response = app
         .oneshot(
@@ -304,6 +304,19 @@ async fn compact_route_defers_when_session_is_busy() {
     let payload: CompactSessionResponse = json_body(response).await;
     assert!(payload.accepted);
     assert!(payload.deferred);
+    let terminal_facts = state
+        .app
+        .terminal_snapshot_facts(&session.session_id)
+        .await
+        .expect("terminal facts should reflect pending compact");
+    assert!(terminal_facts.control.manual_compact_pending);
+    assert!(
+        terminal_facts
+            .slash_candidates
+            .iter()
+            .all(|candidate| candidate.id != "compact"),
+        "pending compact should be observed through terminal discovery facts"
+    );
 }
 
 #[tokio::test]
@@ -439,6 +452,45 @@ async fn prompt_route_rejects_invalid_execution_control() {
                         "text": "hello",
                         "control": {
                             "maxSteps": 0
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn compact_route_rejects_manual_compact_false() {
+    let (state, _guard) = test_state(None).await;
+    let session = state
+        .app
+        .create_session(
+            tempfile::tempdir()
+                .expect("tempdir")
+                .path()
+                .display()
+                .to_string(),
+        )
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/compact", session.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "control": {
+                            "manualCompact": false
                         }
                     })
                     .to_string(),

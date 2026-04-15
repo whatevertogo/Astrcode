@@ -1,0 +1,563 @@
+import type {
+  AgentLifecycle,
+  ChildSessionNotificationKind,
+  ChildSessionNotificationMessage,
+  Message,
+  ParentDelivery,
+  Phase,
+  SubRunViewData,
+  ToolStatus,
+} from '../../types';
+import { buildSubRunThreadTree, listRootSubRunViews } from '../subRunView';
+import { request } from './client';
+import type { SessionEventFilterQuery } from '../sessionView';
+import { asRecord, pickOptionalString, pickStringOrUndefined as pickString } from '../shared';
+
+type ConversationRecord = Record<string, unknown>;
+
+export interface ConversationSnapshotState {
+  cursor: string | null;
+  phase: Phase;
+  blocks: ConversationRecord[];
+  childSummaries: ConversationRecord[];
+}
+
+export interface ConversationViewProjection {
+  cursor: string | null;
+  phase: Phase;
+  messages: Message[];
+  messageFingerprint: string;
+  childSubRuns: SubRunViewData[];
+  childFingerprint: string;
+}
+
+function parsePhase(value: unknown): Phase {
+  switch (value) {
+    case 'idle':
+    case 'thinking':
+    case 'callingTool':
+    case 'streaming':
+    case 'interrupted':
+    case 'done':
+      return value;
+    default:
+      throw new Error(`invalid conversation phase: ${String(value)}`);
+  }
+}
+
+function parseAgentLifecycle(value: unknown): AgentLifecycle {
+  switch (value) {
+    case 'pending':
+    case 'running':
+    case 'idle':
+    case 'terminated':
+      return value;
+    default:
+      return 'running';
+  }
+}
+
+function parseToolStatus(value: unknown): ToolStatus {
+  switch (value) {
+    case 'complete':
+    case 'completed':
+      return 'ok';
+    case 'failed':
+    case 'cancelled':
+      return 'fail';
+    default:
+      return 'running';
+  }
+}
+
+function buildConversationQueryString(options?: {
+  cursor?: string | null;
+  filter?: SessionEventFilterQuery;
+}): string {
+  const params = new URLSearchParams();
+  params.set('focus', options?.filter?.subRunId ? `subrun:${options.filter.subRunId}` : 'root');
+  if (options?.cursor) {
+    params.set('cursor', options.cursor);
+  }
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+function createProgressDelivery(
+  idempotencyKey: string,
+  message: string,
+  terminalSemantics: 'terminal' | 'non_terminal'
+): ParentDelivery {
+  return {
+    idempotencyKey,
+    origin: 'explicit',
+    terminalSemantics,
+    kind: 'progress',
+    payload: { message },
+  };
+}
+
+function childSummaryNotificationKind(lifecycle: AgentLifecycle): ChildSessionNotificationKind {
+  return lifecycle === 'idle' || lifecycle === 'terminated' ? 'delivered' : 'progress_summary';
+}
+
+function childSummaryToMessage(
+  summary: ConversationRecord,
+  options?: {
+    idPrefix?: string;
+    notificationKind?: ChildSessionNotificationKind;
+    deliveryMessage?: string;
+    terminalSemantics?: 'terminal' | 'non_terminal';
+  }
+): ChildSessionNotificationMessage | null {
+  const childSessionId = pickString(summary, 'childSessionId');
+  const childAgentId = pickString(summary, 'childAgentId');
+  const title = pickString(summary, 'title') ?? childAgentId ?? childSessionId;
+  const childRefRecord = asRecord(summary.childRef);
+  const subRunId = childRefRecord ? pickString(childRefRecord, 'subRunId') : undefined;
+  if (!childSessionId || !childAgentId || !subRunId) {
+    return null;
+  }
+
+  const lifecycle = parseAgentLifecycle(summary.lifecycle);
+  const latestOutputSummary =
+    options?.deliveryMessage ?? pickString(summary, 'latestOutputSummary') ?? undefined;
+  const delivery =
+    latestOutputSummary && latestOutputSummary.length > 0
+      ? createProgressDelivery(
+          `${options?.idPrefix ?? 'conversation-child-summary'}:${childSessionId}`,
+          latestOutputSummary,
+          options?.terminalSemantics ??
+            (lifecycle === 'idle' || lifecycle === 'terminated' ? 'terminal' : 'non_terminal')
+        )
+      : undefined;
+
+  return {
+    id: `${options?.idPrefix ?? 'conversation-child-summary'}:${childSessionId}`,
+    kind: 'childSessionNotification',
+    turnId: null,
+    agentId: childAgentId,
+    agentProfile: title,
+    subRunId,
+    childSessionId,
+    childRef: {
+      agentId: childAgentId,
+      sessionId:
+        (childRefRecord ? pickString(childRefRecord, 'sessionId') : undefined) ?? childSessionId,
+      subRunId,
+      executionId:
+        (childRefRecord ? pickOptionalString(childRefRecord, 'executionId') : undefined) ??
+        undefined,
+      parentAgentId:
+        (childRefRecord ? pickOptionalString(childRefRecord, 'parentAgentId') : undefined) ??
+        undefined,
+      parentSubRunId:
+        (childRefRecord ? pickOptionalString(childRefRecord, 'parentSubRunId') : undefined) ??
+        undefined,
+      lineageKind:
+        childRefRecord && pickString(childRefRecord, 'lineageKind') === 'fork'
+          ? 'fork'
+          : childRefRecord && pickString(childRefRecord, 'lineageKind') === 'resume'
+            ? 'resume'
+            : 'spawn',
+      status: lifecycle,
+      openSessionId:
+        (childRefRecord ? pickString(childRefRecord, 'openSessionId') : undefined) ??
+        childSessionId,
+    },
+    notificationKind: options?.notificationKind ?? childSummaryNotificationKind(lifecycle),
+    status: lifecycle,
+    delivery,
+    timestamp: 0,
+  };
+}
+
+function normalizeSnapshotState(payload: unknown): ConversationSnapshotState {
+  const record = asRecord(payload);
+  if (!record) {
+    throw new Error('invalid conversation snapshot response');
+  }
+  return {
+    cursor: pickOptionalString(record, 'cursor') ?? null,
+    phase: parsePhase(record.phase),
+    blocks: Array.isArray(record.blocks)
+      ? (record.blocks.filter(asRecord) as ConversationRecord[])
+      : [],
+    childSummaries: Array.isArray(record.childSummaries)
+      ? (record.childSummaries.filter(asRecord) as ConversationRecord[])
+      : [],
+  };
+}
+
+function collectToolOutput(
+  blocks: ConversationRecord[],
+  toolCallId: string,
+  stream: 'stdout' | 'stderr'
+): string {
+  return blocks
+    .filter(
+      (candidate) =>
+        pickString(candidate, 'kind') === 'tool_stream' &&
+        pickOptionalString(candidate, 'parentToolCallId') === toolCallId &&
+        pickString(candidate, 'stream') === stream
+    )
+    .map((candidate) => pickString(candidate, 'content') ?? '')
+    .join('');
+}
+
+function projectConversationMessages(
+  state: ConversationSnapshotState,
+  options?: { includeInlineChildSummaries?: boolean }
+): Message[] {
+  const messages: Message[] = [];
+  const reasoningByTurn = new Map<string, string>();
+  const assistantTurnIds = new Set(
+    state.blocks
+      .filter((block) => pickString(block, 'kind') === 'assistant')
+      .map((block) => pickOptionalString(block, 'turnId'))
+      .filter((turnId): turnId is string => Boolean(turnId))
+  );
+  const inlineChildSessions = new Set<string>();
+
+  state.blocks.forEach((block, index) => {
+    const kind = pickString(block, 'kind');
+    const id = pickString(block, 'id') ?? `conversation-block-${index}`;
+    const turnId = pickOptionalString(block, 'turnId') ?? null;
+    if (!kind) {
+      return;
+    }
+
+    switch (kind) {
+      case 'user':
+        messages.push({
+          id: `conversation-user:${id}`,
+          kind: 'user',
+          turnId,
+          text: pickString(block, 'markdown') ?? '',
+          timestamp: index,
+        });
+        return;
+
+      case 'thinking': {
+        const markdown = pickString(block, 'markdown') ?? '';
+        if (turnId) {
+          reasoningByTurn.set(turnId, markdown);
+          if (assistantTurnIds.has(turnId)) {
+            return;
+          }
+        }
+        messages.push({
+          id: `conversation-thinking:${id}`,
+          kind: 'assistant',
+          turnId,
+          text: '',
+          reasoningText: markdown,
+          streaming: pickString(block, 'status') === 'streaming',
+          timestamp: index,
+        });
+        return;
+      }
+
+      case 'assistant':
+        messages.push({
+          id: `conversation-assistant:${id}`,
+          kind: 'assistant',
+          turnId,
+          text: pickString(block, 'markdown') ?? '',
+          reasoningText: turnId ? reasoningByTurn.get(turnId) : undefined,
+          streaming: pickString(block, 'status') === 'streaming',
+          timestamp: index,
+        });
+        return;
+
+      case 'tool_call': {
+        const toolCallId = pickOptionalString(block, 'toolCallId') ?? id;
+        const stdout = collectToolOutput(state.blocks, toolCallId, 'stdout');
+        const stderr = collectToolOutput(state.blocks, toolCallId, 'stderr');
+        messages.push({
+          id: `conversation-tool:${toolCallId}`,
+          kind: 'toolCall',
+          turnId,
+          toolCallId,
+          toolName: pickString(block, 'toolName') ?? 'tool',
+          status: parseToolStatus(block.status),
+          args: null,
+          output: stdout || pickOptionalString(block, 'summary') || undefined,
+          error: stderr || undefined,
+          timestamp: index,
+        });
+        return;
+      }
+
+      case 'system_note':
+        if (pickString(block, 'noteKind') !== 'compact') {
+          return;
+        }
+        messages.push({
+          id: `conversation-compact:${id}`,
+          kind: 'compact',
+          turnId,
+          trigger: 'manual',
+          summary: pickString(block, 'markdown') ?? '',
+          preservedRecentTurns: 0,
+          timestamp: index,
+        });
+        return;
+
+      case 'child_handoff': {
+        const child = asRecord(block.child);
+        if (!child) {
+          return;
+        }
+        const handoffKind = pickString(block, 'handoffKind');
+        const childSessionId = pickString(child, 'childSessionId');
+        const message = childSummaryToMessage(child, {
+          idPrefix: `conversation-child-handoff:${id}`,
+          notificationKind:
+            handoffKind === 'returned'
+              ? 'delivered'
+              : handoffKind === 'progress'
+                ? 'progress_summary'
+                : 'started',
+          deliveryMessage: pickString(block, 'message') ?? undefined,
+          terminalSemantics: handoffKind === 'returned' ? 'terminal' : 'non_terminal',
+        });
+        if (!message) {
+          return;
+        }
+        message.timestamp = index;
+        messages.push(message);
+        if (childSessionId) {
+          inlineChildSessions.add(childSessionId);
+        }
+        return;
+      }
+
+      case 'error':
+        messages.push({
+          id: `conversation-error:${id}`,
+          kind: 'assistant',
+          turnId,
+          text: `错误：${pickString(block, 'message') ?? 'conversation error'}`,
+          reasoningText: '',
+          streaming: false,
+          timestamp: index,
+        });
+        return;
+
+      default:
+        return;
+    }
+  });
+
+  if (options?.includeInlineChildSummaries !== false) {
+    state.childSummaries.forEach((summary, index) => {
+      const childSessionId = pickString(summary, 'childSessionId');
+      if (childSessionId && inlineChildSessions.has(childSessionId)) {
+        return;
+      }
+      const message = childSummaryToMessage(summary);
+      if (!message) {
+        return;
+      }
+      message.timestamp = state.blocks.length + index;
+      messages.push(message);
+    });
+  }
+
+  return messages;
+}
+
+function projectChildSubRuns(state: ConversationSnapshotState): {
+  childSubRuns: SubRunViewData[];
+  childFingerprint: string;
+} {
+  const childSummaryMessages = state.childSummaries
+    .map((summary) => childSummaryToMessage(summary))
+    .filter((message): message is ChildSessionNotificationMessage => message !== null);
+  const childTree = buildSubRunThreadTree(childSummaryMessages);
+  return {
+    childSubRuns: listRootSubRunViews(childTree),
+    childFingerprint: childTree.rootStreamFingerprint,
+  };
+}
+
+export function projectConversationState(
+  state: ConversationSnapshotState,
+  focusSubRunId?: string
+): ConversationViewProjection {
+  const includeInlineChildSummaries = !focusSubRunId;
+  const messages = projectConversationMessages(state, { includeInlineChildSummaries });
+  const messageTree = buildSubRunThreadTree(messages);
+  const { childSubRuns, childFingerprint } = includeInlineChildSummaries
+    ? { childSubRuns: [] as SubRunViewData[], childFingerprint: '' }
+    : projectChildSubRuns(state);
+
+  return {
+    cursor: state.cursor,
+    phase: state.phase,
+    messages,
+    messageFingerprint: messageTree.rootStreamFingerprint,
+    childSubRuns,
+    childFingerprint,
+  };
+}
+
+function upsertChildSummary(
+  childSummaries: ConversationRecord[],
+  next: ConversationRecord
+): void {
+  const childSessionId = pickString(next, 'childSessionId');
+  if (!childSessionId) {
+    return;
+  }
+  const index = childSummaries.findIndex(
+    (candidate) => pickString(candidate, 'childSessionId') === childSessionId
+  );
+  if (index >= 0) {
+    childSummaries[index] = next;
+  } else {
+    childSummaries.push(next);
+  }
+}
+
+function applyBlockPatch(block: ConversationRecord, patch: ConversationRecord): void {
+  const kind = pickString(patch, 'kind');
+  switch (kind) {
+    case 'append_markdown': {
+      const markdown = pickString(patch, 'markdown') ?? '';
+      if (typeof block.markdown === 'string') {
+        block.markdown += markdown;
+      } else {
+        block.markdown = markdown;
+      }
+      break;
+    }
+    case 'replace_markdown': {
+      const markdown = pickString(patch, 'markdown') ?? '';
+      if (typeof block.markdown === 'string' || 'markdown' in block) {
+        block.markdown = markdown;
+      } else {
+        block.content = markdown;
+      }
+      break;
+    }
+    case 'append_tool_stream': {
+      const chunk = pickString(patch, 'chunk') ?? '';
+      if (typeof block.content === 'string') {
+        block.content += chunk;
+      } else {
+        block.content = chunk;
+      }
+      break;
+    }
+    case 'replace_summary':
+      block.summary = pickOptionalString(patch, 'summary') ?? null;
+      break;
+    case 'set_status':
+      block.status = pickString(patch, 'status') ?? block.status;
+      break;
+  }
+}
+
+export async function loadConversationSnapshotState(
+  sessionId: string,
+  filter?: SessionEventFilterQuery
+): Promise<ConversationSnapshotState> {
+  const response = await request(
+    `/api/v1/conversation/sessions/${encodeURIComponent(sessionId)}/snapshot${buildConversationQueryString({
+      filter,
+    })}`
+  );
+  return normalizeSnapshotState(await response.json());
+}
+
+export function createConversationStreamRequestPath(
+  sessionId: string,
+  cursor?: string | null,
+  filter?: SessionEventFilterQuery
+): string {
+  return `/api/v1/conversation/sessions/${encodeURIComponent(sessionId)}/stream${buildConversationQueryString({
+    cursor,
+    filter,
+  })}`;
+}
+
+export function applyConversationEnvelope(
+  state: ConversationSnapshotState,
+  payload: unknown
+): void {
+  const envelope = asRecord(payload);
+  if (!envelope) {
+    throw new Error('invalid conversation stream envelope');
+  }
+
+  const kind = pickString(envelope, 'kind');
+  if (!kind) {
+    return;
+  }
+
+  switch (kind) {
+    case 'append_block': {
+      const block = asRecord(envelope.block);
+      if (block) {
+        state.blocks.push(block);
+      }
+      return;
+    }
+
+    case 'patch_block': {
+      const blockId = pickString(envelope, 'blockId');
+      const patch = asRecord(envelope.patch);
+      const block = blockId
+        ? state.blocks.find((candidate) => pickString(candidate, 'id') === blockId)
+        : undefined;
+      if (block && patch) {
+        applyBlockPatch(block, patch);
+      }
+      return;
+    }
+
+    case 'complete_block': {
+      const blockId = pickString(envelope, 'blockId');
+      const block = blockId
+        ? state.blocks.find((candidate) => pickString(candidate, 'id') === blockId)
+        : undefined;
+      if (block) {
+        block.status = pickString(envelope, 'status') ?? block.status;
+      }
+      return;
+    }
+
+    case 'update_control_state': {
+      const control = asRecord(envelope.control);
+      if (control) {
+        state.phase = parsePhase(control.phase);
+      }
+      return;
+    }
+
+    case 'upsert_child_summary': {
+      const child = asRecord(envelope.child);
+      if (child) {
+        upsertChildSummary(state.childSummaries, child);
+      }
+      return;
+    }
+
+    case 'remove_child_summary': {
+      const childSessionId = pickString(envelope, 'childSessionId');
+      state.childSummaries = state.childSummaries.filter(
+        (candidate) => pickString(candidate, 'childSessionId') !== childSessionId
+      );
+      return;
+    }
+
+    case 'replace_slash_candidates':
+    case 'set_banner':
+    case 'clear_banner':
+    case 'rehydrate_required':
+    default:
+      return;
+  }
+}

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{AgentEventEnvelope, ExecutionControlDto, PhaseDto};
+use super::{ExecutionControlDto, PhaseDto};
 
 /// `POST /api/sessions` 请求体——创建新会话。
 ///
@@ -90,35 +90,6 @@ pub struct CompactSessionResponse {
     pub deferred: bool,
     pub message: String,
 }
-
-/// `GET /api/sessions/:id/history` 响应体。
-///
-/// 初始 hydration 返回历史 `AgentEvent` 序列和当前 phase/cursor，
-/// 让前端用和 SSE 增量相同的事件协议重建消息状态，避免再维护
-/// 一套专用 `SessionMessage` 快照协议。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionHistoryResponseDto {
-    pub events: Vec<AgentEventEnvelope>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-    pub phase: PhaseDto,
-}
-
-/// `GET /api/sessions/:id/view` 响应体。
-///
-/// 子执行页面需要同时拿到聚焦视图和直接子执行视图；
-/// 合并成单次加载可以避免前端再并发请求两次 `/history`。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionViewResponseDto {
-    pub focus_events: Vec<AgentEventEnvelope>,
-    pub direct_children_events: Vec<AgentEventEnvelope>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-    pub phase: PhaseDto,
-}
-
 
 /// `DELETE /api/projects/:working_dir` 响应体——项目删除结果。
 ///

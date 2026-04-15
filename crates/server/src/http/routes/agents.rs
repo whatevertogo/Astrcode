@@ -88,7 +88,8 @@ pub(crate) async fn execute_agent(
         Json(AgentExecuteResponseDto {
             accepted: true,
             message: format!(
-                "agent '{}' execution accepted; subscribe to /api/sessions/{}/events for progress",
+                "agent '{}' execution accepted; subscribe to \
+                 /api/v1/conversation/sessions/{}/stream for progress",
                 agent_id, accepted.session_id
             ),
             session_id: Some(accepted.session_id.to_string()),

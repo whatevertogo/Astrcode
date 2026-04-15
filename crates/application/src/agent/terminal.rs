@@ -2,10 +2,9 @@ use std::time::Instant;
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
-    AgentTurnOutcome, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
-    ChildSessionNotificationKind, CloseRequestParentDeliveryPayload,
-    CompletedParentDeliveryPayload, FailedParentDeliveryPayload, ParentDelivery,
-    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
+    AgentTurnOutcome, ChildAgentRef, ChildSessionNotification, ChildSessionNotificationKind,
+    CloseRequestParentDeliveryPayload, CompletedParentDeliveryPayload, FailedParentDeliveryPayload,
+    ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
     ProgressParentDeliveryPayload, StorageEventPayload, SubRunFailure, SubRunFailureCode,
     SubRunHandoff, SubRunResult,
 };
@@ -470,6 +469,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        ChildSessionLineageKind,
         agent::test_support::{TestLlmBehavior, build_agent_test_harness, sample_profile},
         lifecycle::governance::ObservabilitySnapshotProvider,
     };

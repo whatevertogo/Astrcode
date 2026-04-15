@@ -130,9 +130,9 @@ impl DebugWorkbenchService {
         let stored_events = self.app.session_stored_events(session_id).await?;
         let phase = self
             .app
-            .session_view(session_id)
+            .session_control_state(session_id)
             .await
-            .map(|view| view.phase)
+            .map(|control| control.phase)
             .unwrap_or(meta.phase);
 
         let mut items = stored_events

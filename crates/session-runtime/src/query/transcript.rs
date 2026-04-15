@@ -1,6 +1,6 @@
-//! 只读历史查询与会话快照类型。
+//! 只读 transcript 查询与会话快照类型。
 //!
-//! Why: 这里集中表达“从单 session 真相里能读到什么历史/快照”，
+//! Why: 这里集中表达“从单 session 真相里能读到什么 transcript/快照”，
 //! 避免把这类只读投影继续塞回 `factory` 或 `application`。
 
 use astrcode_core::{AgentEvent, LlmMessage, Phase, Result, SessionEventRecord};
@@ -16,16 +16,8 @@ pub struct SessionReplay {
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionHistorySnapshot {
-    pub history: Vec<SessionEventRecord>,
-    pub cursor: Option<String>,
-    pub phase: Phase,
-}
-
-#[derive(Debug, Clone)]
-pub struct SessionViewSnapshot {
-    pub focus_history: Vec<SessionEventRecord>,
-    pub direct_children_history: Vec<SessionEventRecord>,
+pub struct SessionTranscriptSnapshot {
+    pub records: Vec<SessionEventRecord>,
     pub cursor: Option<String>,
     pub phase: Phase,
 }

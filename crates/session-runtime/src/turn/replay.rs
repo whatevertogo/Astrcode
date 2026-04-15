@@ -2,18 +2,21 @@ use std::time::Instant;
 
 use astrcode_core::{Result, SessionId, replay_records};
 
-use crate::{SessionHistorySnapshot, SessionReplay, SessionRuntime, SessionViewSnapshot};
+use crate::{SessionReplay, SessionRuntime, SessionTranscriptSnapshot};
 
 impl SessionRuntime {
-    pub async fn session_history(&self, session_id: &str) -> Result<SessionHistorySnapshot> {
+    pub async fn session_transcript_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionTranscriptSnapshot> {
         let started_at = Instant::now();
         let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let result = async {
             let records = self.replay_history(&session_id, None).await?;
             let phase = self.session_phase(&session_id).await?;
-            Ok(SessionHistorySnapshot {
+            Ok(SessionTranscriptSnapshot {
                 cursor: records.last().map(|record| record.event_id.clone()),
-                history: records,
+                records,
                 phase,
             })
         }
@@ -21,16 +24,6 @@ impl SessionRuntime {
         self.metrics
             .record_session_rehydrate(started_at.elapsed().as_millis() as u64, result.is_ok());
         result
-    }
-
-    pub async fn session_view(&self, session_id: &str) -> Result<SessionViewSnapshot> {
-        let history = self.session_history(session_id).await?;
-        Ok(SessionViewSnapshot {
-            focus_history: history.history.clone(),
-            direct_children_history: Vec::new(),
-            cursor: history.cursor,
-            phase: history.phase,
-        })
     }
 
     pub async fn session_replay(

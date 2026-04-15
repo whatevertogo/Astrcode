@@ -6,6 +6,7 @@ use tokio::sync::broadcast;
 mod agent_use_cases;
 mod ports;
 mod session_use_cases;
+mod terminal_use_cases;
 
 pub mod agent;
 pub mod composer;
@@ -15,6 +16,7 @@ pub mod execution;
 pub mod lifecycle;
 pub mod mcp;
 pub mod observability;
+pub mod terminal;
 pub mod watch;
 
 pub use agent::AgentOrchestrationService;
@@ -30,11 +32,12 @@ pub use astrcode_core::{
 };
 pub use astrcode_kernel::SubRunStatusView;
 pub use astrcode_session_runtime::{
-    SessionCatalogEvent, SessionEventFilterSpec, SessionHistorySnapshot, SessionReplay,
-    SessionViewSnapshot, SubRunEventScope, TurnCollaborationSummary, TurnSummary,
+    SessionCatalogEvent, SessionControlStateSnapshot, SessionEventFilterSpec, SessionReplay,
+    SessionTranscriptSnapshot, SubRunEventScope, TurnCollaborationSummary, TurnSummary,
 };
 pub use composer::{
-    ComposerOption, ComposerOptionKind, ComposerOptionsRequest, ComposerSkillSummary,
+    ComposerOption, ComposerOptionActionKind, ComposerOptionKind, ComposerOptionsRequest,
+    ComposerSkillSummary,
 };
 pub use config::{
     // 常量与解析函数
@@ -123,6 +126,15 @@ pub use observability::{
 };
 pub use ports::{
     AgentKernelPort, AgentSessionPort, AppKernelPort, AppSessionPort, ComposerSkillPort,
+};
+pub use terminal::{
+    ConversationChildSummaryFacts, ConversationControlFacts, ConversationFacts, ConversationFocus,
+    ConversationRehydrateFacts, ConversationRehydrateReason, ConversationResumeCandidateFacts,
+    ConversationSlashAction, ConversationSlashCandidateFacts, ConversationStreamFacts,
+    ConversationStreamReplayFacts, TerminalChildSummaryFacts, TerminalControlFacts, TerminalFacts,
+    TerminalRehydrateFacts, TerminalRehydrateReason, TerminalResumeCandidateFacts,
+    TerminalSlashAction, TerminalSlashCandidateFacts, TerminalStreamFacts,
+    TerminalStreamReplayFacts,
 };
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
 

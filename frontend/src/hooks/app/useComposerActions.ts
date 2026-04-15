@@ -34,9 +34,6 @@ interface UseComposerActionsOptions {
   dispatch: Dispatch<Action>;
   phaseRef: MutableRefObject<Phase>;
   activeSessionIdRef: MutableRefObject<string | null>;
-  pendingSubmitSessionRef: MutableRefObject<string[]>;
-  turnSessionMapRef: MutableRefObject<Record<string, string>>;
-  releasePendingSubmitSession: (sessionId: string) => void;
   setConfirmDialog: React.Dispatch<React.SetStateAction<ConfirmDialogState | null>>;
   refreshSessions: (options?: { preferredSessionId?: string | null }) => Promise<void>;
   createSession: (workingDir: string) => Promise<SessionMeta>;
@@ -90,9 +87,6 @@ export function useComposerActions({
   dispatch,
   phaseRef,
   activeSessionIdRef,
-  pendingSubmitSessionRef,
-  turnSessionMapRef,
-  releasePendingSubmitSession,
   setConfirmDialog,
   refreshSessions,
   createSession,
@@ -232,14 +226,10 @@ export function useComposerActions({
       // 在请求真正发出前就切到 busy，封住同一事件循环内的双击重入窗口。
       phaseRef.current = 'thinking';
       dispatch({ type: 'SET_PHASE', phase: 'thinking' });
-      pendingSubmitSessionRef.current.push(sessionId);
 
       try {
         const submitted = await submitPrompt(sessionId, trimmed);
         const effectiveSessionId = submitted.sessionId ?? sessionId;
-        turnSessionMapRef.current[submitted.turnId] =
-          turnSessionMapRef.current[submitted.turnId] ?? effectiveSessionId;
-        releasePendingSubmitSession(sessionId);
 
         if (
           submitted.branchedFromSessionId &&
@@ -253,7 +243,6 @@ export function useComposerActions({
           await refreshSessions({ preferredSessionId: effectiveSessionId });
         }
       } catch (error) {
-        releasePendingSubmitSession(sessionId);
         dispatch({
           type: 'ADD_MESSAGE',
           sessionId,
@@ -274,13 +263,10 @@ export function useComposerActions({
       activeSessionIdRef,
       compactSession,
       dispatch,
-      pendingSubmitSessionRef,
       phaseRef,
       refreshSessions,
-      releasePendingSubmitSession,
       setConfirmDialog,
       submitPrompt,
-      turnSessionMapRef,
     ]
   );
 

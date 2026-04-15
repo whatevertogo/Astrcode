@@ -3,7 +3,7 @@
 //! Central state management for the app.
 //! The top-level reducer now only routes actions to focused handler groups.
 
-import type { Action, AppState, AtomicAction } from '../types';
+import type { Action, AppState } from '../types';
 import {
   findAssistantMessageIndex,
   findPromptMetricsMessageIndex,
@@ -108,53 +108,11 @@ function handleNavigationAction(state: AppState, action: Action): AppState | nul
 
 function handleCatalogAction(state: AppState, action: Action): AppState | null {
   switch (action.type) {
-    case 'ADD_PROJECT':
-      return {
-        ...state,
-        projects: [action.project, ...state.projects],
-        activeProjectId: action.project.id,
-        activeSessionId: action.project.sessions[0]?.id ?? null,
-        activeSubRunPath: [],
-      };
-    case 'ADD_SESSION':
-      return {
-        ...mapProject(state, action.projectId, (project) => ({
-          ...project,
-          sessions: [action.session, ...project.sessions],
-        })),
-        activeProjectId: action.projectId,
-        activeSessionId: action.session.id,
-        activeSubRunPath: [],
-      };
     case 'TOGGLE_EXPAND':
       return mapProject(state, action.projectId, (project) => ({
         ...project,
         isExpanded: !project.isExpanded,
       }));
-    case 'DELETE_PROJECT': {
-      const projects = state.projects.filter((project) => project.id !== action.projectId);
-      let activeProjectId = state.activeProjectId;
-      let activeSessionId = state.activeSessionId;
-      if (activeProjectId === action.projectId) {
-        activeProjectId = projects[0]?.id ?? null;
-        activeSessionId = projects[0]?.sessions[0]?.id ?? null;
-      }
-      return { ...state, projects, activeProjectId, activeSessionId, activeSubRunPath: [] };
-    }
-    case 'DELETE_SESSION': {
-      const nextState = mapProject(state, action.projectId, (project) => ({
-        ...project,
-        sessions: project.sessions.filter((session) => session.id !== action.sessionId),
-      }));
-      let activeSessionId = nextState.activeSessionId;
-      let activeProjectId = nextState.activeProjectId;
-      if (state.activeSessionId === action.sessionId) {
-        const project = nextState.projects.find((item) => item.id === action.projectId);
-        activeSessionId = project?.sessions[0]?.id ?? null;
-        activeProjectId = project?.id ?? nextState.projects[0]?.id ?? null;
-      }
-      return { ...nextState, activeProjectId, activeSessionId, activeSubRunPath: [] };
-    }
     case 'REPLACE_SESSION_MESSAGES':
       return mapSession(state, action.sessionId, (session) => ({
         ...session,
@@ -166,7 +124,7 @@ function handleCatalogAction(state: AppState, action: Action): AppState | null {
   }
 }
 
-function reduceAtomicAction(state: AppState, action: AtomicAction): AppState {
+function reduceAtomicAction(state: AppState, action: Action): AppState {
   return (
     handleUiStateAction(state, action) ??
     handleNavigationAction(state, action) ??
@@ -177,9 +135,6 @@ function reduceAtomicAction(state: AppState, action: AtomicAction): AppState {
 }
 
 export function reducer(state: AppState, action: Action): AppState {
-  if (action.type === 'APPLY_AGENT_EVENTS_BATCH') {
-    return action.actions.reduce(reduceAtomicAction, state);
-  }
   return reduceAtomicAction(state, action);
 }
 

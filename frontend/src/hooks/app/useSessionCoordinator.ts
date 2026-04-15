@@ -1,17 +1,13 @@
 import { useCallback, useState, type Dispatch, type MutableRefObject } from 'react';
 import { ensureKnownProjects } from '../../lib/knownProjects';
 import { groupSessionsByProject, replaceSessionMessages } from '../../store/utils';
-import { replaySessionHistory } from '../../lib/sessionHistory';
 import { findMatchingSessionId, normalizeSessionIdForCompare } from '../../lib/sessionId';
-import { buildSubRunThreadTree, listRootSubRunViews } from '../../lib/subRunView';
 import { buildFocusedSubRunFilter, type SessionEventFilterQuery } from '../../lib/sessionView';
-import type { Action, Phase, SessionMeta } from '../../types';
-import type { SessionViewSnapshot } from '../../types';
-
-type RootSubRunViews = ReturnType<typeof listRootSubRunViews>;
+import type { Action, Phase, SessionMeta, SubRunViewData } from '../../types';
+import type { ConversationViewProjection } from '../../lib/api/conversation';
 
 interface ActiveSubRunChildren {
-  subRuns: RootSubRunViews;
+  subRuns: SubRunViewData[];
   contentFingerprint: string;
 }
 
@@ -26,15 +22,16 @@ interface UseSessionCoordinatorOptions {
   activeSubRunPathRef: MutableRefObject<string[]>;
   phaseRef: MutableRefObject<Phase>;
   sessionActivationGenerationRef: MutableRefObject<number>;
-  loadSessionView: (
+  loadConversationView: (
     sessionId: string,
     filter?: SessionEventFilterQuery
-  ) => Promise<SessionViewSnapshot>;
+  ) => Promise<ConversationViewProjection>;
   listSessionsWithMeta: () => Promise<SessionMeta[]>;
   connectSession: (
     sessionId: string,
     afterEventId?: string | null,
-    filter?: SessionEventFilterQuery
+    filter?: SessionEventFilterQuery,
+    onProjection?: (projection: ConversationViewProjection) => void
   ) => Promise<void>;
   disconnectSession: () => void;
   bumpModelRefreshKey: () => void;
@@ -46,7 +43,7 @@ export function useSessionCoordinator({
   activeSubRunPathRef,
   phaseRef,
   sessionActivationGenerationRef,
-  loadSessionView: fetchSessionView,
+  loadConversationView,
   listSessionsWithMeta,
   connectSession,
   disconnectSession,
@@ -60,36 +57,18 @@ export function useSessionCoordinator({
   const loadSessionBundle = useCallback(
     async (sessionId: string, subRunPath: string[]) => {
       const filter = buildFocusedSubRunFilter(subRunPath);
-      const snapshot = await fetchSessionView(sessionId, filter);
-      const replayed = replaySessionHistory(sessionId, snapshot.focusEvents, snapshot.phase);
-
-      if (!filter?.subRunId) {
-        return {
-          filter,
-          cursor: snapshot.cursor,
-          phase: replayed.phase,
-          messages: replayed.messages,
-          childSubRuns: [] as RootSubRunViews,
-          childContentFingerprint: '',
-        };
-      }
-
-      const childReplayed = replaySessionHistory(
-        sessionId,
-        snapshot.directChildrenEvents,
-        snapshot.phase
-      );
-      const childTree = buildSubRunThreadTree(childReplayed.messages);
+      const projection = await loadConversationView(sessionId, filter);
       return {
         filter,
-        cursor: snapshot.cursor,
-        phase: replayed.phase,
-        messages: replayed.messages,
-        childSubRuns: listRootSubRunViews(childTree),
-        childContentFingerprint: childTree.rootStreamFingerprint,
+        cursor: projection.cursor,
+        phase: projection.phase,
+        messages: projection.messages,
+        messageFingerprint: projection.messageFingerprint,
+        childSubRuns: projection.childSubRuns,
+        childContentFingerprint: projection.childFingerprint,
       };
     },
-    [fetchSessionView]
+    [loadConversationView]
   );
 
   const loadAndActivateSession = useCallback(
@@ -117,7 +96,27 @@ export function useSessionCoordinator({
       dispatch({ type: 'SET_ACTIVE_SUBRUN_PATH', subRunPath });
       phaseRef.current = loaded.phase;
       dispatch({ type: 'SET_PHASE', phase: loaded.phase });
-      await connectSession(sessionId, loaded.cursor, loaded.filter);
+      await connectSession(sessionId, loaded.cursor, loaded.filter, (projection) => {
+        if (projection.messageFingerprint !== loaded.messageFingerprint) {
+          dispatch({
+            type: 'REPLACE_SESSION_MESSAGES',
+            sessionId,
+            messages: projection.messages,
+          });
+          loaded.messageFingerprint = projection.messageFingerprint;
+        }
+        if (projection.childFingerprint !== loaded.childContentFingerprint) {
+          setActiveSubRunChildren({
+            subRuns: projection.childSubRuns,
+            contentFingerprint: projection.childFingerprint,
+          });
+          loaded.childContentFingerprint = projection.childFingerprint;
+        }
+        if (phaseRef.current !== projection.phase) {
+          phaseRef.current = projection.phase;
+          dispatch({ type: 'SET_PHASE', phase: projection.phase });
+        }
+      });
       if (activationGeneration !== sessionActivationGenerationRef.current) {
         return;
       }
@@ -201,7 +200,27 @@ export function useSessionCoordinator({
           activeSubRunPath: nextActiveSubRunPath,
         });
         dispatch({ type: 'SET_PHASE', phase: loaded.phase });
-        await connectSession(nextSessionId, loaded.cursor, loaded.filter);
+        await connectSession(nextSessionId, loaded.cursor, loaded.filter, (projection) => {
+          if (projection.messageFingerprint !== loaded.messageFingerprint) {
+            dispatch({
+              type: 'REPLACE_SESSION_MESSAGES',
+              sessionId: nextSessionId,
+              messages: projection.messages,
+            });
+            loaded.messageFingerprint = projection.messageFingerprint;
+          }
+          if (projection.childFingerprint !== loaded.childContentFingerprint) {
+            setActiveSubRunChildren({
+              subRuns: projection.childSubRuns,
+              contentFingerprint: projection.childFingerprint,
+            });
+            loaded.childContentFingerprint = projection.childFingerprint;
+          }
+          if (phaseRef.current !== projection.phase) {
+            phaseRef.current = projection.phase;
+            dispatch({ type: 'SET_PHASE', phase: projection.phase });
+          }
+        });
         if (activationGeneration !== sessionActivationGenerationRef.current) {
           return;
         }

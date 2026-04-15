@@ -84,31 +84,6 @@ export type ParentDelivery =
       };
     };
 
-export interface AgentContext {
-  agentId?: string;
-  parentTurnId?: string;
-  parentSubRunId?: string;
-  agentProfile?: string;
-  subRunId?: string;
-  executionId?: string;
-  invocationKind?: InvocationKind;
-  storageMode?: SubRunStorageMode;
-  childSessionId?: string;
-}
-
-type AgentScoped<T> = T & AgentContext;
-
-export interface ToolCallResultEnvelope {
-  toolCallId: string;
-  toolName: string;
-  ok: boolean;
-  output: string;
-  error?: string;
-  metadata?: unknown;
-  durationMs: number;
-  truncated?: boolean;
-}
-
 export interface PromptMetricsSnapshot {
   stepIndex: number;
   estimatedTokens: number;
@@ -150,32 +125,6 @@ export interface ResolvedSubagentContextOverrides {
 export interface ResolvedExecutionLimits {
   allowedTools: string[];
   maxSteps?: number;
-}
-
-export interface MailboxQueuedEventData {
-  turnId?: string | null;
-  deliveryId: string;
-  fromAgentId: string;
-  toAgentId: string;
-  message: string;
-  queuedAt: string;
-  senderLifecycleStatus?: AgentLifecycle;
-  senderLastTurnOutcome?: AgentTurnOutcome;
-  senderOpenSessionId: string;
-  summary?: string;
-}
-
-export interface MailboxBatchEventData {
-  turnId?: string | null;
-  targetAgentId: string;
-  batchId: string;
-  deliveryIds: string[];
-}
-
-export interface MailboxDiscardedEventData {
-  turnId?: string | null;
-  targetAgentId: string;
-  deliveryIds: string[];
 }
 
 export interface ExecutionControl {
@@ -221,124 +170,6 @@ export interface SubRunStatusSnapshot {
   resolvedOverrides?: ResolvedSubagentContextOverrides;
   resolvedLimits?: ResolvedExecutionLimits;
 }
-
-export type AgentEventPayload =
-  | { event: 'sessionStarted'; data: { sessionId: string } }
-  | { event: 'userMessage'; data: AgentScoped<{ turnId: string; content: string }> }
-  | { event: 'phaseChanged'; data: AgentScoped<{ phase: Phase; turnId?: string | null }> }
-  | { event: 'modelDelta'; data: AgentScoped<{ turnId: string; delta: string }> }
-  | { event: 'thinkingDelta'; data: AgentScoped<{ turnId: string; delta: string }> }
-  | {
-      event: 'assistantMessage';
-      data: AgentScoped<{ turnId: string; content: string; reasoningContent?: string }>;
-    }
-  | {
-      event: 'toolCallStart';
-      data: AgentScoped<{
-        turnId: string;
-        toolCallId: string;
-        toolName: string;
-        args: unknown;
-      }>;
-    }
-  | {
-      event: 'toolCallDelta';
-      data: AgentScoped<{
-        turnId: string;
-        toolCallId: string;
-        toolName: string;
-        stream: ToolOutputStream;
-        delta: string;
-      }>;
-    }
-  | {
-      event: 'toolCallResult';
-      data: AgentScoped<{ turnId: string; result: ToolCallResultEnvelope }>;
-    }
-  | {
-      event: 'promptMetrics';
-      data: AgentScoped<
-        {
-          turnId?: string | null;
-        } & PromptMetricsSnapshot
-      >;
-    }
-  | {
-      event: 'agentMailboxQueued';
-      data: AgentScoped<MailboxQueuedEventData>;
-    }
-  | {
-      event: 'agentMailboxBatchStarted';
-      data: AgentScoped<MailboxBatchEventData>;
-    }
-  | {
-      event: 'agentMailboxBatchAcked';
-      data: AgentScoped<MailboxBatchEventData>;
-    }
-  | {
-      event: 'agentMailboxDiscarded';
-      data: AgentScoped<MailboxDiscardedEventData>;
-    }
-  | {
-      event: 'compactApplied';
-      data: AgentScoped<{
-        turnId?: string | null;
-        trigger: CompactTrigger;
-        summary: string;
-        preservedRecentTurns: number;
-      }>;
-    }
-  | {
-      event: 'subRunStarted';
-      data: AgentScoped<{
-        turnId?: string | null;
-
-        toolCallId?: string;
-        resolvedOverrides: ResolvedSubagentContextOverrides;
-        resolvedLimits: ResolvedExecutionLimits;
-      }>;
-    }
-  | {
-      event: 'subRunFinished';
-      data: AgentScoped<{
-        turnId?: string | null;
-
-        toolCallId?: string;
-        result: SubRunResult;
-        stepCount: number;
-        estimatedTokens: number;
-      }>;
-    }
-  | {
-      event: 'childSessionNotification';
-      data: AgentScoped<{
-        turnId?: string | null;
-        childRef: {
-          agentId: string;
-          sessionId: string;
-          subRunId: string;
-          executionId?: string;
-          parentAgentId?: string;
-          parentSubRunId?: string;
-          lineageKind: 'spawn' | 'fork' | 'resume';
-          status: AgentLifecycle;
-          openSessionId: string;
-        };
-        kind: ChildSessionNotificationKind;
-        status: AgentLifecycle;
-        sourceToolCallId?: string;
-        delivery?: ParentDelivery;
-      }>;
-    }
-  | { event: 'turnDone'; data: AgentScoped<{ turnId: string }> }
-  | {
-      event: 'error';
-      data: AgentScoped<{ turnId?: string | null; code: string; message: string }>;
-    };
-
-export type AgentEvent = AgentEventPayload & {
-  protocolVersion: number;
-};
 
 export type SessionCatalogEventPayload =
   | { event: 'sessionCreated'; data: { sessionId: string } }
@@ -598,13 +429,6 @@ export interface SessionMeta {
   phase: Phase;
 }
 
-export interface SessionViewSnapshot {
-  focusEvents: AgentEventPayload[];
-  directChildrenEvents: AgentEventPayload[];
-  cursor: string | null;
-  phase: Phase;
-}
-
 export interface DeleteProjectResult {
   successCount: number;
   failedSessionIds: string[];
@@ -840,18 +664,6 @@ export interface AppState {
   phase: Phase;
 }
 
-type AgentActionContext = {
-  agentId?: string;
-  parentTurnId?: string;
-  parentSubRunId?: string;
-  agentProfile?: string;
-  subRunId?: string;
-  executionId?: string;
-  invocationKind?: InvocationKind;
-  storageMode?: SubRunStorageMode;
-  childSessionId?: string;
-};
-
 // ────────────────────────────────────────────────────────────
 // Reducer action 联合类型（App 和 hooks 之间共享）
 // ────────────────────────────────────────────────────────────
@@ -862,70 +674,9 @@ export type AtomicAction =
   | { type: 'POP_ACTIVE_SUBRUN' }
   | { type: 'SET_ACTIVE_SUBRUN_PATH'; subRunPath: string[] }
   | { type: 'CLEAR_ACTIVE_SUBRUN_PATH' }
-  | { type: 'ADD_PROJECT'; project: Project }
-  | { type: 'ADD_SESSION'; projectId: string; session: Session }
   | { type: 'SET_ACTIVE'; projectId: string; sessionId: string }
   | { type: 'TOGGLE_EXPAND'; projectId: string }
-  | { type: 'RENAME_PROJECT'; projectId: string; name: string }
-  | { type: 'DELETE_PROJECT'; projectId: string }
-  | { type: 'RENAME_SESSION'; projectId: string; sessionId: string; title: string }
-  | { type: 'DELETE_SESSION'; projectId: string; sessionId: string }
   | { type: 'ADD_MESSAGE'; sessionId: string; message: Message }
-  | ({
-      type: 'UPSERT_USER_MESSAGE';
-      sessionId: string;
-      turnId: string;
-      content: string;
-    } & AgentActionContext)
-  | ({
-      type: 'APPEND_DELTA';
-      sessionId: string;
-      turnId: string;
-      delta: string;
-    } & AgentActionContext)
-  | ({
-      type: 'APPEND_REASONING_DELTA';
-      sessionId: string;
-      turnId: string;
-      delta: string;
-    } & AgentActionContext)
-  | ({
-      type: 'FINALIZE_ASSISTANT';
-      sessionId: string;
-      turnId: string;
-      content: string;
-      reasoningText?: string;
-    } & AgentActionContext)
-  | { type: 'END_STREAMING'; sessionId: string; turnId: string }
-  | ({
-      type: 'APPEND_TOOL_CALL_DELTA';
-      sessionId: string;
-      turnId?: string | null;
-      toolCallId: string;
-      toolName: string;
-      stream: ToolOutputStream;
-      delta: string;
-    } & AgentActionContext)
-  | ({
-      type: 'UPDATE_TOOL_CALL';
-      sessionId: string;
-      turnId?: string | null;
-      toolCallId: string;
-      toolName: string;
-      status: ToolStatus;
-      output: string;
-      error?: string;
-      metadata?: unknown;
-      durationMs: number;
-      truncated?: boolean;
-    } & AgentActionContext)
-  | ({
-      type: 'UPSERT_PROMPT_METRICS';
-      sessionId: string;
-      turnId?: string | null;
-    } & AgentActionContext &
-      PromptMetricsSnapshot)
-  | { type: 'SET_WORKING_DIR'; projectId: string; workingDir: string }
   | {
       type: 'INITIALIZE';
       projects: Project[];
@@ -933,12 +684,6 @@ export type AtomicAction =
       activeSessionId: string | null;
       activeSubRunPath?: string[];
     }
-  | { type: 'REPLACE_SESSION_MESSAGES'; sessionId: string; messages: Message[] }
-  | { type: 'ADD_SESSION_BACKEND'; projectId: string; sessionId: string };
+  | { type: 'REPLACE_SESSION_MESSAGES'; sessionId: string; messages: Message[] };
 
-export type Action =
-  | AtomicAction
-  | {
-      type: 'APPLY_AGENT_EVENTS_BATCH';
-      actions: AtomicAction[];
-    };
+export type Action = AtomicAction;

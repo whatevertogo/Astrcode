@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionId, SessionMeta,
-    StoredEvent,
+    ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionId,
+    SessionMeta, StoredEvent,
 };
 use astrcode_session_runtime::{
-    AgentPromptSubmission, SessionCatalogEvent, SessionHistorySnapshot, SessionReplay,
-    SessionRuntime, SessionState, SessionViewSnapshot,
+    AgentPromptSubmission, SessionCatalogEvent, SessionControlStateSnapshot, SessionReplay,
+    SessionRuntime, SessionState, SessionTranscriptSnapshot,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -37,11 +37,18 @@ pub trait AppSessionPort: Send + Sync {
         session_id: &str,
         runtime: ResolvedRuntimeConfig,
     ) -> astrcode_core::Result<bool>;
-    async fn session_history(
+    async fn session_transcript_snapshot(
         &self,
         session_id: &str,
-    ) -> astrcode_core::Result<SessionHistorySnapshot>;
-    async fn session_view(&self, session_id: &str) -> astrcode_core::Result<SessionViewSnapshot>;
+    ) -> astrcode_core::Result<SessionTranscriptSnapshot>;
+    async fn session_control_state(
+        &self,
+        session_id: &str,
+    ) -> astrcode_core::Result<SessionControlStateSnapshot>;
+    async fn session_child_nodes(
+        &self,
+        session_id: &str,
+    ) -> astrcode_core::Result<Vec<ChildSessionNode>>;
     async fn replay_stored_events(
         &self,
         session_id: &SessionId,
@@ -109,15 +116,25 @@ impl AppSessionPort for SessionRuntime {
         self.compact_session(session_id, runtime).await
     }
 
-    async fn session_history(
+    async fn session_transcript_snapshot(
         &self,
         session_id: &str,
-    ) -> astrcode_core::Result<SessionHistorySnapshot> {
-        self.session_history(session_id).await
+    ) -> astrcode_core::Result<SessionTranscriptSnapshot> {
+        self.session_transcript_snapshot(session_id).await
     }
 
-    async fn session_view(&self, session_id: &str) -> astrcode_core::Result<SessionViewSnapshot> {
-        self.session_view(session_id).await
+    async fn session_control_state(
+        &self,
+        session_id: &str,
+    ) -> astrcode_core::Result<SessionControlStateSnapshot> {
+        self.session_control_state(session_id).await
+    }
+
+    async fn session_child_nodes(
+        &self,
+        session_id: &str,
+    ) -> astrcode_core::Result<Vec<ChildSessionNode>> {
+        self.session_child_nodes(session_id).await
     }
 
     async fn replay_stored_events(

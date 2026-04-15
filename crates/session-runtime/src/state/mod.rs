@@ -145,6 +145,17 @@ impl SessionState {
         Ok(*support::lock_anyhow(&self.phase, "session phase")?)
     }
 
+    pub fn active_turn_id_snapshot(&self) -> Result<Option<String>> {
+        Ok(support::lock_anyhow(&self.active_turn_id, "session active turn")?.clone())
+    }
+
+    pub fn manual_compact_pending(&self) -> Result<bool> {
+        Ok(*support::lock_anyhow(
+            &self.pending_manual_compact,
+            "session pending manual compact",
+        )?)
+    }
+
     pub fn complete_execution_state(&self, phase: Phase) {
         // Why: 先清除 running 标志再设置 phase，避免外部观察者看到 phase=Idle
         // 但 running 仍为 true 的竞态窗口（如 compact 在 turn 完成后立即被调用）。

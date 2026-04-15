@@ -24,20 +24,22 @@ use crate::{
     lifecycle::TaskRegistry,
 };
 
-pub(super) struct AgentTestHarness {
-    pub(super) _guard: AgentTestEnvGuard,
-    pub(super) kernel: Arc<Kernel>,
-    pub(super) session_runtime: Arc<SessionRuntime>,
-    pub(super) service: AgentOrchestrationService,
-    pub(super) metrics: Arc<RuntimeObservabilityCollector>,
-    pub(super) event_store: Arc<InMemoryEventStore>,
+pub(crate) struct AgentTestHarness {
+    pub(crate) _guard: AgentTestEnvGuard,
+    pub(crate) kernel: Arc<Kernel>,
+    pub(crate) session_runtime: Arc<SessionRuntime>,
+    pub(crate) service: AgentOrchestrationService,
+    pub(crate) metrics: Arc<RuntimeObservabilityCollector>,
+    pub(crate) event_store: Arc<InMemoryEventStore>,
+    pub(crate) config_service: Arc<ConfigService>,
+    pub(crate) profiles: Arc<ProfileResolutionService>,
 }
 
-pub(super) fn build_agent_test_harness(llm_behavior: TestLlmBehavior) -> Result<AgentTestHarness> {
+pub(crate) fn build_agent_test_harness(llm_behavior: TestLlmBehavior) -> Result<AgentTestHarness> {
     build_agent_test_harness_with_agent_config(llm_behavior, None)
 }
 
-pub(super) fn build_agent_test_harness_with_agent_config(
+pub(crate) fn build_agent_test_harness_with_agent_config(
     llm_behavior: TestLlmBehavior,
     agent_config: Option<astrcode_core::AgentConfig>,
 ) -> Result<AgentTestHarness> {
@@ -78,8 +80,8 @@ pub(super) fn build_agent_test_harness_with_agent_config(
     let service = AgentOrchestrationService::new(
         kernel_port,
         session_port,
-        config_service,
-        profiles,
+        config_service.clone(),
+        profiles.clone(),
         task_registry,
         metrics.clone(),
     );
@@ -91,10 +93,12 @@ pub(super) fn build_agent_test_harness_with_agent_config(
         service,
         metrics,
         event_store,
+        config_service,
+        profiles,
     })
 }
 
-pub(super) fn sample_profile(id: &str) -> AgentProfile {
+pub(crate) fn sample_profile(id: &str) -> AgentProfile {
     AgentProfile {
         id: id.to_string(),
         name: id.to_string(),
@@ -107,7 +111,7 @@ pub(super) fn sample_profile(id: &str) -> AgentProfile {
     }
 }
 
-pub(super) struct AgentTestEnvGuard {
+pub(crate) struct AgentTestEnvGuard {
     _temp_home: tempfile::TempDir,
     previous_test_home: Option<std::ffi::OsString>,
 }
@@ -182,7 +186,7 @@ impl Drop for AgentTestEnvGuard {
 }
 
 #[derive(Debug, Clone)]
-pub(super) enum TestLlmBehavior {
+pub(crate) enum TestLlmBehavior {
     Succeed { content: String },
     Fail { message: String },
 }
@@ -298,7 +302,7 @@ impl ProfileProvider for StaticProfileProvider {
 }
 
 #[derive(Default)]
-pub(super) struct InMemoryEventStore {
+pub(crate) struct InMemoryEventStore {
     sessions: Arc<Mutex<HashMap<String, InMemorySession>>>,
 }
 

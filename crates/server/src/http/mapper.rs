@@ -20,19 +20,17 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_application::{
-    AgentCollaborationScorecardSnapshot, AgentEvent, AgentEventContext, AgentLifecycleStatus,
-    AgentMode, AgentTurnOutcome, ApplicationError, ArtifactRef, CapabilitySpec, ChildAgentRef,
-    ChildSessionLineageKind, ChildSessionNotificationKind, CompactTrigger, ComposerOption,
-    ComposerOptionKind, Config, ExecutionDiagnosticsSnapshot, ForkMode, GovernanceSnapshot,
-    InvocationKind, InvocationMode, OperationMetricsSnapshot, Phase, PluginEntry, PluginHealth,
-    PluginState, ReplayMetricsSnapshot, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, RuntimeObservabilitySnapshot, SessionCatalogEvent,
-    SessionEventRecord, SessionMeta, SubRunExecutionMetricsSnapshot, SubRunFailure,
-    SubRunFailureCode, SubRunHandoff, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
-    ToolOutputStream, format_local_rfc3339, is_env_var_name,
+    AgentCollaborationScorecardSnapshot, AgentMode, ApplicationError, ArtifactRef, CapabilitySpec,
+    ComposerOption, ComposerOptionKind, Config, ExecutionDiagnosticsSnapshot, ForkMode,
+    GovernanceSnapshot, InvocationMode, OperationMetricsSnapshot, Phase, PluginEntry, PluginHealth,
+    PluginState, ReplayMetricsSnapshot, RuntimeObservabilitySnapshot, SessionCatalogEvent,
+    SessionMeta, SubRunExecutionMetricsSnapshot, SubRunFailureCode, SubRunHandoff,
+    SubRunStorageMode, SubagentContextOverrides, format_local_rfc3339, is_env_var_name,
     list_model_options as resolve_model_options, resolve_active_selection,
     resolve_current_model as resolve_runtime_current_model,
 };
+#[cfg(feature = "debug-workbench")]
+use astrcode_application::{AgentLifecycleStatus, AgentTurnOutcome};
 use astrcode_core::{
     ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
 };
@@ -43,27 +41,24 @@ use astrcode_debug_workbench::{
     SessionDebugTraceItemKind,
 };
 use astrcode_protocol::http::{
-    AgentCollaborationScorecardDto, AgentContextDto, AgentEventEnvelope, AgentEventPayload,
-    AgentLifecycleDto, AgentProfileDto, ArtifactRefDto, ChildAgentRefDto,
-    ChildSessionLineageKindDto, ChildSessionNotificationKindDto,
-    CloseRequestParentDeliveryPayloadDto, CompactTriggerDto, CompletedParentDeliveryPayloadDto,
-    ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView,
-    CurrentModelInfoDto, ExecutionDiagnosticsDto, FailedParentDeliveryPayloadDto, ForkModeDto,
-    InvocationKindDto, MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto, ModelOptionDto,
-    OperationMetricsDto, PROTOCOL_VERSION, ParentDeliveryDto, ParentDeliveryOriginDto,
-    ParentDeliveryPayloadDto, ParentDeliveryTerminalSemanticsDto, PhaseDto, PluginHealthDto,
-    PluginRuntimeStateDto, ProfileView, ProgressParentDeliveryPayloadDto, ReplayMetricsDto,
-    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, RuntimeCapabilityDto,
+    AgentCollaborationScorecardDto, AgentProfileDto, ArtifactRefDto,
+    CloseRequestParentDeliveryPayloadDto, CompletedParentDeliveryPayloadDto,
+    ComposerOptionActionKindDto, ComposerOptionDto, ComposerOptionKindDto,
+    ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto, ExecutionDiagnosticsDto,
+    FailedParentDeliveryPayloadDto, ForkModeDto, ModelOptionDto, OperationMetricsDto,
+    PROTOCOL_VERSION, ParentDeliveryDto, ParentDeliveryOriginDto, ParentDeliveryPayloadDto,
+    ParentDeliveryTerminalSemanticsDto, PhaseDto, PluginHealthDto, PluginRuntimeStateDto,
+    ProfileView, ProgressParentDeliveryPayloadDto, ReplayMetricsDto, RuntimeCapabilityDto,
     RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
     SessionCatalogEventPayload, SessionListItem, SubRunExecutionMetricsDto, SubRunFailureCodeDto,
-    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
-    SubagentContextOverridesDto, ToolCallResultDto, ToolOutputStreamDto,
+    SubRunHandoffDto, SubRunStorageModeDto, SubagentContextOverridesDto,
 };
 #[cfg(feature = "debug-workbench")]
 use astrcode_protocol::http::{
-    AgentTurnOutcomeDto, DebugAgentNodeKindDto, RuntimeDebugOverviewDto, RuntimeDebugTimelineDto,
-    RuntimeDebugTimelineSampleDto, SessionDebugAgentNodeDto, SessionDebugAgentsDto,
-    SessionDebugTraceDto, SessionDebugTraceItemDto, SessionDebugTraceItemKindDto,
+    AgentLifecycleDto, AgentTurnOutcomeDto, DebugAgentNodeKindDto, RuntimeDebugOverviewDto,
+    RuntimeDebugTimelineDto, RuntimeDebugTimelineSampleDto, SessionDebugAgentNodeDto,
+    SessionDebugAgentsDto, SessionDebugTraceDto, SessionDebugTraceItemDto,
+    SessionDebugTraceItemKindDto,
 };
 use axum::{http::StatusCode, response::sse::Event};
 
@@ -167,60 +162,6 @@ fn from_fork_mode_dto(dto: ForkModeDto) -> ForkMode {
     }
 }
 
-/// 将会话事件记录转换为 SSE 事件。
-///
-/// 将 `SessionEventRecord` 包装为 `AgentEventEnvelope` 并序列化为 JSON，
-/// 附带协议版本号。序列化失败时返回结构化错误载荷而非 panic，
-/// 确保 SSE 连接不会因单条事件序列化失败而断开。
-pub(crate) fn to_sse_event(record: SessionEventRecord) -> Event {
-    // Keep protocol mapping centralized so protocol stays independent from core/runtime types.
-    let payload =
-        serde_json::to_string(&to_agent_event_envelope(record.event)).unwrap_or_else(|error| {
-            serde_json::json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "event": "error",
-                "data": {
-                    "turnId": null,
-                    "code": "serialization_error",
-                    "message": error.to_string()
-                }
-            })
-            .to_string()
-        });
-    Event::default().id(record.event_id).data(payload)
-}
-
-/// 将 live-only 增量事件转换为 SSE 事件。
-///
-/// live 事件不参与 durable cursor/replay，因此故意不写 event id；
-/// 断线恢复统一依赖后续 durable 真相（如 AssistantFinal / TurnDone）。
-pub(crate) fn to_live_sse_event(event: AgentEvent) -> Event {
-    let payload = serde_json::to_string(&to_agent_event_envelope(event)).unwrap_or_else(|error| {
-        serde_json::json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "event": "error",
-            "data": {
-                "turnId": null,
-                "code": "serialization_error",
-                "message": error.to_string()
-            }
-        })
-        .to_string()
-    });
-    Event::default().data(payload)
-}
-
-/// 将内部事件投影为 HTTP 事件信封。
-///
-/// 历史快照和 SSE 增量都应复用同一份 envelope 映射，避免服务端在
-/// “初始化加载”和“实时事件”之间再维护两种事件载荷格式。
-pub(crate) fn to_agent_event_envelope(event: AgentEvent) -> AgentEventEnvelope {
-    AgentEventEnvelope {
-        protocol_version: PROTOCOL_VERSION,
-        event: to_agent_event_dto(event),
-    }
-}
-
 /// 将会话目录事件转换为 SSE 事件。
 ///
 /// 用于广播会话创建/删除、项目删除、会话分支等目录级变更。
@@ -243,23 +184,6 @@ pub(crate) fn to_session_catalog_sse_event(event: SessionCatalogEvent) -> Event 
     Event::default().data(payload)
 }
 
-/// 解析 SSE 事件 ID 为 `(storage_seq, subindex)` 元组。
-///
-/// 事件 ID 格式为 `{storage_seq}.{subindex}`，其中 `storage_seq` 是会话 writer
-/// 独占分配的单调递增序号，`subindex` 用于同一存储序号下的子事件排序。
-/// 解析失败返回 `None`，调用方应据此判断是否需要从磁盘回放。
-pub(crate) fn parse_event_id(raw: &str) -> Option<(u64, u32)> {
-    let (storage_seq, subindex) = raw.split_once('.')?;
-    Some((storage_seq.parse().ok()?, subindex.parse().ok()?))
-}
-
-/// 将 `(storage_seq, subindex)` 格式化为 SSE 事件 ID 字符串。
-///
-/// 与 `parse_event_id` 互为逆操作，用于 SSE lag 恢复时构造游标。
-pub(crate) fn format_event_id((storage_seq, subindex): (u64, u32)) -> String {
-    format!("{storage_seq}.{subindex}")
-}
-
 /// 将内部 `Phase` 枚举映射为协议层 `PhaseDto`。
 ///
 /// 阶段枚举用于前端渲染会话状态指示器（如思考中、工具调用中、流式输出等）。
@@ -271,39 +195,6 @@ pub(crate) fn to_phase_dto(phase: Phase) -> PhaseDto {
         Phase::Streaming => PhaseDto::Streaming,
         Phase::Interrupted => PhaseDto::Interrupted,
         Phase::Done => PhaseDto::Done,
-    }
-}
-
-/// 将工具输出流类型映射为 DTO。
-///
-/// 用于 `ToolCallDelta` 事件，区分 stdout 和 stderr 输出流。
-fn to_tool_output_stream_dto(stream: ToolOutputStream) -> ToolOutputStreamDto {
-    match stream {
-        ToolOutputStream::Stdout => ToolOutputStreamDto::Stdout,
-        ToolOutputStream::Stderr => ToolOutputStreamDto::Stderr,
-    }
-}
-
-fn to_compact_trigger_dto(trigger: CompactTrigger) -> CompactTriggerDto {
-    match trigger {
-        CompactTrigger::Auto => CompactTriggerDto::Auto,
-        CompactTrigger::Manual => CompactTriggerDto::Manual,
-    }
-}
-
-fn to_agent_context_dto(agent: AgentEventContext) -> AgentContextDto {
-    AgentContextDto {
-        agent_id: agent.agent_id,
-        parent_turn_id: agent.parent_turn_id,
-        parent_sub_run_id: agent.parent_sub_run_id,
-        agent_profile: agent.agent_profile,
-        sub_run_id: agent.sub_run_id,
-        invocation_kind: agent.invocation_kind.map(|kind| match kind {
-            InvocationKind::SubRun => InvocationKindDto::SubRun,
-            InvocationKind::RootExecution => InvocationKindDto::RootExecution,
-        }),
-        storage_mode: agent.storage_mode.map(to_subrun_storage_mode_dto),
-        child_session_id: agent.child_session_id,
     }
 }
 
@@ -324,104 +215,12 @@ fn from_subrun_storage_mode_dto(mode: SubRunStorageModeDto) -> SubRunStorageMode
     }
 }
 
-fn to_subrun_storage_mode_dto(mode: SubRunStorageMode) -> SubRunStorageModeDto {
-    match mode {
-        SubRunStorageMode::IndependentSession => SubRunStorageModeDto::IndependentSession,
-    }
-}
-
-/// 将 lifecycle + last_turn_outcome 组合映射为 SubRunOutcomeDto。
-///
-/// 旧 `AgentStatus` 已拆分为 `AgentLifecycleStatus`（生命周期阶段）和
-/// `AgentTurnOutcome`（单轮结束原因），此函数将两者重新投影为前端兼容的 outcome 枚举。
-fn to_subrun_outcome_dto(
-    lifecycle: AgentLifecycleStatus,
-    last_turn_outcome: Option<AgentTurnOutcome>,
-) -> SubRunOutcomeDto {
-    match last_turn_outcome {
-        Some(AgentTurnOutcome::Completed) => SubRunOutcomeDto::Completed,
-        Some(AgentTurnOutcome::Failed) => SubRunOutcomeDto::Failed,
-        Some(AgentTurnOutcome::Cancelled) => SubRunOutcomeDto::Aborted,
-        Some(AgentTurnOutcome::TokenExceeded) => SubRunOutcomeDto::TokenExceeded,
-        None => match lifecycle {
-            AgentLifecycleStatus::Terminated => SubRunOutcomeDto::Aborted,
-            _ => SubRunOutcomeDto::Running,
-        },
-    }
-}
-
-fn to_subrun_result_dto(
-    result: SubRunResult,
-    sub_run_id: Option<&str>,
-    turn_id: Option<&str>,
-) -> SubRunResultDto {
-    SubRunResultDto {
-        status: to_subrun_outcome_dto(result.lifecycle, result.last_turn_outcome),
-        handoff: result
-            .handoff
-            .map(|handoff| to_subrun_handoff_dto(handoff, sub_run_id, turn_id)),
-        failure: result.failure.map(to_subrun_failure_dto),
-    }
-}
-
-fn to_child_agent_ref_dto(child_ref: ChildAgentRef) -> ChildAgentRefDto {
-    ChildAgentRefDto {
-        agent_id: child_ref.agent_id,
-        session_id: child_ref.session_id,
-        sub_run_id: child_ref.sub_run_id,
-        parent_agent_id: child_ref.parent_agent_id,
-        parent_sub_run_id: child_ref.parent_sub_run_id,
-        lineage_kind: to_child_lineage_kind_dto(child_ref.lineage_kind),
-        status: to_agent_lifecycle_dto(child_ref.status),
-        open_session_id: child_ref.open_session_id,
-    }
-}
-
-fn to_agent_lifecycle_dto(status: AgentLifecycleStatus) -> AgentLifecycleDto {
-    match status {
-        AgentLifecycleStatus::Pending => AgentLifecycleDto::Pending,
-        AgentLifecycleStatus::Running => AgentLifecycleDto::Running,
-        AgentLifecycleStatus::Idle => AgentLifecycleDto::Idle,
-        AgentLifecycleStatus::Terminated => AgentLifecycleDto::Terminated,
-    }
-}
-
-fn to_child_lineage_kind_dto(kind: ChildSessionLineageKind) -> ChildSessionLineageKindDto {
-    match kind {
-        ChildSessionLineageKind::Spawn => ChildSessionLineageKindDto::Spawn,
-        ChildSessionLineageKind::Fork => ChildSessionLineageKindDto::Fork,
-        ChildSessionLineageKind::Resume => ChildSessionLineageKindDto::Resume,
-    }
-}
-
-fn to_child_notification_kind_dto(
-    kind: ChildSessionNotificationKind,
-) -> ChildSessionNotificationKindDto {
-    match kind {
-        ChildSessionNotificationKind::Started => ChildSessionNotificationKindDto::Started,
-        ChildSessionNotificationKind::ProgressSummary => {
-            ChildSessionNotificationKindDto::ProgressSummary
-        },
-        ChildSessionNotificationKind::Delivered => ChildSessionNotificationKindDto::Delivered,
-        ChildSessionNotificationKind::Waiting => ChildSessionNotificationKindDto::Waiting,
-        ChildSessionNotificationKind::Resumed => ChildSessionNotificationKindDto::Resumed,
-        ChildSessionNotificationKind::Closed => ChildSessionNotificationKindDto::Closed,
-        ChildSessionNotificationKind::Failed => ChildSessionNotificationKindDto::Failed,
-    }
-}
-
 fn upgraded_handoff_delivery(
     handoff: &SubRunHandoff,
     _sub_run_id: Option<&str>,
     _turn_id: Option<&str>,
 ) -> Option<ParentDelivery> {
     handoff.delivery.clone()
-}
-
-fn upgraded_notification_delivery(
-    notification: &astrcode_core::ChildSessionNotification,
-) -> Option<ParentDelivery> {
-    notification.delivery.clone()
 }
 
 pub(crate) fn to_subrun_handoff_dto(
@@ -504,15 +303,6 @@ pub(crate) fn to_parent_delivery_dto(delivery: ParentDelivery) -> ParentDelivery
     }
 }
 
-fn to_subrun_failure_dto(failure: SubRunFailure) -> SubRunFailureDto {
-    SubRunFailureDto {
-        code: to_subrun_failure_code_dto(failure.code),
-        display_message: failure.display_message,
-        technical_message: failure.technical_message,
-        retryable: failure.retryable,
-    }
-}
-
 fn to_subrun_failure_code_dto(code: SubRunFailureCode) -> SubRunFailureCodeDto {
     match code {
         SubRunFailureCode::Transport => SubRunFailureCodeDto::Transport,
@@ -520,38 +310,6 @@ fn to_subrun_failure_code_dto(code: SubRunFailureCode) -> SubRunFailureCodeDto {
         SubRunFailureCode::StreamParse => SubRunFailureCodeDto::StreamParse,
         SubRunFailureCode::Interrupted => SubRunFailureCodeDto::Interrupted,
         SubRunFailureCode::Internal => SubRunFailureCodeDto::Internal,
-    }
-}
-
-fn to_resolved_overrides_dto(
-    overrides: ResolvedSubagentContextOverrides,
-) -> ResolvedSubagentContextOverridesDto {
-    ResolvedSubagentContextOverridesDto {
-        storage_mode: to_subrun_storage_mode_dto(overrides.storage_mode),
-        inherit_system_instructions: overrides.inherit_system_instructions,
-        inherit_project_instructions: overrides.inherit_project_instructions,
-        inherit_working_dir: overrides.inherit_working_dir,
-        inherit_policy_upper_bound: overrides.inherit_policy_upper_bound,
-        inherit_cancel_token: overrides.inherit_cancel_token,
-        include_compact_summary: overrides.include_compact_summary,
-        include_recent_tail: overrides.include_recent_tail,
-        include_recovery_refs: overrides.include_recovery_refs,
-        include_parent_findings: overrides.include_parent_findings,
-        fork_mode: overrides.fork_mode.map(to_fork_mode_dto),
-    }
-}
-
-fn to_fork_mode_dto(fork_mode: ForkMode) -> ForkModeDto {
-    match fork_mode {
-        ForkMode::FullHistory => ForkModeDto::FullHistory,
-        ForkMode::LastNTurns(n) => ForkModeDto::LastNTurns(n),
-    }
-}
-
-fn to_resolved_limits_dto(limits: ResolvedExecutionLimitsSnapshot) -> ResolvedExecutionLimitsDto {
-    ResolvedExecutionLimitsDto {
-        allowed_tools: limits.allowed_tools,
-        max_steps: limits.max_steps,
     }
 }
 
@@ -861,279 +619,22 @@ fn to_debug_agent_node_kind_dto(kind: DebugAgentNodeKind) -> DebugAgentNodeKindD
 }
 
 #[cfg(feature = "debug-workbench")]
+fn to_agent_lifecycle_dto(status: AgentLifecycleStatus) -> AgentLifecycleDto {
+    match status {
+        AgentLifecycleStatus::Pending => AgentLifecycleDto::Pending,
+        AgentLifecycleStatus::Running => AgentLifecycleDto::Running,
+        AgentLifecycleStatus::Idle => AgentLifecycleDto::Idle,
+        AgentLifecycleStatus::Terminated => AgentLifecycleDto::Terminated,
+    }
+}
+
+#[cfg(feature = "debug-workbench")]
 fn to_agent_turn_outcome_dto(outcome: AgentTurnOutcome) -> AgentTurnOutcomeDto {
     match outcome {
         AgentTurnOutcome::Completed => AgentTurnOutcomeDto::Completed,
         AgentTurnOutcome::Failed => AgentTurnOutcomeDto::Failed,
         AgentTurnOutcome::Cancelled => AgentTurnOutcomeDto::Cancelled,
         AgentTurnOutcome::TokenExceeded => AgentTurnOutcomeDto::TokenExceeded,
-    }
-}
-
-/// 将智能体事件映射为协议层事件载荷。
-///
-/// 这是 SSE 事件流的核心映射函数，覆盖智能体生命周期中的所有事件类型：
-/// 会话启动、用户消息、阶段变更、模型增量输出、思考增量、助手消息、
-/// 工具调用（开始/增量/结果）、轮次完成、错误。
-/// 工具调用增量输出会携带流类型（stdout/stderr）信息。
-pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
-    match event {
-        AgentEvent::SessionStarted { session_id } => {
-            AgentEventPayload::SessionStarted { session_id }
-        },
-        AgentEvent::UserMessage {
-            turn_id,
-            agent,
-            content,
-        } => AgentEventPayload::UserMessage {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            content,
-        },
-        AgentEvent::PhaseChanged {
-            turn_id,
-            agent,
-            phase,
-        } => AgentEventPayload::PhaseChanged {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            phase: to_phase_dto(phase),
-        },
-        AgentEvent::ModelDelta {
-            turn_id,
-            agent,
-            delta,
-        } => AgentEventPayload::ModelDelta {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            delta,
-        },
-        AgentEvent::ThinkingDelta {
-            turn_id,
-            agent,
-            delta,
-        } => AgentEventPayload::ThinkingDelta {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            delta,
-        },
-        AgentEvent::AssistantMessage {
-            turn_id,
-            agent,
-            content,
-            reasoning_content,
-        } => AgentEventPayload::AssistantMessage {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            content,
-            reasoning_content,
-        },
-        AgentEvent::ToolCallStart {
-            turn_id,
-            agent,
-            tool_call_id,
-            tool_name,
-            input,
-        } => AgentEventPayload::ToolCallStart {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            tool_call_id,
-            tool_name,
-            input,
-        },
-        AgentEvent::ToolCallDelta {
-            turn_id,
-            agent,
-            tool_call_id,
-            tool_name,
-            stream,
-            delta,
-        } => AgentEventPayload::ToolCallDelta {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            tool_call_id,
-            tool_name,
-            stream: to_tool_output_stream_dto(stream),
-            delta,
-        },
-        AgentEvent::ToolCallResult {
-            turn_id,
-            agent,
-            result,
-        } => AgentEventPayload::ToolCallResult {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            result: ToolCallResultDto {
-                tool_call_id: result.tool_call_id,
-                tool_name: result.tool_name,
-                ok: result.ok,
-                output: result.output,
-                error: result.error,
-                metadata: result.metadata,
-                duration_ms: result.duration_ms,
-                truncated: result.truncated,
-            },
-        },
-        AgentEvent::CompactApplied {
-            turn_id,
-            agent,
-            trigger,
-            summary,
-            preserved_recent_turns,
-        } => AgentEventPayload::CompactApplied {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            trigger: to_compact_trigger_dto(trigger),
-            summary,
-            preserved_recent_turns,
-        },
-        AgentEvent::SubRunStarted {
-            turn_id,
-            agent,
-            tool_call_id,
-            resolved_overrides,
-            resolved_limits,
-        } => AgentEventPayload::SubRunStarted {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            tool_call_id,
-            resolved_overrides: to_resolved_overrides_dto(resolved_overrides),
-            resolved_limits: to_resolved_limits_dto(resolved_limits),
-        },
-        AgentEvent::SubRunFinished {
-            turn_id,
-            agent,
-            tool_call_id,
-            result,
-            step_count,
-            estimated_tokens,
-        } => {
-            let sub_run_id = agent.sub_run_id.clone();
-            let result_turn_id = turn_id.clone();
-            AgentEventPayload::SubRunFinished {
-                turn_id,
-                agent: to_agent_context_dto(agent),
-                tool_call_id,
-                result: to_subrun_result_dto(
-                    result,
-                    sub_run_id.as_deref(),
-                    result_turn_id.as_deref(),
-                ),
-                step_count,
-                estimated_tokens,
-            }
-        },
-        AgentEvent::ChildSessionNotification {
-            turn_id,
-            agent,
-            notification,
-        } => AgentEventPayload::ChildSessionNotification {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            child_ref: to_child_agent_ref_dto(notification.child_ref.clone()),
-            kind: to_child_notification_kind_dto(notification.kind),
-            status: to_agent_lifecycle_dto(notification.status),
-            source_tool_call_id: notification.source_tool_call_id.clone(),
-            delivery: upgraded_notification_delivery(&notification).map(to_parent_delivery_dto),
-        },
-        AgentEvent::TurnDone { turn_id, agent } => AgentEventPayload::TurnDone {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-        },
-        AgentEvent::Error {
-            turn_id,
-            agent,
-            code,
-            message,
-        } => AgentEventPayload::Error {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            code,
-            message,
-        },
-        AgentEvent::PromptMetrics {
-            turn_id,
-            agent,
-            metrics,
-        } => AgentEventPayload::PromptMetrics {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            step_index: metrics.step_index,
-            estimated_tokens: metrics.estimated_tokens,
-            context_window: metrics.context_window,
-            effective_window: metrics.effective_window,
-            threshold_tokens: metrics.threshold_tokens,
-            truncated_tool_results: metrics.truncated_tool_results,
-            provider_input_tokens: metrics.provider_input_tokens,
-            provider_output_tokens: metrics.provider_output_tokens,
-            cache_creation_input_tokens: metrics.cache_creation_input_tokens,
-            cache_read_input_tokens: metrics.cache_read_input_tokens,
-            provider_cache_metrics_supported: metrics.provider_cache_metrics_supported,
-            prompt_cache_reuse_hits: metrics.prompt_cache_reuse_hits,
-            prompt_cache_reuse_misses: metrics.prompt_cache_reuse_misses,
-        },
-        AgentEvent::AgentMailboxQueued {
-            turn_id,
-            agent,
-            payload,
-        } => AgentEventPayload::AgentMailboxQueued {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            payload: MailboxQueuedDto {
-                delivery_id: payload.envelope.delivery_id,
-                from_agent_id: payload.envelope.from_agent_id,
-                to_agent_id: payload.envelope.to_agent_id,
-                message: payload.envelope.message,
-                queued_at: payload.envelope.queued_at.to_rfc3339(),
-                sender_lifecycle_status: format!("{:?}", payload.envelope.sender_lifecycle_status),
-                sender_last_turn_outcome: payload
-                    .envelope
-                    .sender_last_turn_outcome
-                    .map(|outcome| format!("{outcome:?}")),
-                sender_open_session_id: payload.envelope.sender_open_session_id,
-                summary: None,
-            },
-        },
-        AgentEvent::AgentMailboxBatchStarted {
-            turn_id,
-            agent,
-            payload,
-        } => AgentEventPayload::AgentMailboxBatchStarted {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            payload: MailboxBatchDto {
-                target_agent_id: payload.target_agent_id,
-                turn_id: payload.turn_id,
-                batch_id: payload.batch_id,
-                delivery_ids: payload.delivery_ids,
-            },
-        },
-        AgentEvent::AgentMailboxBatchAcked {
-            turn_id,
-            agent,
-            payload,
-        } => AgentEventPayload::AgentMailboxBatchAcked {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            payload: MailboxBatchDto {
-                target_agent_id: payload.target_agent_id,
-                turn_id: payload.turn_id,
-                batch_id: payload.batch_id,
-                delivery_ids: payload.delivery_ids,
-            },
-        },
-        AgentEvent::AgentMailboxDiscarded {
-            turn_id,
-            agent,
-            payload,
-        } => AgentEventPayload::AgentMailboxDiscarded {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            payload: MailboxDiscardedDto {
-                target_agent_id: payload.target_agent_id,
-                delivery_ids: payload.delivery_ids,
-            },
-        },
     }
 }
 
@@ -1269,6 +770,15 @@ fn to_composer_option_dto(item: ComposerOption) -> ComposerOptionDto {
         title: item.title,
         description: item.description,
         insert_text: item.insert_text,
+        action_kind: match item.action_kind {
+            astrcode_application::ComposerOptionActionKind::InsertText => {
+                ComposerOptionActionKindDto::InsertText
+            },
+            astrcode_application::ComposerOptionActionKind::ExecuteCommand => {
+                ComposerOptionActionKindDto::ExecuteCommand
+            },
+        },
+        action_value: item.action_value,
         badges: item.badges,
         keywords: item.keywords,
     }

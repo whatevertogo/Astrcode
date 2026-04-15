@@ -1,6 +1,8 @@
 use std::fs;
 
-use astrcode_protocol::http::{ComposerOptionKindDto, ComposerOptionsResponseDto};
+use astrcode_protocol::http::{
+    ComposerOptionActionKindDto, ComposerOptionKindDto, ComposerOptionsResponseDto,
+};
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -77,7 +79,16 @@ async fn composer_options_expose_session_scoped_skill_entries() {
             .iter()
             .all(|item| item.kind == ComposerOptionKindDto::Skill)
     );
-    assert!(payload.items.iter().any(|item| item.id == "git-commit"));
+    let git_commit = payload
+        .items
+        .iter()
+        .find(|item| item.id == "git-commit")
+        .expect("git-commit skill should be exposed");
+    assert_eq!(
+        git_commit.action_kind,
+        ComposerOptionActionKindDto::InsertText
+    );
+    assert_eq!(git_commit.action_value, git_commit.insert_text);
 }
 
 #[tokio::test]
@@ -156,6 +167,11 @@ async fn composer_options_expose_runtime_command_entries() {
     assert_eq!(payload.items[0].kind, ComposerOptionKindDto::Command);
     assert_eq!(payload.items[0].id, "compact");
     assert_eq!(payload.items[0].insert_text, "/compact");
+    assert_eq!(
+        payload.items[0].action_kind,
+        ComposerOptionActionKindDto::ExecuteCommand
+    );
+    assert_eq!(payload.items[0].action_value, "/compact");
 }
 
 #[tokio::test]

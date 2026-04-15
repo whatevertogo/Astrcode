@@ -18,6 +18,13 @@ pub enum ComposerOptionKindDto {
     Capability,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposerOptionActionKindDto {
+    InsertText,
+    ExecuteCommand,
+}
+
 /// 单个输入候选项。
 ///
 /// `insert_text` 是前端选择该项后建议写回输入框的文本。
@@ -31,6 +38,8 @@ pub struct ComposerOptionDto {
     pub title: String,
     pub description: String,
     pub insert_text: String,
+    pub action_kind: ComposerOptionActionKindDto,
+    pub action_value: String,
     #[serde(default)]
     pub badges: Vec<String>,
     #[serde(default)]

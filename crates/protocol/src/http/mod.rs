@@ -18,12 +18,14 @@ mod agent;
 mod auth;
 mod composer;
 mod config;
+pub mod conversation;
 mod debug;
 mod event;
 mod model;
 mod runtime;
 mod session;
 mod session_event;
+pub mod terminal;
 mod tool;
 
 pub use agent::{
@@ -33,10 +35,24 @@ pub use agent::{
     SubagentContextOverridesDto,
 };
 pub use auth::{AuthExchangeRequest, AuthExchangeResponse};
-pub use composer::{ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto};
+pub use composer::{
+    ComposerOptionActionKindDto, ComposerOptionDto, ComposerOptionKindDto,
+    ComposerOptionsResponseDto,
+};
 pub use config::{
     ConfigReloadResponse, ConfigView, ProfileView, SaveActiveSelectionRequest,
     TestConnectionRequest, TestResultDto,
+};
+pub use conversation::v1::{
+    ConversationAssistantBlockDto, ConversationBannerDto, ConversationBannerErrorCodeDto,
+    ConversationBlockDto, ConversationBlockPatchDto, ConversationBlockStatusDto,
+    ConversationChildHandoffBlockDto, ConversationChildHandoffKindDto, ConversationChildSummaryDto,
+    ConversationControlStateDto, ConversationCursorDto, ConversationDeltaDto,
+    ConversationErrorBlockDto, ConversationErrorEnvelopeDto, ConversationSlashActionKindDto,
+    ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto,
+    ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto,
+    ConversationSystemNoteKindDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
+    ConversationToolStreamBlockDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
 };
 pub use debug::{
     DebugAgentNodeKindDto, RuntimeDebugOverviewDto, RuntimeDebugTimelineDto,
@@ -62,8 +78,17 @@ pub use runtime::{
 };
 pub use session::{
     CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
-    PromptAcceptedResponse, PromptRequest, SessionHistoryResponseDto, SessionListItem,
-    SessionViewResponseDto,
+    PromptAcceptedResponse, PromptRequest, SessionListItem,
 };
 pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};
+pub use terminal::v1::{
+    TerminalAssistantBlockDto, TerminalBannerDto, TerminalBannerErrorCodeDto, TerminalBlockDto,
+    TerminalBlockPatchDto, TerminalBlockStatusDto, TerminalChildHandoffBlockDto,
+    TerminalChildHandoffKindDto, TerminalChildSummaryDto, TerminalControlStateDto,
+    TerminalCursorDto, TerminalDeltaDto, TerminalErrorBlockDto, TerminalErrorEnvelopeDto,
+    TerminalSlashActionKindDto, TerminalSlashCandidateDto, TerminalSlashCandidatesResponseDto,
+    TerminalSnapshotResponseDto, TerminalStreamEnvelopeDto, TerminalSystemNoteBlockDto,
+    TerminalSystemNoteKindDto, TerminalThinkingBlockDto, TerminalToolCallBlockDto,
+    TerminalToolStreamBlockDto, TerminalTranscriptErrorCodeDto, TerminalUserBlockDto,
+};
 pub use tool::{ToolDescriptorDto, ToolExecuteRequestDto, ToolExecuteResponseDto};

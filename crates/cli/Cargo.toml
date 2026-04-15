@@ -1,0 +1,20 @@
+[package]
+name = "astrcode-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+astrcode-client = { path = "../client" }
+astrcode-core = { path = "../core" }
+anyhow.workspace = true
+async-trait.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28"
+reqwest.workspace = true
+ratatui = "0.29"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

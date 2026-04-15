@@ -413,6 +413,10 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
       if (parentAgent && !record.parentAgentId) {
         record.parentAgentId = parentAgent;
       }
+      if (!record.parentSubRunId) {
+        record.parentSubRunId =
+          message.childRef?.parentSubRunId ?? message.parentSubRunId ?? record.parentSubRunId;
+      }
       record.latestNotification = message;
     }
 

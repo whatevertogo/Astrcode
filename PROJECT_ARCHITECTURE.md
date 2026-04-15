@@ -158,7 +158,7 @@ agent delegation experience 也遵循同样的分层边界：
 - 只有回答“某个 session 当前发生了什么、如何推进一次 turn”的代码，才能进入 `session-runtime`。
 - `session-runtime` 负责：
   - create/load/list/delete
-  - history/view/replay
+  - transcript snapshot/replay
   - interrupt/compact/run_turn
   - branch/subrun 的单 session 执行真相
   - child delivery / mailbox / observe 的会话内推进部分
@@ -198,7 +198,7 @@ agent delegation experience 也遵循同样的分层边界：
 
 5. **Query 与 Command 逻辑继续分离**
    - 写侧负责追加事件、推进 turn、驱动 mailbox。
-   - 读侧负责 history、snapshot、replay、context view 等投影查询。
+   - 读侧负责 transcript snapshot、stream replay、context view 等投影查询。
    - 当前项目已经开始分离：有 `query/` 模块，也有只读快照类型。
    - 但 `SessionRuntime` 仍同时暴露较多 command/query 方法；长期可以继续向轻量 CQRS 靠拢，让只读查询尽量不被写侧执行路径阻塞。
 

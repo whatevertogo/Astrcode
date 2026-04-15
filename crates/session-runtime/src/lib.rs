@@ -5,7 +5,7 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentCollaborationFact, AgentEventContext, AgentId, AgentLifecycleStatus,
+    AgentCollaborationFact, AgentEventContext, AgentId, AgentLifecycleStatus, ChildSessionNode,
     ChildSessionNotification, DeleteProjectResult, EventStore, EventTranslator,
     MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
     MailboxQueuedPayload, Phase, PromptFactsProvider, ResolvedRuntimeConfig, Result,
@@ -37,9 +37,10 @@ pub use observe::{
     SessionEventFilterSpec, SubRunEventScope, SubRunStatusSnapshot, SubRunStatusSource,
 };
 pub use query::{
-    AgentObserveSnapshot, ProjectedTurnOutcome, SessionHistorySnapshot, SessionReplay,
-    SessionViewSnapshot, TurnTerminalSnapshot, build_agent_observe_snapshot, current_turn_messages,
-    has_terminal_turn_signal, project_turn_outcome, recoverable_parent_deliveries,
+    AgentObserveSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot, SessionReplay,
+    SessionTranscriptSnapshot, TurnTerminalSnapshot, build_agent_observe_snapshot,
+    current_turn_messages, has_terminal_turn_signal, project_turn_outcome,
+    recoverable_parent_deliveries,
 };
 pub use state::{
     MailboxEventAppend, SessionSnapshot, SessionState, SessionStateEventSink, SessionWriter,
@@ -254,6 +255,27 @@ impl SessionRuntime {
     pub async fn get_session_state(&self, session_id: &SessionId) -> Result<Arc<SessionState>> {
         let actor = self.ensure_loaded_session(session_id).await?;
         Ok(Arc::clone(actor.state()))
+    }
+
+    /// 读取会话控制态快照，供 application / terminal surface 编排使用。
+    pub async fn session_control_state(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionControlStateSnapshot> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let actor = self.ensure_loaded_session(&session_id).await?;
+        Ok(SessionControlStateSnapshot {
+            phase: actor.state().current_phase()?,
+            active_turn_id: actor.state().active_turn_id_snapshot()?,
+            manual_compact_pending: actor.state().manual_compact_pending()?,
+        })
+    }
+
+    /// 返回当前 session durable 可见的 direct child lineage 节点。
+    pub async fn session_child_nodes(&self, session_id: &str) -> Result<Vec<ChildSessionNode>> {
+        let session_id = SessionId::from(normalize_session_id(session_id));
+        let actor = self.ensure_loaded_session(&session_id).await?;
+        actor.state().list_child_session_nodes()
     }
 
     /// 读取指定 session 的工作目录。

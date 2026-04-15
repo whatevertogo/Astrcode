@@ -135,18 +135,24 @@ pub(crate) fn require_auth(
     headers: &HeaderMap,
     query_token: Option<&str>,
 ) -> Result<(), ApiError> {
-    let header_token = headers
-        .get(AUTH_HEADER_NAME)
-        .and_then(|value| value.to_str().ok());
-    let authorized = header_token
-        .or(query_token)
-        .map(|token| state.auth_sessions.validate(token))
-        .unwrap_or(false);
-    if authorized {
+    if is_authorized(state, headers, query_token) {
         Ok(())
     } else {
         Err(ApiError::unauthorized())
     }
+}
+
+pub(crate) fn is_authorized(
+    state: &AppState,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+) -> bool {
+    headers
+        .get(AUTH_HEADER_NAME)
+        .and_then(|value| value.to_str().ok())
+        .or(query_token)
+        .map(|token| state.auth_sessions.validate(token))
+        .unwrap_or(false)
 }
 
 /// 常量时间字符串比较，防止时序攻击。

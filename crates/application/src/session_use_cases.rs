@@ -7,8 +7,8 @@ use astrcode_core::{
 };
 
 use crate::{
-    App, ApplicationError, CompactSessionAccepted, ExecutionControl, SessionHistorySnapshot,
-    SessionReplay, SessionViewSnapshot,
+    App, ApplicationError, CompactSessionAccepted, ExecutionControl, SessionControlStateSnapshot,
+    SessionReplay, SessionTranscriptSnapshot,
     agent::{
         IMPLICIT_ROOT_PROFILE_ID, implicit_session_root_agent_id, root_execution_event_context,
     },
@@ -128,6 +128,11 @@ impl App {
                     "maxSteps is not valid for manual compact".to_string(),
                 ));
             }
+            if matches!(control.manual_compact, Some(false)) {
+                return Err(ApplicationError::InvalidArgument(
+                    "manualCompact must be true for manual compact requests".to_string(),
+                ));
+            }
         }
         let working_dir = self
             .session_runtime
@@ -144,22 +149,22 @@ impl App {
         Ok(CompactSessionAccepted { deferred })
     }
 
-    pub async fn session_history(
+    pub async fn session_transcript_snapshot(
         &self,
         session_id: &str,
-    ) -> Result<SessionHistorySnapshot, ApplicationError> {
+    ) -> Result<SessionTranscriptSnapshot, ApplicationError> {
         self.session_runtime
-            .session_history(session_id)
+            .session_transcript_snapshot(session_id)
             .await
             .map_err(ApplicationError::from)
     }
 
-    pub async fn session_view(
+    pub async fn session_control_state(
         &self,
         session_id: &str,
-    ) -> Result<SessionViewSnapshot, ApplicationError> {
+    ) -> Result<SessionControlStateSnapshot, ApplicationError> {
         self.session_runtime
-            .session_view(session_id)
+            .session_control_state(session_id)
             .await
             .map_err(ApplicationError::from)
     }
@@ -188,16 +193,9 @@ impl App {
         &self,
         session_id: &str,
     ) -> Result<Vec<ChildSessionNode>, ApplicationError> {
-        let session_id = astrcode_core::SessionId::from(
-            astrcode_session_runtime::normalize_session_id(session_id),
-        );
-        let state = self
-            .session_runtime
-            .get_session_state(&session_id)
+        self.session_runtime
+            .session_child_nodes(session_id)
             .await
-            .map_err(ApplicationError::from)?;
-        state
-            .list_child_session_nodes()
             .map_err(ApplicationError::from)
     }
 

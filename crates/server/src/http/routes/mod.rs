@@ -2,7 +2,8 @@
 //!
 //! 本模块定义所有 HTTP/SSE API 路由，按业务领域拆分为子模块：
 //!
-//! - **sessions**：会话 CRUD、提示提交、事件流（SSE）
+//! - **sessions**：会话 CRUD、提示提交、会话目录事件流（SSE）
+//! - **conversation**：统一的产品会话读取面（snapshot/stream/slash candidates）
 //! - **composer**：输入框候选列表
 //! - **config**：配置查看和活跃选择保存
 //! - **model**：模型列表、当前模型、连接测试
@@ -17,6 +18,7 @@
 pub(crate) mod agents;
 pub(crate) mod composer;
 pub(crate) mod config;
+pub(crate) mod conversation;
 #[cfg(feature = "debug-workbench")]
 pub(crate) mod debug;
 pub(crate) mod logs;
@@ -50,15 +52,17 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// - `POST /api/sessions` — 创建新会话
 /// - `GET /api/sessions` — 列出所有会话
 /// - `GET /api/session-events` — 订阅会话目录事件（SSE）
-/// - `GET /api/sessions/:id/history` — 获取会话历史事件快照
-/// - `GET /api/sessions/:id/view` — 获取会话/子执行视图快照
 /// - `GET /api/sessions/:id/composer/options` — 获取输入框候选列表
 /// - `POST /api/sessions/:id/prompts` — 提交用户提示
 /// - `POST /api/sessions/:id/compact` — 压缩会话上下文
 /// - `POST /api/sessions/:id/interrupt` — 中断会话执行
-/// - `GET /api/sessions/:id/events` — 订阅会话事件流（SSE，支持断点续传）
 /// - `DELETE /api/sessions/:id` — 删除单个会话
 /// - `DELETE /api/projects` — 删除整个项目（级联删除所有会话）
+///
+/// ### Conversation
+/// - `GET /api/v1/conversation/sessions/{id}/snapshot` — 获取 authoritative conversation snapshot
+/// - `GET /api/v1/conversation/sessions/{id}/stream` — 订阅 authoritative conversation delta 流
+/// - `GET /api/v1/conversation/sessions/{id}/slash-candidates` — 获取 slash candidates
 ///
 /// ### 配置
 /// - `GET /api/config` — 获取当前配置视图
@@ -87,8 +91,6 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             post(sessions::create_session).get(sessions::list_sessions),
         )
         .route("/api/session-events", get(sessions::session_catalog_events))
-        .route("/api/sessions/{id}/history", get(sessions::session_history))
-        .route("/api/sessions/{id}/view", get(sessions::session_view))
         .route(
             "/api/sessions/{id}/composer/options",
             get(composer::session_composer_options),
@@ -102,7 +104,6 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             "/api/sessions/{id}/interrupt",
             post(sessions::interrupt_session),
         )
-        .route("/api/sessions/{id}/events", get(sessions::session_events))
         .route("/api/sessions/{id}", delete(sessions::delete_session))
         .route("/api/projects", delete(sessions::delete_project))
         .route("/api/config", get(config::get_config))
@@ -124,6 +125,18 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         .route(
             "/api/v1/sessions/{id}/agents/{agent_id}/close",
             post(agents::close_agent),
+        )
+        .route(
+            "/api/v1/conversation/sessions/{id}/snapshot",
+            get(conversation::conversation_snapshot),
+        )
+        .route(
+            "/api/v1/conversation/sessions/{id}/stream",
+            get(conversation::conversation_stream),
+        )
+        .route(
+            "/api/v1/conversation/sessions/{id}/slash-candidates",
+            get(conversation::conversation_slash_candidates),
         )
         // MCP 管理
         .route("/api/mcp/status", get(mcp::get_mcp_status))

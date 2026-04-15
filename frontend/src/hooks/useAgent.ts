@@ -1,23 +1,23 @@
 //! # Agent Hook
 //!
-//! Orchestrates API calls and SSE event streaming.
-//!
-//! ## Refactoring Notes
-//!
-//! API calls have been extracted into `lib/api/` so this hook only coordinates
-//! state, lifecycle, and reconnection logic. Tests can now target individual API
-//! modules in isolation.
+//! Orchestrates API calls and authoritative conversation streaming.
 
 import { useCallback, useEffect, useRef } from 'react';
-import { normalizeAgentEvent } from '../lib/agentEvent';
 import { getHostBridge } from '../lib/hostBridge';
 import { consumeSseStream } from '../lib/sse/consumer';
 import { normalizeSessionIdForCompare } from '../lib/sessionId';
-import { buildSessionEventQueryString } from '../lib/sessionView';
 import { ensureServerSession } from '../lib/serverAuth';
 import { request } from '../lib/api/client';
 import { logger } from '../lib/logger';
 import { listComposerOptions } from '../lib/api/composer';
+import {
+  applyConversationEnvelope,
+  createConversationStreamRequestPath,
+  loadConversationSnapshotState,
+  projectConversationState,
+  type ConversationSnapshotState,
+  type ConversationViewProjection,
+} from '../lib/api/conversation';
 import {
   compactSession,
   closeChildAgent,
@@ -26,32 +26,21 @@ import {
   deleteSession,
   interruptSession,
   listSessionsWithMeta,
-  loadSession,
-  loadSessionView,
   submitPrompt,
 } from '../lib/api/sessions';
 import { getConfig, reloadConfig, saveActiveSelection } from '../lib/api/config';
 import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api/models';
 import type {
-  AgentEventPayload,
   ComposerOption,
   ConfigView,
   CurrentModelInfo,
   DeleteProjectResult,
   ExecutionControl,
   ModelOption,
-  Phase,
   SessionMeta,
-  SessionViewSnapshot,
   TestResult,
 } from '../types';
 import type { SessionEventFilterQuery } from '../lib/sessionView';
-
-export interface SessionSnapshot {
-  events: AgentEventPayload[];
-  cursor: string | null;
-  phase: Phase;
-}
 
 export interface PromptSubmission {
   turnId: string;
@@ -59,28 +48,9 @@ export interface PromptSubmission {
   branchedFromSessionId?: string;
 }
 
-// SSE 重连配置
 const SSE_RECONNECT_BASE_DELAY_MS = 500;
 const SSE_RECONNECT_MAX_DELAY_MS = 5_000;
 const SSE_RECONNECT_FATAL_ATTEMPTS = 3;
-
-/// 分发流错误事件
-function dispatchStreamError(
-  onEvents: (events: AgentEventPayload[]) => void,
-  message: string,
-  turnId: string | null = null
-): void {
-  onEvents([
-    {
-      event: 'error',
-      data: {
-        code: 'event_stream_error',
-        message,
-        turnId,
-      },
-    },
-  ]);
-}
 
 function shouldRetryEventStream(error: unknown): boolean {
   const message =
@@ -88,46 +58,25 @@ function shouldRetryEventStream(error: unknown): boolean {
   return !message.includes('unauthorized') && !message.includes('403');
 }
 
-export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
-  const onEventRef = useRef(onEvents);
+function projectionSignature(projection: ConversationViewProjection): string {
+  return `${projection.phase}::${projection.messageFingerprint}::${projection.childFingerprint}`;
+}
+
+export function useAgent() {
   const streamAbortRef = useRef<AbortController | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const frameFlushRef = useRef<number | null>(null);
-  const pendingEventBufferRef = useRef<AgentEventPayload[]>([]);
   const reconnectAttemptRef = useRef(0);
   const connectedSessionIdRef = useRef<string | null>(null);
   const connectedSessionFilterRef = useRef<SessionEventFilterQuery | undefined>(undefined);
   const lastEventIdRef = useRef<string | null>(null);
-
-  // Generation counter to prevent race conditions when switching sessions
-  const streamGenerationRef = useRef(0);
-
-  useEffect(() => {
-    onEventRef.current = onEvents;
-  }, [onEvents]);
-
-  const recoverSessionPhase = useCallback(
-    async (sessionId: string, filter?: SessionEventFilterQuery): Promise<void> => {
-      try {
-        const snapshot = await loadSessionView(sessionId, filter);
-        onEventRef.current([
-          {
-            event: 'phaseChanged',
-            data: {
-              phase: snapshot.phase,
-              turnId: null,
-            },
-          },
-        ]);
-      } catch (error) {
-        logger.warn('useAgent', 'failed to recover session phase from server snapshot', {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
-    []
+  const conversationStateRef = useRef<ConversationSnapshotState | null>(null);
+  const projectionHandlerRef = useRef<((projection: ConversationViewProjection) => void) | null>(
+    null
   );
+  const pendingProjectionRef = useRef<ConversationViewProjection | null>(null);
+  const lastProjectionSignatureRef = useRef<string | null>(null);
+  const streamGenerationRef = useRef(0);
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -135,6 +84,54 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
       reconnectTimerRef.current = null;
     }
   }, []);
+
+  const flushProjectedConversation = useCallback(() => {
+    if (frameFlushRef.current !== null) {
+      window.cancelAnimationFrame(frameFlushRef.current);
+      frameFlushRef.current = null;
+    }
+    const projection = pendingProjectionRef.current;
+    pendingProjectionRef.current = null;
+    if (!projection) {
+      return;
+    }
+    projectionHandlerRef.current?.(projection);
+  }, []);
+
+  const queueProjectedConversation = useCallback(
+    (projection: ConversationViewProjection) => {
+      const signature = projectionSignature(projection);
+      if (lastProjectionSignatureRef.current === signature) {
+        return;
+      }
+      lastProjectionSignatureRef.current = signature;
+      pendingProjectionRef.current = projection;
+      if (frameFlushRef.current !== null) {
+        return;
+      }
+      frameFlushRef.current = window.requestAnimationFrame(() => {
+        frameFlushRef.current = null;
+        flushProjectedConversation();
+      });
+    },
+    [flushProjectedConversation]
+  );
+
+  const recoverConversationProjection = useCallback(
+    async (sessionId: string, filter?: SessionEventFilterQuery): Promise<void> => {
+      try {
+        const snapshotState = await loadConversationSnapshotState(sessionId, filter);
+        conversationStateRef.current = snapshotState;
+        queueProjectedConversation(projectConversationState(snapshotState, filter?.subRunId));
+      } catch (error) {
+        logger.warn('useAgent', 'failed to recover conversation projection from server snapshot', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [queueProjectedConversation]
+  );
 
   useEffect(() => {
     return () => {
@@ -145,85 +142,58 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
         window.cancelAnimationFrame(frameFlushRef.current);
         frameFlushRef.current = null;
       }
-      pendingEventBufferRef.current = [];
+      pendingProjectionRef.current = null;
     };
   }, [clearReconnectTimer]);
 
-  const flushBufferedEvents = useCallback(() => {
-    if (frameFlushRef.current !== null) {
-      window.cancelAnimationFrame(frameFlushRef.current);
-      frameFlushRef.current = null;
-    }
-    if (pendingEventBufferRef.current.length === 0) {
-      return;
-    }
-    const batch = pendingEventBufferRef.current;
-    pendingEventBufferRef.current = [];
-    onEventRef.current(batch);
-  }, []);
-
-  const queueIncomingEvent = useCallback(
-    (rawEvent: unknown) => {
-      pendingEventBufferRef.current.push(normalizeAgentEvent(rawEvent));
-      if (frameFlushRef.current !== null) {
-        return;
-      }
-      frameFlushRef.current = window.requestAnimationFrame(() => {
-        frameFlushRef.current = null;
-        flushBufferedEvents();
-      });
-    },
-    [flushBufferedEvents]
-  );
-
   const failActiveConnection = useCallback(
-    (message: string, turnId: string | null = null) => {
+    (message: string) => {
       const activeSessionId = connectedSessionIdRef.current;
       const activeFilter = connectedSessionFilterRef.current;
-      // 这里显式结束本地流状态，而不是无限重试。
-      // 原因是：当用户手动关闭 server 后，继续保持 busy 只会把 UI 卡死在“可中断但无法中断”的假状态。
+      logger.warn('useAgent', 'conversation stream stopped and unlocked input', {
+        sessionId: activeSessionId,
+        message,
+      });
       clearReconnectTimer();
       streamAbortRef.current?.abort();
       streamAbortRef.current = null;
       connectedSessionIdRef.current = null;
       connectedSessionFilterRef.current = undefined;
       lastEventIdRef.current = null;
+      conversationStateRef.current = null;
+      projectionHandlerRef.current = null;
+      pendingProjectionRef.current = null;
       reconnectAttemptRef.current = 0;
       streamGenerationRef.current += 1;
-      flushBufferedEvents();
+      flushProjectedConversation();
       if (activeSessionId) {
-        void recoverSessionPhase(activeSessionId, activeFilter);
+        void recoverConversationProjection(activeSessionId, activeFilter);
       }
-      dispatchStreamError(onEventRef.current, message, turnId);
     },
-    [clearReconnectTimer, flushBufferedEvents, recoverSessionPhase]
+    [clearReconnectTimer, flushProjectedConversation, recoverConversationProjection]
   );
 
   const connectSession = useCallback(
     async (
       sessionId: string,
       afterEventId?: string | null,
-      filter?: SessionEventFilterQuery
+      filter?: SessionEventFilterQuery,
+      onProjection?: (projection: ConversationViewProjection) => void
     ): Promise<void> => {
       await ensureServerSession();
       clearReconnectTimer();
       streamAbortRef.current?.abort();
-      pendingEventBufferRef.current = [];
+      pendingProjectionRef.current = null;
 
-      // Increment generation to invalidate any pending operations from previous connections
       const generation = ++streamGenerationRef.current;
-
+      projectionHandlerRef.current = onProjection ?? null;
       connectedSessionIdRef.current = sessionId;
       connectedSessionFilterRef.current = filter;
       lastEventIdRef.current = afterEventId ?? null;
       reconnectAttemptRef.current = 0;
 
       const scheduleReconnect = (failureMessage: string) => {
-        // Check if this connection is still active
-        if (streamGenerationRef.current !== generation) {
-          return;
-        }
-        if (connectedSessionIdRef.current !== sessionId) {
+        if (streamGenerationRef.current !== generation || connectedSessionIdRef.current !== sessionId) {
           return;
         }
         clearReconnectTimer();
@@ -241,9 +211,8 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
         );
         reconnectTimerRef.current = window.setTimeout(() => {
           reconnectTimerRef.current = null;
-          // Check generation again before reconnecting
           if (streamGenerationRef.current === generation) {
-            logger.warn('useAgent', 'session event stream reconnecting', {
+            logger.warn('useAgent', 'conversation stream reconnecting', {
               sessionId,
               attempt,
               delayMs,
@@ -255,7 +224,6 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
       };
 
       const startStream = async (cursor: string | null): Promise<void> => {
-        // Check if this connection is still active
         if (streamGenerationRef.current !== generation) {
           return;
         }
@@ -264,10 +232,11 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
         streamAbortRef.current = controller;
         try {
           const response = await request(
-            `/api/sessions/${encodeURIComponent(sessionId)}/events${buildSessionEventQueryString({
-              afterEventId: cursor,
-              filter: connectedSessionFilterRef.current,
-            })}`,
+            createConversationStreamRequestPath(
+              sessionId,
+              cursor,
+              connectedSessionFilterRef.current
+            ),
             {
               headers: {
                 Accept: 'text/event-stream',
@@ -277,7 +246,6 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
             }
           );
 
-          // Check generation after request
           if (streamGenerationRef.current !== generation) {
             controller.abort();
             return;
@@ -287,7 +255,6 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
           const closeReason = await consumeSseStream(
             response,
             (payload, eventId) => {
-              // Check generation before processing each event
               if (streamGenerationRef.current !== generation) {
                 return;
               }
@@ -295,59 +262,55 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
                 lastEventIdRef.current = eventId;
               }
               try {
-                queueIncomingEvent(JSON.parse(payload));
+                const conversationState = conversationStateRef.current;
+                if (!conversationState) {
+                  return;
+                }
+                applyConversationEnvelope(conversationState, JSON.parse(payload));
+                queueProjectedConversation(
+                  projectConversationState(
+                    conversationState,
+                    connectedSessionFilterRef.current?.subRunId
+                  )
+                );
               } catch (error) {
-                queueIncomingEvent({
-                  protocolVersion: 1,
-                  event: 'error',
-                  data: {
-                    turnId: null,
-                    code: 'invalid_agent_event',
-                    message: String(error),
-                  },
+                logger.warn('useAgent', 'invalid conversation stream envelope', {
+                  sessionId,
+                  error: error instanceof Error ? error.message : String(error),
                 });
               }
             },
             controller.signal
           );
+
           if (closeReason === 'ended') {
-            // 会话事件流按设计应长期保持连接；如果无错误地 EOF，通常也是传输链路抖动。
-            // 桌面端 WebView 偶发会触发这种“静默断流”，必须自动重连，否则 UI 会停在旧状态。
             if (
               !controller.signal.aborted &&
               connectedSessionIdRef.current === sessionId &&
               streamGenerationRef.current === generation
             ) {
-              logger.warn(
-                'useAgent',
-                'session event stream ended unexpectedly, scheduling reconnect',
-                {
-                  sessionId,
-                  cursor: lastEventIdRef.current,
-                }
-              );
-              scheduleReconnect('与服务端的事件流连接已中断。');
+              logger.warn('useAgent', 'conversation stream ended unexpectedly, scheduling reconnect', {
+                sessionId,
+                cursor: lastEventIdRef.current,
+              });
+              scheduleReconnect('与服务端的会话流连接已中断。');
             }
             return;
           }
-          flushBufferedEvents();
+          flushProjectedConversation();
         } catch (error) {
-          // Check generation before handling error
           if (streamGenerationRef.current !== generation) {
             return;
           }
           if (!controller.signal.aborted && connectedSessionIdRef.current === sessionId) {
             if (shouldRetryEventStream(error)) {
-              scheduleReconnect(error instanceof Error ? error.message : '无法连接后端事件流。');
+              scheduleReconnect(error instanceof Error ? error.message : '无法连接后端会话流。');
             } else {
-              dispatchStreamError(
-                onEventRef.current,
-                error instanceof Error ? error.message : String(error)
-              );
+              failActiveConnection(error instanceof Error ? error.message : String(error));
             }
           }
         } finally {
-          flushBufferedEvents();
+          flushProjectedConversation();
           if (streamAbortRef.current === controller) {
             streamAbortRef.current = null;
           }
@@ -356,7 +319,12 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
 
       void startStream(lastEventIdRef.current);
     },
-    [clearReconnectTimer, failActiveConnection, flushBufferedEvents, queueIncomingEvent]
+    [
+      clearReconnectTimer,
+      failActiveConnection,
+      flushProjectedConversation,
+      queueProjectedConversation,
+    ]
   );
 
   const disconnectSession = useCallback(() => {
@@ -366,11 +334,14 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
     connectedSessionIdRef.current = null;
     connectedSessionFilterRef.current = undefined;
     lastEventIdRef.current = null;
+    conversationStateRef.current = null;
+    projectionHandlerRef.current = null;
+    pendingProjectionRef.current = null;
     reconnectAttemptRef.current = 0;
-    flushBufferedEvents();
-    // Increment generation to invalidate any pending operations
+    lastProjectionSignatureRef.current = null;
+    flushProjectedConversation();
     streamGenerationRef.current++;
-  }, [clearReconnectTimer, flushBufferedEvents]);
+  }, [clearReconnectTimer, flushProjectedConversation]);
 
   const handleCreateSession = useCallback(async (workingDir: string): Promise<SessionMeta> => {
     return createSession(workingDir);
@@ -380,17 +351,16 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
     return listSessionsWithMeta();
   }, []);
 
-  const handleLoadSession = useCallback(
-    async (sessionId: string, filter?: SessionEventFilterQuery): Promise<SessionSnapshot> => {
-      const { events, cursor, phase } = await loadSession(sessionId, filter);
-      return { events, cursor, phase };
-    },
-    []
-  );
-
-  const handleLoadSessionView = useCallback(
-    async (sessionId: string, filter?: SessionEventFilterQuery): Promise<SessionViewSnapshot> => {
-      return loadSessionView(sessionId, filter);
+  const handleLoadConversationView = useCallback(
+    async (
+      sessionId: string,
+      filter?: SessionEventFilterQuery
+    ): Promise<ConversationViewProjection> => {
+      const snapshotState = await loadConversationSnapshotState(sessionId, filter);
+      conversationStateRef.current = snapshotState;
+      const projection = projectConversationState(snapshotState, filter?.subRunId);
+      lastProjectionSignatureRef.current = projectionSignature(projection);
+      return projection;
     },
     []
   );
@@ -401,8 +371,7 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
       text: string,
       control?: ExecutionControl
     ): Promise<PromptSubmission> => {
-      const response = await submitPrompt(sessionId, text, control);
-      return response;
+      return submitPrompt(sessionId, text, control);
     },
     []
   );
@@ -411,18 +380,15 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
     async (sessionId: string): Promise<void> => {
       try {
         await interruptSession(sessionId);
-        await recoverSessionPhase(
-          sessionId,
-          connectedSessionIdRef.current === sessionId
-            ? connectedSessionFilterRef.current
-            : undefined
-        );
+        if (connectedSessionIdRef.current === sessionId) {
+          await recoverConversationProjection(sessionId, connectedSessionFilterRef.current);
+        }
       } catch (error) {
         logger.error('useAgent', 'failed to interrupt session:', error);
         failActiveConnection(error instanceof Error ? error.message : String(error));
       }
     },
-    [failActiveConnection, recoverSessionPhase]
+    [failActiveConnection, recoverConversationProjection]
   );
 
   const handleCompactSession = useCallback(
@@ -454,11 +420,8 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
         activeSessionId &&
         normalizeSessionIdForCompare(activeSessionId) === normalizeSessionIdForCompare(sessionId)
       ) {
-        // Why: 删除当前会话会让服务端按预期关闭 SSE；前端必须先主动断流，
-        // 否则会把正常关闭误判成异常断流并触发重连噪声。
         disconnectSession();
       }
-
       await deleteSession(sessionId);
     },
     [disconnectSession]
@@ -516,7 +479,6 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
   );
 
   const openConfigInEditor = useCallback(async (path?: string): Promise<void> => {
-    // 每次调用时即时获取最新桥接，避免组件初始化时 Tauri 环境未就绪导致拿到错误的 browserBridge
     await getHostBridge().openConfigInEditor(path);
   }, []);
 
@@ -527,8 +489,7 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
   return {
     createSession: handleCreateSession,
     listSessionsWithMeta: handleListSessionsWithMeta,
-    loadSession: handleLoadSession,
-    loadSessionView: handleLoadSessionView,
+    loadConversationView: handleLoadConversationView,
     connectSession,
     disconnectSession,
     submitPrompt: handleSubmitPrompt,

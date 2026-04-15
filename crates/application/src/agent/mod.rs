@@ -16,7 +16,7 @@ mod observe;
 mod routing;
 mod terminal;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod wake;
 
 use std::{path::Path, sync::Arc};
