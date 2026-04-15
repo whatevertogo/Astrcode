@@ -117,7 +117,7 @@ function buildMessageFingerprint(message: Message): string {
   if (message.kind === 'toolCall') {
     return `${message.id}:tool:${message.status}:${message.output?.length ?? 0}:${
       message.error?.length ?? 0
-    }`;
+    }:${message.metadata === undefined ? '' : JSON.stringify(message.metadata)}`;
   }
   if (message.kind === 'toolStream') {
     return `${message.id}:toolStream:${message.toolCallId}:${message.stream}:${message.status}:${message.content.length}`;
@@ -155,7 +155,61 @@ function remapMessageReference(
   if (next.kind !== previous.kind) {
     return null;
   }
+  if (hasSubRunTopologyChange(previous, next)) {
+    return null;
+  }
   return next;
+}
+
+function sameSpawnedAgentRef(
+  left: SpawnedAgentRef | null,
+  right: SpawnedAgentRef | null
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.subRunId === right.subRunId &&
+    left.agentId === right.agentId &&
+    left.childSessionId === right.childSessionId
+  );
+}
+
+function sameChildRefTopology(
+  left: ChildSessionNotificationMessage['childRef'],
+  right: ChildSessionNotificationMessage['childRef']
+): boolean {
+  return (
+    left.agentId === right.agentId &&
+    left.subRunId === right.subRunId &&
+    left.parentAgentId === right.parentAgentId &&
+    left.parentSubRunId === right.parentSubRunId &&
+    left.openSessionId === right.openSessionId
+  );
+}
+
+function hasSubRunTopologyChange(previous: Message, next: Message): boolean {
+  if (
+    previous.subRunId !== next.subRunId ||
+    previous.agentId !== next.agentId ||
+    previous.parentSubRunId !== next.parentSubRunId ||
+    previous.childSessionId !== next.childSessionId
+  ) {
+    return true;
+  }
+
+  if (previous.kind === 'toolCall' && next.kind === 'toolCall') {
+    return !sameSpawnedAgentRef(pickSpawnedAgentRef(previous), pickSpawnedAgentRef(next));
+  }
+
+  if (previous.kind === 'childSessionNotification' && next.kind === 'childSessionNotification') {
+    return !sameChildRefTopology(previous.childRef, next.childRef);
+  }
+
+  return false;
 }
 
 function patchThreadItems(
@@ -426,7 +480,7 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     record.ownBodyEntries.push({ index, message });
   });
 
-  rootEntries.forEach(({ index, message }) => {
+  messages.forEach((message, index) => {
     const spawnedAgentRef = pickSpawnedAgentRef(message);
     if (!spawnedAgentRef) {
       return;
@@ -442,6 +496,14 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     }
     if (!record.childSessionId && spawnedAgentRef.childSessionId) {
       record.childSessionId = spawnedAgentRef.childSessionId;
+    }
+    const parentSubRunId = message.subRunId ? aliases.get(message.subRunId) ?? message.subRunId : null;
+    if (
+      !record.parentSubRunId &&
+      parentSubRunId &&
+      parentSubRunId !== canonicalSubRunId
+    ) {
+      record.parentSubRunId = parentSubRunId;
     }
   });
 

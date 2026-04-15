@@ -225,6 +225,11 @@ fn apply_block_patch(
                 block.summary = Some(summary);
             }
         },
+        AstrcodeConversationBlockPatchDto::ReplaceMetadata { metadata } => {
+            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+                block.metadata = Some(metadata);
+            }
+        },
         AstrcodeConversationBlockPatchDto::SetStatus { status } => set_block_status(block, status),
     }
 }

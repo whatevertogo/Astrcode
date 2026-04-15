@@ -206,6 +206,8 @@ pub async fn assemble_prompt_request(
         request.step_index,
         snapshot,
         prune_outcome.stats.truncated_tool_results,
+        prompt_output.cache_metrics,
+        request.gateway.supports_cache_metrics(),
     ));
 
     let mut llm_request = LlmRequest::new(messages.clone(), request.tools, request.cancel.clone())
@@ -412,6 +414,63 @@ mod tests {
         assert_eq!(result.llm_request.messages.len(), 1);
     }
 
+    #[tokio::test]
+    async fn assemble_prompt_request_carries_prompt_cache_reuse_counts() {
+        let base_gateway = test_gateway(64_000);
+        let gateway = KernelGateway::new(
+            base_gateway.capabilities().clone(),
+            Arc::new(LocalNoopLlmProvider),
+            Arc::new(RecordingPromptProvider {
+                captured: Arc::new(Mutex::new(Vec::new())),
+            }),
+            Arc::new(LocalNoopResourceProvider),
+        );
+        let mut micro_state = crate::context_window::micro_compact::MicroCompactState::default();
+        let tracker = crate::context_window::file_access::FileAccessTracker::new(4);
+        let session_state = test_session_state();
+        let mut replacement_state = ToolResultReplacementState::default();
+        let settings = ContextWindowSettings::from(&ResolvedRuntimeConfig::default());
+
+        let result = assemble_prompt_request(AssemblePromptRequest {
+            gateway: &gateway,
+            prompt_facts_provider: &NoopPromptFactsProvider,
+            session_id: "session-1",
+            turn_id: "turn-1",
+            working_dir: Path::new("."),
+            messages: vec![LlmMessage::User {
+                content: "hello".to_string(),
+                origin: astrcode_core::UserMessageOrigin::User,
+            }],
+            cancel: astrcode_core::CancelToken::new(),
+            agent: &AgentEventContext::default(),
+            step_index: 0,
+            token_tracker: &TokenUsageTracker::default(),
+            tools: vec![ToolDefinition {
+                name: "readFile".to_string(),
+                description: "read".to_string(),
+                parameters: json!({"type":"object"}),
+            }]
+            .into(),
+            settings: &settings,
+            clearable_tools: &std::collections::HashSet::new(),
+            micro_compact_state: &mut micro_state,
+            file_access_tracker: &tracker,
+            session_state: &session_state,
+            tool_result_replacement_state: &mut replacement_state,
+            prompt_declarations: &[],
+        })
+        .await
+        .expect("assembly should succeed");
+
+        assert!(matches!(
+            &result.events[0].payload,
+            StorageEventPayload::PromptMetrics { metrics }
+                if metrics.prompt_cache_reuse_hits == 2
+                    && metrics.prompt_cache_reuse_misses == 1
+                    && !metrics.provider_cache_metrics_supported
+        ));
+    }
+
     #[derive(Debug)]
     struct RecordingPromptProvider {
         captured: Arc<Mutex<Vec<PromptDeclaration>>>,
@@ -428,6 +487,10 @@ mod tests {
             Ok(PromptBuildOutput {
                 system_prompt: "recorded".to_string(),
                 system_prompt_blocks: Vec::new(),
+                cache_metrics: astrcode_core::PromptBuildCacheMetrics {
+                    reuse_hits: 2,
+                    reuse_misses: 1,
+                },
                 metadata: serde_json::Value::Null,
             })
         }

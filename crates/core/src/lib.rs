@@ -111,8 +111,8 @@ pub use policy::{
 };
 pub use ports::{
     EventStore, LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, ModelLimits, PromptAgentProfileSummary, PromptBuildOutput, PromptBuildRequest,
-    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    LlmUsage, ModelLimits, PromptAgentProfileSummary, PromptBuildCacheMetrics, PromptBuildOutput,
+    PromptBuildRequest, PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
     PromptDeclarationSource, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider,
     PromptSkillSummary, ResourceProvider, ResourceReadResult, ResourceRequestContext,
 };

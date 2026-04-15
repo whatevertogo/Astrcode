@@ -58,6 +58,10 @@ impl KernelGateway {
         self.llm.model_limits()
     }
 
+    pub fn supports_cache_metrics(&self) -> bool {
+        self.llm.supports_cache_metrics()
+    }
+
     pub async fn invoke_tool(
         &self,
         call: &ToolCallRequest,

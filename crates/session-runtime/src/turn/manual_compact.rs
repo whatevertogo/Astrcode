@@ -167,6 +167,7 @@ mod tests {
             Ok(PromptBuildOutput {
                 system_prompt: "noop".to_string(),
                 system_prompt_blocks: Vec::new(),
+                cache_metrics: Default::default(),
                 metadata: serde_json::Value::Null,
             })
         }

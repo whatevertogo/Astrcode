@@ -1395,6 +1395,98 @@ describe('buildSubRunView', () => {
     expect(rootViews[0]?.title).toBe('planner');
   });
 
+  it('recovers nested spawned sub-runs from tool metadata when lifecycle events are missing', () => {
+    const messages: Message[] = [
+      {
+        ...makeSubRunStartFixture({
+          id: 'subrun-parent-start',
+          turnId: 'turn-root',
+          parentTurnId: 'turn-root',
+          agentId: 'agent-parent',
+          subRunId: 'subrun-parent',
+          agentProfile: 'planner',
+          depth: 1,
+          timestamp: 1,
+        }),
+      },
+      {
+        id: 'spawn-tool-call-nested',
+        kind: 'toolCall',
+        turnId: 'turn-parent',
+        agentId: 'agent-parent',
+        parentTurnId: 'turn-root',
+        subRunId: 'subrun-parent',
+        agentProfile: 'planner',
+        toolCallId: 'call-nested',
+        toolName: 'spawn',
+        status: 'ok',
+        args: { prompt: 'task-child' },
+        output: 'spawn 已在后台启动。',
+        metadata: {
+          agentRef: {
+            agentId: 'agent-child',
+            subRunId: 'subrun-child',
+            openSessionId: 'session-child',
+          },
+        },
+        timestamp: 2,
+      },
+    ];
+
+    const tree = buildSubRunThreadTree(messages);
+    const parentView = buildSubRunView(tree, 'subrun-parent');
+    const childView = buildSubRunView(tree, 'subrun-child');
+
+    expect(parentView?.directChildSubRunIds).toEqual(['subrun-child']);
+    expect(childView?.parentSubRunId).toBe('subrun-parent');
+    expect(childView?.childSessionId).toBe('session-child');
+    expect(childView?.title).toBe('agent-child');
+  });
+
+  it('updates sub-run tree fingerprint when spawn metadata arrives later on the same tool call', () => {
+    const initialMessages: Message[] = [
+      {
+        id: 'spawn-tool-call-late',
+        kind: 'toolCall',
+        turnId: 'turn-root',
+        toolCallId: 'call-late',
+        toolName: 'spawn',
+        status: 'running',
+        args: { prompt: 'task-child' },
+        output: 'spawn 启动中',
+        timestamp: 1,
+      },
+    ];
+    const tree = buildSubRunThreadTree(initialMessages);
+
+    const nextMessages: Message[] = [
+      {
+        id: 'spawn-tool-call-late',
+        kind: 'toolCall',
+        turnId: 'turn-root',
+        toolCallId: 'call-late',
+        toolName: 'spawn',
+        status: 'ok',
+        args: { prompt: 'task-child' },
+        output: 'spawn 已在后台启动。',
+        metadata: {
+          agentRef: {
+            agentId: 'agent-child',
+            subRunId: 'subrun-child',
+            openSessionId: 'session-child',
+          },
+        },
+        timestamp: 1,
+      },
+    ];
+
+    const patched = patchSubRunThreadTreeMessages(tree, nextMessages);
+
+    expect(patched).toBeNull();
+    const rebuilt = buildSubRunThreadTree(nextMessages);
+    expect(listRootSubRunViews(rebuilt).map((view) => view.subRunId)).toEqual(['subrun-child']);
+  });
+
   it('patches thread tree incrementally when only message content changes', () => {
     const messages: Message[] = [
       {

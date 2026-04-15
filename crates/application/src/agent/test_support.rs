@@ -276,6 +276,7 @@ impl PromptProvider for TestPromptProvider {
         Ok(PromptBuildOutput {
             system_prompt: "test".to_string(),
             system_prompt_blocks: Vec::new(),
+            cache_metrics: Default::default(),
             metadata: Value::Null,
         })
     }

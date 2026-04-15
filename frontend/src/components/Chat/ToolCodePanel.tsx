@@ -8,11 +8,18 @@ interface ToolCodePanelProps {
   title: string;
   tone?: 'normal' | 'error';
   content: string;
+  scrollMode?: 'self' | 'inherit';
 }
 
-function ToolCodePanel({ title, tone = 'normal', content }: ToolCodePanelProps) {
+function ToolCodePanel({
+  title,
+  tone = 'normal',
+  content,
+  scrollMode = 'self',
+}: ToolCodePanelProps) {
   const contentRef = useRef<HTMLPreElement>(null);
-  useNestedScrollContainment(contentRef);
+  const inactiveRef = useRef<HTMLPreElement>(null);
+  useNestedScrollContainment(scrollMode === 'self' ? contentRef : inactiveRef);
 
   return (
     <div className={cn(codeBlockShell, 'my-0')}>
@@ -23,7 +30,9 @@ function ToolCodePanel({ title, tone = 'normal', content }: ToolCodePanelProps) 
         ref={contentRef}
         className={cn(
           codeBlockContent,
-          'max-h-[420px] overflow-auto whitespace-pre-wrap overflow-wrap-anywhere',
+          scrollMode === 'self'
+            ? 'max-h-[420px] overflow-auto whitespace-pre-wrap overflow-wrap-anywhere'
+            : 'overflow-visible whitespace-pre-wrap overflow-wrap-anywhere',
           tone === 'error' ? 'text-danger' : 'text-code-text'
         )}
       >

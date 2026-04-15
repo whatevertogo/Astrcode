@@ -108,6 +108,9 @@ pub enum TerminalBlockPatchDto {
     ReplaceSummary {
         summary: String,
     },
+    ReplaceMetadata {
+        metadata: Value,
+    },
     SetStatus {
         status: TerminalBlockStatusDto,
     },
@@ -178,6 +181,8 @@ pub struct TerminalToolCallBlockDto {
     pub input: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

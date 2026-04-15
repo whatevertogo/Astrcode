@@ -1,7 +1,8 @@
-import { memo } from 'react';
+import { memo, useRef } from 'react';
 
 import type { ToolCallMessage, ToolStreamMessage } from '../../types';
 import {
+  extractToolChildSessionTarget,
   extractStructuredArgs,
   extractStructuredJsonOutput,
   extractToolMetadataSummary,
@@ -10,13 +11,16 @@ import {
 } from '../../lib/toolDisplay';
 import {
   chevronIcon,
+  infoButton,
   pillDanger,
   pillNeutral,
   pillSuccess,
 } from '../../lib/styles';
 import { cn } from '../../lib/utils';
+import { useChatScreenContext } from './ChatScreenContext';
 import ToolCodePanel from './ToolCodePanel';
 import ToolJsonView from './ToolJsonView';
+import { useNestedScrollContainment } from './useNestedScrollContainment';
 
 interface ToolCallBlockProps {
   message: ToolCallMessage;
@@ -67,17 +71,27 @@ function resultTextSurface(text: string, tone: 'normal' | 'error') {
         value={structuredResult.value}
         summary={structuredResult.summary}
         defaultOpen={true}
+        scrollMode="inherit"
       />
     );
   }
 
   return (
-    <ToolCodePanel title={tone === 'error' ? 'Error output' : 'Result'} tone={tone} content={text} />
+    <ToolCodePanel
+      title={tone === 'error' ? 'Error output' : 'Result'}
+      tone={tone}
+      content={text}
+      scrollMode="inherit"
+    />
   );
 }
 
 function ToolCallBlock({ message, streams = [] }: ToolCallBlockProps) {
+  const { onOpenChildSession, onOpenSubRun } = useChatScreenContext();
+  const viewportRef = useRef<HTMLDivElement>(null);
+  useNestedScrollContainment(viewportRef);
   const shellDisplay = extractToolShellDisplay(message.metadata);
+  const childSessionTarget = extractToolChildSessionTarget(message.metadata);
   const summary = formatToolCallSummary(
     message.toolName,
     message.args,
@@ -99,6 +113,25 @@ function ToolCallBlock({ message, streams = [] }: ToolCallBlockProps) {
       <summary className="flex min-w-0 cursor-pointer items-center gap-2 py-1.5 font-mono text-[13px] leading-relaxed text-text-secondary list-none [&::-webkit-details-marker]:hidden hover:opacity-85">
         <span className={cn('shrink-0', statusPill(message.status))}>{message.toolName}</span>
         <span className="min-w-0 flex-1 truncate text-text-primary">{summary}</span>
+        {childSessionTarget && (
+          <button
+            type="button"
+            className={cn(infoButton, 'min-h-[26px] px-2.5 py-0 text-[11px]')}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (childSessionTarget.openSessionId) {
+                void onOpenChildSession(childSessionTarget.openSessionId);
+                return;
+              }
+              if (childSessionTarget.subRunId) {
+                void onOpenSubRun(childSessionTarget.subRunId);
+              }
+            }}
+          >
+            打开子会话
+          </button>
+        )}
         <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
         <span className={chevronIcon}>
           <svg
@@ -116,69 +149,79 @@ function ToolCallBlock({ message, streams = [] }: ToolCallBlockProps) {
         </span>
       </summary>
       <div className="mt-2 flex min-w-0 flex-col gap-3 rounded-[18px] border border-border bg-surface-soft px-4 py-3.5 shadow-[0_16px_34px_rgba(15,23,42,0.06)]">
-        {streams.length > 0 ? (
-          streams.map((streamMessage) => (
-            <section key={streamMessage.id} className="flex min-w-0 flex-col gap-2">
-              <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className={streamBadge(streamMessage.stream)}>
-                    {streamTitle(
-                      message.toolName,
-                      streamMessage.stream,
-                      Boolean(shellDisplay?.command)
-                    )}
-                  </span>
-                  <span className="truncate font-mono text-text-muted">
-                    {streamMessage.stream === 'stderr' ? '错误输出' : '工具结果'}
-                  </span>
-                </div>
-                <span className="shrink-0 text-text-muted">{statusLabel(streamMessage.status)}</span>
+        <div
+          ref={viewportRef}
+          className="min-w-0 overflow-y-auto overscroll-contain pr-1 max-h-[min(58vh,560px)]"
+        >
+          <div className="flex min-w-0 flex-col gap-3">
+            {streams.length > 0 ? (
+              streams.map((streamMessage) => (
+                <section key={streamMessage.id} className="flex min-w-0 flex-col gap-2">
+                  <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className={streamBadge(streamMessage.stream)}>
+                        {streamTitle(
+                          message.toolName,
+                          streamMessage.stream,
+                          Boolean(shellDisplay?.command)
+                        )}
+                      </span>
+                      <span className="truncate font-mono text-text-muted">
+                        {streamMessage.stream === 'stderr' ? '错误输出' : '工具结果'}
+                      </span>
+                    </div>
+                    <span className="shrink-0 text-text-muted">
+                      {statusLabel(streamMessage.status)}
+                    </span>
+                  </div>
+                  {resultTextSurface(
+                    streamMessage.content,
+                    streamMessage.stream === 'stderr' ? 'error' : 'normal'
+                  )}
+                </section>
+              ))
+            ) : fallbackResult ? (
+              structuredFallbackResult ? (
+                <section className="flex min-w-0 flex-col gap-2">
+                  <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className={cn('shrink-0', statusPill(message.status))}>结果</span>
+                      <span className="truncate font-mono text-text-muted">
+                        {structuredFallbackResult.summary}
+                      </span>
+                    </div>
+                    <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
+                  </div>
+                  <ToolJsonView
+                    value={structuredFallbackResult.value}
+                    summary={structuredFallbackResult.summary}
+                    defaultOpen={true}
+                    scrollMode="inherit"
+                  />
+                </section>
+              ) : (
+                <section className="flex min-w-0 flex-col gap-2">
+                  <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className={cn('shrink-0', statusPill(message.status))}>
+                        {message.error ? '错误' : '结果'}
+                      </span>
+                      <span className="truncate font-mono text-text-muted">
+                        {shellDisplay?.command ? `$ ${shellDisplay.command}` : message.toolName}
+                      </span>
+                    </div>
+                    <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
+                  </div>
+                  {resultTextSurface(fallbackResult, message.error ? 'error' : 'normal')}
+                </section>
+              )
+            ) : (
+              <div className="rounded-xl border border-dashed border-border bg-white/55 px-3.5 py-3 text-[13px] leading-relaxed text-text-secondary">
+                {message.status === 'running' ? '等待工具输出...' : '该工具没有可展示的文本结果。'}
               </div>
-              {resultTextSurface(
-                streamMessage.content,
-                streamMessage.stream === 'stderr' ? 'error' : 'normal'
-              )}
-            </section>
-          ))
-        ) : fallbackResult ? (
-          structuredFallbackResult ? (
-            <section className="flex min-w-0 flex-col gap-2">
-              <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className={cn('shrink-0', statusPill(message.status))}>结果</span>
-                  <span className="truncate font-mono text-text-muted">
-                    {structuredFallbackResult.summary}
-                  </span>
-                </div>
-                <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
-              </div>
-              <ToolJsonView
-                value={structuredFallbackResult.value}
-                summary={structuredFallbackResult.summary}
-                defaultOpen={true}
-              />
-            </section>
-          ) : (
-            <section className="flex min-w-0 flex-col gap-2">
-              <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className={cn('shrink-0', statusPill(message.status))}>
-                    {message.error ? '错误' : '结果'}
-                  </span>
-                  <span className="truncate font-mono text-text-muted">
-                    {shellDisplay?.command ? `$ ${shellDisplay.command}` : message.toolName}
-                  </span>
-                </div>
-                <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
-              </div>
-              {resultTextSurface(fallbackResult, message.error ? 'error' : 'normal')}
-            </section>
-          )
-        ) : (
-          <div className="rounded-xl border border-dashed border-border bg-white/55 px-3.5 py-3 text-[13px] leading-relaxed text-text-secondary">
-            {message.status === 'running' ? '等待工具输出...' : '该工具没有可展示的文本结果。'}
+            )}
           </div>
-        )}
+        </div>
 
         {structuredArgs && (
           <details className="group mt-1">

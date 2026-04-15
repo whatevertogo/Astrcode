@@ -767,6 +767,7 @@ impl TerminalDeltaProjector {
             status: TerminalBlockStatusDto::Streaming,
             input: input.cloned(),
             summary: None,
+            metadata: None,
         }))
     }
 
@@ -859,6 +860,16 @@ impl TerminalDeltaProjector {
                             summary: summary.clone(),
                         },
                     });
+                }
+                if let Some(metadata) = &result.metadata {
+                    if self.replace_tool_metadata(index, metadata) {
+                        deltas.push(TerminalDeltaDto::PatchBlock {
+                            block_id: call_block_id.clone(),
+                            patch: TerminalBlockPatchDto::ReplaceMetadata {
+                                metadata: metadata.clone(),
+                            },
+                        });
+                    }
                 }
                 if let Some(delta) = self.complete_block(&call_block_id, status) {
                     deltas.push(delta);
@@ -1056,6 +1067,17 @@ impl TerminalDeltaProjector {
                 return false;
             }
             block.summary = Some(summary.to_string());
+            return true;
+        }
+        false
+    }
+
+    fn replace_tool_metadata(&mut self, index: usize, metadata: &Value) -> bool {
+        if let TerminalBlockDto::ToolCall(block) = &mut self.blocks[index] {
+            if block.metadata.as_ref() == Some(metadata) {
+                return false;
+            }
+            block.metadata = Some(metadata.clone());
             return true;
         }
         false

@@ -146,4 +146,60 @@ describe('projectConversationState', () => {
       summary: '3 results',
     });
   });
+
+  it('applies replace_metadata patches onto existing tool call blocks', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-1',
+      phase: 'callingTool',
+      blocks: [
+        {
+          id: 'tool-call-1',
+          kind: 'tool_call',
+          turnId: 'turn-2',
+          toolCallId: 'call-1',
+          toolName: 'spawn',
+          status: 'streaming',
+          input: {
+            prompt: 'explore repo',
+          },
+        },
+      ],
+      childSummaries: [],
+    };
+
+    applyConversationEnvelope(state, {
+      cursor: 'cursor-2',
+      kind: 'patch_block',
+      blockId: 'tool-call-1',
+      patch: {
+        kind: 'replace_metadata',
+        metadata: {
+          openSessionId: 'session-child-1',
+          agentRef: {
+            agentId: 'agent-child-1',
+            subRunId: 'subrun-child-1',
+            openSessionId: 'session-child-1',
+          },
+        },
+      },
+    });
+
+    const projection = projectConversationState(state);
+
+    expect(state.cursor).toBe('cursor-2');
+    expect(state.blocks[0]?.metadata).toMatchObject({
+      openSessionId: 'session-child-1',
+    });
+    expect(projection.messages[0]).toMatchObject({
+      kind: 'toolCall',
+      metadata: {
+        openSessionId: 'session-child-1',
+        agentRef: {
+          agentId: 'agent-child-1',
+          subRunId: 'subrun-child-1',
+          openSessionId: 'session-child-1',
+        },
+      },
+    });
+  });
 });

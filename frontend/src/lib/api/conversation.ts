@@ -267,6 +267,7 @@ function projectConversationMessages(
           status: parseToolStatus(block.status),
           args: block.input ?? null,
           output: pickOptionalString(block, 'summary') || undefined,
+          metadata: block.metadata ?? undefined,
           timestamp: index,
         });
         return;
@@ -460,6 +461,9 @@ function applyBlockPatch(block: ConversationRecord, patch: ConversationRecord): 
     }
     case 'replace_summary':
       block.summary = pickOptionalString(patch, 'summary') ?? null;
+      break;
+    case 'replace_metadata':
+      block.metadata = patch.metadata;
       break;
     case 'set_status':
       block.status = pickString(patch, 'status') ?? block.status;

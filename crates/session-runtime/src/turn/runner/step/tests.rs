@@ -146,6 +146,8 @@ fn assembled_prompt(messages: Vec<LlmMessage>) -> AssemblePromptResult {
                 threshold_tokens: 80,
             },
             0,
+            Default::default(),
+            false,
         )],
         auto_compacted: false,
         tool_result_budget_stats: crate::turn::tool_result_budget::ToolResultBudgetStats::default(),

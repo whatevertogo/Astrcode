@@ -302,12 +302,22 @@ pub struct PromptBuildRequest {
 }
 
 /// Prompt 组装结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptBuildCacheMetrics {
+    pub reuse_hits: u32,
+    pub reuse_misses: u32,
+}
+
+/// Prompt 组装结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptBuildOutput {
     pub system_prompt: String,
     #[serde(default)]
     pub system_prompt_blocks: Vec<SystemPromptBlock>,
+    #[serde(default)]
+    pub cache_metrics: PromptBuildCacheMetrics,
     #[serde(default)]
     pub metadata: Value,
 }

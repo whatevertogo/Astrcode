@@ -21,7 +21,9 @@ use crate::turn::{
         OUTPUT_CONTINUATION_PROMPT, OutputContinuationDecision, continuation_transition,
         decide_output_continuation,
     },
-    events::{assistant_final_event, turn_done_event, user_message_event},
+    events::{
+        apply_prompt_metrics_usage, assistant_final_event, turn_done_event, user_message_event,
+    },
     loop_control::{
         AUTO_CONTINUE_NUDGE, BudgetContinuationDecision, TurnLoopTransition, TurnStopCause,
         decide_budget_continuation,
@@ -73,6 +75,7 @@ async fn run_single_step_with(
 
     let llm_finished_at = Instant::now();
     record_llm_usage(execution, &output);
+    apply_prompt_metrics_usage(&mut execution.events, execution.step_index, output.usage);
     let has_tool_calls = append_assistant_output(execution, resources, &output);
     warn_if_output_truncated(resources, execution, &output);
 

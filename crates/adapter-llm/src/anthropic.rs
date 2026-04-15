@@ -685,6 +685,7 @@ fn cache_control_if_allowed(remaining: &mut usize) -> Option<AnthropicCacheContr
     consume_cache_breakpoint(remaining).then(AnthropicCacheControl::ephemeral)
 }
 
+// Dynamic 层不参与缓存，动态内容每轮都变
 fn cacheable_system_layer(layer: SystemPromptLayer) -> bool {
     !matches!(layer, SystemPromptLayer::Dynamic)
 }

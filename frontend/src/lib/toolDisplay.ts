@@ -19,6 +19,12 @@ export interface ToolMetadataSummary {
   pills: string[];
 }
 
+export interface ToolChildSessionTarget {
+  openSessionId?: string;
+  subRunId?: string;
+  agentId?: string;
+}
+
 export interface StructuredJsonOutput {
   value: UnknownRecord | unknown[];
   summary: string;
@@ -218,6 +224,31 @@ export function extractToolMetadataSummary(metadata: unknown): ToolMetadataSumma
   }
 
   return { message: message ?? undefined, pills };
+}
+
+export function extractToolChildSessionTarget(
+  metadata: unknown
+): ToolChildSessionTarget | null {
+  const container = asRecord(metadata);
+  if (!container) {
+    return null;
+  }
+
+  const agentRef = asRecord(container.agentRef);
+  const openSessionId =
+    pickString(container, 'openSessionId') ?? pickString(agentRef ?? {}, 'openSessionId');
+  const subRunId = pickString(agentRef ?? {}, 'subRunId');
+  const agentId = pickString(agentRef ?? {}, 'agentId');
+
+  if (!openSessionId && !subRunId) {
+    return null;
+  }
+
+  return {
+    openSessionId: openSessionId ?? undefined,
+    subRunId: subRunId ?? undefined,
+    agentId: agentId ?? undefined,
+  };
 }
 
 function summarizeJsonContainer(value: UnknownRecord | unknown[]): string {

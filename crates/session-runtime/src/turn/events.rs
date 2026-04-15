@@ -1,8 +1,9 @@
 #[cfg(test)]
 use astrcode_core::ToolOutputStream;
 use astrcode_core::{
-    AgentEventContext, CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload,
-    ToolCallRequest, ToolExecutionResult, UserMessageOrigin,
+    AgentEventContext, CompactTrigger, LlmUsage, PromptMetricsPayload, StorageEvent,
+    StorageEventPayload, ToolCallRequest, ToolExecutionResult, UserMessageOrigin,
+    ports::PromptBuildCacheMetrics,
 };
 use chrono::{DateTime, Utc};
 
@@ -134,6 +135,8 @@ pub(crate) fn prompt_metrics_event(
     step_index: usize,
     snapshot: PromptTokenSnapshot,
     truncated_tool_results: usize,
+    cache_metrics: PromptBuildCacheMetrics,
+    provider_cache_metrics_supported: bool,
 ) -> StorageEvent {
     StorageEvent {
         turn_id: Some(turn_id.to_string()),
@@ -150,12 +153,42 @@ pub(crate) fn prompt_metrics_event(
                 provider_output_tokens: None,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                provider_cache_metrics_supported: false,
-                prompt_cache_reuse_hits: 0,
-                prompt_cache_reuse_misses: 0,
+                provider_cache_metrics_supported,
+                prompt_cache_reuse_hits: cache_metrics.reuse_hits,
+                prompt_cache_reuse_misses: cache_metrics.reuse_misses,
             },
         },
     }
+}
+
+pub(crate) fn apply_prompt_metrics_usage(
+    events: &mut [StorageEvent],
+    step_index: usize,
+    usage: Option<LlmUsage>,
+) {
+    let Some(usage) = usage else {
+        return;
+    };
+
+    let step_index = saturating_u32(step_index);
+    let Some(StorageEvent {
+        payload: StorageEventPayload::PromptMetrics { metrics },
+        ..
+    }) = events.iter_mut().rev().find(|event| {
+        matches!(
+            &event.payload,
+            StorageEventPayload::PromptMetrics { metrics }
+                if metrics.step_index == step_index
+        )
+    })
+    else {
+        return;
+    };
+
+    metrics.provider_input_tokens = Some(saturating_u32(usage.input_tokens));
+    metrics.provider_output_tokens = Some(saturating_u32(usage.output_tokens));
+    metrics.cache_creation_input_tokens = Some(saturating_u32(usage.cache_creation_input_tokens));
+    metrics.cache_read_input_tokens = Some(saturating_u32(usage.cache_read_input_tokens));
 }
 
 pub(crate) fn tool_call_event(
@@ -238,16 +271,17 @@ pub(crate) fn tool_result_reference_applied_event(
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, CompactTrigger, StorageEventPayload, ToolCallRequest,
-        ToolExecutionResult, ToolOutputStream, UserMessageOrigin,
+        AgentEventContext, CompactTrigger, LlmUsage, StorageEventPayload, ToolCallRequest,
+        ToolExecutionResult, ToolOutputStream, UserMessageOrigin, ports::PromptBuildCacheMetrics,
     };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
 
     use super::{
-        CompactAppliedStats, assistant_final_event, compact_applied_event, error_event,
-        prompt_metrics_event, session_start_event, tool_call_delta_event, tool_call_event,
-        tool_result_event, turn_done_event, user_message_event,
+        CompactAppliedStats, apply_prompt_metrics_usage, assistant_final_event,
+        compact_applied_event, error_event, prompt_metrics_event, session_start_event,
+        tool_call_delta_event, tool_call_event, tool_result_event, turn_done_event,
+        user_message_event,
     };
     use crate::context_window::token_usage::PromptTokenSnapshot;
 
@@ -440,6 +474,11 @@ mod tests {
                 threshold_tokens: 97_200,
             },
             3,
+            PromptBuildCacheMetrics {
+                reuse_hits: 4,
+                reuse_misses: 1,
+            },
+            true,
         );
 
         assert_eq!(event.turn_id.as_deref(), Some("turn-prompt-1"));
@@ -457,9 +496,49 @@ mod tests {
                     && metrics.provider_output_tokens.is_none()
                     && metrics.cache_creation_input_tokens.is_none()
                     && metrics.cache_read_input_tokens.is_none()
-                    && !metrics.provider_cache_metrics_supported
-                    && metrics.prompt_cache_reuse_hits == 0
-                    && metrics.prompt_cache_reuse_misses == 0
+                    && metrics.provider_cache_metrics_supported
+                    && metrics.prompt_cache_reuse_hits == 4
+                    && metrics.prompt_cache_reuse_misses == 1
+        ));
+    }
+
+    #[test]
+    fn apply_prompt_metrics_usage_backfills_provider_cache_fields() {
+        let agent = AgentEventContext::root_execution("root-agent", "planner");
+        let mut events = vec![prompt_metrics_event(
+            "turn-prompt-1",
+            &agent,
+            2,
+            PromptTokenSnapshot {
+                context_tokens: 1_024,
+                budget_tokens: 900,
+                context_window: 128_000,
+                effective_window: 108_000,
+                threshold_tokens: 97_200,
+            },
+            0,
+            PromptBuildCacheMetrics::default(),
+            true,
+        )];
+
+        apply_prompt_metrics_usage(
+            &mut events,
+            2,
+            Some(LlmUsage {
+                input_tokens: 900,
+                output_tokens: 120,
+                cache_creation_input_tokens: 700,
+                cache_read_input_tokens: 650,
+            }),
+        );
+
+        assert!(matches!(
+            &events[0].payload,
+            StorageEventPayload::PromptMetrics { metrics }
+                if metrics.provider_input_tokens == Some(900)
+                    && metrics.provider_output_tokens == Some(120)
+                    && metrics.cache_creation_input_tokens == Some(700)
+                    && metrics.cache_read_input_tokens == Some(650)
         ));
     }
 

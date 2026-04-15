@@ -5,13 +5,14 @@
 
 use astrcode_core::{
     Result, SystemPromptBlock,
-    ports::{PromptBuildOutput, PromptBuildRequest, PromptProvider},
+    ports::{PromptBuildCacheMetrics, PromptBuildOutput, PromptBuildRequest, PromptProvider},
 };
 use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
     PromptAgentProfileSummary, PromptContext, PromptDeclaration, PromptSkillSummary,
+    diagnostics::DiagnosticReason,
     layered_builder::{LayeredPromptBuilder, default_layered_prompt_builder},
 };
 
@@ -95,6 +96,7 @@ impl PromptProvider for ComposerPromptProvider {
         Ok(PromptBuildOutput {
             system_prompt,
             system_prompt_blocks,
+            cache_metrics: summarize_prompt_cache_metrics(&output),
             metadata: serde_json::json!({
                 "extra_tools_count": output.plan.extra_tools.len(),
                 "diagnostics_count": output.diagnostics.items.len(),
@@ -159,6 +161,22 @@ fn build_prompt_vars(request: &PromptBuildRequest) -> std::collections::HashMap<
         );
     }
     vars
+}
+
+fn summarize_prompt_cache_metrics(output: &crate::PromptBuildOutput) -> PromptBuildCacheMetrics {
+    let mut metrics = PromptBuildCacheMetrics::default();
+    for diagnostic in &output.diagnostics.items {
+        match &diagnostic.reason {
+            DiagnosticReason::CacheReuseHit { .. } => {
+                metrics.reuse_hits = metrics.reuse_hits.saturating_add(1);
+            },
+            DiagnosticReason::CacheReuseMiss { .. } => {
+                metrics.reuse_misses = metrics.reuse_misses.saturating_add(1);
+            },
+            _ => {},
+        }
+    }
+    metrics
 }
 
 fn insert_json_string(

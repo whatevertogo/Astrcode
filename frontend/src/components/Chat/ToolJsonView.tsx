@@ -9,6 +9,7 @@ interface ToolJsonViewProps {
   value: UnknownRecord | unknown[];
   summary: string;
   defaultOpen?: boolean;
+  scrollMode?: 'self' | 'inherit';
 }
 
 interface JsonNodeProps {
@@ -97,14 +98,24 @@ function JsonNode({ value, label, path, defaultOpen = false }: JsonNodeProps) {
   );
 }
 
-function ToolJsonView({ value, summary, defaultOpen = false }: ToolJsonViewProps) {
+function ToolJsonView({
+  value,
+  summary,
+  defaultOpen = false,
+  scrollMode = 'self',
+}: ToolJsonViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  useNestedScrollContainment(containerRef);
+  const inactiveRef = useRef<HTMLDivElement>(null);
+  useNestedScrollContainment(scrollMode === 'self' ? containerRef : inactiveRef);
 
   return (
     <div
       ref={containerRef}
-      className="m-0 max-h-[420px] overflow-auto rounded-lg border border-code-border bg-code-surface font-mono text-[13px]"
+      className={
+        scrollMode === 'self'
+          ? 'm-0 max-h-[420px] overflow-auto rounded-lg border border-code-border bg-code-surface font-mono text-[13px]'
+          : 'm-0 rounded-lg border border-code-border bg-code-surface font-mono text-[13px]'
+      }
     >
       <JsonNode value={value} label="JSON" path="root" defaultOpen={defaultOpen} />
       <div className="px-3 py-2 border-t border-border text-text-secondary text-xs">{summary}</div>
