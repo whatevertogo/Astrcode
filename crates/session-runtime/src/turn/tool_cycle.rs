@@ -397,6 +397,7 @@ async fn invoke_single_tool(
         "tool start",
     )
     .await;
+    broadcast_tool_start(&session_state, turn_id, agent, tool_call);
 
     // 构建工具上下文
     let tool_ctx = ToolContext::new(
@@ -447,6 +448,15 @@ async fn invoke_single_tool(
         "tool result",
     )
     .await;
+    broadcast_tool_result(
+        &session_state,
+        turn_id,
+        agent,
+        &ToolExecutionResult {
+            duration_ms,
+            ..result.clone()
+        },
+    );
 
     let mut events = buffered_events
         .lock()
@@ -469,6 +479,34 @@ fn broadcast_tool_output_delta(
         tool_name: delta.tool_name,
         stream: delta.stream,
         delta: delta.delta,
+    });
+}
+
+fn broadcast_tool_start(
+    session_state: &SessionState,
+    turn_id: &str,
+    agent: &AgentEventContext,
+    tool_call: &ToolCallRequest,
+) {
+    session_state.broadcast_live_event(astrcode_core::AgentEvent::ToolCallStart {
+        turn_id: turn_id.to_string(),
+        agent: agent.clone(),
+        tool_call_id: tool_call.id.clone(),
+        tool_name: tool_call.name.clone(),
+        input: tool_call.args.clone(),
+    });
+}
+
+fn broadcast_tool_result(
+    session_state: &SessionState,
+    turn_id: &str,
+    agent: &AgentEventContext,
+    result: &ToolExecutionResult,
+) {
+    session_state.broadcast_live_event(astrcode_core::AgentEvent::ToolCallResult {
+        turn_id: turn_id.to_string(),
+        agent: agent.clone(),
+        result: result.clone(),
     });
 }
 
@@ -763,13 +801,35 @@ mod tests {
             "tool result should be durably recorded immediately"
         );
 
-        let live_event = timeout(Duration::from_secs(1), live_receiver.recv())
+        let live_start = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool start in time")
+            .expect("live receiver should stay open");
+        let live_delta = timeout(Duration::from_secs(1), live_receiver.recv())
             .await
             .expect("live receiver should get stdout delta in time")
             .expect("live receiver should stay open");
+        let live_result = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool result in time")
+            .expect("live receiver should stay open");
         assert!(
             matches!(
-                live_event,
+                live_start,
+                astrcode_core::AgentEvent::ToolCallStart {
+                    turn_id,
+                    tool_call_id,
+                    tool_name,
+                    ..
+                } if turn_id == "turn-live"
+                    && tool_call_id == "call-live"
+                    && tool_name == "streaming_probe"
+            ),
+            "tool start should go through the live channel immediately"
+        );
+        assert!(
+            matches!(
+                live_delta,
                 astrcode_core::AgentEvent::ToolCallDelta {
                     turn_id,
                     tool_call_id,
@@ -783,6 +843,17 @@ mod tests {
                     && delta == "live-stdout"
             ),
             "stdout delta should go through the live channel immediately"
+        );
+        assert!(
+            matches!(
+                live_result,
+                astrcode_core::AgentEvent::ToolCallResult { turn_id, result, .. }
+                    if turn_id == "turn-live"
+                        && result.tool_call_id == "call-live"
+                        && result.tool_name == "streaming_probe"
+                        && result.output == "done"
+            ),
+            "tool result should go through the live channel immediately"
         );
     }
 
@@ -847,13 +918,35 @@ mod tests {
             "buffered mode should not immediately append durable events"
         );
 
-        let live_event = timeout(Duration::from_secs(1), live_receiver.recv())
+        let live_start = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool start in time")
+            .expect("live receiver should stay open");
+        let live_delta = timeout(Duration::from_secs(1), live_receiver.recv())
             .await
             .expect("live receiver should get stdout delta in time")
             .expect("live receiver should stay open");
+        let live_result = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool result in time")
+            .expect("live receiver should stay open");
         assert!(
             matches!(
-                live_event,
+                live_start,
+                astrcode_core::AgentEvent::ToolCallStart {
+                    turn_id,
+                    tool_call_id,
+                    tool_name,
+                    ..
+                } if turn_id == "turn-buffered"
+                    && tool_call_id == "call-buffered"
+                    && tool_name == "streaming_probe"
+            ),
+            "buffered mode should still broadcast tool start live"
+        );
+        assert!(
+            matches!(
+                live_delta,
                 astrcode_core::AgentEvent::ToolCallDelta {
                     turn_id,
                     tool_call_id,
@@ -867,6 +960,17 @@ mod tests {
                     && delta == "live-stdout"
             ),
             "buffered mode should keep live stdout forwarding"
+        );
+        assert!(
+            matches!(
+                live_result,
+                astrcode_core::AgentEvent::ToolCallResult { turn_id, result, .. }
+                    if turn_id == "turn-buffered"
+                        && result.tool_call_id == "call-buffered"
+                        && result.tool_name == "streaming_probe"
+                        && result.output == "done"
+            ),
+            "buffered mode should still broadcast tool result live"
         );
     }
 }
