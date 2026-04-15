@@ -32,8 +32,8 @@ use crate::{
         request::AssemblePromptResult,
         runner::TurnExecutionRequestView,
         test_support::{
-            NoopPromptFactsProvider, assert_contains_compact_summary, assert_has_assistant_final,
-            assert_has_turn_done, root_compact_applied_event, test_gateway, test_session_state,
+            NoopPromptFactsProvider, assert_contains_compact_summary, assert_has_turn_done,
+            root_compact_applied_event, test_gateway, test_session_state,
         },
         tool_cycle::{ToolCycleOutcome, ToolCycleResult, ToolEventEmissionMode},
     },
@@ -387,7 +387,13 @@ async fn run_single_step_returns_cancelled_when_tool_cycle_interrupts() {
     ));
     assert_eq!(execution.step_index, 0);
     assert_eq!(driver.counts.tool_cycle.load(Ordering::SeqCst), 1);
-    assert_has_assistant_final(&execution.events);
+    assert!(
+        execution
+            .events
+            .iter()
+            .all(|event| !matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
+        "tool-only interrupted step should not persist an empty assistant final"
+    );
 }
 
 #[tokio::test]

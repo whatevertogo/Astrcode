@@ -21,6 +21,7 @@ use astrcode_protocol::http::{
     TerminalToolStreamBlockDto, TerminalTranscriptErrorCodeDto, TerminalUserBlockDto,
     ToolOutputStreamDto,
 };
+use serde_json::Value;
 
 pub(crate) fn project_terminal_snapshot(facts: &TerminalFacts) -> TerminalSnapshotResponseDto {
     let child_lookup = child_summary_lookup(&facts.child_summaries);
@@ -334,8 +335,14 @@ pub(crate) struct TerminalDeltaProjector {
 
 #[derive(Default, Clone)]
 struct TurnBlockRefs {
-    thinking: Option<String>,
-    assistant: Option<String>,
+    current_thinking: Option<String>,
+    current_assistant: Option<String>,
+    historical_thinking: Vec<String>,
+    historical_assistant: Vec<String>,
+    pending_thinking: Vec<String>,
+    pending_assistant: Vec<String>,
+    thinking_count: usize,
+    assistant_count: usize,
 }
 
 #[derive(Default, Clone)]
@@ -381,6 +388,91 @@ impl ToolBlockRefs {
     }
 }
 
+impl TurnBlockRefs {
+    fn current_or_next_block_id(&mut self, turn_id: &str, kind: BlockKind) -> String {
+        match kind {
+            BlockKind::Thinking => {
+                if let Some(block_id) = &self.current_thinking {
+                    return block_id.clone();
+                }
+                self.thinking_count += 1;
+                let block_id = turn_scoped_block_id(turn_id, "thinking", self.thinking_count);
+                self.current_thinking = Some(block_id.clone());
+                block_id
+            },
+            BlockKind::Assistant => {
+                if let Some(block_id) = &self.current_assistant {
+                    return block_id.clone();
+                }
+                self.assistant_count += 1;
+                let block_id = turn_scoped_block_id(turn_id, "assistant", self.assistant_count);
+                self.current_assistant = Some(block_id.clone());
+                block_id
+            },
+        }
+    }
+
+    fn block_id_for_finalize(&mut self, turn_id: &str, kind: BlockKind) -> String {
+        match kind {
+            BlockKind::Thinking => {
+                if let Some(block_id) = self.pending_thinking.first().cloned() {
+                    self.pending_thinking.remove(0);
+                    return block_id;
+                }
+                self.current_or_next_block_id(turn_id, kind)
+            },
+            BlockKind::Assistant => {
+                if let Some(block_id) = self.pending_assistant.first().cloned() {
+                    self.pending_assistant.remove(0);
+                    return block_id;
+                }
+                self.current_or_next_block_id(turn_id, kind)
+            },
+        }
+    }
+
+    fn split_after_live_tool_boundary(&mut self) {
+        if let Some(block_id) = self.current_thinking.take() {
+            self.pending_thinking.push(block_id);
+        }
+        if let Some(block_id) = self.current_assistant.take() {
+            self.pending_assistant.push(block_id);
+        }
+    }
+
+    fn split_after_durable_tool_boundary(&mut self) {
+        if let Some(block_id) = self.current_thinking.take() {
+            self.historical_thinking.push(block_id);
+        }
+        if let Some(block_id) = self.current_assistant.take() {
+            self.historical_assistant.push(block_id);
+        }
+    }
+
+    fn all_block_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        ids.extend(self.historical_thinking.iter().cloned());
+        ids.extend(self.historical_assistant.iter().cloned());
+        ids.extend(self.pending_thinking.iter().cloned());
+        ids.extend(self.pending_assistant.iter().cloned());
+        if let Some(block_id) = &self.current_thinking {
+            ids.push(block_id.clone());
+        }
+        if let Some(block_id) = &self.current_assistant {
+            ids.push(block_id.clone());
+        }
+        ids
+    }
+}
+
+fn turn_scoped_block_id(turn_id: &str, role: &str, ordinal: usize) -> String {
+    if ordinal <= 1 {
+        format!("turn:{turn_id}:{role}")
+    } else {
+        format!("turn:{turn_id}:{role}:{ordinal}")
+    }
+}
+
 impl TerminalDeltaProjector {
     pub(crate) fn new(child_lookup: HashMap<String, TerminalChildSummaryDto>) -> Self {
         Self {
@@ -421,25 +513,10 @@ impl TerminalDeltaProjector {
                 self.append_user_block(&block_id, turn_id, content)
             },
             AgentEvent::ThinkingDelta { turn_id, delta, .. } => {
-                let block_id = format!("turn:{turn_id}:thinking");
-                self.turn_blocks
-                    .entry(turn_id.clone())
-                    .or_default()
-                    .thinking = Some(block_id.clone());
-                self.append_markdown_streaming_block(&block_id, turn_id, delta, BlockKind::Thinking)
+                self.append_markdown_streaming_block(turn_id, delta, BlockKind::Thinking)
             },
             AgentEvent::ModelDelta { turn_id, delta, .. } => {
-                let block_id = format!("turn:{turn_id}:assistant");
-                self.turn_blocks
-                    .entry(turn_id.clone())
-                    .or_default()
-                    .assistant = Some(block_id.clone());
-                self.append_markdown_streaming_block(
-                    &block_id,
-                    turn_id,
-                    delta,
-                    BlockKind::Assistant,
-                )
+                self.append_markdown_streaming_block(turn_id, delta, BlockKind::Assistant)
             },
             AgentEvent::AssistantMessage {
                 turn_id,
@@ -453,8 +530,9 @@ impl TerminalDeltaProjector {
                 turn_id,
                 tool_call_id,
                 tool_name,
+                input,
                 ..
-            } => self.start_tool_call(turn_id, tool_call_id, tool_name),
+            } => self.start_tool_call(turn_id, tool_call_id, tool_name, Some(input), source),
             AgentEvent::ToolCallDelta {
                 turn_id,
                 tool_call_id,
@@ -529,15 +607,19 @@ impl TerminalDeltaProjector {
 
     fn append_markdown_streaming_block(
         &mut self,
-        block_id: &str,
         turn_id: &str,
         delta: &str,
         kind: BlockKind,
     ) -> Vec<TerminalDeltaDto> {
-        if let Some(index) = self.block_index.get(block_id).copied() {
+        let block_id = self
+            .turn_blocks
+            .entry(turn_id.to_string())
+            .or_default()
+            .current_or_next_block_id(turn_id, kind);
+        if let Some(index) = self.block_index.get(&block_id).copied() {
             self.append_markdown(index, delta);
             return vec![TerminalDeltaDto::PatchBlock {
-                block_id: block_id.to_string(),
+                block_id,
                 patch: TerminalBlockPatchDto::AppendMarkdown {
                     markdown: delta.to_string(),
                 },
@@ -546,13 +628,13 @@ impl TerminalDeltaProjector {
 
         let block = match kind {
             BlockKind::Thinking => TerminalBlockDto::Thinking(TerminalThinkingBlockDto {
-                id: block_id.to_string(),
+                id: block_id.clone(),
                 turn_id: Some(turn_id.to_string()),
                 status: TerminalBlockStatusDto::Streaming,
                 markdown: delta.to_string(),
             }),
             BlockKind::Assistant => TerminalBlockDto::Assistant(TerminalAssistantBlockDto {
-                id: block_id.to_string(),
+                id: block_id,
                 turn_id: Some(turn_id.to_string()),
                 status: TerminalBlockStatusDto::Streaming,
                 markdown: delta.to_string(),
@@ -567,12 +649,21 @@ impl TerminalDeltaProjector {
         content: &str,
         reasoning_content: Option<&str>,
     ) -> Vec<TerminalDeltaDto> {
-        let assistant_id = format!("turn:{turn_id}:assistant");
-        let thinking_id = format!("turn:{turn_id}:thinking");
+        let (assistant_id, thinking_id) = {
+            let turn_refs = self.turn_blocks.entry(turn_id.to_string()).or_default();
+            (
+                turn_refs.block_id_for_finalize(turn_id, BlockKind::Assistant),
+                reasoning_content
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|_| turn_refs.block_id_for_finalize(turn_id, BlockKind::Thinking)),
+            )
+        };
         let mut deltas = Vec::new();
 
-        if let Some(reasoning_content) = reasoning_content.filter(|value| !value.trim().is_empty())
-        {
+        if let (Some(reasoning_content), Some(thinking_id)) = (
+            reasoning_content.filter(|value| !value.trim().is_empty()),
+            thinking_id,
+        ) {
             deltas.extend(self.ensure_full_markdown_block(
                 &thinking_id,
                 turn_id,
@@ -649,6 +740,8 @@ impl TerminalDeltaProjector {
         turn_id: &str,
         tool_call_id: &str,
         tool_name: &str,
+        input: Option<&Value>,
+        source: ProjectionSource,
     ) -> Vec<TerminalDeltaDto> {
         let block_id = format!("tool:{tool_call_id}:call");
         let refs = self
@@ -660,12 +753,19 @@ impl TerminalDeltaProjector {
         if self.block_index.contains_key(&block_id) {
             return Vec::new();
         }
+        let turn_refs = self.turn_blocks.entry(turn_id.to_string()).or_default();
+        if source.is_live() {
+            turn_refs.split_after_live_tool_boundary();
+        } else {
+            turn_refs.split_after_durable_tool_boundary();
+        }
         self.push_block(TerminalBlockDto::ToolCall(TerminalToolCallBlockDto {
             id: block_id,
             turn_id: Some(turn_id.to_string()),
             tool_call_id: Some(tool_call_id.to_string()),
             tool_name: tool_name.to_string(),
             status: TerminalBlockStatusDto::Streaming,
+            input: input.cloned(),
             summary: None,
         }))
     }
@@ -679,7 +779,7 @@ impl TerminalDeltaProjector {
         delta: &str,
         source: ProjectionSource,
     ) -> Vec<TerminalDeltaDto> {
-        let mut deltas = self.start_tool_call(turn_id, tool_call_id, tool_name);
+        let mut deltas = self.start_tool_call(turn_id, tool_call_id, tool_name, None, source);
         let refs = self
             .tool_blocks
             .entry(tool_call_id.to_string())
@@ -727,7 +827,13 @@ impl TerminalDeltaProjector {
         result: &ToolExecutionResult,
         source: ProjectionSource,
     ) -> Vec<TerminalDeltaDto> {
-        let mut deltas = self.start_tool_call(turn_id, &result.tool_call_id, &result.tool_name);
+        let mut deltas = self.start_tool_call(
+            turn_id,
+            &result.tool_call_id,
+            &result.tool_name,
+            None,
+            source,
+        );
         let status = if result.ok {
             TerminalBlockStatusDto::Complete
         } else {
@@ -866,13 +972,8 @@ impl TerminalDeltaProjector {
             return Vec::new();
         };
         let mut deltas = Vec::new();
-        if let Some(thinking) = refs.thinking {
-            if let Some(delta) = self.complete_block(&thinking, TerminalBlockStatusDto::Complete) {
-                deltas.push(delta);
-            }
-        }
-        if let Some(assistant) = refs.assistant {
-            if let Some(delta) = self.complete_block(&assistant, TerminalBlockStatusDto::Complete) {
+        for block_id in refs.all_block_ids() {
+            if let Some(delta) = self.complete_block(&block_id, TerminalBlockStatusDto::Complete) {
                 deltas.push(delta);
             }
         }
@@ -999,6 +1100,10 @@ impl ProjectionSource {
     fn is_durable(self) -> bool {
         matches!(self, Self::Durable)
     }
+
+    fn is_live(self) -> bool {
+        matches!(self, Self::Live)
+    }
 }
 
 fn block_id(block: &TerminalBlockDto) -> &str {
@@ -1113,6 +1218,9 @@ mod tests {
                         "toolCallId": "call-1",
                         "toolName": "shell_command",
                         "status": "complete",
+                        "input": {
+                            "command": "rg terminal"
+                        },
                         "summary": "read files"
                     },
                     {
@@ -1206,7 +1314,10 @@ mod tests {
                         "turnId": "turn-1",
                         "toolCallId": "call-1",
                         "toolName": "shell_command",
-                        "status": "streaming"
+                        "status": "streaming",
+                        "input": {
+                            "command": "pwd"
+                        }
                     }
                 },
                 {
@@ -1437,7 +1548,8 @@ mod tests {
                         "turnId": "turn-1",
                         "toolCallId": "call-1",
                         "toolName": "web",
-                        "status": "streaming"
+                        "status": "streaming",
+                        "input": {}
                     }
                 }
             ])
@@ -1557,6 +1669,92 @@ mod tests {
             )))
             .expect("durable result should collapse to no-op after matching live completion"),
             json!([])
+        );
+    }
+
+    #[test]
+    fn durable_multi_step_turn_keeps_final_assistant_after_tool_blocks() {
+        let mut projector = TerminalDeltaProjector::default();
+        let agent = sample_agent_context();
+
+        projector.seed(&[
+            record(
+                "1.1",
+                AgentEvent::AssistantMessage {
+                    turn_id: "turn-1".to_string(),
+                    agent: agent.clone(),
+                    content: "好的，让我先浏览一下项目。".to_string(),
+                    reasoning_content: None,
+                },
+            ),
+            record(
+                "1.2",
+                AgentEvent::ToolCallStart {
+                    turn_id: "turn-1".to_string(),
+                    agent: agent.clone(),
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "listDir".to_string(),
+                    input: json!({ "path": "." }),
+                },
+            ),
+            record(
+                "1.3",
+                AgentEvent::ToolCallResult {
+                    turn_id: "turn-1".to_string(),
+                    agent: agent.clone(),
+                    result: ToolExecutionResult {
+                        tool_call_id: "call-1".to_string(),
+                        tool_name: "listDir".to_string(),
+                        ok: true,
+                        output: "[{\"name\":\"crates\"}]".to_string(),
+                        error: None,
+                        metadata: None,
+                        duration_ms: 1,
+                        truncated: false,
+                    },
+                },
+            ),
+            record(
+                "1.4",
+                AgentEvent::AssistantMessage {
+                    turn_id: "turn-1".to_string(),
+                    agent,
+                    content: "现在我对项目有了全面的了解。".to_string(),
+                    reasoning_content: None,
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            serde_json::to_value(&projector.blocks).expect("blocks should encode"),
+            json!([
+                {
+                    "kind": "assistant",
+                    "id": "turn:turn-1:assistant",
+                    "turnId": "turn-1",
+                    "status": "complete",
+                    "markdown": "好的，让我先浏览一下项目。"
+                },
+                {
+                    "kind": "tool_call",
+                    "id": "tool:call-1:call",
+                    "turnId": "turn-1",
+                    "toolCallId": "call-1",
+                    "toolName": "listDir",
+                    "status": "complete",
+                    "input": {
+                        "path": "."
+                    },
+                    "summary": "[{\"name\":\"crates\"}]"
+                },
+                {
+                    "kind": "assistant",
+                    "id": "turn:turn-1:assistant:2",
+                    "turnId": "turn-1",
+                    "status": "complete",
+                    "markdown": "现在我对项目有了全面的了解。"
+                }
+            ])
         );
     }
 

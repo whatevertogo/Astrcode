@@ -265,7 +265,7 @@ function projectConversationMessages(
           toolCallId,
           toolName: pickString(block, 'toolName') ?? 'tool',
           status: parseToolStatus(block.status),
-          args: null,
+          args: block.input ?? null,
           output: pickOptionalString(block, 'summary') || undefined,
           timestamp: index,
         });
@@ -507,12 +507,27 @@ export function applyConversationEnvelope(
   if (!kind) {
     return;
   }
+  const envelopeCursor = pickOptionalString(envelope, 'cursor');
+  if (envelopeCursor) {
+    state.cursor = envelopeCursor;
+  }
 
   switch (kind) {
     case 'append_block': {
       const block = asRecord(envelope.block);
       if (block) {
-        state.blocks.push(block);
+        const blockId = pickString(block, 'id');
+        const existingIndex = blockId
+          ? state.blocks.findIndex((candidate) => pickString(candidate, 'id') === blockId)
+          : -1;
+        if (existingIndex >= 0) {
+          state.blocks[existingIndex] = {
+            ...state.blocks[existingIndex],
+            ...block,
+          };
+        } else {
+          state.blocks.push(block);
+        }
       }
       return;
     }

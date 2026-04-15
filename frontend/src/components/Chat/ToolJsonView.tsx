@@ -1,13 +1,14 @@
-import { memo } from 'react';
+import { memo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import type { UnknownRecord } from '../../lib/shared';
+import { useNestedScrollContainment } from './useNestedScrollContainment';
 
 const MAX_CHILDREN_PER_NODE = 200;
-const MAX_STRING_PREVIEW = 240;
 
 interface ToolJsonViewProps {
   value: UnknownRecord | unknown[];
   summary: string;
+  defaultOpen?: boolean;
 }
 
 interface JsonNodeProps {
@@ -34,13 +35,9 @@ function renderPrimitiveValue(value: unknown): ReactNode {
   }
 
   if (typeof value === 'string') {
-    const truncated =
-      value.length > MAX_STRING_PREVIEW
-        ? `${value.slice(0, MAX_STRING_PREVIEW)}... (${value.length} chars)`
-        : value;
     return (
       <span className="whitespace-pre-wrap overflow-wrap-anywhere text-json-string">
-        &quot;{truncated}&quot;
+        &quot;{value}&quot;
       </span>
     );
   }
@@ -100,10 +97,16 @@ function JsonNode({ value, label, path, defaultOpen = false }: JsonNodeProps) {
   );
 }
 
-function ToolJsonView({ value, summary }: ToolJsonViewProps) {
+function ToolJsonView({ value, summary, defaultOpen = false }: ToolJsonViewProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  useNestedScrollContainment(containerRef);
+
   return (
-    <div className="m-0 max-h-[360px] overflow-auto rounded-lg border border-code-border bg-code-surface font-mono text-[13px]">
-      <JsonNode value={value} label="JSON" path="root" defaultOpen={false} />
+    <div
+      ref={containerRef}
+      className="m-0 max-h-[420px] overflow-auto rounded-lg border border-code-border bg-code-surface font-mono text-[13px]"
+    >
+      <JsonNode value={value} label="JSON" path="root" defaultOpen={defaultOpen} />
       <div className="px-3 py-2 border-t border-border text-text-secondary text-xs">{summary}</div>
     </div>
   );

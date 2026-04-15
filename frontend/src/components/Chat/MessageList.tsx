@@ -1,5 +1,5 @@
 import React, { Component, useCallback, useEffect, useRef } from 'react';
-import type { Message, SubRunViewData, ThreadItem } from '../../types';
+import type { Message, SubRunViewData, ThreadItem, ToolStreamMessage } from '../../types';
 import { emptyStateSurface, errorSurface } from '../../lib/styles';
 import { cn } from '../../lib/utils';
 import AssistantMessage from './AssistantMessage';
@@ -224,6 +224,7 @@ export default function MessageList({
       metrics?: Message,
       options?: {
         nested?: boolean;
+        groupedToolStreams?: ToolStreamMessage[];
       }
     ) => {
       if (msg.kind === 'user') {
@@ -245,7 +246,7 @@ export default function MessageList({
         );
       }
       if (msg.kind === 'toolCall') {
-        return <ToolCallBlock message={msg} />;
+        return <ToolCallBlock message={msg} streams={options?.groupedToolStreams} />;
       }
       if (msg.kind === 'toolStream') {
         return <ToolStreamBlock message={msg} />;
@@ -272,6 +273,7 @@ export default function MessageList({
       options?: {
         key?: string;
         nested?: boolean;
+        groupedToolStreams?: ToolStreamMessage[];
       },
       metricsOverride?: Message
     ) => {
@@ -307,8 +309,11 @@ export default function MessageList({
       options?: {
         nested?: boolean;
       }
-    ): React.ReactNode[] =>
-      items.map((item, index) => {
+    ): React.ReactNode[] => {
+      const rendered: React.ReactNode[] = [];
+
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
         if (item.kind === 'message') {
           const previousItem = items[index - 1];
           const nextItem = items[index + 1];
@@ -316,10 +321,11 @@ export default function MessageList({
           const nextMessage = nextItem?.kind === 'message' ? nextItem.message : null;
 
           if (item.message.kind === 'promptMetrics') {
-            return null;
+            continue;
           }
 
           let metricsToAttach: Message | undefined;
+          let groupedToolStreams: ToolStreamMessage[] | undefined;
           if (item.message.kind === 'assistant') {
             let hasMoreAssistantInTurn = false;
             const currentTurnId = item.message.turnId;
@@ -365,21 +371,47 @@ export default function MessageList({
             }
           }
 
-          return renderMessageRow(
-            item.message,
-            previousMessage,
-            nextMessage,
-            {
-              key: item.message.id,
-              nested: options?.nested,
-            },
-            metricsToAttach
+          if (item.message.kind === 'toolCall') {
+            groupedToolStreams = [];
+            let cursor = index + 1;
+            while (cursor < items.length) {
+              const candidate = items[cursor];
+              if (candidate.kind !== 'message' || candidate.message.kind !== 'toolStream') {
+                break;
+              }
+              if (candidate.message.toolCallId !== item.message.toolCallId) {
+                break;
+              }
+              groupedToolStreams.push(candidate.message);
+              cursor += 1;
+            }
+            if (groupedToolStreams.length > 0) {
+              index = cursor - 1;
+            } else {
+              groupedToolStreams = undefined;
+            }
+          }
+
+          rendered.push(
+            renderMessageRow(
+              item.message,
+              previousMessage,
+              nextMessage,
+              {
+                key: item.message.id,
+                nested: options?.nested,
+                groupedToolStreams,
+              },
+              metricsToAttach
+            )
           );
+          continue;
         }
 
         const subRunView = subRunViews.get(item.subRunId);
         if (!subRunView) {
-          return (
+          rendered.push(
+            (
             <div
               key={`subrun-missing-${item.subRunId}`}
               className={
@@ -393,7 +425,9 @@ export default function MessageList({
                 <div className="mb-2 text-xs text-danger/70">subRunId: {item.subRunId}</div>
               </div>
             </div>
+            )
           );
+          continue;
         }
 
         const boundaryMessage =
@@ -420,7 +454,8 @@ export default function MessageList({
           />
         );
 
-        return (
+        rendered.push(
+          (
           <div key={`subrun-${subRunView.subRunId}`} className={rowClass}>
             {boundaryMessage ? (
               <MessageBoundary message={boundaryMessage}>{subRunBlock}</MessageBoundary>
@@ -428,8 +463,12 @@ export default function MessageList({
               subRunBlock
             )}
           </div>
+          )
         );
-      }),
+      }
+
+      return rendered;
+    },
     [onCancelSubRun, onOpenChildSession, onOpenSubRun, renderMessageRow, sessionId, subRunViews]
   );
 

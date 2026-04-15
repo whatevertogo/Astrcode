@@ -38,6 +38,9 @@
       "toolCallId": "tool-call-1",
       "toolName": "shell_command",
       "status": "complete",
+      "input": {
+        "command": "rg terminal"
+      },
       "summary": "读取 protocol 上下文"
     },
     {

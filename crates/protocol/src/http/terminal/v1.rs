@@ -175,6 +175,8 @@ pub struct TerminalToolCallBlockDto {
     pub tool_name: String,
     pub status: TerminalBlockStatusDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
 }
 

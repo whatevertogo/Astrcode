@@ -382,15 +382,6 @@ pub(crate) fn assert_has_turn_done(events: &[StorageEvent]) {
     );
 }
 
-pub(crate) fn assert_has_assistant_final(events: &[StorageEvent]) {
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
-        "expected events to contain AssistantFinal"
-    );
-}
-
 pub(crate) async fn append_root_turn_event_to_actor(
     actor: &Arc<SessionActor>,
     event: StorageEvent,
