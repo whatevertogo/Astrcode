@@ -1044,7 +1044,7 @@ fn project_collaboration_lifecycle(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use astrcode_core::{
         AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken, CloseAgentParams,
@@ -1059,6 +1059,7 @@ mod tests {
     use crate::{
         AgentKernelPort, AppKernelPort,
         agent::test_support::{TestLlmBehavior, build_agent_test_harness},
+        lifecycle::governance::ObservabilitySnapshotProvider,
     };
 
     async fn spawn_direct_child(
@@ -1456,6 +1457,7 @@ mod tests {
         )
         .with_turn_id("turn-child-report-2")
         .with_agent_context(subrun_event_context(&resumed_child));
+        let metrics_before = harness.metrics.snapshot();
 
         let result = harness
             .service
@@ -1473,6 +1475,24 @@ mod tests {
             .expect("resumed child should be able to send upward");
 
         assert!(result.delivery_id.is_some());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if harness
+                .kernel
+                .agent_control()
+                .pending_parent_delivery_count(&parent.session_id)
+                .await
+                == 0
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "explicit upstream send should trigger parent wake and drain delivery queue"
+            );
+            sleep(Duration::from_millis(20)).await;
+        }
+
         let parent_events = harness
             .session_runtime
             .replay_stored_events(&SessionId::from(parent.session_id.clone()))
@@ -1486,7 +1506,8 @@ mod tests {
                     && notification.child_ref.lineage_kind
                         == astrcode_core::ChildSessionLineageKind::Resume
                     && notification.delivery.as_ref().is_some_and(|delivery| {
-                        delivery.payload.message() == "继续推进后的显式上报"
+                        delivery.origin == astrcode_core::ParentDeliveryOrigin::Explicit
+                            && delivery.payload.message() == "继续推进后的显式上报"
                     })
         )));
         assert!(
@@ -1500,6 +1521,45 @@ mod tests {
             )),
             "resumed child delivery must target the current parent turn instead of the stale \
              spawn turn"
+        );
+        assert!(
+            parent_events.iter().any(|stored| matches!(
+                &stored.event.payload,
+                StorageEventPayload::AgentMailboxQueued { payload }
+                    if payload.envelope.message == "继续推进后的显式上报"
+            )),
+            "explicit upstream send should enqueue the same delivery for parent wake consumption"
+        );
+        assert!(
+            parent_events.iter().any(|stored| matches!(
+                &stored.event.payload,
+                StorageEventPayload::UserMessage { content, .. }
+                    if content.contains("delivery_id: child-send:")
+                        && content.contains("message: 继续推进后的显式上报")
+            )),
+            "parent wake prompt should consume the explicit upstream delivery"
+        );
+        let metrics = harness.metrics.snapshot();
+        assert!(
+            metrics.execution_diagnostics.parent_reactivation_requested
+                - metrics_before
+                    .execution_diagnostics
+                    .parent_reactivation_requested
+                >= 1
+        );
+        assert!(
+            metrics.execution_diagnostics.parent_reactivation_succeeded
+                - metrics_before
+                    .execution_diagnostics
+                    .parent_reactivation_succeeded
+                >= 1
+        );
+        assert!(
+            metrics.execution_diagnostics.delivery_buffer_wake_succeeded
+                - metrics_before
+                    .execution_diagnostics
+                    .delivery_buffer_wake_succeeded
+                >= 1
         );
     }
 

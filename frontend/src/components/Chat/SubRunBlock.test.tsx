@@ -3,7 +3,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import type { ThreadItem } from '../../lib/subRunView';
-import type { SubRunFinishMessage, SubRunStartMessage } from '../../types';
+import type {
+  ChildSessionNotificationMessage,
+  SubRunFinishMessage,
+  SubRunStartMessage,
+} from '../../types';
 import SubRunBlock from './SubRunBlock';
 
 function renderThreadItems(items: ThreadItem[]): ReactNode[] {
@@ -383,5 +387,52 @@ describe('SubRunBlock result rendering', () => {
     expect(html).toContain('这是完整子会话报告，不应该再内嵌在父会话里。');
     expect(html).not.toContain('最终回复');
     expect(html).not.toContain('<li>finding-1</li>');
+  });
+
+  it('renders latest notification delivery when finish message is absent', () => {
+    const latestNotification: ChildSessionNotificationMessage = {
+      id: 'notification-progress-1',
+      kind: 'childSessionNotification',
+      subRunId: 'subrun-progress',
+      childSessionId: 'session-child',
+      childRef: {
+        agentId: 'agent-child',
+        sessionId: 'session-parent',
+        subRunId: 'subrun-progress',
+        lineageKind: 'spawn',
+        status: 'running',
+        openSessionId: 'session-child',
+      },
+      notificationKind: 'progress_summary',
+      status: 'running',
+      timestamp: Date.now(),
+      delivery: {
+        idempotencyKey: 'delivery-progress-1',
+        origin: 'explicit',
+        terminalSemantics: 'non_terminal',
+        kind: 'progress',
+        payload: {
+          message: '子 Agent 正在整理第二批结果。',
+        },
+      },
+    };
+
+    const html = renderToStaticMarkup(
+      <SubRunBlock
+        subRunId="subrun-progress"
+        sessionId="session-parent"
+        title="reviewer"
+        latestNotification={latestNotification}
+        threadItems={[]}
+        streamFingerprint=""
+        hasDescriptorLineage={true}
+        renderThreadItems={renderThreadItems}
+        onCancelSubRun={async () => {}}
+      />
+    );
+
+    expect(html).toContain('子 Agent 正在整理第二批结果。');
+    expect(html).toContain('思考与工具');
+    expect(html).not.toContain('最终回复');
   });
 });

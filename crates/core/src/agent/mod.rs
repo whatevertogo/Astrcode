@@ -1422,4 +1422,107 @@ mod tests {
             payload => panic!("unexpected payload: {payload:?}"),
         }
     }
+
+    #[test]
+    fn legacy_child_notification_deserialize_upgrades_failed_into_delivery() {
+        let notification: ChildSessionNotification = serde_json::from_value(serde_json::json!({
+            "notificationId": "delivery-failed",
+            "childRef": {
+                "agentId": "agent-child",
+                "sessionId": "session-parent",
+                "subRunId": "subrun-child",
+                "lineageKind": "spawn",
+                "status": "idle",
+                "openSessionId": "session-child"
+            },
+            "kind": "failed",
+            "summary": "legacy failure",
+            "status": "idle"
+        }))
+        .expect("legacy failed notification should deserialize");
+
+        let delivery = notification
+            .delivery
+            .expect("legacy failed notification should upgrade");
+        assert_eq!(
+            delivery.terminal_semantics,
+            super::ParentDeliveryTerminalSemantics::Terminal
+        );
+        match delivery.payload {
+            super::ParentDeliveryPayload::Failed(payload) => {
+                assert_eq!(payload.message, "legacy failure");
+                assert_eq!(payload.code, super::SubRunFailureCode::Internal);
+                assert!(!payload.retryable);
+                assert_eq!(payload.technical_message, None);
+            },
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_child_notification_deserialize_upgrades_closed_into_delivery() {
+        let notification: ChildSessionNotification = serde_json::from_value(serde_json::json!({
+            "notificationId": "delivery-closed",
+            "childRef": {
+                "agentId": "agent-child",
+                "sessionId": "session-parent",
+                "subRunId": "subrun-child",
+                "lineageKind": "spawn",
+                "status": "idle",
+                "openSessionId": "session-child"
+            },
+            "kind": "closed",
+            "summary": "legacy close request",
+            "status": "idle"
+        }))
+        .expect("legacy closed notification should deserialize");
+
+        let delivery = notification
+            .delivery
+            .expect("legacy closed notification should upgrade");
+        assert_eq!(
+            delivery.terminal_semantics,
+            super::ParentDeliveryTerminalSemantics::Terminal
+        );
+        match delivery.payload {
+            super::ParentDeliveryPayload::CloseRequest(payload) => {
+                assert_eq!(payload.message, "legacy close request");
+                assert_eq!(payload.reason.as_deref(), Some("legacy_child_notification"));
+            },
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_child_notification_deserialize_upgrades_summary_only_progress_into_delivery() {
+        let notification: ChildSessionNotification = serde_json::from_value(serde_json::json!({
+            "notificationId": "delivery-progress",
+            "childRef": {
+                "agentId": "agent-child",
+                "sessionId": "session-parent",
+                "subRunId": "subrun-child",
+                "lineageKind": "spawn",
+                "status": "running",
+                "openSessionId": "session-child"
+            },
+            "kind": "waiting",
+            "summary": "legacy progress only",
+            "status": "running"
+        }))
+        .expect("legacy progress notification should deserialize");
+
+        let delivery = notification
+            .delivery
+            .expect("legacy progress notification should upgrade");
+        assert_eq!(
+            delivery.terminal_semantics,
+            super::ParentDeliveryTerminalSemantics::NonTerminal
+        );
+        match delivery.payload {
+            super::ParentDeliveryPayload::Progress(payload) => {
+                assert_eq!(payload.message, "legacy progress only");
+            },
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
 }
