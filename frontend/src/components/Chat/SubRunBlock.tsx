@@ -1,5 +1,10 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { SubRunFinishMessage, SubRunStartMessage } from '../../types';
+import type {
+  ChildSessionNotificationMessage,
+  ParentDelivery,
+  SubRunFinishMessage,
+  SubRunStartMessage,
+} from '../../types';
 import type { ThreadItem } from '../../lib/subRunView';
 import { cn } from '../../lib/utils';
 import {
@@ -20,6 +25,7 @@ interface SubRunBlockProps {
   title: string;
   startMessage?: SubRunStartMessage;
   finishMessage?: SubRunFinishMessage;
+  latestNotification?: ChildSessionNotificationMessage;
   threadItems: ThreadItem[];
   streamFingerprint: string;
   hasDescriptorLineage: boolean;
@@ -88,6 +94,11 @@ function isVisibleActivityItem(item: ThreadItem): boolean {
   return item.message.kind === 'assistant' || item.message.kind === 'toolCall';
 }
 
+function getDeliveryMessage(delivery?: ParentDelivery): string | null {
+  const message = delivery?.payload.message?.trim();
+  return message && message.length > 0 ? message : null;
+}
+
 function SubRunBlock({
   subRunId,
   sessionId,
@@ -95,6 +106,7 @@ function SubRunBlock({
   title,
   startMessage,
   finishMessage,
+  latestNotification,
   threadItems,
   streamFingerprint,
   hasDescriptorLineage: _hasDescriptorLineage,
@@ -122,6 +134,8 @@ function SubRunBlock({
       : getStorageModeLabel(startMessage, childSessionId);
   const resultHandoff = finishMessage?.result.handoff;
   const resultFailure = finishMessage?.result.failure;
+  const latestDelivery = latestNotification?.delivery ?? resultHandoff?.delivery;
+  const latestDeliveryMessage = getDeliveryMessage(latestDelivery);
   const isBackgroundRunning = status === 'running';
   const navigationLabel =
     childSessionId !== undefined
@@ -132,7 +146,7 @@ function SubRunBlock({
   const activityItems = useMemo(() => threadItems.filter(isVisibleActivityItem), [threadItems]);
   const activitySummary =
     resultFailure?.displayMessage ||
-    resultHandoff?.summary.trim() ||
+    latestDeliveryMessage ||
     (isBackgroundRunning
       ? childSessionId
         ? '独立子会话正在后台运行，请打开会话查看实时输出。'
@@ -313,7 +327,14 @@ function SubRunBlock({
   const renderFinalReply = () => {
     // 成功交付时展示最终回复摘要
     // 独立子会话的完整结果应该留在子会话里，父视图只保留摘要和入口。
-    if (!resultHandoff || status !== 'completed' || childSessionId) {
+    const completedDelivery = latestDelivery?.kind === 'completed' ? latestDelivery : undefined;
+    const completedSummary = getDeliveryMessage(completedDelivery);
+    const completedFindings =
+      completedDelivery?.kind === 'completed'
+        ? completedDelivery.payload.findings
+        : (resultHandoff?.findings ?? []);
+
+    if (!completedSummary || status !== 'completed' || childSessionId) {
       return null;
     }
     return (
@@ -337,11 +358,11 @@ function SubRunBlock({
         </summary>
         <div className="mt-2 mb-2">
           <div className="flex-1 basis-[260px] min-w-0 text-[13px] leading-relaxed text-text-secondary whitespace-pre-wrap overflow-wrap-anywhere">
-            {resultHandoff.summary}
+            {completedSummary}
           </div>
-          {resultHandoff.findings.length > 0 && (
+          {completedFindings.length > 0 && (
             <ul className="mt-1 mb-0 ml-4 p-0 list-disc text-text-secondary text-[0.85em]">
-              {resultHandoff.findings.map((finding, index) => (
+              {completedFindings.map((finding, index) => (
                 <li key={index}>{finding}</li>
               ))}
             </ul>

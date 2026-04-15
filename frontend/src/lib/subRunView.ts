@@ -1,4 +1,5 @@
 import type {
+  ChildSessionNotificationMessage,
   Message,
   SubRunFinishMessage,
   SubRunStartMessage,
@@ -27,6 +28,7 @@ interface SubRunRecord {
   subRunId: string;
   startMessage?: SubRunStartMessage;
   finishMessage?: SubRunFinishMessage;
+  latestNotification?: ChildSessionNotificationMessage;
   ownBodyEntries: IndexedMessage[];
   agentId?: string;
   childSessionId?: string;
@@ -131,7 +133,7 @@ function buildMessageFingerprint(message: Message): string {
     return `${message.id}:subRunStart:${message.subRunId ?? 'unknown'}`;
   }
   if (message.kind === 'childSessionNotification') {
-    return `${message.id}:childNotification:${message.childRef.subRunId}:${message.notificationKind}:${message.status}`;
+    return `${message.id}:childNotification:${message.childRef.subRunId}:${message.notificationKind}:${message.status}:${message.delivery?.idempotencyKey ?? 'legacy'}`;
   }
   return `${message.id}:subRunFinish:${message.subRunId ?? 'unknown'}:${message.result.status}`;
 }
@@ -348,6 +350,7 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
       if (parentAgent && !record.parentAgentId) {
         record.parentAgentId = parentAgent;
       }
+      record.latestNotification = message;
     }
 
     record.ownBodyEntries.push({ index, message });
@@ -527,6 +530,7 @@ export function buildSubRunThreadTree(messages: Message[]): SubRunThreadTree {
       title: record.title,
       startMessage: record.startMessage,
       finishMessage: record.finishMessage,
+      latestNotification: record.latestNotification,
       bodyMessages: record.ownBodyEntries.map((entry) => entry.message),
       threadItems,
       streamFingerprint,
@@ -621,11 +625,22 @@ export function patchSubRunThreadTreeMessages(
     if (!patchedThreadItems) {
       return null;
     }
+    const patchedLatestNotification = view.latestNotification
+      ? remapMessageReference(view.latestNotification, nextById)
+      : null;
+    if (view.latestNotification && !patchedLatestNotification) {
+      return null;
+    }
+    const latestNotification =
+      patchedLatestNotification?.kind === 'childSessionNotification'
+        ? patchedLatestNotification
+        : undefined;
 
     patchedSubRuns.set(subRunId, {
       ...view,
       startMessage: patchedStartMessage as SubRunStartMessage | undefined,
       finishMessage: patchedFinishMessage as SubRunFinishMessage | undefined,
+      latestNotification,
       bodyMessages: patchedBodyMessages,
       threadItems: patchedThreadItems,
     });
@@ -744,6 +759,6 @@ export function listRootSubRunViews(
     .filter((view): view is SubRunViewData => view !== undefined);
 }
 
-/// 从消息列表构建父视图摘要投影。
+/// 从消息列表构建父视图 delivery 投影。
 /// 直接消费 childSessionNotification，避免再从 mixed-thread 生命周期反推父摘要。
-/// 父视图只消费摘要，不消费子会话原始事件流，不暴露 raw JSON。
+/// 父视图只消费 typed delivery，不消费子会话原始事件流，不暴露 raw JSON。

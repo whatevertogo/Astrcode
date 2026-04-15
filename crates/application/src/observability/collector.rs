@@ -263,7 +263,6 @@ impl CollaborationMetricsState {
             AgentCollaborationActionKind::Observe => self.record_observe(fact),
             AgentCollaborationActionKind::Close => self.record_close(fact),
             AgentCollaborationActionKind::Delivery => self.record_delivery(fact),
-            AgentCollaborationActionKind::ReplyToParent => {},
         }
     }
 

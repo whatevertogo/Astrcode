@@ -5,9 +5,11 @@
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentInboxEnvelope,
-    AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind, CloseAgentParams,
-    CollaborationResult, CollaborationResultKind, InboxEnvelopeKind, MailboxDiscardedPayload,
-    MailboxQueuedPayload, SendAgentParams, SubRunHandle,
+    AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
+    ChildSessionNotificationKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
+    InboxEnvelopeKind, MailboxDiscardedPayload, MailboxQueuedPayload, ParentDelivery,
+    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics, SendAgentParams,
+    SendToChildParams, SendToParentParams, SubRunHandle,
 };
 
 use super::{
@@ -102,16 +104,29 @@ impl AgentOrchestrationService {
         .await
     }
 
-    /// 向子 Agent 追加消息（send 协作工具的业务逻辑）。
-    pub async fn send_to_child(
+    /// 统一 send 入口：按参数形状决定上行或下行。
+    pub async fn route_send(
         &self,
         params: SendAgentParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
-        let collaboration = self.tool_collaboration_context(ctx)?;
         params
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;
+
+        match params {
+            SendAgentParams::ToChild(params) => self.send_to_child(params, ctx).await,
+            SendAgentParams::ToParent(params) => self.send_to_parent(params, ctx).await,
+        }
+    }
+
+    /// 向子 Agent 追加消息（send 协作工具的下行业务逻辑）。
+    async fn send_to_child(
+        &self,
+        params: SendToChildParams,
+        ctx: &astrcode_core::ToolContext,
+    ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
+        let collaboration = self.tool_collaboration_context(ctx)?;
 
         let child = self
             .require_direct_child_handle(
@@ -148,6 +163,303 @@ impl AgentOrchestrationService {
 
         self.queue_message_for_active_child(&child, &params, ctx, &collaboration)
             .await
+    }
+
+    async fn send_to_parent(
+        &self,
+        params: SendToParentParams,
+        ctx: &astrcode_core::ToolContext,
+    ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
+        let fallback_collaboration = self.tool_collaboration_context(ctx)?;
+        let Some(child_agent_id) = ctx.agent_context().agent_id.as_deref() else {
+            let error = super::AgentOrchestrationError::InvalidInput(
+                "upstream send requires a child agent execution context".to_string(),
+            );
+            log::warn!(
+                "upstream send rejected before routing: reason='missing_child_context', \
+                 session='{}', turn='{}'",
+                ctx.session_id(),
+                ctx.turn_id().unwrap_or("unknown-turn")
+            );
+            return self
+                .reject_with_fact(
+                    fallback_collaboration.runtime(),
+                    fallback_collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Delivery,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .reason_code("missing_child_context")
+                        .summary(error.to_string()),
+                    error,
+                )
+                .await;
+        };
+
+        let child = match self.kernel.get_handle(child_agent_id).await {
+            Some(child) => child,
+            None => {
+                let error = super::AgentOrchestrationError::NotFound(format!(
+                    "agent '{}' not found",
+                    child_agent_id
+                ));
+                log::warn!(
+                    "upstream send rejected before routing: reason='sender_handle_missing', \
+                     childAgent='{}', session='{}', turn='{}'",
+                    child_agent_id,
+                    ctx.session_id(),
+                    ctx.turn_id().unwrap_or("unknown-turn")
+                );
+                return self
+                    .reject_with_fact(
+                        fallback_collaboration.runtime(),
+                        fallback_collaboration
+                            .fact(
+                                AgentCollaborationActionKind::Delivery,
+                                AgentCollaborationOutcomeKind::Rejected,
+                            )
+                            .reason_code("sender_handle_missing")
+                            .summary(error.to_string()),
+                        error,
+                    )
+                    .await;
+            },
+        };
+
+        let collaboration = self.upstream_collaboration_context(&child, ctx).await?;
+        let Some(parent_agent_id) = child.parent_agent_id.as_ref() else {
+            let error = super::AgentOrchestrationError::InvalidInput(
+                "root agent cannot use upstream send because it has no direct parent".to_string(),
+            );
+            log::warn!(
+                "upstream send rejected before routing: reason='missing_direct_parent', \
+                 childAgent='{}', parentSession='{}', parentTurn='{}'",
+                child.agent_id,
+                collaboration.session_id(),
+                collaboration.turn_id()
+            );
+            return self
+                .reject_with_fact(
+                    collaboration.runtime(),
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Delivery,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .child(&child)
+                        .reason_code("missing_direct_parent")
+                        .summary(error.to_string()),
+                    error,
+                )
+                .await;
+        };
+
+        let Some(parent_handle) = self.kernel.get_handle(parent_agent_id).await else {
+            let error = super::AgentOrchestrationError::NotFound(format!(
+                "direct parent agent '{}' not found",
+                parent_agent_id
+            ));
+            log::warn!(
+                "upstream send rejected before routing: reason='parent_not_found', \
+                 childAgent='{}', parentAgent='{}', parentSession='{}', parentTurn='{}'",
+                child.agent_id,
+                parent_agent_id,
+                collaboration.session_id(),
+                collaboration.turn_id()
+            );
+            return self
+                .reject_with_fact(
+                    collaboration.runtime(),
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Delivery,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .child(&child)
+                        .reason_code("parent_not_found")
+                        .summary(error.to_string()),
+                    error,
+                )
+                .await;
+        };
+
+        let parent_lifecycle = self.kernel.get_lifecycle(parent_agent_id).await;
+        if matches!(parent_lifecycle, Some(AgentLifecycleStatus::Terminated))
+            || matches!(parent_handle.lifecycle, AgentLifecycleStatus::Terminated)
+        {
+            let error = super::AgentOrchestrationError::InvalidInput(format!(
+                "direct parent agent '{}' has been terminated and cannot receive upstream send",
+                parent_agent_id
+            ));
+            log::warn!(
+                "upstream send rejected before routing: reason='parent_terminated', \
+                 childAgent='{}', parentAgent='{}', parentSession='{}', parentTurn='{}'",
+                child.agent_id,
+                parent_agent_id,
+                collaboration.session_id(),
+                collaboration.turn_id()
+            );
+            return self
+                .reject_with_fact(
+                    collaboration.runtime(),
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Delivery,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .child(&child)
+                        .reason_code("parent_terminated")
+                        .summary(error.to_string()),
+                    error,
+                )
+                .await;
+        }
+
+        let Some(source_turn_id) = ctx.turn_id().map(ToString::to_string) else {
+            let error = super::AgentOrchestrationError::InvalidInput(
+                "upstream send requires the current child work turn id".to_string(),
+            );
+            log::warn!(
+                "upstream send rejected before routing: reason='missing_source_turn', \
+                 childAgent='{}', parentSession='{}', parentTurn='{}'",
+                child.agent_id,
+                collaboration.session_id(),
+                collaboration.turn_id()
+            );
+            return self
+                .reject_with_fact(
+                    collaboration.runtime(),
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Delivery,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .child(&child)
+                        .reason_code("missing_source_turn")
+                        .summary(error.to_string()),
+                    error,
+                )
+                .await;
+        };
+
+        let payload = params.payload;
+        let notification = self
+            .build_explicit_parent_delivery_notification(&child, &payload, ctx, &source_turn_id)
+            .await;
+        self.append_child_session_notification(
+            &child,
+            collaboration.session_id(),
+            collaboration.turn_id(),
+            &notification,
+        )
+        .await?;
+        self.record_fact_best_effort(
+            collaboration.runtime(),
+            collaboration
+                .fact(
+                    AgentCollaborationActionKind::Delivery,
+                    AgentCollaborationOutcomeKind::Delivered,
+                )
+                .child(&child)
+                .delivery_id(notification.notification_id.clone())
+                .summary(payload.message().trim().to_string()),
+        )
+        .await;
+        log::info!(
+            "explicit upstream send delivered: childAgent='{}', parentAgent='{}', \
+             parentSession='{}', parentTurn='{}', deliveryId='{}', sourceTurnId='{}'",
+            child.agent_id,
+            parent_agent_id,
+            collaboration.session_id(),
+            collaboration.turn_id(),
+            notification.notification_id,
+            source_turn_id
+        );
+        self.reactivate_parent_agent_if_idle(
+            collaboration.session_id(),
+            collaboration.turn_id(),
+            &notification,
+        )
+        .await;
+
+        let child_ref = self.build_child_ref_from_handle(&child).await;
+        Ok(CollaborationResult {
+            accepted: true,
+            kind: CollaborationResultKind::Sent,
+            agent_ref: Some(self.project_child_ref_status(child_ref).await),
+            delivery_id: Some(notification.notification_id.clone()),
+            summary: Some(format!(
+                "已向 direct parent 发送 {} 消息。",
+                parent_delivery_label(&payload)
+            )),
+            observe_result: None,
+            delegation: child.delegation.clone(),
+            cascade: None,
+            closed_root_agent_id: None,
+            failure: None,
+        })
+    }
+
+    async fn upstream_collaboration_context(
+        &self,
+        child: &SubRunHandle,
+        ctx: &astrcode_core::ToolContext,
+    ) -> Result<super::ToolCollaborationContext, super::AgentOrchestrationError> {
+        Ok(super::ToolCollaborationContext::new(
+            self.resolve_runtime_config_for_session(&child.session_id)
+                .await?,
+            child.session_id.clone(),
+            ctx.agent_context()
+                .parent_turn_id
+                .clone()
+                .unwrap_or_else(|| child.parent_turn_id.clone()),
+            child.parent_agent_id.clone(),
+            ctx.tool_call_id().map(ToString::to_string),
+        ))
+    }
+
+    async fn build_explicit_parent_delivery_notification(
+        &self,
+        child: &SubRunHandle,
+        payload: &ParentDeliveryPayload,
+        ctx: &astrcode_core::ToolContext,
+        source_turn_id: &str,
+    ) -> ChildSessionNotification {
+        let status = self
+            .kernel
+            .get_lifecycle(&child.agent_id)
+            .await
+            .unwrap_or(child.lifecycle);
+        let notification_id = explicit_parent_delivery_id(
+            &child.sub_run_id,
+            source_turn_id,
+            ctx.tool_call_id().map(ToString::to_string).as_deref(),
+            payload,
+        );
+
+        ChildSessionNotification {
+            notification_id: notification_id.clone(),
+            child_ref: ChildAgentRef {
+                agent_id: child.agent_id.clone(),
+                session_id: child.session_id.clone(),
+                sub_run_id: child.sub_run_id.clone(),
+                parent_agent_id: child.parent_agent_id.clone(),
+                parent_sub_run_id: child.parent_sub_run_id.clone(),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status,
+                open_session_id: super::child_open_session_id(child),
+            },
+            kind: parent_delivery_notification_kind(payload),
+            status,
+            source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
+            delivery: Some(ParentDelivery {
+                idempotency_key: notification_id,
+                origin: ParentDeliveryOrigin::Explicit,
+                terminal_semantics: parent_delivery_terminal_semantics(payload),
+                source_turn_id: Some(source_turn_id.to_string()),
+                payload: payload.clone(),
+            }),
+        }
     }
 
     /// 关闭子 agent 及其子树（close 协作工具的业务逻辑）。
@@ -294,7 +606,7 @@ impl AgentOrchestrationService {
     async fn resume_idle_child_if_needed(
         &self,
         child: &SubRunHandle,
-        params: &SendAgentParams,
+        params: &SendToChildParams,
         ctx: &astrcode_core::ToolContext,
         collaboration: &super::ToolCollaborationContext,
         lifecycle: Option<AgentLifecycleStatus>,
@@ -448,7 +760,7 @@ impl AgentOrchestrationService {
     async fn queue_message_for_active_child(
         &self,
         child: &SubRunHandle,
-        params: &SendAgentParams,
+        params: &SendToChildParams,
         ctx: &astrcode_core::ToolContext,
         collaboration: &super::ToolCollaborationContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
@@ -518,7 +830,7 @@ impl AgentOrchestrationService {
 /// 将待处理的 inbox 信封与新的 send 输入拼接为 resume 消息。
 fn compose_reusable_child_message(
     pending: &[astrcode_core::AgentInboxEnvelope],
-    params: &astrcode_core::SendAgentParams,
+    params: &astrcode_core::SendToChildParams,
 ) -> String {
     let mut parts = pending
         .iter()
@@ -546,6 +858,50 @@ fn compose_reusable_child_message(
         .collect::<Vec<_>>()
         .join("\n\n");
     format!("请按顺序处理以下追加要求：\n\n{enumerated}")
+}
+
+fn parent_delivery_terminal_semantics(
+    payload: &ParentDeliveryPayload,
+) -> ParentDeliveryTerminalSemantics {
+    match payload {
+        ParentDeliveryPayload::Progress(_) => ParentDeliveryTerminalSemantics::NonTerminal,
+        ParentDeliveryPayload::Completed(_)
+        | ParentDeliveryPayload::Failed(_)
+        | ParentDeliveryPayload::CloseRequest(_) => ParentDeliveryTerminalSemantics::Terminal,
+    }
+}
+
+fn parent_delivery_notification_kind(
+    payload: &ParentDeliveryPayload,
+) -> ChildSessionNotificationKind {
+    match payload {
+        ParentDeliveryPayload::Progress(_) => ChildSessionNotificationKind::ProgressSummary,
+        ParentDeliveryPayload::Completed(_) => ChildSessionNotificationKind::Delivered,
+        ParentDeliveryPayload::Failed(_) => ChildSessionNotificationKind::Failed,
+        ParentDeliveryPayload::CloseRequest(_) => ChildSessionNotificationKind::Closed,
+    }
+}
+
+fn parent_delivery_label(payload: &ParentDeliveryPayload) -> &'static str {
+    match payload {
+        ParentDeliveryPayload::Progress(_) => "progress",
+        ParentDeliveryPayload::Completed(_) => "completed",
+        ParentDeliveryPayload::Failed(_) => "failed",
+        ParentDeliveryPayload::CloseRequest(_) => "close_request",
+    }
+}
+
+fn explicit_parent_delivery_id(
+    sub_run_id: &str,
+    source_turn_id: &str,
+    source_tool_call_id: Option<&str>,
+    payload: &ParentDeliveryPayload,
+) -> String {
+    let tool_call_id = source_tool_call_id.unwrap_or("tool-call-missing");
+    format!(
+        "child-send:{sub_run_id}:{source_turn_id}:{tool_call_id}:{}",
+        parent_delivery_label(payload)
+    )
 }
 
 fn render_parent_message_envelope(envelope: &astrcode_core::AgentInboxEnvelope) -> String {
@@ -689,7 +1045,8 @@ mod tests {
 
     use astrcode_core::{
         AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken, CloseAgentParams,
-        ObserveParams, SendAgentParams, SessionId, SpawnAgentParams, StorageEventPayload,
+        CompletedParentDeliveryPayload, ObserveParams, ParentDeliveryPayload, SendAgentParams,
+        SendToChildParams, SendToParentParams, SessionId, SpawnAgentParams, StorageEventPayload,
         ToolContext,
         agent::executor::{CollaborationExecutor, SubAgentExecutor},
     };
@@ -697,7 +1054,7 @@ mod tests {
 
     use super::super::{root_execution_event_context, subrun_event_context};
     use crate::{
-        AgentKernelPort,
+        AgentKernelPort, AppKernelPort,
         agent::test_support::{TestLlmBehavior, build_agent_test_harness},
     };
 
@@ -805,11 +1162,11 @@ mod tests {
         let send_error = harness
             .service
             .send(
-                SendAgentParams {
+                SendAgentParams::ToChild(SendToChildParams {
                     agent_id: child_agent_id.clone(),
                     message: "继续".to_string(),
                     context: None,
-                },
+                }),
                 &other_ctx,
             )
             .await
@@ -879,11 +1236,11 @@ mod tests {
         let result = harness
             .service
             .send(
-                SendAgentParams {
+                SendAgentParams::ToChild(SendToChildParams {
                     agent_id: child_agent_id,
                     message: "请继续整理结论".to_string(),
                     context: None,
-                },
+                }),
                 &parent_ctx,
             )
             .await
@@ -940,11 +1297,11 @@ mod tests {
         let result = harness
             .service
             .send(
-                SendAgentParams {
+                SendAgentParams::ToChild(SendToChildParams {
                     agent_id: child_agent_id,
                     message: "继续第二轮".to_string(),
                     context: Some("只看 CI".to_string()),
-                },
+                }),
                 &parent_ctx,
             )
             .await
@@ -957,6 +1314,138 @@ mod tests {
                 .as_deref()
                 .is_some_and(|summary| summary.contains("mailbox 排队"))
         );
+    }
+
+    #[tokio::test]
+    async fn send_to_parent_rejects_root_execution_without_direct_parent() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should be registered");
+
+        let root_ctx = ToolContext::new(
+            parent.session_id.clone().into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-root")
+        .with_agent_context(root_execution_event_context("root-agent", "root-profile"));
+
+        let error = harness
+            .service
+            .send(
+                SendAgentParams::ToParent(SendToParentParams {
+                    payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                        message: "根节点不应该上行".to_string(),
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    }),
+                }),
+                &root_ctx,
+            )
+            .await
+            .expect_err("root agent should not be able to send upward");
+        assert!(error.to_string().contains("no direct parent"));
+
+        let events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent events should replay");
+        assert!(events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentCollaborationFact { fact, .. }
+                if fact.action == AgentCollaborationActionKind::Delivery
+                    && fact.outcome == AgentCollaborationOutcomeKind::Rejected
+                    && fact.reason_code.as_deref() == Some("missing_direct_parent")
+        )));
+    }
+
+    #[tokio::test]
+    async fn send_to_parent_rejects_when_direct_parent_is_terminated() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        let (child_agent_id, _) =
+            spawn_direct_child(&harness, &parent.session_id, project.path()).await;
+        let child_handle = harness
+            .kernel
+            .get_handle(&child_agent_id)
+            .await
+            .expect("child handle should exist");
+
+        let _ = harness
+            .kernel
+            .agent_control()
+            .set_lifecycle(
+                "root-agent",
+                astrcode_core::AgentLifecycleStatus::Terminated,
+            )
+            .await;
+
+        let child_ctx = ToolContext::new(
+            child_handle
+                .child_session_id
+                .clone()
+                .expect("child session id should exist")
+                .into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-child-report")
+        .with_agent_context(subrun_event_context(&child_handle));
+
+        let error = harness
+            .service
+            .send(
+                SendAgentParams::ToParent(SendToParentParams {
+                    payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                        message: "父级已终止".to_string(),
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    }),
+                }),
+                &child_ctx,
+            )
+            .await
+            .expect_err("terminated parent should reject upward send");
+        assert!(error.to_string().contains("terminated"));
+
+        let parent_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent events should replay");
+        assert!(parent_events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentCollaborationFact { fact, .. }
+                if fact.action == AgentCollaborationActionKind::Delivery
+                    && fact.outcome == AgentCollaborationOutcomeKind::Rejected
+                    && fact.reason_code.as_deref() == Some("parent_terminated")
+        )));
     }
 
     #[tokio::test]

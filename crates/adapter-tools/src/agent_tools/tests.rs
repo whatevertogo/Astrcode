@@ -3,8 +3,11 @@ use std::sync::{Arc, Mutex};
 use astrcode_core::{
     AgentLifecycleStatus, AgentTurnOutcome, ArtifactRef, CancelToken, ChildAgentRef,
     ChildSessionLineageKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
-    DelegationMetadata, ObserveParams, SendAgentParams, SpawnAgentParams, SpawnCapabilityGrant,
-    SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult, Tool, ToolContext,
+    CompletedParentDeliveryPayload, DelegationMetadata, ObserveParams, ParentDelivery,
+    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
+    ProgressParentDeliveryPayload, SendAgentParams, SendToChildParams, SendToParentParams,
+    SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure, SubRunFailureCode, SubRunHandoff,
+    SubRunResult, Tool, ToolContext,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -30,9 +33,19 @@ impl SubAgentExecutor for RecordingExecutor {
             lifecycle: AgentLifecycleStatus::Idle,
             last_turn_outcome: Some(AgentTurnOutcome::Completed),
             handoff: Some(SubRunHandoff {
-                summary: "done".to_string(),
                 findings: vec!["checked".to_string()],
                 artifacts: Vec::new(),
+                delivery: Some(ParentDelivery {
+                    idempotency_key: "handoff-done".to_string(),
+                    origin: ParentDeliveryOrigin::Explicit,
+                    terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
+                    source_turn_id: Some("turn-done".to_string()),
+                    payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                        message: "done".to_string(),
+                        findings: vec!["checked".to_string()],
+                        artifacts: Vec::new(),
+                    }),
+                }),
             }),
             failure: None,
         })
@@ -161,10 +174,10 @@ fn send_observe_close_prompt_metadata_stays_action_oriented() {
         .capability_metadata()
         .prompt
         .expect("send should expose prompt metadata");
-    assert!(send_prompt.summary.contains("next concrete instruction"));
-    assert!(send_prompt.guide.contains("same child should continue"));
-    assert!(send_prompt.guide.contains("prefer `send` over spawning"));
-    assert!(send_prompt.guide.contains("same child should continue"));
+    assert!(send_prompt.summary.contains("upstream typed delivery"));
+    assert!(send_prompt.guide.contains("direct child"));
+    assert!(send_prompt.guide.contains("direct parent"));
+    assert!(send_prompt.guide.contains("both directions in one turn"));
 
     let observe_prompt = ObserveAgentTool::new(executor.clone())
         .capability_metadata()
@@ -206,9 +219,17 @@ async fn spawn_agent_tool_preserves_running_outcome_in_metadata() {
                 lifecycle: AgentLifecycleStatus::Running,
                 last_turn_outcome: None,
                 handoff: Some(SubRunHandoff {
-                    summary: "running".to_string(),
                     findings: vec!["status=running".to_string()],
                     artifacts: Vec::new(),
+                    delivery: Some(ParentDelivery {
+                        idempotency_key: "handoff-running".to_string(),
+                        origin: ParentDeliveryOrigin::Explicit,
+                        terminal_semantics: ParentDeliveryTerminalSemantics::NonTerminal,
+                        source_turn_id: None,
+                        payload: ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
+                            message: "running".to_string(),
+                        }),
+                    }),
                 }),
                 failure: None,
             })
@@ -304,7 +325,6 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
                 lifecycle: AgentLifecycleStatus::Running,
                 last_turn_outcome: None,
                 handoff: Some(SubRunHandoff {
-                    summary: "spawn 已在后台启动。".to_string(),
                     findings: Vec::new(),
                     artifacts: vec![
                         ArtifactRef {
@@ -340,6 +360,15 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
                             uri: None,
                         },
                     ],
+                    delivery: Some(ParentDelivery {
+                        idempotency_key: "handoff-subrun-42".to_string(),
+                        origin: ParentDeliveryOrigin::Explicit,
+                        terminal_semantics: ParentDeliveryTerminalSemantics::NonTerminal,
+                        source_turn_id: None,
+                        payload: ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
+                            message: "spawn 已在后台启动。".to_string(),
+                        }),
+                    }),
                 }),
                 failure: None,
             })
@@ -405,7 +434,6 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
                 lifecycle: AgentLifecycleStatus::Running,
                 last_turn_outcome: None,
                 handoff: Some(SubRunHandoff {
-                    summary: "spawn 已在后台启动。".to_string(),
                     findings: Vec::new(),
                     artifacts: vec![
                         ArtifactRef {
@@ -441,6 +469,15 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
                             uri: None,
                         },
                     ],
+                    delivery: Some(ParentDelivery {
+                        idempotency_key: "handoff-subrun-99".to_string(),
+                        origin: ParentDeliveryOrigin::Explicit,
+                        terminal_semantics: ParentDeliveryTerminalSemantics::NonTerminal,
+                        source_turn_id: None,
+                        payload: ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
+                            message: "spawn 已在后台启动。".to_string(),
+                        }),
+                    }),
                 }),
                 failure: None,
             })
@@ -499,7 +536,10 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
 
     let send_calls = executor.send_calls.lock().expect("lock");
     assert_eq!(send_calls.len(), 1);
-    assert_eq!(send_calls[0].agent_id, "agent-99");
+    assert!(matches!(
+        &send_calls[0],
+        SendAgentParams::ToChild(SendToChildParams { agent_id, .. }) if agent_id == "agent-99"
+    ));
     drop(send_calls);
 
     let close_calls = executor.close_calls.lock().expect("lock");
@@ -646,7 +686,7 @@ impl CollaborationExecutor for RecordingCollabExecutor {
 // ─── send ──────────────────────────────────────────────────
 
 #[tokio::test]
-async fn send_agent_tool_parses_params_and_delegates_to_executor() {
+async fn send_agent_tool_parses_downstream_params_and_delegates_to_executor() {
     let executor = Arc::new(RecordingCollabExecutor::new());
     let tool = SendAgentTool::new(executor.clone());
 
@@ -668,18 +708,63 @@ async fn send_agent_tool_parses_params_and_delegates_to_executor() {
     assert_eq!(result.tool_name, "send");
     let calls = executor.send_calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].agent_id, "agent-42");
-    assert_eq!(calls[0].message, "请修改第三部分");
-    assert_eq!(calls[0].context.as_deref(), Some("关注性能"));
+    assert!(matches!(
+        &calls[0],
+        SendAgentParams::ToChild(SendToChildParams {
+            agent_id,
+            message,
+            context,
+        }) if agent_id == "agent-42"
+            && message == "请修改第三部分"
+            && context.as_deref() == Some("关注性能")
+    ));
 }
 
 #[tokio::test]
-async fn send_agent_tool_rejects_missing_agent_id() {
+async fn send_agent_tool_parses_upstream_params_and_delegates_to_executor() {
+    let executor = Arc::new(RecordingCollabExecutor::new());
+    let tool = SendAgentTool::new(executor.clone());
+
+    let result = tool
+        .execute(
+            "call-send-upstream".to_string(),
+            json!({
+                "kind": "completed",
+                "payload": {
+                    "message": "子任务已完成",
+                    "findings": ["结论一"]
+                }
+            }),
+            &tool_context(),
+        )
+        .await
+        .expect("upstream send should succeed");
+
+    assert!(result.ok);
+    assert_eq!(result.output, "消息已发送");
+    let calls = executor.send_calls.lock().expect("lock");
+    assert_eq!(calls.len(), 1);
+    assert!(matches!(
+        &calls[0],
+        SendAgentParams::ToParent(SendToParentParams {
+            payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                message,
+                findings,
+                artifacts,
+            })
+        }) if message == "子任务已完成"
+            && findings == &vec!["结论一".to_string()]
+            && artifacts.is_empty()
+    ));
+}
+
+#[tokio::test]
+async fn send_agent_tool_rejects_missing_branch_shape() {
     let tool = SendAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
 
     let result = tool
         .execute(
-            "call-send-2".to_string(),
+            "call-send-invalid".to_string(),
             json!({"message": "hello"}),
             &tool_context(),
         )
@@ -696,13 +781,38 @@ async fn send_agent_tool_rejects_missing_agent_id() {
 }
 
 #[tokio::test]
-async fn send_agent_tool_rejects_empty_message() {
+async fn send_agent_tool_rejects_empty_downstream_message() {
     let tool = SendAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
 
     let result = tool
         .execute(
-            "call-send-3".to_string(),
+            "call-send-empty-downstream".to_string(),
             json!({"agentId": "agent-42", "message": "  "}),
+            &tool_context(),
+        )
+        .await
+        .expect("should return tool result");
+
+    assert!(!result.ok);
+    assert!(
+        result
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("invalid send params"))
+    );
+}
+
+#[tokio::test]
+async fn send_agent_tool_rejects_empty_upstream_message() {
+    let tool = SendAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
+
+    let result = tool
+        .execute(
+            "call-send-empty-upstream".to_string(),
+            json!({
+                "kind": "progress",
+                "payload": { "message": "  " }
+            }),
             &tool_context(),
         )
         .await
@@ -937,10 +1047,43 @@ async fn observe_agent_tool_rejects_empty_agent_id() {
     );
 }
 
-// ─── 四工具公开面回归 ────────────────────────────────────────
+// ─── 协作工具公开面回归 ─────────────────────────────────────
 
 #[test]
-fn only_four_tools_registered_in_public_surface() {
+fn collaboration_prompt_metadata_stays_action_oriented() {
+    let executor = Arc::new(RecordingCollabExecutor::new());
+
+    let send_prompt = SendAgentTool::new(executor.clone())
+        .capability_metadata()
+        .prompt
+        .expect("send should expose prompt metadata");
+    assert!(send_prompt.summary.contains("upstream typed delivery"));
+    assert!(send_prompt.guide.contains("direct child"));
+    assert!(send_prompt.guide.contains("direct parent"));
+    assert!(send_prompt.guide.contains("both directions in one turn"));
+
+    let observe_prompt = ObserveAgentTool::new(executor.clone())
+        .capability_metadata()
+        .prompt
+        .expect("observe should expose prompt metadata");
+    assert!(observe_prompt.summary.contains("decide the next action"));
+    assert!(observe_prompt.guide.contains("`wait`, `send`, or `close`"));
+    assert!(observe_prompt.guide.contains("current child state"));
+
+    let close_prompt = CloseAgentTool::new(executor)
+        .capability_metadata()
+        .prompt
+        .expect("close should expose prompt metadata");
+    assert!(
+        close_prompt
+            .summary
+            .contains("finished or no longer useful")
+    );
+    assert!(close_prompt.guide.contains("cascade"));
+}
+
+#[test]
+fn collaboration_tools_registered_in_public_surface() {
     let executor = Arc::new(RecordingCollabExecutor::new());
     let tools: Vec<Box<dyn Tool>> = vec![
         Box::new(SendAgentTool::new(executor.clone())),
@@ -983,6 +1126,7 @@ fn old_tool_names_not_in_definitions() {
                 "waitAgent",
                 "resumeAgent",
                 "deliverToParent",
+                "reply_to_parent",
                 "spawnAgent",
                 "sendAgent",
                 "closeAgent"

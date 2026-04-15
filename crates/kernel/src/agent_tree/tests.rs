@@ -3,7 +3,9 @@ use std::time::Duration;
 use astrcode_core::{
     AgentInboxEnvelope, AgentLifecycleStatus, AgentMode, AgentProfile, AgentTurnOutcome,
     ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
-    LiveSubRunControlBoundary, SessionId, SubRunHandle,
+    CompletedParentDeliveryPayload, LiveSubRunControlBoundary, ParentDelivery,
+    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics, SessionId,
+    SubRunHandle,
 };
 
 use super::{
@@ -13,6 +15,20 @@ use super::{
 
 fn default_limits() -> AgentControlLimits {
     AgentControlLimits::default()
+}
+
+fn completed_delivery(id: &str, message: String) -> ParentDelivery {
+    ParentDelivery {
+        idempotency_key: id.to_string(),
+        origin: ParentDeliveryOrigin::Explicit,
+        terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
+        source_turn_id: Some(format!("turn-{id}")),
+        payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+            message,
+            findings: Vec::new(),
+            artifacts: Vec::new(),
+        }),
+    }
 }
 
 fn explore_profile() -> AgentProfile {
@@ -50,10 +66,12 @@ fn sample_parent_delivery(
                 open_session_id: format!("child-session-{notification_id}"),
             },
             kind: ChildSessionNotificationKind::Delivered,
-            summary: format!("summary-{notification_id}"),
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
-            final_reply_excerpt: Some(format!("final-{notification_id}")),
+            delivery: Some(completed_delivery(
+                notification_id,
+                format!("final-{notification_id}"),
+            )),
         },
     )
 }
@@ -80,10 +98,12 @@ fn sample_parent_delivery_for_child(
                 .unwrap_or_else(|| child.session_id.clone()),
         },
         kind: ChildSessionNotificationKind::Delivered,
-        summary: format!("summary-{notification_id}"),
         status: child.lifecycle,
         source_tool_call_id: None,
-        final_reply_excerpt: Some(format!("final-{notification_id}")),
+        delivery: Some(completed_delivery(
+            notification_id,
+            format!("final-{notification_id}"),
+        )),
     }
 }
 
@@ -1174,10 +1194,12 @@ async fn parent_delivery_batch_checkout_uses_turn_start_snapshot_for_same_parent
                 open_session_id: format!("child-session-{delivery_id}"),
             },
             kind: ChildSessionNotificationKind::Delivered,
-            summary: format!("summary-{delivery_id}"),
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
-            final_reply_excerpt: Some(format!("final-{delivery_id}")),
+            delivery: Some(completed_delivery(
+                delivery_id,
+                format!("final-{delivery_id}"),
+            )),
         };
 
     assert!(
@@ -1265,10 +1287,12 @@ async fn parent_delivery_batch_requeue_restores_started_snapshot_for_retry() {
                 open_session_id: format!("child-session-{delivery_id}"),
             },
             kind: ChildSessionNotificationKind::Delivered,
-            summary: format!("summary-{delivery_id}"),
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
-            final_reply_excerpt: Some(format!("final-{delivery_id}")),
+            delivery: Some(completed_delivery(
+                delivery_id,
+                format!("final-{delivery_id}"),
+            )),
         };
 
     assert!(

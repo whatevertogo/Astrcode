@@ -75,7 +75,6 @@ impl TurnCollaborationSummary {
                 AgentCollaborationActionKind::Observe => summary.observe_count += 1,
                 AgentCollaborationActionKind::Close => summary.close_count += 1,
                 AgentCollaborationActionKind::Delivery => summary.delivery_count += 1,
-                AgentCollaborationActionKind::ReplyToParent => {},
             }
             match fact.outcome {
                 AgentCollaborationOutcomeKind::Rejected => summary.rejected_count += 1,

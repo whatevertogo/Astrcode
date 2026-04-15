@@ -32,6 +32,57 @@ export type SubRunFailureCode =
   | 'stream_parse'
   | 'interrupted'
   | 'internal';
+export type ParentDeliveryOrigin = 'explicit' | 'fallback';
+export type ParentDeliveryTerminalSemantics = 'non_terminal' | 'terminal';
+export type ParentDeliveryKind = 'progress' | 'completed' | 'failed' | 'close_request';
+
+export type ParentDelivery =
+  | {
+      idempotencyKey: string;
+      origin: ParentDeliveryOrigin;
+      terminalSemantics: ParentDeliveryTerminalSemantics;
+      sourceTurnId?: string;
+      kind: 'progress';
+      payload: {
+        message: string;
+      };
+    }
+  | {
+      idempotencyKey: string;
+      origin: ParentDeliveryOrigin;
+      terminalSemantics: ParentDeliveryTerminalSemantics;
+      sourceTurnId?: string;
+      kind: 'completed';
+      payload: {
+        message: string;
+        findings: string[];
+        artifacts: ArtifactRef[];
+      };
+    }
+  | {
+      idempotencyKey: string;
+      origin: ParentDeliveryOrigin;
+      terminalSemantics: ParentDeliveryTerminalSemantics;
+      sourceTurnId?: string;
+      kind: 'failed';
+      payload: {
+        message: string;
+        code: SubRunFailureCode;
+        technicalMessage?: string;
+        retryable: boolean;
+      };
+    }
+  | {
+      idempotencyKey: string;
+      origin: ParentDeliveryOrigin;
+      terminalSemantics: ParentDeliveryTerminalSemantics;
+      sourceTurnId?: string;
+      kind: 'close_request';
+      payload: {
+        message: string;
+        reason?: string;
+      };
+    };
 
 export interface AgentContext {
   agentId?: string;
@@ -135,9 +186,9 @@ export interface ExecutionControl {
 export interface SubRunResult {
   status: SubRunOutcome;
   handoff?: {
-    summary: string;
     findings: string[];
     artifacts: ArtifactRef[];
+    delivery?: ParentDelivery;
   };
   failure?: {
     code: SubRunFailureCode;
@@ -274,10 +325,9 @@ export type AgentEventPayload =
           openSessionId: string;
         };
         kind: ChildSessionNotificationKind;
-        summary: string;
         status: AgentLifecycle;
         sourceToolCallId?: string;
-        finalReplyExcerpt?: string;
+        delivery?: ParentDelivery;
       }>;
     }
   | { event: 'turnDone'; data: AgentScoped<{ turnId: string }> }
@@ -477,9 +527,8 @@ export interface ChildSessionNotificationMessage {
   };
   notificationKind: ChildSessionNotificationKind;
   status: AgentLifecycle;
-  summary: string;
   sourceToolCallId?: string;
-  finalReplyExcerpt?: string;
+  delivery?: ParentDelivery;
   timestamp: number;
 }
 
@@ -510,6 +559,7 @@ export interface SubRunViewData {
   title: string;
   startMessage?: SubRunStartMessage;
   finishMessage?: SubRunFinishMessage;
+  latestNotification?: ChildSessionNotificationMessage;
   bodyMessages: Message[];
   threadItems: ThreadItem[];
   streamFingerprint: string;

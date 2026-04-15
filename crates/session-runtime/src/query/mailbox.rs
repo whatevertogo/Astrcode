@@ -99,10 +99,21 @@ mod tests {
                 open_session_id: "session-child".to_string(),
             },
             kind: ChildSessionNotificationKind::Delivered,
-            summary: "done".to_string(),
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
-            final_reply_excerpt: Some("done".to_string()),
+            delivery: Some(astrcode_core::ParentDelivery {
+                idempotency_key: "delivery-1".to_string(),
+                origin: astrcode_core::ParentDeliveryOrigin::Explicit,
+                terminal_semantics: astrcode_core::ParentDeliveryTerminalSemantics::Terminal,
+                source_turn_id: Some("turn-parent".to_string()),
+                payload: astrcode_core::ParentDeliveryPayload::Completed(
+                    astrcode_core::CompletedParentDeliveryPayload {
+                        message: "done".to_string(),
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    },
+                ),
+            }),
         };
         let events = vec![
             StoredEvent {

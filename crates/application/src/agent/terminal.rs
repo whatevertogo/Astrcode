@@ -6,24 +6,23 @@ use astrcode_core::{
     ChildSessionNotificationKind, CloseRequestParentDeliveryPayload,
     CompletedParentDeliveryPayload, FailedParentDeliveryPayload, ParentDelivery,
     ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
-    ProgressParentDeliveryPayload, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
+    ProgressParentDeliveryPayload, StorageEventPayload, SubRunFailure, SubRunFailureCode,
+    SubRunHandoff, SubRunResult,
 };
 
 use super::{
     AgentOrchestrationError, AgentOrchestrationService, child_collaboration_artifacts,
-    child_open_session_id, subrun_event_context_for_parent_turn,
+    child_open_session_id, subrun_event_context_for_parent_turn, terminal_notification_message,
 };
 
 /// child turn 终态投递到父侧的内部投影层。
 ///
 /// 从 `SubRunResult` 提取出父侧 `ChildSessionNotification` 所需的三个维度：
-/// notification kind（Delivered/Failed/Closed）、lifecycle status、摘要 + 摘录。
+/// notification kind（Delivered/Failed/Closed）、lifecycle status、typed delivery payload。
 struct ChildTerminalDeliveryProjection {
     kind: ChildSessionNotificationKind,
     status: AgentLifecycleStatus,
-    summary: String,
-    final_reply_excerpt: Option<String>,
-    delivery: ParentDeliveryPayload,
+    delivery: ParentDelivery,
 }
 
 /// 聚合 child turn 终态收口所需上下文，避免不同入口重复传参与路由真相漂移。
@@ -108,7 +107,12 @@ impl AgentOrchestrationService {
         watch: ChildTurnTerminalContext,
         outcome: astrcode_session_runtime::ProjectedTurnOutcome,
     ) -> Result<(), AgentOrchestrationError> {
-        let result = build_child_subrun_result(&watch.child, &watch.parent_session_id, &outcome);
+        let result = build_child_subrun_result(
+            &watch.child,
+            &watch.parent_session_id,
+            &watch.execution_turn_id,
+            &outcome,
+        );
         let _ = self
             .kernel
             // 为什么这里需要单独的完成态推进端口：
@@ -123,14 +127,26 @@ impl AgentOrchestrationService {
             None,
             Some(watch.child.storage_mode),
         );
+        if self.has_explicit_terminal_delivery_for_turn(&watch).await? {
+            log::info!(
+                "skip fallback terminal delivery because explicit terminal delivery already \
+                 exists: childAgent='{}', parentSession='{}', parentTurn='{}', sourceTurnId='{}'",
+                watch.child.agent_id,
+                watch.parent_session_id,
+                watch.parent_turn_id,
+                watch.execution_turn_id
+            );
+            return Ok(());
+        }
 
-        let delivery = project_child_terminal_delivery(&result);
-        let notification_id = child_terminal_notification_id(
+        let fallback_notification_id = child_terminal_notification_id(
             &watch.child.sub_run_id,
             &watch.execution_turn_id,
             result.lifecycle,
             result.last_turn_outcome,
         );
+        let delivery = project_child_terminal_delivery(&result, &fallback_notification_id);
+        let notification_id = delivery.delivery.idempotency_key.clone();
         let notification = ChildSessionNotification {
             notification_id: notification_id.clone(),
             child_ref: ChildAgentRef {
@@ -145,31 +161,12 @@ impl AgentOrchestrationService {
                 open_session_id: child_open_session_id(&watch.child),
             },
             kind: delivery.kind,
-            summary: delivery.summary,
             status: delivery.status,
             source_tool_call_id: watch.source_tool_call_id,
-            final_reply_excerpt: delivery.final_reply_excerpt,
-            delivery: Some(ParentDelivery {
-                idempotency_key: notification_id,
-                origin: ParentDeliveryOrigin::Fallback,
-                terminal_semantics: match delivery.kind {
-                    ChildSessionNotificationKind::Started
-                    | ChildSessionNotificationKind::ProgressSummary
-                    | ChildSessionNotificationKind::Waiting
-                    | ChildSessionNotificationKind::Resumed => {
-                        ParentDeliveryTerminalSemantics::NonTerminal
-                    },
-                    ChildSessionNotificationKind::Delivered
-                    | ChildSessionNotificationKind::Closed
-                    | ChildSessionNotificationKind::Failed => {
-                        ParentDeliveryTerminalSemantics::Terminal
-                    },
-                },
-                payload: delivery.delivery,
-            }),
+            delivery: Some(delivery.delivery),
         };
 
-        self.append_child_terminal_notification(
+        self.append_child_session_notification(
             &watch.child,
             &watch.parent_session_id,
             &watch.parent_turn_id,
@@ -191,7 +188,7 @@ impl AgentOrchestrationService {
             .parent_agent_id(watch.child.parent_agent_id.clone())
             .child(&watch.child)
             .delivery_id(notification.notification_id.clone())
-            .summary(notification.summary.clone())
+            .summary(terminal_notification_message(&notification))
             .source_tool_call_id(notification.source_tool_call_id.clone()),
         )
         .await;
@@ -204,7 +201,7 @@ impl AgentOrchestrationService {
         Ok(())
     }
 
-    async fn append_child_terminal_notification(
+    pub(super) async fn append_child_session_notification(
         &self,
         child: &astrcode_core::SubRunHandle,
         parent_session_id: &str,
@@ -222,16 +219,43 @@ impl AgentOrchestrationService {
             .map_err(AgentOrchestrationError::from)?;
         Ok(())
     }
+
+    async fn has_explicit_terminal_delivery_for_turn(
+        &self,
+        watch: &ChildTurnTerminalContext,
+    ) -> Result<bool, AgentOrchestrationError> {
+        let stored = self
+            .session_runtime
+            .replay_stored_events(&astrcode_core::SessionId::from(
+                watch.parent_session_id.clone(),
+            ))
+            .await
+            .map_err(AgentOrchestrationError::from)?;
+
+        Ok(stored.iter().any(|stored| match &stored.event.payload {
+            StorageEventPayload::ChildSessionNotification { notification, .. } => {
+                notification.delivery.as_ref().is_some_and(|delivery| {
+                    notification.child_ref.agent_id == watch.child.agent_id
+                        && delivery.origin == ParentDeliveryOrigin::Explicit
+                        && delivery.terminal_semantics == ParentDeliveryTerminalSemantics::Terminal
+                        && delivery.source_turn_id.as_deref()
+                            == Some(watch.execution_turn_id.as_str())
+                })
+            },
+            _ => false,
+        }))
+    }
 }
 
 /// 将 Anthropic turn 终态映射为 `SubRunResult`。
 ///
 /// 关键设计决策：`TokenExceeded` 被视为"完成"（带 handoff），而非"失败"。
 /// 原因是 token 超限时 LLM 通常已输出了有价值的部分结果，
-/// 父级应该能通过 handoff summary 获取这些内容。
+/// 父级应该能通过 typed handoff delivery 获取这些内容。
 fn build_child_subrun_result(
     child: &astrcode_core::SubRunHandle,
     parent_session_id: &str,
+    source_turn_id: &str,
     outcome: &astrcode_session_runtime::ProjectedTurnOutcome,
 ) -> SubRunResult {
     match outcome.outcome {
@@ -239,10 +263,24 @@ fn build_child_subrun_result(
             lifecycle: AgentLifecycleStatus::Idle,
             last_turn_outcome: Some(outcome.outcome),
             handoff: Some(SubRunHandoff {
-                summary: outcome.summary.clone(),
                 findings: Vec::new(),
                 artifacts: child_handoff_artifacts(child, parent_session_id),
-                delivery: None,
+                delivery: Some(ParentDelivery {
+                    idempotency_key: child_terminal_notification_id(
+                        &child.sub_run_id,
+                        source_turn_id,
+                        AgentLifecycleStatus::Idle,
+                        Some(outcome.outcome),
+                    ),
+                    origin: ParentDeliveryOrigin::Fallback,
+                    terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
+                    source_turn_id: Some(source_turn_id.to_string()),
+                    payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                        message: outcome.summary.clone(),
+                        findings: Vec::new(),
+                        artifacts: child_handoff_artifacts(child, parent_session_id),
+                    }),
+                }),
             }),
             failure: None,
         },
@@ -285,11 +323,10 @@ fn child_terminal_notification_id(
 }
 
 /// 从 `SubRunResult` 投影出 `ChildTerminalDeliveryProjection`。
-///
-/// `final_reply_excerpt` 仅在 Completed/TokenExceeded 时填充，
-/// 优先使用 handoff summary 作为摘录；父侧 wake prompt 通过 excerpt 复用同一文本。
-/// Failed/Cancelled 不填充 excerpt，父侧只能看到 summary 级别的错误描述。
-fn project_child_terminal_delivery(result: &SubRunResult) -> ChildTerminalDeliveryProjection {
+fn project_child_terminal_delivery(
+    result: &SubRunResult,
+    fallback_notification_id: &str,
+) -> ChildTerminalDeliveryProjection {
     let (kind, status) = match result.last_turn_outcome {
         Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded) => (
             ChildSessionNotificationKind::Delivered,
@@ -309,91 +346,87 @@ fn project_child_terminal_delivery(result: &SubRunResult) -> ChildTerminalDelive
         ),
     };
 
-    let summary = result
-        .handoff
-        .as_ref()
-        .map(|handoff| handoff.summary.trim())
-        .filter(|summary| !summary.is_empty())
-        .map(ToString::to_string)
-        .or_else(|| {
-            result
-                .failure
-                .as_ref()
-                .map(|failure| failure.display_message.trim())
-                .filter(|message| !message.is_empty())
-                .map(ToString::to_string)
-        })
-        .unwrap_or_else(|| match result.last_turn_outcome {
-            Some(AgentTurnOutcome::Completed) => {
-                "子 Agent 已完成，但没有返回可读总结。".to_string()
-            },
-            Some(AgentTurnOutcome::TokenExceeded) => {
-                "子 Agent 因 token 限额结束，但没有返回可读总结。".to_string()
-            },
-            Some(AgentTurnOutcome::Failed) => "子 Agent 失败，且没有返回可读错误信息。".to_string(),
-            Some(AgentTurnOutcome::Cancelled) => "子 Agent 已关闭。".to_string(),
-            None => "子 Agent 状态未知。".to_string(),
-        });
-    let final_reply_excerpt = result
-        .handoff
-        .as_ref()
-        .map(|handoff| handoff.summary.trim().to_string())
-        .filter(|summary| !summary.is_empty())
-        .or_else(|| {
-            matches!(
-                result.last_turn_outcome,
-                Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded)
-            )
-            .then_some(summary.clone())
-        });
     let delivery = result
         .handoff
         .as_ref()
         .and_then(|handoff| handoff.delivery.as_ref())
-        .map(|delivery| delivery.payload.clone())
-        .unwrap_or_else(|| match result.last_turn_outcome {
-            Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded) => {
-                ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
-                    message: summary.clone(),
-                    findings: result
+        .cloned()
+        .unwrap_or_else(|| ParentDelivery {
+            idempotency_key: fallback_notification_id.to_string(),
+            origin: ParentDeliveryOrigin::Fallback,
+            terminal_semantics: match result.last_turn_outcome {
+                Some(AgentTurnOutcome::Completed)
+                | Some(AgentTurnOutcome::TokenExceeded)
+                | Some(AgentTurnOutcome::Failed)
+                | Some(AgentTurnOutcome::Cancelled) => ParentDeliveryTerminalSemantics::Terminal,
+                None => ParentDeliveryTerminalSemantics::NonTerminal,
+            },
+            source_turn_id: None,
+            payload: match result.last_turn_outcome {
+                Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded) => {
+                    let message = result
                         .handoff
                         .as_ref()
-                        .map(|handoff| handoff.findings.clone())
-                        .unwrap_or_default(),
-                    artifacts: result
-                        .handoff
-                        .as_ref()
-                        .map(|handoff| handoff.artifacts.clone())
-                        .unwrap_or_default(),
-                })
+                        .and_then(|handoff| handoff.delivery.as_ref())
+                        .map(|delivery| delivery.payload.message().trim())
+                        .filter(|message| !message.is_empty())
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| match result.last_turn_outcome {
+                            Some(AgentTurnOutcome::Completed) => {
+                                "子 Agent 已完成，但没有返回可读总结。".to_string()
+                            },
+                            Some(AgentTurnOutcome::TokenExceeded) => {
+                                "子 Agent 因 token 限额结束，但没有返回可读总结。".to_string()
+                            },
+                            _ => {
+                                unreachable!("completed branch should only serve terminal handoff")
+                            },
+                        });
+                    ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                        message,
+                        findings: result
+                            .handoff
+                            .as_ref()
+                            .map(|handoff| handoff.findings.clone())
+                            .unwrap_or_default(),
+                        artifacts: result
+                            .handoff
+                            .as_ref()
+                            .map(|handoff| handoff.artifacts.clone())
+                            .unwrap_or_default(),
+                    })
+                },
+                Some(AgentTurnOutcome::Failed) => {
+                    let failure = result.failure.as_ref();
+                    let message = failure
+                        .map(|failure| failure.display_message.trim())
+                        .filter(|message| !message.is_empty())
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "子 Agent 失败，且没有返回可读错误信息。".to_string());
+                    ParentDeliveryPayload::Failed(FailedParentDeliveryPayload {
+                        message,
+                        code: failure
+                            .map(|failure| failure.code)
+                            .unwrap_or(SubRunFailureCode::Internal),
+                        technical_message: failure.map(|failure| failure.technical_message.clone()),
+                        retryable: failure.is_some_and(|failure| failure.retryable),
+                    })
+                },
+                Some(AgentTurnOutcome::Cancelled) => {
+                    ParentDeliveryPayload::CloseRequest(CloseRequestParentDeliveryPayload {
+                        message: "子 Agent 已关闭。".to_string(),
+                        reason: Some("child_turn_cancelled".to_string()),
+                    })
+                },
+                None => ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
+                    message: "子 Agent 状态未知。".to_string(),
+                }),
             },
-            Some(AgentTurnOutcome::Failed) => {
-                let failure = result.failure.as_ref();
-                ParentDeliveryPayload::Failed(FailedParentDeliveryPayload {
-                    message: summary.clone(),
-                    code: failure
-                        .map(|failure| failure.code)
-                        .unwrap_or(SubRunFailureCode::Internal),
-                    technical_message: failure.map(|failure| failure.technical_message.clone()),
-                    retryable: failure.is_some_and(|failure| failure.retryable),
-                })
-            },
-            Some(AgentTurnOutcome::Cancelled) => {
-                ParentDeliveryPayload::CloseRequest(CloseRequestParentDeliveryPayload {
-                    message: summary.clone(),
-                    reason: Some("child_turn_cancelled".to_string()),
-                })
-            },
-            None => ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
-                message: summary.clone(),
-            }),
         });
 
     ChildTerminalDeliveryProjection {
         kind,
         status,
-        summary,
-        final_reply_excerpt,
         delivery,
     }
 }
@@ -575,7 +608,9 @@ mod tests {
                 &stored.event.payload,
                 StorageEventPayload::ChildSessionNotification { notification, .. }
                     if notification.kind == ChildSessionNotificationKind::Delivered
-                        && notification.final_reply_excerpt.as_deref() == Some("子 Agent 总结")
+                        && notification.delivery.as_ref().is_some_and(|delivery| {
+                            delivery.payload.message() == "子 Agent 总结"
+                        })
             )),
             "child finalize should append terminal notification to parent session"
         );
@@ -611,8 +646,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn project_child_terminal_delivery_preserves_explicit_envelope() {
+        let explicit_delivery = ParentDelivery {
+            idempotency_key: "delivery-explicit".to_string(),
+            origin: ParentDeliveryOrigin::Explicit,
+            terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
+            source_turn_id: Some("turn-child".to_string()),
+            payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                message: "显式最终回复".to_string(),
+                findings: vec!["finding-1".to_string()],
+                artifacts: Vec::new(),
+            }),
+        };
+        let result = SubRunResult {
+            lifecycle: AgentLifecycleStatus::Idle,
+            last_turn_outcome: Some(AgentTurnOutcome::Completed),
+            handoff: Some(SubRunHandoff {
+                findings: vec!["finding-1".to_string()],
+                artifacts: Vec::new(),
+                delivery: Some(explicit_delivery.clone()),
+            }),
+            failure: None,
+        };
+
+        let projection = project_child_terminal_delivery(
+            &result,
+            "child-terminal:subrun-1:turn-child:completed",
+        );
+
+        assert_eq!(projection.kind, ChildSessionNotificationKind::Delivered);
+        assert_eq!(projection.status, AgentLifecycleStatus::Idle);
+        assert_eq!(projection.delivery, explicit_delivery);
+    }
+
     #[tokio::test]
-    async fn append_child_terminal_notification_uses_explicit_parent_session_route() {
+    async fn append_child_session_notification_uses_explicit_parent_session_route() {
         let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
             content: "父级已收到交付。".to_string(),
         })
@@ -659,7 +728,7 @@ mod tests {
 
         harness
             .service
-            .append_child_terminal_notification(
+            .append_child_session_notification(
                 &child_handle,
                 &parent.session_id,
                 "turn-parent",
@@ -677,11 +746,20 @@ mod tests {
                         open_session_id: child.session_id.clone(),
                     },
                     kind: ChildSessionNotificationKind::Delivered,
-                    summary: "子 Agent 已完成".to_string(),
                     status: AgentLifecycleStatus::Idle,
                     source_tool_call_id: None,
-                    final_reply_excerpt: Some("最终回复".to_string()),
-                    delivery: None,
+                    delivery: Some(ParentDelivery {
+                        idempotency_key: "child-terminal:subrun-test:turn-child:completed"
+                            .to_string(),
+                        origin: ParentDeliveryOrigin::Explicit,
+                        terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
+                        source_turn_id: Some("turn-child".to_string()),
+                        payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                            message: "最终回复".to_string(),
+                            findings: Vec::new(),
+                            artifacts: Vec::new(),
+                        }),
+                    }),
                 },
             )
             .await
@@ -701,7 +779,9 @@ mod tests {
             parent_events.iter().any(|stored| matches!(
                 &stored.event.payload,
                 StorageEventPayload::ChildSessionNotification { notification, .. }
-                    if notification.final_reply_excerpt.as_deref() == Some("最终回复")
+                    if notification.delivery.as_ref().is_some_and(|delivery| {
+                        delivery.payload.message() == "最终回复"
+                    })
             )),
             "notification should be written to the explicit parent session"
         );

@@ -259,7 +259,7 @@ impl AgentOrchestrationService {
                             )
                             .child(&child_handle)
                             .delivery_id(delivery.delivery_id.clone())
-                            .summary(delivery.notification.summary.clone())
+                            .summary(terminal_notification_message(&delivery.notification))
                             .latency_ms(
                                 (chrono::Utc::now().timestamp_millis() - delivery.queued_at_ms)
                                     .max(0) as u64,
@@ -407,7 +407,7 @@ impl AgentOrchestrationService {
                     .child(&child_handle)
                     .delivery_id(pending.delivery_id.clone())
                     .reason_code("durable_recovery")
-                    .summary(pending.notification.summary.clone())
+                    .summary(terminal_notification_message(&pending.notification))
                     .source_tool_call_id(pending.notification.source_tool_call_id.clone()),
                 )
                 .await;
@@ -466,9 +466,10 @@ fn build_wake_prompt_from_deliveries(
         .map(|delivery| {
             format!(
                 "[Agent Mailbox Message]\ndelivery_id: {}\nfrom_agent_id: \
-                 {}\nsender_lifecycle_status: Idle\nmessage: {}",
+                 {}\nsender_lifecycle_status: {:?}\nmessage: {}",
                 delivery.delivery_id,
                 delivery.notification.child_ref.agent_id,
+                delivery.notification.status,
                 terminal_notification_message(&delivery.notification),
             )
         })
@@ -532,11 +533,65 @@ mod tests {
                 open_session_id: "session-child".to_string(),
             },
             kind,
-            summary: "子 Agent 已完成".to_string(),
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: Some("tool-call-1".to_string()),
-            final_reply_excerpt: Some("最终回复摘录".to_string()),
-            delivery: None,
+            delivery: Some(astrcode_core::ParentDelivery {
+                idempotency_key: format!("delivery-{kind:?}").to_lowercase(),
+                origin: astrcode_core::ParentDeliveryOrigin::Explicit,
+                terminal_semantics: match kind {
+                    ChildSessionNotificationKind::Started
+                    | ChildSessionNotificationKind::ProgressSummary
+                    | ChildSessionNotificationKind::Waiting
+                    | ChildSessionNotificationKind::Resumed => {
+                        astrcode_core::ParentDeliveryTerminalSemantics::NonTerminal
+                    },
+                    ChildSessionNotificationKind::Delivered
+                    | ChildSessionNotificationKind::Closed
+                    | ChildSessionNotificationKind::Failed => {
+                        astrcode_core::ParentDeliveryTerminalSemantics::Terminal
+                    },
+                },
+                source_turn_id: Some("turn-child".to_string()),
+                payload: match kind {
+                    ChildSessionNotificationKind::Delivered => {
+                        astrcode_core::ParentDeliveryPayload::Completed(
+                            astrcode_core::CompletedParentDeliveryPayload {
+                                message: "最终回复摘录".to_string(),
+                                findings: Vec::new(),
+                                artifacts: Vec::new(),
+                            },
+                        )
+                    },
+                    ChildSessionNotificationKind::Failed => {
+                        astrcode_core::ParentDeliveryPayload::Failed(
+                            astrcode_core::FailedParentDeliveryPayload {
+                                message: "子 Agent 已完成".to_string(),
+                                code: astrcode_core::SubRunFailureCode::Internal,
+                                technical_message: None,
+                                retryable: false,
+                            },
+                        )
+                    },
+                    ChildSessionNotificationKind::Closed => {
+                        astrcode_core::ParentDeliveryPayload::CloseRequest(
+                            astrcode_core::CloseRequestParentDeliveryPayload {
+                                message: "子 Agent 已完成".to_string(),
+                                reason: Some("child_closed".to_string()),
+                            },
+                        )
+                    },
+                    ChildSessionNotificationKind::Started
+                    | ChildSessionNotificationKind::ProgressSummary
+                    | ChildSessionNotificationKind::Waiting
+                    | ChildSessionNotificationKind::Resumed => {
+                        astrcode_core::ParentDeliveryPayload::Progress(
+                            astrcode_core::ProgressParentDeliveryPayload {
+                                message: "子 Agent 已完成".to_string(),
+                            },
+                        )
+                    },
+                },
+            }),
         }
     }
 
@@ -732,11 +787,21 @@ mod tests {
                 open_session_id: "session-leaf".to_string(),
             },
             kind: ChildSessionNotificationKind::Delivered,
-            summary: "leaf 已完成".to_string(),
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
-            final_reply_excerpt: Some("leaf 最终回复".to_string()),
-            delivery: None,
+            delivery: Some(astrcode_core::ParentDelivery {
+                idempotency_key: "leaf-terminal:turn-leaf:completed".to_string(),
+                origin: astrcode_core::ParentDeliveryOrigin::Explicit,
+                terminal_semantics: astrcode_core::ParentDeliveryTerminalSemantics::Terminal,
+                source_turn_id: Some("turn-leaf".to_string()),
+                payload: astrcode_core::ParentDeliveryPayload::Completed(
+                    astrcode_core::CompletedParentDeliveryPayload {
+                        message: "leaf 最终回复".to_string(),
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    },
+                ),
+            }),
         };
 
         harness
@@ -949,26 +1014,20 @@ mod tests {
     }
 
     #[test]
-    fn wake_prompt_prefers_final_excerpt_and_falls_back_to_summary() {
+    fn wake_prompt_uses_delivery_message_without_legacy_fields() {
         let delivered = sample_notification(
             "session-parent",
             "agent-parent",
             ChildSessionNotificationKind::Delivered,
         );
-        let summary_only = ChildSessionNotification {
-            final_reply_excerpt: None,
-            ..sample_notification(
-                "session-parent",
-                "agent-parent",
-                ChildSessionNotificationKind::Failed,
-            )
-        };
+        let failed = sample_notification(
+            "session-parent",
+            "agent-parent",
+            ChildSessionNotificationKind::Failed,
+        );
 
         assert_eq!(terminal_notification_message(&delivered), "最终回复摘录");
-        assert_eq!(
-            terminal_notification_message(&summary_only),
-            "子 Agent 已完成"
-        );
+        assert_eq!(terminal_notification_message(&failed), "子 Agent 已完成");
 
         let prompt = build_wake_prompt_from_deliveries(&[
             astrcode_kernel::PendingParentDelivery {
@@ -983,7 +1042,7 @@ mod tests {
                 parent_session_id: "session-parent".to_string(),
                 parent_turn_id: "turn-parent".to_string(),
                 queued_at_ms: chrono::Utc::now().timestamp_millis(),
-                notification: summary_only,
+                notification: failed,
             },
         ]);
         assert!(prompt.contains("Treat each delivery as a new message from that child agent"));

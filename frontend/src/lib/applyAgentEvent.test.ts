@@ -84,9 +84,20 @@ describe('applyAgentEvent session routing', () => {
         result: {
           status: 'completed',
           handoff: {
-            summary: 'child finished',
             findings: [],
             artifacts: [],
+            delivery: {
+              idempotencyKey: 'delivery-subrun-finish',
+              origin: 'explicit',
+              terminalSemantics: 'terminal',
+              sourceTurnId: 'turn-parent',
+              kind: 'completed',
+              payload: {
+                message: 'child finished',
+                findings: [],
+                artifacts: [],
+              },
+            },
           },
         },
         stepCount: 1,
@@ -109,9 +120,19 @@ describe('applyAgentEvent session routing', () => {
           openSessionId: 'session-child',
         },
         kind: 'delivered',
-        summary: 'child delivered',
         status: 'idle',
-        finalReplyExcerpt: 'final excerpt',
+        delivery: {
+          idempotencyKey: 'delivery-child-notification',
+          origin: 'explicit',
+          terminalSemantics: 'terminal',
+          sourceTurnId: 'turn-parent',
+          kind: 'completed',
+          payload: {
+            message: 'final excerpt',
+            findings: [],
+            artifacts: [],
+          },
+        },
       },
     };
 

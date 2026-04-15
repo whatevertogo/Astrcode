@@ -422,7 +422,11 @@ fn build_trace_item(stored: &StoredEvent) -> Option<SessionDebugTraceItem> {
             recorded_at: *timestamp,
             kind: SessionDebugTraceItemKind::ChildNotification,
             title: format!("{:?}", notification.kind).to_lowercase(),
-            summary: notification.summary.clone(),
+            summary: notification
+                .delivery
+                .as_ref()
+                .map(|delivery| delivery.payload.message().to_string())
+                .unwrap_or_else(|| "child notification without delivery".to_string()),
             agent_id,
             sub_run_id,
             child_agent_id: Some(notification.child_ref.agent_id.clone()),

@@ -390,6 +390,7 @@ export default function MessageList({
             title={subRunView.title}
             startMessage={subRunView.startMessage}
             finishMessage={subRunView.finishMessage}
+            latestNotification={subRunView.latestNotification}
             threadItems={subRunView.threadItems}
             streamFingerprint={subRunView.streamFingerprint}
             hasDescriptorLineage={subRunView.hasDescriptorLineage}
@@ -425,6 +426,7 @@ export default function MessageList({
         title={subRunView.title}
         startMessage={subRunView.startMessage}
         finishMessage={subRunView.finishMessage}
+        latestNotification={subRunView.latestNotification}
         threadItems={subRunView.threadItems}
         streamFingerprint={subRunView.streamFingerprint}
         hasDescriptorLineage={subRunView.hasDescriptorLineage}

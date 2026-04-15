@@ -48,11 +48,21 @@ function makeChildSessionNotificationFixture() {
         open_session_id: 'session-child-1',
       },
       kind: 'delivered',
-      summary: '子会话已完成',
+      delivery: {
+        idempotencyKey: 'delivery-child',
+        origin: 'explicit',
+        terminalSemantics: 'terminal',
+        sourceTurnId: 'turn-child',
+        kind: 'completed',
+        payload: {
+          message: '最终摘要',
+          findings: [],
+          artifacts: [],
+        },
+      },
       status: 'completed',
       open_session_id: 'session-child-1',
       source_tool_call_id: 'call-child',
-      final_reply_excerpt: '最终摘要',
     },
   };
 }
@@ -346,15 +356,26 @@ describe('normalizeAgentEvent protocol gate', () => {
           subRunId: 'subrun-child',
           executionId: 'subrun-child',
           parentAgentId: undefined,
+          parentSubRunId: undefined,
           lineageKind: 'spawn',
           status: 'idle',
           openSessionId: 'session-child-1',
         },
         kind: 'delivered',
-        summary: '子会话已完成',
         status: 'idle',
         sourceToolCallId: 'call-child',
-        finalReplyExcerpt: '最终摘要',
+        delivery: {
+          idempotencyKey: 'delivery-child',
+          origin: 'explicit',
+          terminalSemantics: 'terminal',
+          sourceTurnId: 'turn-child',
+          kind: 'completed',
+          payload: {
+            message: '最终摘要',
+            findings: [],
+            artifacts: [],
+          },
+        },
       },
     });
   });
@@ -408,6 +429,68 @@ describe('normalizeAgentEvent protocol gate', () => {
         },
         stepCount: 3,
         estimatedTokens: 120,
+      },
+    });
+  });
+
+  it('accepts subRunFinished payloads with typed handoff delivery', () => {
+    const normalized = normalizeAgentEvent({
+      protocolVersion: 1,
+      event: 'subRunFinished',
+      data: {
+        turn_id: 'turn-subrun',
+        sub_run_id: 'subrun-child',
+        result: {
+          status: 'completed',
+          handoff: {
+            findings: ['finding-1'],
+            artifacts: [],
+            delivery: {
+              idempotency_key: 'delivery-subrun-finish',
+              origin: 'explicit',
+              terminal_semantics: 'terminal',
+              source_turn_id: 'turn-child',
+              kind: 'completed',
+              payload: {
+                message: '显式交付',
+                findings: ['finding-1'],
+                artifacts: [],
+              },
+            },
+          },
+        },
+        step_count: 2,
+        estimated_tokens: 64,
+      },
+    });
+
+    expect(normalized).toEqual({
+      event: 'subRunFinished',
+      data: {
+        turnId: 'turn-subrun',
+        subRunId: 'subrun-child',
+        executionId: 'subrun-child',
+        result: {
+          status: 'completed',
+          handoff: {
+            findings: ['finding-1'],
+            artifacts: [],
+            delivery: {
+              idempotencyKey: 'delivery-subrun-finish',
+              origin: 'explicit',
+              terminalSemantics: 'terminal',
+              sourceTurnId: 'turn-child',
+              kind: 'completed',
+              payload: {
+                message: '显式交付',
+                findings: ['finding-1'],
+                artifacts: [],
+              },
+            },
+          },
+        },
+        stepCount: 2,
+        estimatedTokens: 64,
       },
     });
   });

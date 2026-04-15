@@ -193,9 +193,19 @@ describe('SubRunBlock result rendering', () => {
       result: {
         status: 'completed',
         handoff: {
-          summary: '完成了静态分析并整理出两个风险点。',
           findings: ['问题一', '问题二'],
           artifacts: [],
+          delivery: {
+            idempotencyKey: 'delivery-directory-summary',
+            origin: 'explicit',
+            terminalSemantics: 'terminal',
+            kind: 'completed',
+            payload: {
+              message: '完成了静态分析并整理出两个风险点。',
+              findings: ['问题一', '问题二'],
+              artifacts: [],
+            },
+          },
         },
       },
       stepCount: 2,
@@ -233,9 +243,19 @@ describe('SubRunBlock result rendering', () => {
       result: {
         status: 'completed',
         handoff: {
-          summary: '审查完成，发现两个问题。',
           findings: ['问题一', '问题二'],
           artifacts: [],
+          delivery: {
+            idempotencyKey: 'delivery-json-summary',
+            origin: 'explicit',
+            terminalSemantics: 'terminal',
+            kind: 'completed',
+            payload: {
+              message: '审查完成，发现两个问题。',
+              findings: ['问题一', '问题二'],
+              artifacts: [],
+            },
+          },
         },
       },
       stepCount: 1,
@@ -273,9 +293,19 @@ describe('SubRunBlock result rendering', () => {
       result: {
         status: 'completed',
         handoff: {
-          summary: '代码审查完成：所有模块通过检查。',
           findings: [],
           artifacts: [],
+          delivery: {
+            idempotencyKey: 'delivery-readable-summary',
+            origin: 'explicit',
+            terminalSemantics: 'terminal',
+            kind: 'completed',
+            payload: {
+              message: '代码审查完成：所有模块通过检查。',
+              findings: [],
+              artifacts: [],
+            },
+          },
         },
       },
       stepCount: 3,
@@ -314,9 +344,19 @@ describe('SubRunBlock result rendering', () => {
       result: {
         status: 'completed',
         handoff: {
-          summary: '这是完整子会话报告，不应该再内嵌在父会话里。',
           findings: ['finding-1'],
           artifacts: [],
+          delivery: {
+            idempotencyKey: 'delivery-child-session-summary',
+            origin: 'explicit',
+            terminalSemantics: 'terminal',
+            kind: 'completed',
+            payload: {
+              message: '这是完整子会话报告，不应该再内嵌在父会话里。',
+              findings: ['finding-1'],
+              artifacts: [],
+            },
+          },
         },
       },
       stepCount: 2,

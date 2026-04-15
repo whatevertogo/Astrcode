@@ -8,14 +8,13 @@ use std::path::PathBuf;
 use astrcode_application::{
     AgentEventContext, AgentLifecycleStatus, AgentTurnOutcome, InvocationKind,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, StorageEventPayload,
-    StoredEvent, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult, SubRunStatusView,
+    StoredEvent, SubRunFailure, SubRunFailureCode, SubRunResult, SubRunStatusView,
 };
 use astrcode_protocol::http::{
     AgentExecuteRequestDto, AgentExecuteResponseDto, AgentLifecycleDto, AgentProfileDto,
-    AgentTurnOutcomeDto, ArtifactRefDto, ExecutionControlDto, ResolvedExecutionLimitsDto,
-    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-    SubRunOutcomeDto, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
-    SubRunStorageModeDto,
+    AgentTurnOutcomeDto, ExecutionControlDto, ResolvedExecutionLimitsDto,
+    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunOutcomeDto,
+    SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto, SubRunStorageModeDto,
 };
 use axum::{
     Json,
@@ -357,28 +356,33 @@ fn project_durable_subrun_status(
         }
     }
 
-    projection.map(|projection| SubRunStatusDto {
-        sub_run_id: projection.sub_run_id,
-        tool_call_id: projection.tool_call_id,
-        source: SubRunStatusSourceDto::Durable,
-        agent_id: projection.agent_id,
-        agent_profile: projection.agent_profile,
-        session_id: parent_session_id.to_string(),
-        child_session_id: Some(projection.child_session_id),
-        depth: projection.depth,
-        parent_agent_id: projection.parent_agent_id,
-        parent_sub_run_id: projection.parent_sub_run_id,
-        storage_mode: SubRunStorageModeDto::IndependentSession,
-        lifecycle: to_lifecycle_dto(projection.lifecycle),
-        last_turn_outcome: projection.last_turn_outcome.map(to_turn_outcome_dto),
-        result: projection.result.map(to_subrun_result_dto),
-        step_count: projection.step_count,
-        estimated_tokens: projection.estimated_tokens,
-        resolved_overrides: projection.resolved_overrides.map(to_resolved_overrides_dto),
-        resolved_limits: Some(ResolvedExecutionLimitsDto {
-            allowed_tools: projection.resolved_limits.allowed_tools,
-            max_steps: projection.resolved_limits.max_steps,
-        }),
+    projection.map(|projection| {
+        let sub_run_id = projection.sub_run_id.clone();
+        SubRunStatusDto {
+            sub_run_id: projection.sub_run_id,
+            tool_call_id: projection.tool_call_id,
+            source: SubRunStatusSourceDto::Durable,
+            agent_id: projection.agent_id,
+            agent_profile: projection.agent_profile,
+            session_id: parent_session_id.to_string(),
+            child_session_id: Some(projection.child_session_id),
+            depth: projection.depth,
+            parent_agent_id: projection.parent_agent_id,
+            parent_sub_run_id: projection.parent_sub_run_id,
+            storage_mode: SubRunStorageModeDto::IndependentSession,
+            lifecycle: to_lifecycle_dto(projection.lifecycle),
+            last_turn_outcome: projection.last_turn_outcome.map(to_turn_outcome_dto),
+            result: projection
+                .result
+                .map(|result| to_subrun_result_dto(result, Some(sub_run_id.as_str()))),
+            step_count: projection.step_count,
+            estimated_tokens: projection.estimated_tokens,
+            resolved_overrides: projection.resolved_overrides.map(to_resolved_overrides_dto),
+            resolved_limits: Some(ResolvedExecutionLimitsDto {
+                allowed_tools: projection.resolved_limits.allowed_tools,
+                max_steps: projection.resolved_limits.max_steps,
+            }),
+        }
     })
 }
 
@@ -409,10 +413,12 @@ fn to_resolved_overrides_dto(
     }
 }
 
-fn to_subrun_result_dto(result: SubRunResult) -> SubRunResultDto {
+fn to_subrun_result_dto(result: SubRunResult, sub_run_id: Option<&str>) -> SubRunResultDto {
     SubRunResultDto {
         status: to_subrun_outcome_dto(result.lifecycle, result.last_turn_outcome),
-        handoff: result.handoff.map(to_subrun_handoff_dto),
+        handoff: result
+            .handoff
+            .map(|handoff| crate::mapper::to_subrun_handoff_dto(handoff, sub_run_id, None)),
         failure: result.failure.map(to_subrun_failure_dto),
     }
 }
@@ -430,26 +436,6 @@ fn to_subrun_outcome_dto(
             AgentLifecycleStatus::Terminated => SubRunOutcomeDto::Aborted,
             _ => SubRunOutcomeDto::Running,
         },
-    }
-}
-
-fn to_subrun_handoff_dto(handoff: SubRunHandoff) -> SubRunHandoffDto {
-    SubRunHandoffDto {
-        summary: handoff.summary,
-        findings: handoff.findings,
-        artifacts: handoff
-            .artifacts
-            .into_iter()
-            .map(|artifact| ArtifactRefDto {
-                kind: artifact.kind,
-                id: artifact.id,
-                label: artifact.label,
-                session_id: artifact.session_id,
-                storage_seq: artifact.storage_seq,
-                uri: artifact.uri,
-            })
-            .collect(),
-        delivery: None,
     }
 }
 
@@ -490,4 +476,109 @@ fn to_turn_outcome_dto(outcome: AgentTurnOutcome) -> AgentTurnOutcomeDto {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CloseAgentResponse {
     closed_agent_ids: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_application::{
+        AgentEventContext, AgentLifecycleStatus, AgentTurnOutcome, StoredEvent, SubRunHandoff,
+        SubRunResult, SubRunStorageMode,
+    };
+    use astrcode_core::{
+        ArtifactRef, CompletedParentDeliveryPayload, ParentDelivery, ParentDeliveryOrigin,
+        ParentDeliveryPayload, ParentDeliveryTerminalSemantics, StorageEvent, StorageEventPayload,
+    };
+
+    use super::project_durable_subrun_status;
+
+    #[test]
+    fn durable_subrun_projection_preserves_typed_handoff_delivery() {
+        let child_agent = AgentEventContext::sub_run(
+            "agent-child",
+            "turn-parent",
+            "reviewer",
+            "subrun-child",
+            Some("subrun-parent".to_string()),
+            SubRunStorageMode::IndependentSession,
+            Some("session-child".to_string()),
+        );
+        let explicit_delivery = ParentDelivery {
+            idempotency_key: "delivery-explicit".to_string(),
+            origin: ParentDeliveryOrigin::Explicit,
+            terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
+            source_turn_id: Some("turn-child".to_string()),
+            payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                message: "显式交付".to_string(),
+                findings: vec!["finding-1".to_string()],
+                artifacts: vec![ArtifactRef {
+                    kind: "session".to_string(),
+                    id: "session-child".to_string(),
+                    label: "Child Session".to_string(),
+                    session_id: Some("session-child".to_string()),
+                    storage_seq: None,
+                    uri: None,
+                }],
+            }),
+        };
+        let stored_events = vec![StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent {
+                turn_id: Some("turn-child".to_string()),
+                agent: child_agent.clone(),
+                payload: StorageEventPayload::SubRunFinished {
+                    tool_call_id: Some("call-1".to_string()),
+                    result: SubRunResult {
+                        lifecycle: AgentLifecycleStatus::Idle,
+                        last_turn_outcome: Some(AgentTurnOutcome::Completed),
+                        handoff: Some(SubRunHandoff {
+                            findings: vec!["finding-1".to_string()],
+                            artifacts: vec![ArtifactRef {
+                                kind: "session".to_string(),
+                                id: "session-child".to_string(),
+                                label: "Child Session".to_string(),
+                                session_id: Some("session-child".to_string()),
+                                storage_seq: None,
+                                uri: None,
+                            }],
+                            delivery: Some(explicit_delivery.clone()),
+                        }),
+                        failure: None,
+                    },
+                    timestamp: Some(chrono::Utc::now()),
+                    step_count: 3,
+                    estimated_tokens: 120,
+                },
+            },
+        }];
+
+        let projection = project_durable_subrun_status(
+            "session-parent",
+            "session-child",
+            "subrun-child",
+            &stored_events,
+        )
+        .expect("projection should exist");
+
+        let result = projection.result.expect("durable result should exist");
+        let handoff = result.handoff.expect("handoff should exist");
+        let delivery = handoff
+            .delivery
+            .expect("typed delivery should survive durable projection");
+        assert_eq!(delivery.idempotency_key, "delivery-explicit");
+        assert_eq!(
+            delivery.origin,
+            astrcode_protocol::http::ParentDeliveryOriginDto::Explicit
+        );
+        assert_eq!(
+            delivery.terminal_semantics,
+            astrcode_protocol::http::ParentDeliveryTerminalSemanticsDto::Terminal
+        );
+        match delivery.payload {
+            astrcode_protocol::http::ParentDeliveryPayloadDto::Completed(payload) => {
+                assert_eq!(payload.message, "显式交付");
+                assert_eq!(payload.findings, vec!["finding-1".to_string()]);
+            },
+            payload => panic!("unexpected delivery payload: {payload:?}"),
+        }
+    }
 }

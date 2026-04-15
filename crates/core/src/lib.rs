@@ -64,8 +64,9 @@ pub use agent::{
     LineageSnapshot, ParentDelivery, ParentDeliveryKind, ParentDeliveryOrigin,
     ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SendAgentParams,
-    SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure, SubRunFailureCode, SubRunHandle,
-    SubRunHandoff, SubRunResult, SubRunStorageMode, SubagentContextOverrides,
+    SendToChildParams, SendToParentParams, SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure,
+    SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides,
     executor::{CollaborationExecutor, SubAgentExecutor},
     lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
     mailbox::{

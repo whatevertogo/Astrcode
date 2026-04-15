@@ -822,7 +822,15 @@ describe('buildSubRunView', () => {
         },
         notificationKind: 'started',
         status: 'running',
-        summary: 'started',
+        delivery: {
+          idempotencyKey: 'delivery-self-started',
+          origin: 'explicit',
+          terminalSemantics: 'non_terminal',
+          kind: 'progress',
+          payload: {
+            message: 'started',
+          },
+        },
         timestamp: 2,
       },
     ];
@@ -876,7 +884,15 @@ describe('buildSubRunView', () => {
         },
         notificationKind: 'started',
         status: 'running',
-        summary: 'a started',
+        delivery: {
+          idempotencyKey: 'delivery-a-started',
+          origin: 'explicit',
+          terminalSemantics: 'non_terminal',
+          kind: 'progress',
+          payload: {
+            message: 'a started',
+          },
+        },
         timestamp: 3,
       },
       {
@@ -896,7 +912,15 @@ describe('buildSubRunView', () => {
         },
         notificationKind: 'started',
         status: 'running',
-        summary: 'b started',
+        delivery: {
+          idempotencyKey: 'delivery-b-started',
+          origin: 'explicit',
+          terminalSemantics: 'non_terminal',
+          kind: 'progress',
+          payload: {
+            message: 'b started',
+          },
+        },
         timestamp: 4,
       },
     ];
@@ -908,8 +932,8 @@ describe('buildSubRunView', () => {
     expect(buildSubRunView(tree, 'subrun-b')?.parentSubRunId).toBe('subrun-a');
   });
 
-  // 父摘要投影测试 — 确保根级子执行可作为父视图摘要卡片使用
-  it('projects root sub-runs as parent summary cards with title and status', () => {
+  // 父视图 delivery 投影测试 — 确保根级子执行可作为父视图卡片使用
+  it('projects root sub-runs as parent delivery cards with title and status', () => {
     const messages: Message[] = [
       {
         id: 'root-user',
@@ -950,9 +974,19 @@ describe('buildSubRunView', () => {
         result: {
           status: 'completed',
           handoff: {
-            summary: '完成了文件探索',
             findings: ['发现三个风险点'],
             artifacts: [],
+            delivery: {
+              idempotencyKey: 'delivery-subrun-a',
+              origin: 'explicit',
+              terminalSemantics: 'terminal',
+              kind: 'completed',
+              payload: {
+                message: '完成了文件探索',
+                findings: ['发现三个风险点'],
+                artifacts: [],
+              },
+            },
           },
         },
         stepCount: 2,
@@ -1003,7 +1037,8 @@ describe('buildSubRunView', () => {
     const cardOk = summaryCards[0];
     expect(cardOk.title).toBe('explorer');
     expect(cardOk.finishMessage?.result.status).toBe('completed');
-    expect(cardOk.finishMessage?.result.handoff?.summary).toBe('完成了文件探索');
+    expect(cardOk.finishMessage?.result.handoff?.delivery?.kind).toBe('completed');
+    expect(cardOk.finishMessage?.result.handoff?.delivery?.payload.message).toBe('完成了文件探索');
 
     // 第二个：失败，错误信息应可获取
     const cardFail = summaryCards[1];
@@ -1144,7 +1179,15 @@ describe('buildSubRunView', () => {
         },
         notificationKind: 'started',
         status: 'running',
-        summary: '子会话已启动',
+        delivery: {
+          idempotencyKey: 'delivery-child-started',
+          origin: 'explicit',
+          terminalSemantics: 'non_terminal',
+          kind: 'progress',
+          payload: {
+            message: '子会话已启动',
+          },
+        },
         timestamp: 1,
       },
     ];

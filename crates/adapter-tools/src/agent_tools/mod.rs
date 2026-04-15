@@ -9,7 +9,7 @@ mod spawn_tool;
 
 pub use astrcode_core::{
     CloseAgentParams, CollaborationResult, CollaborationResultKind, ObserveParams, SendAgentParams,
-    SpawnAgentParams,
+    SendToChildParams, SendToParentParams, SpawnAgentParams,
 };
 pub use close_tool::CloseAgentTool;
 pub use collaboration_executor::CollaborationExecutor;

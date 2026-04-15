@@ -377,11 +377,8 @@ function collectAgentEventActions(
           childRef: event.data.childRef,
           notificationKind: event.data.kind,
           status: event.data.status,
-          summary: event.data.summary,
+          ...(event.data.delivery ? { delivery: event.data.delivery } : {}),
           ...(event.data.sourceToolCallId ? { sourceToolCallId: event.data.sourceToolCallId } : {}),
-          ...(event.data.finalReplyExcerpt
-            ? { finalReplyExcerpt: event.data.finalReplyExcerpt }
-            : {}),
           timestamp: Date.now(),
         },
       });

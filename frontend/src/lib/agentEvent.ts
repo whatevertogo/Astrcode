@@ -3,12 +3,14 @@
 //! 将 SSE 接收的原始事件规范化为前端可用的格式。
 
 import type {
+  ArtifactRef,
   AgentLifecycle,
   AgentEventPayload,
   AgentTurnOutcome,
   ChildSessionNotificationKind,
   CompactTrigger,
   InvocationKind,
+  ParentDelivery,
   Phase,
   SubRunResult,
   SubRunStorageMode,
@@ -53,6 +55,9 @@ const VALID_AGENT_TURN_OUTCOMES: AgentTurnOutcome[] = [
   'cancelled',
   'token_exceeded',
 ];
+const VALID_PARENT_DELIVERY_ORIGINS = ['explicit', 'fallback'] as const;
+const VALID_PARENT_DELIVERY_TERMINAL_SEMANTICS = ['non_terminal', 'terminal'] as const;
+const VALID_PARENT_DELIVERY_KINDS = ['progress', 'completed', 'failed', 'close_request'] as const;
 
 function toPhase(value: unknown): Phase | null {
   if (typeof value !== 'string') {
@@ -125,6 +130,152 @@ function toAgentTurnOutcome(value: unknown): AgentTurnOutcome | null {
     return normalized as AgentTurnOutcome;
   }
   return null;
+}
+
+function toParentDeliveryOrigin(value: unknown): ParentDelivery['origin'] | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  return (VALID_PARENT_DELIVERY_ORIGINS as readonly string[]).includes(value)
+    ? (value as ParentDelivery['origin'])
+    : null;
+}
+
+function toParentDeliveryTerminalSemantics(
+  value: unknown
+): ParentDelivery['terminalSemantics'] | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  return (VALID_PARENT_DELIVERY_TERMINAL_SEMANTICS as readonly string[]).includes(value)
+    ? (value as ParentDelivery['terminalSemantics'])
+    : null;
+}
+
+function parseArtifactRefs(raw: unknown): ArtifactRef[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .map((value) => asRecord(value))
+    .filter((value): value is Record<string, unknown> => Boolean(value))
+    .map((artifact) => ({
+      kind: pickString(artifact, 'kind') ?? 'unknown',
+      id: pickString(artifact, 'id') ?? 'unknown',
+      label: pickString(artifact, 'label') ?? 'artifact',
+      sessionId: pickOptionalString(artifact, 'sessionId', 'session_id') ?? undefined,
+      storageSeq: pickNumber(artifact, 'storageSeq', 'storage_seq') ?? undefined,
+      uri: pickOptionalString(artifact, 'uri') ?? undefined,
+    }));
+}
+
+function parseParentDelivery(raw: unknown): ParentDelivery | undefined {
+  const data = asRecord(raw);
+  if (!data) {
+    return undefined;
+  }
+
+  const idempotencyKey = pickString(data, 'idempotencyKey', 'idempotency_key');
+  const origin = toParentDeliveryOrigin(data.origin);
+  const terminalSemantics = toParentDeliveryTerminalSemantics(
+    data.terminalSemantics ?? data.terminal_semantics
+  );
+  const kind = pickString(data, 'kind');
+  const payload = asRecord(data.payload);
+  if (
+    !idempotencyKey ||
+    !origin ||
+    !terminalSemantics ||
+    !kind ||
+    !payload ||
+    !(VALID_PARENT_DELIVERY_KINDS as readonly string[]).includes(kind)
+  ) {
+    return undefined;
+  }
+
+  const sourceTurnId = pickOptionalString(data, 'sourceTurnId', 'source_turn_id') ?? undefined;
+
+  if (kind === 'progress') {
+    const message = pickString(payload, 'message');
+    if (!message) {
+      return undefined;
+    }
+    return {
+      idempotencyKey,
+      origin,
+      terminalSemantics,
+      sourceTurnId,
+      kind,
+      payload: { message },
+    };
+  }
+
+  if (kind === 'completed') {
+    const message = pickString(payload, 'message');
+    if (!message) {
+      return undefined;
+    }
+    return {
+      idempotencyKey,
+      origin,
+      terminalSemantics,
+      sourceTurnId,
+      kind,
+      payload: {
+        message,
+        findings: Array.isArray(payload.findings)
+          ? payload.findings.filter((value): value is string => typeof value === 'string')
+          : [],
+        artifacts: parseArtifactRefs(payload.artifacts),
+      },
+    };
+  }
+
+  if (kind === 'failed') {
+    const message = pickString(payload, 'message');
+    const code = pickString(payload, 'code');
+    if (
+      !message ||
+      (code !== 'transport' &&
+        code !== 'provider_http' &&
+        code !== 'stream_parse' &&
+        code !== 'interrupted' &&
+        code !== 'internal')
+    ) {
+      return undefined;
+    }
+    return {
+      idempotencyKey,
+      origin,
+      terminalSemantics,
+      sourceTurnId,
+      kind,
+      payload: {
+        message,
+        code,
+        technicalMessage:
+          pickOptionalString(payload, 'technicalMessage', 'technical_message') ?? undefined,
+        retryable: payload.retryable === true,
+      },
+    };
+  }
+
+  const message = pickString(payload, 'message');
+  if (!message) {
+    return undefined;
+  }
+  return {
+    idempotencyKey,
+    origin,
+    terminalSemantics,
+    sourceTurnId,
+    kind: 'close_request',
+    payload: {
+      message,
+      reason: pickOptionalString(payload, 'reason') ?? undefined,
+    },
+  };
 }
 
 function normalizeChildNotificationStatus(
@@ -630,19 +781,18 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
     }
     const handoff = asRecord(result.handoff);
     const failure = asRecord(result.failure);
-
+    const turnId = pickOptionalString(data, 'turnId', 'turn_id') ?? null;
     return {
       event: 'subRunFinished',
       data: {
-        turnId: pickOptionalString(data, 'turnId', 'turn_id') ?? null,
+        turnId,
         ...pickAgentContext(data, { includeParentTurnId: true }),
         ...(toolCallId ? { toolCallId } : {}),
         result: {
           status,
           handoff: handoff
-            ? {
-                summary: pickString(handoff, 'summary') ?? '',
-                artifacts: Array.isArray(handoff.artifacts)
+            ? (() => {
+                const artifacts = Array.isArray(handoff.artifacts)
                   ? handoff.artifacts
                       .map((value) => asRecord(value))
                       .filter((value): value is Record<string, unknown> => Boolean(value))
@@ -655,11 +805,17 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
                         storageSeq: pickNumber(artifact, 'storageSeq', 'storage_seq') ?? undefined,
                         uri: pickOptionalString(artifact, 'uri') ?? undefined,
                       }))
-                  : [],
-                findings: Array.isArray(handoff.findings)
+                  : [];
+                const findings = Array.isArray(handoff.findings)
                   ? handoff.findings.filter((value): value is string => typeof value === 'string')
-                  : [],
-              }
+                  : [];
+                const delivery = parseParentDelivery(handoff.delivery);
+                return {
+                  artifacts,
+                  findings,
+                  ...(delivery ? { delivery } : {}),
+                };
+              })()
             : undefined,
           failure: failure
             ? {
@@ -705,10 +861,10 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
       kindRaw && (VALID_CHILD_NOTIFICATION_KINDS as string[]).includes(kindRaw)
         ? (kindRaw as ChildSessionNotificationKind)
         : 'failed';
-    const summary = pickString(data, 'summary') ?? '';
     const status = normalizeChildNotificationStatus(data.status, 'terminated');
     const childStatus = normalizeChildNotificationStatus(childRefRaw.status, status);
     const openSessionId = pickString(childRefRaw, 'openSessionId', 'open_session_id') ?? sessionId;
+    const delivery = parseParentDelivery(data.delivery);
     return {
       event: 'childSessionNotification',
       data: {
@@ -727,12 +883,10 @@ export function normalizeAgentEvent(raw: unknown): AgentEventPayload {
           openSessionId,
         },
         kind,
-        summary,
         status,
         sourceToolCallId:
           pickOptionalString(data, 'sourceToolCallId', 'source_tool_call_id') ?? undefined,
-        finalReplyExcerpt:
-          pickOptionalString(data, 'finalReplyExcerpt', 'final_reply_excerpt') ?? undefined,
+        ...(delivery ? { delivery } : {}),
         ...pickAgentContext(data),
       },
     };

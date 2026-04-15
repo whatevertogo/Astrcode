@@ -159,7 +159,7 @@ fn artifact_id(artifacts: &[astrcode_core::ArtifactRef], kind: &str) -> Option<S
 /// 生成 LLM 在 tool result 中看到的文本输出。
 ///
 /// - 失败（Idle + Failed outcome）：展示 failure.display_message（面向用户的错误描述）
-/// - 其他：展示 handoff.summary（子 agent 返回的执行摘要）
+/// - 其他：展示 handoff.delivery.message（子 agent 返回的 typed upward delivery）
 fn tool_output_for_result(result: &SubRunResult) -> String {
     if is_failed_outcome(result) {
         result
@@ -171,7 +171,8 @@ fn tool_output_for_result(result: &SubRunResult) -> String {
         result
             .handoff
             .as_ref()
-            .map(|handoff| handoff.summary.clone())
-            .unwrap_or_else(|| "子 Agent 未返回摘要。".to_string())
+            .and_then(|handoff| handoff.delivery.as_ref())
+            .map(|delivery| delivery.payload.message().to_string())
+            .unwrap_or_else(|| "子 Agent 未返回交付。".to_string())
     }
 }

@@ -23,10 +23,20 @@ function makeParentSummaryProjectionEventsFixture(): AgentEventPayload[] {
           openSessionId: 'session-child-1',
         },
         kind: 'delivered',
-        summary: '子会话已完成摘要',
         status: 'idle',
         sourceToolCallId: 'call-child-1',
-        finalReplyExcerpt: '子会话最终回复摘录',
+        delivery: {
+          idempotencyKey: 'delivery-child-1',
+          origin: 'explicit',
+          terminalSemantics: 'terminal',
+          sourceTurnId: 'turn-root',
+          kind: 'completed',
+          payload: {
+            message: '子会话最终回复摘录',
+            findings: [],
+            artifacts: [],
+          },
+        },
       },
     },
   ];
@@ -114,7 +124,7 @@ describe('replaySessionHistory', () => {
     });
   });
 
-  it('replays parent summary facts with child-session entry fields and renders legacy rejection as error text', () => {
+  it('replays parent delivery facts with child-session entry fields and renders legacy rejection as error text', () => {
     const summaryReplay = replaySessionHistory(
       'session-1',
       makeParentSummaryProjectionEventsFixture(),
@@ -136,8 +146,13 @@ describe('replaySessionHistory', () => {
       },
       notificationKind: 'delivered',
       status: 'idle',
-      summary: '子会话已完成摘要',
-      finalReplyExcerpt: '子会话最终回复摘录',
+      delivery: {
+        idempotencyKey: 'delivery-child-1',
+        kind: 'completed',
+        payload: {
+          message: '子会话最终回复摘录',
+        },
+      },
     });
     expect(summaryReplay.messages.some((message) => message.kind === 'user')).toBe(false);
 

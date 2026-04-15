@@ -155,7 +155,7 @@ impl CapabilitySurfaceSync {
     }
 }
 
-/// 构建 agent 四工具（spawn / send / close / observe）的 capability invoker。
+/// 构建 agent 协作工具（spawn / send / close / observe）的 capability invoker。
 ///
 /// 因为 agent_service 依赖 kernel 和 session_runtime，
 /// 而 kernel 的 capability surface 又需要包含 agent 工具，

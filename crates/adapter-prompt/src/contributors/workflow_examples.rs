@@ -129,17 +129,18 @@ impl PromptContributor for WorkflowExamplesContributor {
                          `close` the branch. If the same child should continue, `send` one \
                          precise follow-up. If you see the same `deliveryId` again after \
                          recovery, treat it as the same delivery, not a new task.\n\nWhen you are \
-                         the child on a delegated task, assume the parent mainly sees your final \
-                         delivery. End your turn with a concise, reusable summary for the parent: \
-                         what you finished, what you found, and what still needs follow-up. Do \
-                         not wait for the parent to guess your progress from raw intermediate \
-                         steps, and do not end with an open loop like '继续观察中' unless you \
-                         still need the parent to keep you alive.\n\nWhen you are the parent and \
-                         receive a child delivery, treat it as a decision point. Do not leave it \
-                         hanging and do not immediately re-observe the same child unless the \
-                         state is unclear. Decide immediately whether the result is complete \
-                         enough to `close` the branch, or whether the same child should continue \
-                         with one concrete `send` follow-up that names the exact next step."
+                         the child on a delegated task, use upstream `send(kind + payload)` to \
+                         deliver a formal message to your direct parent. Report `progress`, \
+                         `completed`, `failed`, or `close_request` explicitly. Do not wait for \
+                         the parent to infer state from raw intermediate steps, and do not end \
+                         with an open loop like '继续观察中' unless you are also sending a \
+                         non-terminal `progress` delivery that keeps the branch alive.\n\nWhen \
+                         you are the parent and receive a child delivery, treat it as a decision \
+                         point. Do not leave it hanging and do not immediately re-observe the \
+                         same child unless the state is unclear. Decide immediately whether the \
+                         result is complete enough to `close` the branch, or whether the same \
+                         child should continue with one concrete `send` follow-up that names the \
+                         exact next step."
                     ),
                 )
                 .with_priority(600),
@@ -354,8 +355,9 @@ mod tests {
         assert!(
             collaboration_block
                 .content
-                .contains("mainly sees your final delivery")
+                .contains("use upstream `send(kind + payload)`")
         );
+        assert!(collaboration_block.content.contains("`close_request`"));
         assert!(collaboration_block.content.contains("exact next step"));
     }
 

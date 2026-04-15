@@ -3,8 +3,9 @@ use astrcode_protocol::http::{
     ChildSessionLineageKindDto, ChildSessionNotificationDto, ChildSessionNotificationKindDto,
     CompletedParentDeliveryPayloadDto, InvocationKindDto, ParentDeliveryDto,
     ParentDeliveryOriginDto, ParentDeliveryPayloadDto, ParentDeliveryTerminalSemanticsDto,
-    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto,
-    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
+    ProgressParentDeliveryPayloadDto, ResolvedExecutionLimitsDto,
+    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
+    SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
 };
 
 #[test]
@@ -137,10 +138,21 @@ fn sub_run_finished_omits_parent_handoff_on_failure() {
         result: SubRunResultDto {
             status: SubRunOutcomeDto::Completed,
             handoff: Some(SubRunHandoffDto {
-                summary: "done".to_string(),
                 findings: vec!["checked".to_string()],
                 artifacts: Vec::new(),
-                delivery: None,
+                delivery: Some(ParentDeliveryDto {
+                    idempotency_key: "handoff-1".to_string(),
+                    origin: ParentDeliveryOriginDto::Explicit,
+                    terminal_semantics: ParentDeliveryTerminalSemanticsDto::Terminal,
+                    source_turn_id: Some("turn-1".to_string()),
+                    payload: ParentDeliveryPayloadDto::Completed(
+                        CompletedParentDeliveryPayloadDto {
+                            message: "done".to_string(),
+                            findings: vec!["checked".to_string()],
+                            artifacts: Vec::new(),
+                        },
+                    ),
+                }),
             }),
             failure: None,
         },
@@ -171,11 +183,17 @@ fn child_session_notification_roundtrip_keeps_projection_fields() {
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKindDto::Started,
-        summary: "child started".to_string(),
         status: AgentLifecycleDto::Running,
         source_tool_call_id: Some("call-1".to_string()),
-        final_reply_excerpt: None,
-        delivery: None,
+        delivery: Some(ParentDeliveryDto {
+            idempotency_key: "notification-1".to_string(),
+            origin: ParentDeliveryOriginDto::Explicit,
+            terminal_semantics: ParentDeliveryTerminalSemanticsDto::NonTerminal,
+            source_turn_id: Some("turn-child".to_string()),
+            payload: ParentDeliveryPayloadDto::Progress(ProgressParentDeliveryPayloadDto {
+                message: "child started".to_string(),
+            }),
+        }),
     };
 
     let encoded = serde_json::to_value(&notification).expect("serialize notification");
@@ -221,11 +239,17 @@ fn child_session_notification_event_payload_roundtrip() {
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKindDto::Started,
-        summary: "child started".to_string(),
         status: AgentLifecycleDto::Running,
         source_tool_call_id: Some("call-1".to_string()),
-        final_reply_excerpt: None,
-        delivery: None,
+        delivery: Some(ParentDeliveryDto {
+            idempotency_key: "notification-event-1".to_string(),
+            origin: ParentDeliveryOriginDto::Explicit,
+            terminal_semantics: ParentDeliveryTerminalSemanticsDto::NonTerminal,
+            source_turn_id: Some("turn-child".to_string()),
+            payload: ParentDeliveryPayloadDto::Progress(ProgressParentDeliveryPayloadDto {
+                message: "child started".to_string(),
+            }),
+        }),
     };
 
     let encoded =
@@ -249,14 +273,13 @@ fn child_session_notification_roundtrip_keeps_typed_delivery() {
             open_session_id: "session-child".to_string(),
         },
         kind: ChildSessionNotificationKindDto::Delivered,
-        summary: "legacy summary".to_string(),
         status: AgentLifecycleDto::Idle,
         source_tool_call_id: Some("call-typed".to_string()),
-        final_reply_excerpt: Some("typed excerpt".to_string()),
         delivery: Some(ParentDeliveryDto {
             idempotency_key: "delivery-typed".to_string(),
             origin: ParentDeliveryOriginDto::Fallback,
             terminal_semantics: ParentDeliveryTerminalSemanticsDto::Terminal,
+            source_turn_id: Some("turn-typed".to_string()),
             payload: ParentDeliveryPayloadDto::Completed(CompletedParentDeliveryPayloadDto {
                 message: "child completed".to_string(),
                 findings: vec!["checked".to_string()],

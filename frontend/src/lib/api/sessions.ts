@@ -55,10 +55,9 @@ export interface ChildSessionNotification {
   notificationId: string;
   childRef: ChildAgentRef;
   kind: 'started' | 'progress_summary' | 'delivered' | 'waiting' | 'resumed' | 'closed' | 'failed';
-  summary: string;
   status: AgentLifecycle;
   sourceToolCallId?: string;
-  finalReplyExcerpt?: string;
+  delivery?: import('../../types').ParentDelivery;
 }
 
 export async function createSession(workingDir: string): Promise<SessionMeta> {
@@ -211,5 +210,5 @@ export async function deleteProject(workingDir: string): Promise<DeleteProjectRe
   );
 }
 
-/// 获取父会话的子会话摘要列表。
-/// 父视图只消费摘要，不消费子会话原始事件流。
+/// 获取父会话的子会话 delivery 列表。
+/// 父视图只消费 typed delivery，不消费子会话原始事件流。

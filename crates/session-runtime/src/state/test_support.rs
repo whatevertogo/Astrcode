@@ -83,10 +83,31 @@ pub(crate) fn child_notification_event(
                     open_session_id: "session-child".into(),
                 },
                 kind,
-                summary: "child summary".into(),
                 status,
                 source_tool_call_id: Some("call-1".into()),
-                final_reply_excerpt: None,
+                delivery: Some(astrcode_core::ParentDelivery {
+                    idempotency_key: format!("child:{kind:?}"),
+                    origin: astrcode_core::ParentDeliveryOrigin::Explicit,
+                    terminal_semantics: match kind {
+                        ChildSessionNotificationKind::Started
+                        | ChildSessionNotificationKind::ProgressSummary
+                        | ChildSessionNotificationKind::Waiting
+                        | ChildSessionNotificationKind::Resumed => {
+                            astrcode_core::ParentDeliveryTerminalSemantics::NonTerminal
+                        },
+                        ChildSessionNotificationKind::Delivered
+                        | ChildSessionNotificationKind::Closed
+                        | ChildSessionNotificationKind::Failed => {
+                            astrcode_core::ParentDeliveryTerminalSemantics::Terminal
+                        },
+                    },
+                    source_turn_id: Some("turn-root".to_string()),
+                    payload: astrcode_core::ParentDeliveryPayload::Progress(
+                        astrcode_core::ProgressParentDeliveryPayload {
+                            message: "child summary".to_string(),
+                        },
+                    ),
+                }),
             },
             timestamp: Some(chrono::Utc::now()),
         },

@@ -25,10 +25,11 @@ use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
     AgentCollaborationPolicyContext, AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope,
     AgentTurnOutcome, ArtifactRef, CloseAgentParams, CollaborationResult, DelegationMetadata,
-    InvocationKind, ObserveParams, PromptDeclaration, PromptDeclarationKind,
-    PromptDeclarationRenderTarget, PromptDeclarationSource, ResolvedExecutionLimitsSnapshot,
-    Result, RuntimeMetricsRecorder, SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff,
-    SubRunResult, SystemPromptLayer, ToolContext,
+    InvocationKind, ObserveParams, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
+    ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload, PromptDeclaration,
+    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource,
+    ResolvedExecutionLimitsSnapshot, Result, RuntimeMetricsRecorder, SendAgentParams,
+    SpawnAgentParams, SubRunHandle, SubRunHandoff, SubRunResult, SystemPromptLayer, ToolContext,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -309,9 +310,11 @@ pub(crate) fn build_fresh_child_contract(metadata: &DelegationMetadata) -> Promp
         "You are a delegated child responsible for one isolated branch.\n\nResponsibility \
          branch:\n- {}\n\nFresh-child rule:\n- Treat this as a new responsibility branch with its \
          own ownership boundary.\n- Do not expand into unrelated exploration or \
-         implementation.\n\nDelivery contract:\n- End the turn with a concise reusable summary \
-         for the parent.\n- State what you finished, the key findings, and any remaining \
-         follow-up.\n\nReuse boundary:\n- {}",
+         implementation.\n\nUnified send contract:\n- Use downstream `send(agentId + message)` \
+         only when you need a direct child to continue a more specific sub-branch.\n- When this \
+         branch reaches progress, completion, failure, or a close request, use upstream \
+         `send(kind + payload)` to report to your direct parent.\n- Do not wait for an extra \
+         confirmation loop before reporting terminal state.\n\nReuse boundary:\n- {}",
         metadata.responsibility_summary, metadata.reuse_scope_summary
     );
     if let Some(limit_summary) = &metadata.capability_limit_summary {
@@ -353,8 +356,11 @@ pub(crate) fn build_resumed_child_contract(
         content.push_str(&format!("\n- Supplementary context: {}", context.trim()));
     }
     content.push_str(&format!(
-        "\n\nDelivery contract:\n- Reply with the concrete progress on this delta, key findings, \
-         and remaining follow-up.\n\nReuse boundary:\n- {}",
+        "\n\nUnified send contract:\n- Keep using downstream `send(agentId + message)` only for \
+         direct child delegation inside the same branch.\n- Use upstream `send(kind + payload)` \
+         to report concrete progress, completion, failure, or a close request back to your direct \
+         parent.\n- Do not restate the whole branch transcript when reporting upward.\n\nReuse \
+         boundary:\n- {}",
         metadata.reuse_scope_summary
     ));
     if let Some(limit_summary) = &metadata.capability_limit_summary {
@@ -451,7 +457,7 @@ pub(crate) fn child_delivery_mailbox_envelope(
         to_agent_id: target_agent_id,
         message: terminal_notification_message(notification),
         queued_at: chrono::Utc::now(),
-        sender_lifecycle_status: AgentLifecycleStatus::Idle,
+        sender_lifecycle_status: notification.status,
         sender_last_turn_outcome: terminal_notification_turn_outcome(notification),
         sender_open_session_id: notification.child_ref.open_session_id.clone(),
     }
@@ -461,11 +467,12 @@ pub(crate) fn terminal_notification_message(
     notification: &astrcode_core::ChildSessionNotification,
 ) -> String {
     notification
-        .final_reply_excerpt
-        .as_deref()
-        .filter(|excerpt| !excerpt.trim().is_empty())
-        .unwrap_or(notification.summary.as_str())
-        .to_string()
+        .delivery
+        .as_ref()
+        .map(|delivery| delivery.payload.message().trim())
+        .filter(|message| !message.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "子 Agent 未提供可读交付。".to_string())
 }
 
 pub(crate) fn terminal_notification_turn_outcome(
@@ -473,6 +480,16 @@ pub(crate) fn terminal_notification_turn_outcome(
 ) -> Option<AgentTurnOutcome> {
     if !matches!(notification.status, AgentLifecycleStatus::Idle) {
         return None;
+    }
+    if let Some(delivery) = &notification.delivery {
+        return match delivery.payload {
+            astrcode_core::ParentDeliveryPayload::Completed(_) => Some(AgentTurnOutcome::Completed),
+            astrcode_core::ParentDeliveryPayload::Failed(_) => Some(AgentTurnOutcome::Failed),
+            astrcode_core::ParentDeliveryPayload::CloseRequest(_) => {
+                Some(AgentTurnOutcome::Cancelled)
+            },
+            astrcode_core::ParentDeliveryPayload::Progress(_) => None,
+        };
     }
     match notification.kind {
         astrcode_core::ChildSessionNotificationKind::Delivered => Some(AgentTurnOutcome::Completed),
@@ -1112,14 +1129,21 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             lifecycle: AgentLifecycleStatus::Running,
             last_turn_outcome: None,
             handoff: Some(SubRunHandoff {
-                summary: if params.description.trim().is_empty() {
-                    "子 Agent 已启动。".to_string()
-                } else {
-                    format!("子 Agent 已启动：{}", params.description.trim())
-                },
                 findings: Vec::new(),
                 artifacts: handoff_artifacts,
-                delivery: None,
+                delivery: Some(ParentDelivery {
+                    idempotency_key: format!("subrun-started:{accepted_sub_run_id}"),
+                    origin: ParentDeliveryOrigin::Explicit,
+                    terminal_semantics: ParentDeliveryTerminalSemantics::NonTerminal,
+                    source_turn_id: None,
+                    payload: ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
+                        message: if params.description.trim().is_empty() {
+                            "子 Agent 已启动。".to_string()
+                        } else {
+                            format!("子 Agent 已启动：{}", params.description.trim())
+                        },
+                    }),
+                }),
             }),
             failure: None,
         })
@@ -1135,7 +1159,7 @@ impl astrcode_core::CollaborationExecutor for AgentOrchestrationService {
         params: SendAgentParams,
         ctx: &ToolContext,
     ) -> Result<CollaborationResult> {
-        self.send_to_child(params, ctx)
+        self.route_send(params, ctx)
             .await
             .map_err(map_orchestration_error)
     }
@@ -1262,11 +1286,21 @@ mod tests {
                 open_session_id: "session-child".to_string(),
             },
             kind: ChildSessionNotificationKind::Delivered,
-            summary: "summary".to_string(),
             status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
-            final_reply_excerpt: Some("final reply".to_string()),
-            delivery: None,
+            delivery: Some(astrcode_core::ParentDelivery {
+                idempotency_key: "delivery-1".to_string(),
+                origin: astrcode_core::ParentDeliveryOrigin::Explicit,
+                terminal_semantics: astrcode_core::ParentDeliveryTerminalSemantics::Terminal,
+                source_turn_id: Some("turn-child".to_string()),
+                payload: astrcode_core::ParentDeliveryPayload::Completed(
+                    astrcode_core::CompletedParentDeliveryPayload {
+                        message: "final reply".to_string(),
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    },
+                ),
+            }),
         };
 
         let envelope = child_delivery_mailbox_envelope(&notification, "agent-parent".to_string());

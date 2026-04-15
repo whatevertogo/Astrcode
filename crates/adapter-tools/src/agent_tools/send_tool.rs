@@ -14,10 +14,10 @@ use crate::agent_tools::{
 
 const TOOL_NAME: &str = "send";
 
-/// 向既有 child agent 追加消息的协作工具。
+/// 统一父子协作消息入口。
 ///
-/// 消息进入 child agent 的 inbox，由其下一轮 LLM 调用消费。
-/// 必须指定 `agentId`，该 ID 来自 spawn 返回结果中的稳定引用。
+/// 同一个 `send` 既可以向 direct child 发送下一条具体指令，
+/// 也可以在 child 上下文中向 direct parent 发送 typed upward delivery。
 pub struct SendAgentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }
@@ -28,37 +28,121 @@ impl SendAgentTool {
     }
 
     fn build_description() -> String {
-        r#"Send a follow-up message or rework request to an existing sub-agent.
+        r#"Send a collaboration message along the direct parent/child edge.
 
-Use `send` to continue the same child with one concrete next step.
+Use `send` in one of two shapes:
 
-- Use the exact `agentId` returned earlier
-- Send one clear instruction, revision request, or narrowed follow-up
-- Add `context` only when it materially changes the task
+- Downstream: `agentId + message (+ context)` sends the next concrete instruction to a direct child
+- Upstream: `kind + payload` sends a typed delivery to the direct parent from a child context
 
-Do not use `send` for status checks, vague reminders, or replacing a reusable child with a new spawn."#
+Do not use `send` for status checks, vague reminders, sibling chat, or cross-tree routing."#
             .to_string()
     }
 
     fn parameters_schema() -> Value {
         json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "agentId": {
-                    "type": "string",
-                    "description": "Target sub-agent stable ID."
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "agentId": {
+                            "type": "string",
+                            "description": "Target direct child stable ID."
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Concrete instruction for the child."
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Optional supplementary context."
+                        }
+                    },
+                    "required": ["agentId", "message"]
                 },
-                "message": {
-                    "type": "string",
-                    "description": "Message content to send to the sub-agent."
-                },
-                "context": {
-                    "type": "string",
-                    "description": "Optional supplementary context."
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "const": "progress" },
+                                "payload": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "message": { "type": "string" }
+                                    },
+                                    "required": ["message"]
+                                }
+                            },
+                            "required": ["kind", "payload"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "const": "completed" },
+                                "payload": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "message": { "type": "string" },
+                                        "findings": {
+                                            "type": "array",
+                                            "items": { "type": "string" }
+                                        },
+                                        "artifacts": {
+                                            "type": "array",
+                                            "items": { "type": "object" }
+                                        }
+                                    },
+                                    "required": ["message"]
+                                }
+                            },
+                            "required": ["kind", "payload"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "const": "failed" },
+                                "payload": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "message": { "type": "string" },
+                                        "code": {
+                                            "type": "string",
+                                            "enum": ["transport", "provider_http", "stream_parse", "interrupted", "internal"]
+                                        },
+                                        "technicalMessage": { "type": "string" },
+                                        "retryable": { "type": "boolean" }
+                                    },
+                                    "required": ["message", "code", "retryable"]
+                                }
+                            },
+                            "required": ["kind", "payload"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "const": "close_request" },
+                                "payload": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "message": { "type": "string" },
+                                        "reason": { "type": "string" }
+                                    },
+                                    "required": ["message"]
+                                }
+                            },
+                            "required": ["kind", "payload"]
+                        }
+                    ]
                 }
-            },
-            "required": ["agentId", "message"]
+            ]
         })
     }
 }
@@ -83,27 +167,28 @@ impl Tool for SendAgentTool {
             .compact_clearable(false)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Send the next concrete instruction to an existing sub-agent.",
-                    "Use `send` when the same child should continue. Write one concrete next \
-                     step or revision request, use the exact `agentId`, and prefer `send` over \
-                     spawning a new child when the responsibility stays the same.",
+                    "Send a downstream instruction or an upstream typed delivery on the direct collaboration edge.",
+                    "Use `send` with `agentId + message` when you need a direct child to continue. \
+                     Use `send` with `kind + payload` when you need to report progress, completion, \
+                     failure, or a close request to your direct parent. The same middle-layer agent \
+                     can use both directions in one turn.",
                 )
                 .caveat(
-                    "Only send to sub-agents you spawned yourself. Never rewrite `agent-1` as \
-                     `agent-01`.",
+                    "Downstream sends only target direct children. Upstream sends never accept an \
+                     explicit parent id; routing comes from the current child context.",
                 )
                 .caveat(
-                    "Do not use `send` for status checks. If you already know the child is still \
+                    "Do not use `send` for status checks. If you already know a child is still \
                      running and are simply waiting, do not call `observe` repeatedly either; wait \
                      briefly with your current shell tool instead.",
                 )
                 .caveat(
-                    "Messages enter the child's mailbox and are processed in order. Do not stack \
-                     many speculative sends; wait for a result or observe before changing course.",
+                    "Messages must stay on the direct parent/child edge. No sibling chat, no \
+                     cross-tree routing, no vague reminders.",
                 )
                 .caveat(
-                    "Keep the message delta-oriented. Do not restate the whole original brief \
-                     when the child already owns the responsibility.",
+                    "Keep downstream messages delta-oriented, and keep upstream messages \
+                     collaboration-oriented. Do not restate the whole branch transcript.",
                 )
                 .prompt_tag("collaboration"),
             )

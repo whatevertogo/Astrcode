@@ -350,10 +350,16 @@ fn to_subrun_outcome_dto(
     }
 }
 
-fn to_subrun_result_dto(result: SubRunResult) -> SubRunResultDto {
+fn to_subrun_result_dto(
+    result: SubRunResult,
+    sub_run_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> SubRunResultDto {
     SubRunResultDto {
         status: to_subrun_outcome_dto(result.lifecycle, result.last_turn_outcome),
-        handoff: result.handoff.map(to_subrun_handoff_dto),
+        handoff: result
+            .handoff
+            .map(|handoff| to_subrun_handoff_dto(handoff, sub_run_id, turn_id)),
         failure: result.failure.map(to_subrun_failure_dto),
     }
 }
@@ -404,16 +410,34 @@ fn to_child_notification_kind_dto(
     }
 }
 
-fn to_subrun_handoff_dto(handoff: SubRunHandoff) -> SubRunHandoffDto {
+fn upgraded_handoff_delivery(
+    handoff: &SubRunHandoff,
+    _sub_run_id: Option<&str>,
+    _turn_id: Option<&str>,
+) -> Option<ParentDelivery> {
+    handoff.delivery.clone()
+}
+
+fn upgraded_notification_delivery(
+    notification: &astrcode_core::ChildSessionNotification,
+) -> Option<ParentDelivery> {
+    notification.delivery.clone()
+}
+
+pub(crate) fn to_subrun_handoff_dto(
+    handoff: SubRunHandoff,
+    sub_run_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> SubRunHandoffDto {
+    let delivery = upgraded_handoff_delivery(&handoff, sub_run_id, turn_id);
     SubRunHandoffDto {
-        summary: handoff.summary,
         findings: handoff.findings,
         artifacts: handoff
             .artifacts
             .into_iter()
             .map(to_artifact_ref_dto)
             .collect(),
-        delivery: handoff.delivery.map(to_parent_delivery_dto),
+        delivery: delivery.map(to_parent_delivery_dto),
     }
 }
 
@@ -470,11 +494,12 @@ fn to_parent_delivery_payload_dto(payload: ParentDeliveryPayload) -> ParentDeliv
     }
 }
 
-fn to_parent_delivery_dto(delivery: ParentDelivery) -> ParentDeliveryDto {
+pub(crate) fn to_parent_delivery_dto(delivery: ParentDelivery) -> ParentDeliveryDto {
     ParentDeliveryDto {
         idempotency_key: delivery.idempotency_key,
         origin: to_parent_delivery_origin_dto(delivery.origin),
         terminal_semantics: to_parent_delivery_terminal_semantics_dto(delivery.terminal_semantics),
+        source_turn_id: delivery.source_turn_id,
         payload: to_parent_delivery_payload_dto(delivery.payload),
     }
 }
@@ -982,13 +1007,21 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             result,
             step_count,
             estimated_tokens,
-        } => AgentEventPayload::SubRunFinished {
-            turn_id,
-            agent: to_agent_context_dto(agent),
-            tool_call_id,
-            result: to_subrun_result_dto(result),
-            step_count,
-            estimated_tokens,
+        } => {
+            let sub_run_id = agent.sub_run_id.clone();
+            let result_turn_id = turn_id.clone();
+            AgentEventPayload::SubRunFinished {
+                turn_id,
+                agent: to_agent_context_dto(agent),
+                tool_call_id,
+                result: to_subrun_result_dto(
+                    result,
+                    sub_run_id.as_deref(),
+                    result_turn_id.as_deref(),
+                ),
+                step_count,
+                estimated_tokens,
+            }
         },
         AgentEvent::ChildSessionNotification {
             turn_id,
@@ -999,11 +1032,9 @@ pub(crate) fn to_agent_event_dto(event: AgentEvent) -> AgentEventPayload {
             agent: to_agent_context_dto(agent),
             child_ref: to_child_agent_ref_dto(notification.child_ref.clone()),
             kind: to_child_notification_kind_dto(notification.kind),
-            summary: notification.summary,
             status: to_agent_lifecycle_dto(notification.status),
-            source_tool_call_id: notification.source_tool_call_id,
-            final_reply_excerpt: notification.final_reply_excerpt,
-            delivery: notification.delivery.map(to_parent_delivery_dto),
+            source_tool_call_id: notification.source_tool_call_id.clone(),
+            delivery: upgraded_notification_delivery(&notification).map(to_parent_delivery_dto),
         },
         AgentEvent::TurnDone { turn_id, agent } => AgentEventPayload::TurnDone {
             turn_id,

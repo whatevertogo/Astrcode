@@ -1,10 +1,11 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, EventTranslator, ExecutionAccepted, Phase, PromptDeclaration,
-    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
-    Result, RuntimeMetricsRecorder, SessionId, StorageEvent, StorageEventPayload, TurnId,
-    UserMessageOrigin,
+    AgentEventContext, CancelToken, CompletedParentDeliveryPayload, EventTranslator,
+    ExecutionAccepted, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
+    ParentDeliveryTerminalSemantics, Phase, PromptDeclaration, ResolvedExecutionLimitsSnapshot,
+    ResolvedRuntimeConfig, ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder,
+    SessionId, StorageEvent, StorageEventPayload, TurnId, UserMessageOrigin,
 };
 use astrcode_kernel::CapabilityRouter;
 use chrono::Utc;
@@ -537,10 +538,23 @@ fn subrun_finished_event(
             lifecycle: astrcode_core::AgentLifecycleStatus::Idle,
             last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
             handoff: Some(astrcode_core::SubRunHandoff {
-                summary,
                 findings: Vec::new(),
                 artifacts: Vec::new(),
-                delivery: None,
+                delivery: Some(ParentDelivery {
+                    idempotency_key: format!(
+                        "legacy-subrun-finished:{}:{}",
+                        agent.sub_run_id.as_deref().unwrap_or("unknown-subrun"),
+                        turn_id
+                    ),
+                    origin: ParentDeliveryOrigin::Fallback,
+                    terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
+                    source_turn_id: Some(turn_id.to_string()),
+                    payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
+                        message: summary,
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                    }),
+                }),
             }),
             failure: None,
         },

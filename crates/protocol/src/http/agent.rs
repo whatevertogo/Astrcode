@@ -193,12 +193,9 @@ pub struct ChildSessionNotificationDto {
     pub notification_id: String,
     pub child_ref: ChildAgentRefDto,
     pub kind: ChildSessionNotificationKindDto,
-    pub summary: String,
     pub status: AgentLifecycleDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_tool_call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub final_reply_excerpt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<super::event::ParentDeliveryDto>,
 }

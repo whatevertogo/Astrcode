@@ -452,8 +452,7 @@ export function useAgent(onEvents: (events: AgentEventPayload[]) => void) {
       const activeSessionId = connectedSessionIdRef.current;
       if (
         activeSessionId &&
-        normalizeSessionIdForCompare(activeSessionId) ===
-          normalizeSessionIdForCompare(sessionId)
+        normalizeSessionIdForCompare(activeSessionId) === normalizeSessionIdForCompare(sessionId)
       ) {
         // Why: 删除当前会话会让服务端按预期关闭 SSE；前端必须先主动断流，
         // 否则会把正常关闭误判成异常断流并触发重连噪声。

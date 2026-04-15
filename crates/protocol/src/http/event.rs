@@ -181,6 +181,8 @@ pub struct ParentDeliveryDto {
     pub idempotency_key: String,
     pub origin: ParentDeliveryOriginDto,
     pub terminal_semantics: ParentDeliveryTerminalSemanticsDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn_id: Option<String>,
     #[serde(flatten)]
     pub payload: ParentDeliveryPayloadDto,
 }
@@ -188,7 +190,6 @@ pub struct ParentDeliveryDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubRunHandoffDto {
-    pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -490,12 +491,9 @@ pub enum AgentEventPayload {
         agent: AgentContextDto,
         child_ref: ChildAgentRefDto,
         kind: ChildSessionNotificationKindDto,
-        summary: String,
         status: AgentLifecycleDto,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_tool_call_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        final_reply_excerpt: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         delivery: Option<ParentDeliveryDto>,
     },
