@@ -31,6 +31,7 @@ use transport::{
 const DEFAULT_STREAM_BUFFER: usize = 128;
 
 pub use astrcode_protocol::http::{
+    AgentLifecycleDto as AstrcodeConversationAgentLifecycleDto,
     CompactSessionRequest as AstrcodeCompactSessionRequest,
     CompactSessionResponse as AstrcodeCompactSessionResponse,
     CreateSessionRequest as AstrcodeCreateSessionRequest,

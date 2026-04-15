@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use astrcode_client::{
     AstrcodePhaseDto, AstrcodeSessionListItem, AstrcodeTerminalBannerDto, AstrcodeTerminalBlockDto,
@@ -8,12 +8,22 @@ use astrcode_client::{
     AstrcodeTerminalSnapshotResponseDto, AstrcodeTerminalStreamEnvelopeDto,
 };
 
+use crate::capability::TerminalCapabilities;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PaneFocus {
     Transcript,
+    ChildPane,
     #[default]
     Composer,
     Overlay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamRenderMode {
+    #[default]
+    Smooth,
+    CatchUp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -65,9 +75,64 @@ impl Default for StatusLine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ChildPaneState {
+    pub selected: usize,
+    pub focused_child_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrappedLine {
+    pub style: WrappedLineStyle,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrappedLineStyle {
+    Plain,
+    Muted,
+    Accent,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TranscriptRenderCache {
+    pub width: u16,
+    pub revision: u64,
+    pub lines: Vec<WrappedLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RenderState {
+    pub viewport_width: u16,
+    pub viewport_height: u16,
+    pub transcript_revision: u64,
+    pub wrap_cache_revision: u64,
+    pub transcript_cache: TranscriptRenderCache,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamBackpressureState {
+    pub mode: StreamRenderMode,
+    pub pending_chunks: usize,
+    pub oldest_chunk_age: Duration,
+}
+
+impl Default for StreamBackpressureState {
+    fn default() -> Self {
+        Self {
+            mode: StreamRenderMode::Smooth,
+            pending_chunks: 0,
+            oldest_chunk_age: Duration::ZERO,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliState {
     pub connection_origin: String,
     pub working_dir: Option<PathBuf>,
+    pub capabilities: TerminalCapabilities,
     pub sessions: Vec<AstrcodeSessionListItem>,
     pub active_session_id: Option<String>,
     pub active_session_title: Option<String>,
@@ -82,13 +147,48 @@ pub struct CliState {
     pub pane_focus: PaneFocus,
     pub composer: ComposerState,
     pub overlay: OverlayState,
+    pub child_pane: ChildPaneState,
+    pub render: RenderState,
+    pub stream: StreamBackpressureState,
+}
+
+impl Default for CliState {
+    fn default() -> Self {
+        Self {
+            connection_origin: String::new(),
+            working_dir: None,
+            capabilities: TerminalCapabilities::detect(),
+            sessions: Vec::new(),
+            active_session_id: None,
+            active_session_title: None,
+            cursor: None,
+            control: None,
+            transcript: Vec::new(),
+            child_summaries: Vec::new(),
+            slash_candidates: Vec::new(),
+            banner: None,
+            status: StatusLine::default(),
+            scroll_anchor: 0,
+            pane_focus: PaneFocus::Composer,
+            composer: ComposerState::default(),
+            overlay: OverlayState::None,
+            child_pane: ChildPaneState::default(),
+            render: RenderState::default(),
+            stream: StreamBackpressureState::default(),
+        }
+    }
 }
 
 impl CliState {
-    pub fn new(connection_origin: String, working_dir: Option<PathBuf>) -> Self {
+    pub fn new(
+        connection_origin: String,
+        working_dir: Option<PathBuf>,
+        capabilities: TerminalCapabilities,
+    ) -> Self {
         Self {
             connection_origin,
             working_dir,
+            capabilities,
             ..Default::default()
         }
     }
@@ -104,6 +204,31 @@ impl CliState {
         self.status = StatusLine {
             message: message.into(),
             is_error: true,
+        };
+    }
+
+    pub fn set_stream_mode(&mut self, mode: StreamRenderMode, pending: usize, oldest: Duration) {
+        self.stream.mode = mode;
+        self.stream.pending_chunks = pending;
+        self.stream.oldest_chunk_age = oldest;
+    }
+
+    pub fn set_viewport_size(&mut self, width: u16, height: u16) {
+        if self.render.viewport_width == width && self.render.viewport_height == height {
+            return;
+        }
+        self.render.viewport_width = width;
+        self.render.viewport_height = height;
+        self.render.wrap_cache_revision = self.render.wrap_cache_revision.saturating_add(1);
+        self.render.transcript_cache = TranscriptRenderCache::default();
+        self.scroll_anchor = 0;
+    }
+
+    pub fn update_transcript_cache(&mut self, width: u16, lines: Vec<WrappedLine>) {
+        self.render.transcript_cache = TranscriptRenderCache {
+            width,
+            revision: self.render.transcript_revision,
+            lines,
         };
     }
 
@@ -129,6 +254,77 @@ impl CliState {
 
     pub fn scroll_down(&mut self) {
         self.scroll_anchor = self.scroll_anchor.saturating_add(1);
+    }
+
+    pub fn cycle_focus_forward(&mut self) {
+        self.pane_focus = match self.pane_focus {
+            PaneFocus::Transcript => {
+                if self.child_summaries.is_empty() {
+                    PaneFocus::Composer
+                } else {
+                    PaneFocus::ChildPane
+                }
+            },
+            PaneFocus::ChildPane => PaneFocus::Composer,
+            PaneFocus::Composer => PaneFocus::Transcript,
+            PaneFocus::Overlay => PaneFocus::Overlay,
+        };
+    }
+
+    pub fn cycle_focus_backward(&mut self) {
+        self.pane_focus = match self.pane_focus {
+            PaneFocus::Transcript => PaneFocus::Composer,
+            PaneFocus::ChildPane => PaneFocus::Transcript,
+            PaneFocus::Composer => {
+                if self.child_summaries.is_empty() {
+                    PaneFocus::Transcript
+                } else {
+                    PaneFocus::ChildPane
+                }
+            },
+            PaneFocus::Overlay => PaneFocus::Overlay,
+        };
+    }
+
+    pub fn child_next(&mut self) {
+        if self.child_summaries.is_empty() {
+            return;
+        }
+        self.child_pane.selected = (self.child_pane.selected + 1) % self.child_summaries.len();
+    }
+
+    pub fn child_prev(&mut self) {
+        if self.child_summaries.is_empty() {
+            return;
+        }
+        self.child_pane.selected = (self.child_pane.selected + self.child_summaries.len() - 1)
+            % self.child_summaries.len();
+    }
+
+    pub fn toggle_child_focus(&mut self) {
+        let Some(selected) = self.selected_child_summary() else {
+            return;
+        };
+        if self.child_pane.focused_child_session_id.as_deref()
+            == Some(selected.child_session_id.as_str())
+        {
+            self.child_pane.focused_child_session_id = None;
+        } else {
+            self.child_pane.focused_child_session_id = Some(selected.child_session_id.clone());
+        }
+    }
+
+    pub fn selected_child_summary(&self) -> Option<&AstrcodeTerminalChildSummaryDto> {
+        self.child_summaries.get(self.child_pane.selected)
+    }
+
+    pub fn focused_child_summary(&self) -> Option<&AstrcodeTerminalChildSummaryDto> {
+        let Some(child_session_id) = self.child_pane.focused_child_session_id.as_deref() else {
+            return self.selected_child_summary();
+        };
+        self.child_summaries
+            .iter()
+            .find(|summary| summary.child_session_id == child_session_id)
     }
 
     pub fn update_sessions(&mut self, sessions: Vec<AstrcodeSessionListItem>) {
@@ -165,14 +361,6 @@ impl CliState {
             items,
             selected: 0,
         });
-    }
-
-    pub fn overlay_query(&self) -> Option<&str> {
-        match &self.overlay {
-            OverlayState::Resume(resume) => Some(resume.query.as_str()),
-            OverlayState::SlashPalette(palette) => Some(palette.query.as_str()),
-            OverlayState::None => None,
-        }
     }
 
     pub fn overlay_query_push(&mut self, ch: char) {
@@ -253,6 +441,9 @@ impl CliState {
         self.scroll_anchor = 0;
         self.overlay = OverlayState::None;
         self.pane_focus = PaneFocus::Composer;
+        self.child_pane.selected = 0;
+        self.child_pane.focused_child_session_id = None;
+        self.bump_transcript_revision();
     }
 
     pub fn apply_stream_envelope(&mut self, envelope: AstrcodeTerminalStreamEnvelopeDto) {
@@ -273,9 +464,17 @@ impl CliState {
         self.control.as_ref().map(|control| control.phase)
     }
 
+    fn bump_transcript_revision(&mut self) {
+        self.render.transcript_revision = self.render.transcript_revision.saturating_add(1);
+        self.render.transcript_cache = TranscriptRenderCache::default();
+    }
+
     fn apply_delta(&mut self, delta: AstrcodeTerminalDeltaDto) {
         match delta {
-            AstrcodeTerminalDeltaDto::AppendBlock { block } => self.transcript.push(block),
+            AstrcodeTerminalDeltaDto::AppendBlock { block } => {
+                self.transcript.push(block);
+                self.bump_transcript_revision();
+            },
             AstrcodeTerminalDeltaDto::PatchBlock { block_id, patch } => {
                 if let Some(block) = self
                     .transcript
@@ -283,6 +482,7 @@ impl CliState {
                     .find(|block| block_id_of(block) == block_id)
                 {
                     apply_block_patch(block, patch);
+                    self.bump_transcript_revision();
                 }
             },
             AstrcodeTerminalDeltaDto::CompleteBlock { block_id, status } => {
@@ -292,6 +492,7 @@ impl CliState {
                     .find(|block| block_id_of(block) == block_id)
                 {
                     set_block_status(block, status);
+                    self.bump_transcript_revision();
                 }
             },
             AstrcodeTerminalDeltaDto::UpdateControlState { control } => {
@@ -307,10 +508,23 @@ impl CliState {
                 } else {
                     self.child_summaries.push(child);
                 }
+                if self.child_pane.selected >= self.child_summaries.len()
+                    && !self.child_summaries.is_empty()
+                {
+                    self.child_pane.selected = self.child_summaries.len() - 1;
+                }
             },
             AstrcodeTerminalDeltaDto::RemoveChildSummary { child_session_id } => {
                 self.child_summaries
                     .retain(|child| child.child_session_id != child_session_id);
+                if self.child_pane.selected >= self.child_summaries.len() {
+                    self.child_pane.selected = self.child_summaries.len().saturating_sub(1);
+                }
+                if self.child_pane.focused_child_session_id.as_deref()
+                    == Some(child_session_id.as_str())
+                {
+                    self.child_pane.focused_child_session_id = None;
+                }
             },
             AstrcodeTerminalDeltaDto::ReplaceSlashCandidates { candidates } => {
                 self.slash_candidates = candidates.clone();
@@ -325,9 +539,7 @@ impl CliState {
                 self.banner = Some(banner);
             },
             AstrcodeTerminalDeltaDto::ClearBanner => self.banner = None,
-            AstrcodeTerminalDeltaDto::RehydrateRequired { error } => {
-                self.set_banner_error(error);
-            },
+            AstrcodeTerminalDeltaDto::RehydrateRequired { error } => self.set_banner_error(error),
         }
     }
 }
@@ -402,6 +614,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::capability::{ColorLevel, GlyphMode, TerminalCapabilities};
 
     fn sample_snapshot() -> AstrcodeTerminalSnapshotResponseDto {
         AstrcodeTerminalSnapshotResponseDto {
@@ -437,9 +650,19 @@ mod tests {
         }
     }
 
+    fn capabilities() -> TerminalCapabilities {
+        TerminalCapabilities {
+            color: ColorLevel::TrueColor,
+            glyphs: GlyphMode::Unicode,
+            alt_screen: true,
+            mouse: true,
+            bracketed_paste: true,
+        }
+    }
+
     #[test]
     fn applies_snapshot_and_stream_deltas() {
-        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None);
+        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.activate_snapshot(sample_snapshot());
         state.apply_stream_envelope(AstrcodeTerminalStreamEnvelopeDto {
             session_id: "session-1".to_string(),
@@ -464,7 +687,7 @@ mod tests {
 
     #[test]
     fn replace_markdown_patch_overwrites_streamed_content() {
-        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None);
+        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.activate_snapshot(sample_snapshot());
         state.apply_stream_envelope(AstrcodeTerminalStreamEnvelopeDto {
             session_id: "session-1".to_string(),
@@ -485,7 +708,7 @@ mod tests {
 
     #[test]
     fn overlay_selection_tracks_resume_and_slash_items() {
-        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None);
+        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.set_slash_query(
             "review",
             vec![AstrcodeTerminalSlashCandidateDto {
@@ -504,5 +727,21 @@ mod tests {
         ));
         state.close_overlay();
         assert!(matches!(state.overlay, OverlayState::None));
+    }
+
+    #[test]
+    fn resize_invalidates_wrap_cache() {
+        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
+        state.update_transcript_cache(
+            80,
+            vec![WrappedLine {
+                style: WrappedLineStyle::Plain,
+                content: "cached".to_string(),
+            }],
+        );
+        state.set_viewport_size(100, 40);
+
+        assert_eq!(state.render.transcript_cache.lines.len(), 0);
+        assert_eq!(state.scroll_anchor, 0);
     }
 }

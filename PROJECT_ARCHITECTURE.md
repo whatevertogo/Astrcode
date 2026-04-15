@@ -265,6 +265,35 @@ agent delegation experience 也遵循同样的分层边界：
   - disabled
 - 若插件能力不能通过统一 capability surface 表达，则默认视为边界未收敛，而不是允许额外开旁路。
 
+### 4.8 `client` / `cli` / conversation surface
+
+- `conversation v1` 是当前唯一的产品读协议，统一承担 snapshot、stream、child summaries、slash candidates 与 control state 的 authoritative read model。
+- 旧 `/api/sessions/*/view`、`/history`、`/events` 产品读面已删除；客户端不得再通过本地 reducer 重放原始事件来重建 UI 真相。
+- `server` 内部的 `terminal_projection` 负责把 `application` 返回的 `ConversationFacts` 投影成 `protocol` DTO；它是纯 projection，不做业务校验。
+- `client` crate 只负责：
+  - bootstrap exchange 后的 typed HTTP/SSE facade
+  - 结构化错误归一化
+  - snapshot / stream / slash candidates 消费
+- `client` crate 不负责：
+  - `run.json` 发现
+  - 本地 `astrcode-server` spawn
+  - ready handshake
+  - 子进程生命周期管理
+- `cli` crate 的 `launcher` 负责：
+  - `--server-origin` / `--token`
+  - `~/.astrcode/run.json`
+  - 本地 `astrcode-server` spawn
+  - ready handshake
+  - managed-local server 生命周期
+- `cli` crate 的 `tui app` 负责：
+  - ratatui / crossterm 主循环
+  - 单 active session live stream
+  - pane focus、scroll anchor、overlay、degrade 策略
+  - transcript / child pane / slash palette 渲染
+- `cli` 不允许在本地复制平行业务语义：
+  - slash command 只是输入壳，语义必须映射到稳定 server contract
+  - child pane / transcript 只能消费 authoritative conversation surface
+
 ## 5. 关键不变量
 
 - `CapabilitySpec` 是运行时内部唯一能力语义模型。

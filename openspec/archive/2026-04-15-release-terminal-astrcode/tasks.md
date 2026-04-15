@@ -52,14 +52,14 @@
 
 ## 9. Transcript、Pane 与渲染策略
 
-- [ ] 9.1 在 `crates/cli/src/ui/` 与 `render/` 实现 transcript、child pane/focus view、status/banner、slash palette 的基础组件，覆盖 thinking、tool stream、child handoff、turn error block 与 compact/system note。
-- [ ] 9.2 在 `crates/cli/src/render/` 实现 resize 处理：窗口变化时失效 line-wrap cache、重算 scroll anchor 与 child pane 布局，禁止继续复用旧宽度下的渲染缓存。
-- [ ] 9.3 在 `crates/cli/src/app/` / `render/` 加入 `Smooth` 与 `CatchUp` 两档 stream chunking 策略，基于队列深度与最老 chunk age 切换，避免高吞吐流式输出打爆终端渲染。
-- [ ] 9.4 在 `crates/cli/src/capability/` 实现 truecolor、unicode width、alt-screen、mouse、bracketed paste 探测与 degrade 策略，保证最差情况下仍能退化到 ASCII + no-color 的基本聊天体验。
+- [x] 9.1 在 `crates/cli/src/ui/` 与 `render/` 实现 transcript、child pane/focus view、status/banner、slash palette 的基础组件，覆盖 thinking、tool stream、child handoff、turn error block 与 compact/system note。
+- [x] 9.2 在 `crates/cli/src/render/` 实现 resize 处理：窗口变化时失效 line-wrap cache、重算 scroll anchor 与 child pane 布局，禁止继续复用旧宽度下的渲染缓存。
+- [x] 9.3 在 `crates/cli/src/app/` / `render/` 加入 `Smooth` 与 `CatchUp` 两档 stream chunking 策略，基于队列深度与最老 chunk age 切换，避免高吞吐流式输出打爆终端渲染。
+- [x] 9.4 在 `crates/cli/src/capability/` 实现 truecolor、unicode width、alt-screen、mouse、bracketed paste 探测与 degrade 策略，保证最差情况下仍能退化到 ASCII + no-color 的基本聊天体验。
 
 ## 10. 端到端验证与发布接线
 
-- [ ] 10.1 为 `crates/cli/` 增加 ratatui test backend 渲染测试，至少覆盖 transcript、child pane、slash palette、error/banner、空状态与 degrade 模式。
-- [ ] 10.2 增加 server + client + cli 的端到端验收脚本或集成测试，覆盖 attach 已运行 server、managed-local 启动、snapshot/stream、resume、/compact、/skill 与单 active stream 切换。
-- [ ] 10.3 更新 `PROJECT_ARCHITECTURE.md`、必要的开发文档与 release 说明，明确 `launcher / client / terminal_projection / server route / tui app` 边界，以及 conversation v1 已替代并删除 legacy `/view`/`history`/`events` 产品读面。
-- [ ] 10.4 将 `astrcode-cli` 纳入构建与发布产物，补齐验证命令：`cargo fmt --all`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --workspace`、`node scripts/check-crate-boundaries.mjs`，并在需要时补充 frontend 验证以确认现有 surface 未回归。
+- [x] 10.1 为 `crates/cli/` 增加 ratatui test backend 渲染测试，至少覆盖 transcript、child pane、slash palette、error/banner、空状态与 degrade 模式。
+- [x] 10.2 增加 server + client + cli 的端到端验收脚本或集成测试，覆盖 attach 已运行 server、managed-local 启动、snapshot/stream、resume、/compact、/skill 与单 active stream 切换。
+- [x] 10.3 更新 `PROJECT_ARCHITECTURE.md`、必要的开发文档与 release 说明，明确 `launcher / client / terminal_projection / server route / tui app` 边界，以及 conversation v1 已替代并删除 legacy `/view`/`history`/`events` 产品读面。
+- [x] 10.4 将 `astrcode-cli` 纳入构建与发布产物，补齐验证命令：`cargo fmt --all`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --workspace`、`node scripts/check-crate-boundaries.mjs`，并在需要时补充 frontend 验证以确认现有 surface 未回归。
