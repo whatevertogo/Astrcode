@@ -39,7 +39,7 @@ node scripts/check-crate-boundaries.mjs --strict  # 严格模式
 
 - `server` 是唯一组合根，通过 `bootstrap_server_runtime()` 组装所有组件
 - `application` 不依赖任何 `adapter-*`，只依赖 `core` + `kernel` + `session-runtime`
-- 治理层使用 `AppGovernance`（`astrcode-application`），不使用旧 `RuntimeGovernance`（`astrcode-runtime`）
+- 治理层使用 `AppGovernance`（`astrcode-application`）
 - 能力语义统一使用 `CapabilitySpec`（`astrcode-core`），传输层使用 `CapabilityDescriptor`（`astrcode-protocol`）
 
 ## 代码规范
@@ -64,11 +64,3 @@ node scripts/check-crate-boundaries.mjs --strict  # 严格模式
 - 使用 `node scripts/check-crate-boundaries.mjs` 验证 crate 依赖规则没有被违反
 - `src-tauri` 是 Tauri 薄壳，不含业务逻辑
 - `server` 组合根在 `crates/server/src/bootstrap/runtime.rs`
-
-## 变更管理
-
-使用 OpenSpec 管理变更：
-
-- 新变更：`openspec/changes/<change-name>/` 目录
-- 归档前需合并 delta specs 到 `openspec/specs/` 主目录
-- 已归档变更存放在 `openspec/archive/`

@@ -339,7 +339,7 @@ describe('SubRunBlock result rendering', () => {
     expect(html).not.toContain('"handoff"');
   });
 
-  it('keeps completed child-session handoff in the child session instead of inlining it in parent', () => {
+  it('renders completed child-session delivery summary in the parent card', () => {
     const finishMessage: SubRunFinishMessage = {
       id: 'subrun-finish-child-session',
       kind: 'subRunFinish',
@@ -385,8 +385,8 @@ describe('SubRunBlock result rendering', () => {
 
     expect(html).toContain('打开独立会话');
     expect(html).toContain('这是完整子会话报告，不应该再内嵌在父会话里。');
-    expect(html).not.toContain('最终回复');
-    expect(html).not.toContain('<li>finding-1</li>');
+    expect(html).toContain('已向父会话汇报');
+    expect(html).toContain('<li>finding-1</li>');
   });
 
   it('renders latest notification delivery when finish message is absent', () => {

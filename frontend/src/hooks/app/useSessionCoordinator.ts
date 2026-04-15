@@ -63,6 +63,7 @@ export function useSessionCoordinator({
         cursor: projection.cursor,
         phase: projection.phase,
         messages: projection.messages,
+        messageTree: projection.messageTree,
         messageFingerprint: projection.messageFingerprint,
         childSubRuns: projection.childSubRuns,
         childContentFingerprint: projection.childFingerprint,
@@ -85,6 +86,7 @@ export function useSessionCoordinator({
         type: 'REPLACE_SESSION_MESSAGES',
         sessionId,
         messages: loaded.messages,
+        subRunThreadTree: loaded.messageTree,
       });
       setActiveSubRunChildren({
         subRuns: loaded.childSubRuns,
@@ -102,6 +104,7 @@ export function useSessionCoordinator({
             type: 'REPLACE_SESSION_MESSAGES',
             sessionId,
             messages: projection.messages,
+            subRunThreadTree: projection.messageTree,
           });
           loaded.messageFingerprint = projection.messageFingerprint;
         }
@@ -185,7 +188,12 @@ export function useSessionCoordinator({
         if (activationGeneration !== sessionActivationGenerationRef.current) {
           return;
         }
-        const hydratedProjects = replaceSessionMessages(projects, nextSessionId, loaded.messages);
+        const hydratedProjects = replaceSessionMessages(
+          projects,
+          nextSessionId,
+          loaded.messages,
+          loaded.messageTree
+        );
         activeSessionIdRef.current = nextSessionId;
         phaseRef.current = loaded.phase;
         setActiveSubRunChildren({
@@ -206,6 +214,7 @@ export function useSessionCoordinator({
               type: 'REPLACE_SESSION_MESSAGES',
               sessionId: nextSessionId,
               messages: projection.messages,
+              subRunThreadTree: projection.messageTree,
             });
             loaded.messageFingerprint = projection.messageFingerprint;
           }

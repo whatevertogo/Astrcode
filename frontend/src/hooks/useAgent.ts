@@ -71,6 +71,7 @@ export function useAgent() {
   const connectedSessionFilterRef = useRef<SessionEventFilterQuery | undefined>(undefined);
   const lastEventIdRef = useRef<string | null>(null);
   const conversationStateRef = useRef<ConversationSnapshotState | null>(null);
+  const messageTreeRef = useRef<ConversationViewProjection['messageTree'] | null>(null);
   const projectionHandlerRef = useRef<((projection: ConversationViewProjection) => void) | null>(
     null
   );
@@ -122,7 +123,9 @@ export function useAgent() {
       try {
         const snapshotState = await loadConversationSnapshotState(sessionId, filter);
         conversationStateRef.current = snapshotState;
-        queueProjectedConversation(projectConversationState(snapshotState, filter?.subRunId));
+        const projection = projectConversationState(snapshotState, filter?.subRunId);
+        messageTreeRef.current = projection.messageTree;
+        queueProjectedConversation(projection);
       } catch (error) {
         logger.warn('useAgent', 'failed to recover conversation projection from server snapshot', {
           sessionId,
@@ -161,6 +164,7 @@ export function useAgent() {
       connectedSessionFilterRef.current = undefined;
       lastEventIdRef.current = null;
       conversationStateRef.current = null;
+      messageTreeRef.current = null;
       projectionHandlerRef.current = null;
       pendingProjectionRef.current = null;
       reconnectAttemptRef.current = 0;
@@ -193,7 +197,10 @@ export function useAgent() {
       reconnectAttemptRef.current = 0;
 
       const scheduleReconnect = (failureMessage: string) => {
-        if (streamGenerationRef.current !== generation || connectedSessionIdRef.current !== sessionId) {
+        if (
+          streamGenerationRef.current !== generation ||
+          connectedSessionIdRef.current !== sessionId
+        ) {
           return;
         }
         clearReconnectTimer();
@@ -267,12 +274,15 @@ export function useAgent() {
                   return;
                 }
                 applyConversationEnvelope(conversationState, JSON.parse(payload));
-                queueProjectedConversation(
-                  projectConversationState(
-                    conversationState,
-                    connectedSessionFilterRef.current?.subRunId
-                  )
+                const projection = projectConversationState(
+                  conversationState,
+                  connectedSessionFilterRef.current?.subRunId,
+                  messageTreeRef.current ?? undefined
                 );
+                // TODO(stream-backpressure): 如果服务端开始做时间窗 coalescing，这里可以继续保留
+                // “单帧只提交最后一个 projection” 的策略，避免高频 delta 把主线程重新打满。
+                messageTreeRef.current = projection.messageTree;
+                queueProjectedConversation(projection);
               } catch (error) {
                 logger.warn('useAgent', 'invalid conversation stream envelope', {
                   sessionId,
@@ -289,10 +299,14 @@ export function useAgent() {
               connectedSessionIdRef.current === sessionId &&
               streamGenerationRef.current === generation
             ) {
-              logger.warn('useAgent', 'conversation stream ended unexpectedly, scheduling reconnect', {
-                sessionId,
-                cursor: lastEventIdRef.current,
-              });
+              logger.warn(
+                'useAgent',
+                'conversation stream ended unexpectedly, scheduling reconnect',
+                {
+                  sessionId,
+                  cursor: lastEventIdRef.current,
+                }
+              );
               scheduleReconnect('与服务端的会话流连接已中断。');
             }
             return;
@@ -335,6 +349,7 @@ export function useAgent() {
     connectedSessionFilterRef.current = undefined;
     lastEventIdRef.current = null;
     conversationStateRef.current = null;
+    messageTreeRef.current = null;
     projectionHandlerRef.current = null;
     pendingProjectionRef.current = null;
     reconnectAttemptRef.current = 0;
@@ -359,6 +374,7 @@ export function useAgent() {
       const snapshotState = await loadConversationSnapshotState(sessionId, filter);
       conversationStateRef.current = snapshotState;
       const projection = projectConversationState(snapshotState, filter?.subRunId);
+      messageTreeRef.current = projection.messageTree;
       lastProjectionSignatureRef.current = projectionSignature(projection);
       return projection;
     },

@@ -15,7 +15,6 @@ import {
   upsertAssistantTurnMessage,
 } from './reducerHelpers';
 import { handleProjectedMessageAction } from './reducerMessageProjection';
-import { buildSubRunThreadTree } from '../lib/subRunView';
 
 export {
   findAssistantMessageIndex,
@@ -117,7 +116,7 @@ function handleCatalogAction(state: AppState, action: Action): AppState | null {
       return mapSession(state, action.sessionId, (session) => ({
         ...session,
         messages: action.messages,
-        subRunThreadTree: buildSubRunThreadTree(action.messages),
+        subRunThreadTree: action.subRunThreadTree,
       }));
     default:
       return null;

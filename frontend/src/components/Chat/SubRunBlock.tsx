@@ -91,7 +91,11 @@ function isVisibleActivityItem(item: ThreadItem): boolean {
     return true;
   }
 
-  return item.message.kind === 'assistant' || item.message.kind === 'toolCall';
+  return (
+    item.message.kind === 'assistant' ||
+    item.message.kind === 'toolCall' ||
+    item.message.kind === 'toolStream'
+  );
 }
 
 function getDeliveryMessage(delivery?: ParentDelivery): string | null {
@@ -325,8 +329,11 @@ function SubRunBlock({
   );
 
   const renderFinalReply = () => {
-    // 成功交付时展示最终回复摘要
-    // 独立子会话的完整结果应该留在子会话里，父视图只保留摘要和入口。
+    // 成功交付时始终展示上游投递摘要。
+    // Why: 这是 child -> parent 的契约事实；即便完整执行日志保留在独立会话里，
+    // 父视图也必须直接可见“已经投递了什么”，否则会被误解为父 Agent 在自行观察子会话。
+    // TODO(child-delivery): 等后端提供独立的 parent_delivery block 后，
+    // 这里应直接消费 delivery 事实，而不是继续从 finish/handoff/latestNotification 三处归并。
     const completedDelivery = latestDelivery?.kind === 'completed' ? latestDelivery : undefined;
     const completedSummary = getDeliveryMessage(completedDelivery);
     const completedFindings =
@@ -334,13 +341,13 @@ function SubRunBlock({
         ? completedDelivery.payload.findings
         : (resultHandoff?.findings ?? []);
 
-    if (!completedSummary || status !== 'completed' || childSessionId) {
+    if (!completedSummary || status !== 'completed') {
       return null;
     }
     return (
       <details className="m-0 bg-transparent border-none group" open>
         <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
-          <span>最终回复</span>
+          <span>{childSessionId ? '已向父会话汇报' : '最终回复'}</span>
           <span className={chevronIcon}>
             <svg
               width="14"

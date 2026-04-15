@@ -7,7 +7,7 @@ use astrcode_client::{
     AstrcodeConversationStreamEnvelopeDto, AstrcodePhaseDto, AstrcodeSessionListItem,
 };
 
-use super::{ChildPaneState, RenderState};
+use super::{ChildPaneState, RenderState, TranscriptCell};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationState {
@@ -17,6 +17,7 @@ pub struct ConversationState {
     pub cursor: Option<AstrcodeConversationCursorDto>,
     pub control: Option<AstrcodeConversationControlStateDto>,
     pub transcript: Vec<AstrcodeConversationBlockDto>,
+    pub transcript_cells: Vec<TranscriptCell>,
     pub child_summaries: Vec<AstrcodeConversationChildSummaryDto>,
     pub slash_candidates: Vec<AstrcodeConversationSlashCandidateDto>,
     pub banner: Option<AstrcodeConversationBannerDto>,
@@ -37,6 +38,7 @@ impl ConversationState {
         self.cursor = Some(snapshot.cursor);
         self.control = Some(snapshot.control);
         self.transcript = snapshot.blocks;
+        self.rebuild_transcript_cells();
         self.child_summaries = snapshot.child_summaries;
         self.slash_candidates = snapshot.slash_candidates;
         self.banner = snapshot.banner;
@@ -92,26 +94,32 @@ impl ConversationState {
     ) {
         match delta {
             AstrcodeConversationDeltaDto::AppendBlock { block } => {
+                self.transcript_cells
+                    .push(TranscriptCell::from_block(&block));
                 self.transcript.push(block);
                 render.invalidate_transcript_cache();
             },
             AstrcodeConversationDeltaDto::PatchBlock { block_id, patch } => {
-                if let Some(block) = self
+                if let Some((index, block)) = self
                     .transcript
                     .iter_mut()
-                    .find(|block| block_id_of(block) == block_id)
+                    .enumerate()
+                    .find(|(_, block)| block_id_of(block) == block_id)
                 {
                     apply_block_patch(block, patch);
+                    self.transcript_cells[index] = TranscriptCell::from_block(block);
                     render.invalidate_transcript_cache();
                 }
             },
             AstrcodeConversationDeltaDto::CompleteBlock { block_id, status } => {
-                if let Some(block) = self
+                if let Some((index, block)) = self
                     .transcript
                     .iter_mut()
-                    .find(|block| block_id_of(block) == block_id)
+                    .enumerate()
+                    .find(|(_, block)| block_id_of(block) == block_id)
                 {
                     set_block_status(block, status);
+                    self.transcript_cells[index] = TranscriptCell::from_block(block);
                     render.invalidate_transcript_cache();
                 }
             },
@@ -158,6 +166,14 @@ impl ConversationState {
                 self.set_banner_error(error);
             },
         }
+    }
+
+    fn rebuild_transcript_cells(&mut self) {
+        self.transcript_cells = self
+            .transcript
+            .iter()
+            .map(TranscriptCell::from_block)
+            .collect();
     }
 }
 

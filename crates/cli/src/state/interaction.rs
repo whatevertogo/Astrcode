@@ -14,6 +14,16 @@ pub struct ComposerState {
     pub input: String,
 }
 
+impl ComposerState {
+    pub fn line_count(&self) -> usize {
+        self.input.lines().count().max(1)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.input.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ResumeOverlayState {
     pub query: String,
@@ -29,11 +39,17 @@ pub struct SlashPaletteState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DebugOverlayState {
+    pub scroll: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum OverlayState {
     #[default]
     None,
     Resume(ResumeOverlayState),
     SlashPalette(SlashPaletteState),
+    DebugLogs(DebugOverlayState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,14 +79,29 @@ pub struct ChildPaneState {
     pub focused_child_session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractionState {
     pub status: StatusLine,
     pub scroll_anchor: u16,
+    pub follow_transcript_tail: bool,
     pub pane_focus: PaneFocus,
     pub composer: ComposerState,
     pub overlay: OverlayState,
     pub child_pane: ChildPaneState,
+}
+
+impl Default for InteractionState {
+    fn default() -> Self {
+        Self {
+            status: StatusLine::default(),
+            scroll_anchor: 0,
+            follow_transcript_tail: true,
+            pane_focus: PaneFocus::default(),
+            composer: ComposerState::default(),
+            overlay: OverlayState::default(),
+            child_pane: ChildPaneState::default(),
+        }
+    }
 }
 
 impl InteractionState {
@@ -92,6 +123,14 @@ impl InteractionState {
         self.composer.input.push(ch);
     }
 
+    pub fn append_input(&mut self, value: &str) {
+        self.composer.input.push_str(value);
+    }
+
+    pub fn insert_newline(&mut self) {
+        self.composer.input.push('\n');
+    }
+
     pub fn pop_input(&mut self) {
         self.composer.input.pop();
     }
@@ -105,15 +144,18 @@ impl InteractionState {
     }
 
     pub fn scroll_up(&mut self) {
-        self.scroll_anchor = self.scroll_anchor.saturating_sub(1);
+        self.follow_transcript_tail = false;
+        self.scroll_anchor = self.scroll_anchor.saturating_add(1);
     }
 
     pub fn scroll_down(&mut self) {
-        self.scroll_anchor = self.scroll_anchor.saturating_add(1);
+        self.scroll_anchor = self.scroll_anchor.saturating_sub(1);
+        self.follow_transcript_tail = self.scroll_anchor == 0;
     }
 
     pub fn reset_scroll(&mut self) {
         self.scroll_anchor = 0;
+        self.follow_transcript_tail = true;
     }
 
     pub fn cycle_focus_forward(&mut self, has_children: bool) {
@@ -226,7 +268,17 @@ impl InteractionState {
         match &mut self.overlay {
             OverlayState::Resume(resume) => resume.query.push(ch),
             OverlayState::SlashPalette(palette) => palette.query.push(ch),
+            OverlayState::DebugLogs(_) => {},
             OverlayState::None => self.push_input(ch),
+        }
+    }
+
+    pub fn overlay_query_append(&mut self, value: &str) {
+        match &mut self.overlay {
+            OverlayState::Resume(resume) => resume.query.push_str(value),
+            OverlayState::SlashPalette(palette) => palette.query.push_str(value),
+            OverlayState::DebugLogs(_) => {},
+            OverlayState::None => self.append_input(value),
         }
     }
 
@@ -238,6 +290,7 @@ impl InteractionState {
             OverlayState::SlashPalette(palette) => {
                 palette.query.pop();
             },
+            OverlayState::DebugLogs(_) => {},
             OverlayState::None => self.pop_input(),
         }
     }
@@ -247,6 +300,10 @@ impl InteractionState {
         self.pane_focus = PaneFocus::Composer;
     }
 
+    pub fn has_overlay(&self) -> bool {
+        !matches!(self.overlay, OverlayState::None)
+    }
+
     pub fn overlay_next(&mut self) {
         match &mut self.overlay {
             OverlayState::Resume(resume) if !resume.items.is_empty() => {
@@ -254,6 +311,9 @@ impl InteractionState {
             },
             OverlayState::SlashPalette(palette) if !palette.items.is_empty() => {
                 palette.selected = (palette.selected + 1) % palette.items.len();
+            },
+            OverlayState::DebugLogs(debug) => {
+                debug.scroll = debug.scroll.saturating_add(1);
             },
             _ => {},
         }
@@ -268,6 +328,9 @@ impl InteractionState {
             OverlayState::SlashPalette(palette) if !palette.items.is_empty() => {
                 palette.selected = (palette.selected + palette.items.len().saturating_sub(1))
                     % palette.items.len();
+            },
+            OverlayState::DebugLogs(debug) => {
+                debug.scroll = debug.scroll.saturating_sub(1);
             },
             _ => {},
         }
@@ -284,7 +347,17 @@ impl InteractionState {
                 .get(palette.selected)
                 .cloned()
                 .map(OverlaySelection::SlashCandidate),
+            OverlayState::DebugLogs(_) => None,
             OverlayState::None => None,
+        }
+    }
+
+    pub fn toggle_debug_overlay(&mut self) {
+        if matches!(self.overlay, OverlayState::DebugLogs(_)) {
+            self.close_overlay();
+        } else {
+            self.pane_focus = PaneFocus::Overlay;
+            self.overlay = OverlayState::DebugLogs(DebugOverlayState::default());
         }
     }
 }

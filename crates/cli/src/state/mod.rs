@@ -1,7 +1,9 @@
 mod conversation;
+mod debug;
 mod interaction;
 mod render;
 mod shell;
+mod transcript_cell;
 
 use std::{path::PathBuf, time::Duration};
 
@@ -11,12 +13,14 @@ use astrcode_client::{
     AstrcodeConversationStreamEnvelopeDto, AstrcodePhaseDto, AstrcodeSessionListItem,
 };
 pub use conversation::ConversationState;
+pub use debug::DebugChannelState;
 pub use interaction::{
-    ChildPaneState, ComposerState, InteractionState, OverlaySelection, OverlayState, PaneFocus,
-    ResumeOverlayState, SlashPaletteState, StatusLine,
+    ChildPaneState, ComposerState, DebugOverlayState, InteractionState, OverlaySelection,
+    OverlayState, PaneFocus, ResumeOverlayState, SlashPaletteState, StatusLine,
 };
 pub use render::{RenderState, StreamViewState, TranscriptRenderCache};
 pub use shell::ShellState;
+pub use transcript_cell::{TranscriptCell, TranscriptCellKind, TranscriptCellStatus};
 
 use crate::capability::TerminalCapabilities;
 
@@ -36,10 +40,16 @@ pub struct WrappedLine {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WrappedLineStyle {
     Plain,
-    Muted,
+    Dim,
     Accent,
+    Success,
     Warning,
     Error,
+    User,
+    Header,
+    Footer,
+    Selection,
+    Border,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -49,6 +59,7 @@ pub struct CliState {
     pub interaction: InteractionState,
     pub render: RenderState,
     pub stream_view: StreamViewState,
+    pub debug: DebugChannelState,
 }
 
 impl CliState {
@@ -76,9 +87,7 @@ impl CliState {
     }
 
     pub fn set_viewport_size(&mut self, width: u16, height: u16) {
-        if self.render.set_viewport_size(width, height) {
-            self.interaction.reset_scroll();
-        }
+        self.render.set_viewport_size(width, height);
     }
 
     pub fn update_transcript_cache(&mut self, width: u16, lines: Vec<WrappedLine>) {
@@ -87,6 +96,14 @@ impl CliState {
 
     pub fn push_input(&mut self, ch: char) {
         self.interaction.push_input(ch);
+    }
+
+    pub fn append_input(&mut self, value: &str) {
+        self.interaction.append_input(value);
+    }
+
+    pub fn insert_newline(&mut self) {
+        self.interaction.insert_newline();
     }
 
     pub fn pop_input(&mut self) {
@@ -173,6 +190,10 @@ impl CliState {
         self.interaction.overlay_query_push(ch);
     }
 
+    pub fn overlay_query_append(&mut self, value: &str) {
+        self.interaction.overlay_query_append(value);
+    }
+
     pub fn overlay_query_pop(&mut self) {
         self.interaction.overlay_query_pop();
     }
@@ -220,6 +241,14 @@ impl CliState {
 
     pub fn active_phase(&self) -> Option<AstrcodePhaseDto> {
         self.conversation.active_phase()
+    }
+
+    pub fn push_debug_line(&mut self, line: impl Into<String>) {
+        self.debug.push(line);
+    }
+
+    pub fn toggle_debug_overlay(&mut self) {
+        self.interaction.toggle_debug_overlay();
     }
 }
 
@@ -364,9 +393,35 @@ mod tests {
                 content: "cached".to_string(),
             }],
         );
+        state.scroll_up();
         state.set_viewport_size(100, 40);
 
         assert_eq!(state.render.transcript_cache.lines.len(), 0);
+        assert_eq!(state.interaction.scroll_anchor, 1);
+        assert!(!state.interaction.follow_transcript_tail);
+    }
+
+    #[test]
+    fn manual_scroll_disables_follow_until_returning_to_tail() {
+        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
+
+        state.scroll_up();
+        assert_eq!(state.interaction.scroll_anchor, 1);
+        assert!(!state.interaction.follow_transcript_tail);
+
+        state.scroll_down();
         assert_eq!(state.interaction.scroll_anchor, 0);
+        assert!(state.interaction.follow_transcript_tail);
+    }
+
+    #[test]
+    fn activating_snapshot_resets_transcript_follow_state() {
+        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
+        state.scroll_up();
+
+        state.activate_snapshot(sample_snapshot());
+
+        assert_eq!(state.interaction.scroll_anchor, 0);
+        assert!(state.interaction.follow_transcript_tail);
     }
 }

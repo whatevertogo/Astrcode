@@ -344,12 +344,41 @@ struct ToolBlockRefs {
     call: Option<String>,
     stdout: Option<String>,
     stderr: Option<String>,
+    pending_live_stdout_bytes: usize,
+    pending_live_stderr_bytes: usize,
 }
 
 #[derive(Clone, Copy)]
 enum BlockKind {
     Thinking,
     Assistant,
+}
+
+impl ToolBlockRefs {
+    fn reconcile_tool_chunk(
+        &mut self,
+        stream: ToolOutputStream,
+        delta: &str,
+        source: ProjectionSource,
+    ) -> String {
+        let pending_live_bytes = match stream {
+            ToolOutputStream::Stdout => &mut self.pending_live_stdout_bytes,
+            ToolOutputStream::Stderr => &mut self.pending_live_stderr_bytes,
+        };
+
+        if matches!(source, ProjectionSource::Live) {
+            *pending_live_bytes += delta.len();
+            return delta.to_string();
+        }
+
+        if *pending_live_bytes == 0 {
+            return delta.to_string();
+        }
+
+        let consumed = (*pending_live_bytes).min(delta.len());
+        *pending_live_bytes -= consumed;
+        delta[consumed..].to_string()
+    }
 }
 
 impl TerminalDeltaProjector {
@@ -367,10 +396,27 @@ impl TerminalDeltaProjector {
     }
 
     pub(crate) fn project_record(&mut self, record: &SessionEventRecord) -> Vec<TerminalDeltaDto> {
-        match &record.event {
+        self.project_event(
+            &record.event,
+            ProjectionSource::Durable,
+            Some(&record.event_id),
+        )
+    }
+
+    pub(crate) fn project_live_event(&mut self, event: &AgentEvent) -> Vec<TerminalDeltaDto> {
+        self.project_event(event, ProjectionSource::Live, None)
+    }
+
+    fn project_event(
+        &mut self,
+        event: &AgentEvent,
+        source: ProjectionSource,
+        durable_event_id: Option<&str>,
+    ) -> Vec<TerminalDeltaDto> {
+        match event {
             AgentEvent::UserMessage {
                 turn_id, content, ..
-            } => {
+            } if source.is_durable() => {
                 let block_id = format!("turn:{turn_id}:user");
                 self.append_user_block(&block_id, turn_id, content)
             },
@@ -400,7 +446,9 @@ impl TerminalDeltaProjector {
                 content,
                 reasoning_content,
                 ..
-            } => self.finalize_assistant_block(turn_id, content, reasoning_content.as_deref()),
+            } if source.is_durable() => {
+                self.finalize_assistant_block(turn_id, content, reasoning_content.as_deref())
+            },
             AgentEvent::ToolCallStart {
                 turn_id,
                 tool_call_id,
@@ -414,29 +462,38 @@ impl TerminalDeltaProjector {
                 stream,
                 delta,
                 ..
-            } => self.append_tool_stream(turn_id, tool_call_id, tool_name, *stream, delta),
+            } => self.append_tool_stream(turn_id, tool_call_id, tool_name, *stream, delta, source),
             AgentEvent::ToolCallResult {
                 turn_id, result, ..
-            } => self.complete_tool_call(turn_id.as_str(), result),
+            } => self.complete_tool_call(turn_id.as_str(), result, source),
             AgentEvent::CompactApplied {
                 turn_id, summary, ..
-            } => {
+            } if source.is_durable() => {
                 let block_id = format!(
                     "system:compact:{}",
-                    turn_id.clone().unwrap_or_else(|| record.event_id.clone())
+                    turn_id
+                        .clone()
+                        .or_else(|| durable_event_id.map(ToString::to_string))
+                        .unwrap_or_else(|| "session".to_string())
                 );
                 self.append_system_note(&block_id, TerminalSystemNoteKindDto::Compact, summary)
             },
             AgentEvent::ChildSessionNotification { notification, .. } => {
-                self.append_child_handoff(notification)
+                if source.is_durable() {
+                    self.append_child_handoff(notification)
+                } else {
+                    Vec::new()
+                }
             },
             AgentEvent::Error {
                 turn_id,
                 code,
                 message,
                 ..
-            } => self.append_error(turn_id.as_deref(), code, message),
-            AgentEvent::TurnDone { turn_id, .. } => self.complete_turn(turn_id),
+            } if source.is_durable() => self.append_error(turn_id.as_deref(), code, message),
+            AgentEvent::TurnDone { turn_id, .. } if source.is_durable() => {
+                self.complete_turn(turn_id)
+            },
             AgentEvent::PhaseChanged { .. }
             | AgentEvent::SessionStarted { .. }
             | AgentEvent::PromptMetrics { .. }
@@ -445,7 +502,12 @@ impl TerminalDeltaProjector {
             | AgentEvent::AgentMailboxQueued { .. }
             | AgentEvent::AgentMailboxBatchStarted { .. }
             | AgentEvent::AgentMailboxBatchAcked { .. }
-            | AgentEvent::AgentMailboxDiscarded { .. } => Vec::new(),
+            | AgentEvent::AgentMailboxDiscarded { .. }
+            | AgentEvent::UserMessage { .. }
+            | AgentEvent::AssistantMessage { .. }
+            | AgentEvent::CompactApplied { .. }
+            | AgentEvent::Error { .. }
+            | AgentEvent::TurnDone { .. } => Vec::new(),
         }
     }
 
@@ -615,12 +677,17 @@ impl TerminalDeltaProjector {
         tool_name: &str,
         stream: ToolOutputStream,
         delta: &str,
+        source: ProjectionSource,
     ) -> Vec<TerminalDeltaDto> {
         let mut deltas = self.start_tool_call(turn_id, tool_call_id, tool_name);
         let refs = self
             .tool_blocks
             .entry(tool_call_id.to_string())
             .or_default();
+        let chunk = refs.reconcile_tool_chunk(stream, delta, source);
+        if chunk.is_empty() {
+            return deltas;
+        }
         let block_id = match stream {
             ToolOutputStream::Stdout => refs
                 .stdout
@@ -632,12 +699,12 @@ impl TerminalDeltaProjector {
                 .clone(),
         };
         if let Some(index) = self.block_index.get(&block_id).copied() {
-            self.append_tool_stream_content(index, delta);
+            self.append_tool_stream_content(index, &chunk);
             deltas.push(TerminalDeltaDto::PatchBlock {
                 block_id,
                 patch: TerminalBlockPatchDto::AppendToolStream {
                     stream: to_stream_dto(stream),
-                    chunk: delta.to_string(),
+                    chunk,
                 },
             });
             return deltas;
@@ -648,7 +715,7 @@ impl TerminalDeltaProjector {
                 parent_tool_call_id: Some(tool_call_id.to_string()),
                 stream: to_stream_dto(stream),
                 status: TerminalBlockStatusDto::Streaming,
-                content: delta.to_string(),
+                content: chunk,
             })),
         );
         deltas
@@ -658,6 +725,7 @@ impl TerminalDeltaProjector {
         &mut self,
         turn_id: &str,
         result: &ToolExecutionResult,
+        source: ProjectionSource,
     ) -> Vec<TerminalDeltaDto> {
         let mut deltas = self.start_tool_call(turn_id, &result.tool_call_id, &result.tool_name);
         let status = if result.ok {
@@ -669,18 +737,23 @@ impl TerminalDeltaProjector {
         let refs = self
             .tool_blocks
             .entry(result.tool_call_id.clone())
-            .or_default()
-            .clone();
+            .or_default();
+        if source.is_durable() {
+            refs.pending_live_stdout_bytes = 0;
+            refs.pending_live_stderr_bytes = 0;
+        }
+        let refs = refs.clone();
 
         if let Some(call_block_id) = refs.call {
             if let Some(index) = self.block_index.get(&call_block_id).copied() {
-                self.replace_tool_summary(index, &summary);
-                deltas.push(TerminalDeltaDto::PatchBlock {
-                    block_id: call_block_id.clone(),
-                    patch: TerminalBlockPatchDto::ReplaceSummary {
-                        summary: summary.clone(),
-                    },
-                });
+                if self.replace_tool_summary(index, &summary) {
+                    deltas.push(TerminalDeltaDto::PatchBlock {
+                        block_id: call_block_id.clone(),
+                        patch: TerminalBlockPatchDto::ReplaceSummary {
+                            summary: summary.clone(),
+                        },
+                    });
+                }
                 if let Some(delta) = self.complete_block(&call_block_id, status) {
                     deltas.push(delta);
                 }
@@ -876,10 +949,15 @@ impl TerminalDeltaProjector {
         }
     }
 
-    fn replace_tool_summary(&mut self, index: usize, summary: &str) {
+    fn replace_tool_summary(&mut self, index: usize, summary: &str) -> bool {
         if let TerminalBlockDto::ToolCall(block) = &mut self.blocks[index] {
+            if block.summary.as_deref() == Some(summary) {
+                return false;
+            }
             block.summary = Some(summary.to_string());
+            return true;
         }
+        false
     }
 
     fn set_status(&mut self, index: usize, status: TerminalBlockStatusDto) {
@@ -908,6 +986,18 @@ impl TerminalDeltaProjector {
             TerminalBlockDto::ToolStream(block) => Some(block.status),
             _ => None,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionSource {
+    Durable,
+    Live,
+}
+
+impl ProjectionSource {
+    fn is_durable(self) -> bool {
+        matches!(self, Self::Durable)
     }
 }
 
@@ -1254,6 +1344,219 @@ mod tests {
                     "status": "complete"
                 }
             ])
+        );
+    }
+
+    #[test]
+    fn live_events_project_streaming_reasoning_and_assistant_blocks() {
+        let mut projector = TerminalDeltaProjector::default();
+        let agent = sample_agent_context();
+
+        assert_eq!(
+            serde_json::to_value(projector.project_live_event(&AgentEvent::ThinkingDelta {
+                turn_id: "turn-1".to_string(),
+                agent: agent.clone(),
+                delta: "先".to_string(),
+            }))
+            .expect("thinking live deltas should encode"),
+            json!([
+                {
+                    "kind": "append_block",
+                    "block": {
+                        "kind": "thinking",
+                        "id": "turn:turn-1:thinking",
+                        "turnId": "turn-1",
+                        "status": "streaming",
+                        "markdown": "先"
+                    }
+                }
+            ])
+        );
+
+        assert_eq!(
+            serde_json::to_value(projector.project_live_event(&AgentEvent::ThinkingDelta {
+                turn_id: "turn-1".to_string(),
+                agent: agent.clone(),
+                delta: "整理协议".to_string(),
+            }))
+            .expect("thinking append deltas should encode"),
+            json!([
+                {
+                    "kind": "patch_block",
+                    "blockId": "turn:turn-1:thinking",
+                    "patch": {
+                        "kind": "append_markdown",
+                        "markdown": "整理协议"
+                    }
+                }
+            ])
+        );
+
+        assert_eq!(
+            serde_json::to_value(projector.project_live_event(&AgentEvent::ModelDelta {
+                turn_id: "turn-1".to_string(),
+                agent,
+                delta: "正在输出".to_string(),
+            }))
+            .expect("assistant live deltas should encode"),
+            json!([
+                {
+                    "kind": "append_block",
+                    "block": {
+                        "kind": "assistant",
+                        "id": "turn:turn-1:assistant",
+                        "turnId": "turn-1",
+                        "status": "streaming",
+                        "markdown": "正在输出"
+                    }
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn live_tool_streams_render_immediately_and_durable_replay_does_not_duplicate_chunks() {
+        let mut projector = TerminalDeltaProjector::default();
+        let agent = sample_agent_context();
+
+        assert_eq!(
+            serde_json::to_value(projector.project_live_event(&AgentEvent::ToolCallStart {
+                turn_id: "turn-1".to_string(),
+                agent: agent.clone(),
+                tool_call_id: "call-1".to_string(),
+                tool_name: "web".to_string(),
+                input: serde_json::json!({}),
+            }))
+            .expect("tool call start should encode"),
+            json!([
+                {
+                    "kind": "append_block",
+                    "block": {
+                        "kind": "tool_call",
+                        "id": "tool:call-1:call",
+                        "turnId": "turn-1",
+                        "toolCallId": "call-1",
+                        "toolName": "web",
+                        "status": "streaming"
+                    }
+                }
+            ])
+        );
+
+        assert_eq!(
+            serde_json::to_value(projector.project_live_event(&AgentEvent::ToolCallDelta {
+                turn_id: "turn-1".to_string(),
+                agent: agent.clone(),
+                tool_call_id: "call-1".to_string(),
+                tool_name: "web".to_string(),
+                stream: ToolOutputStream::Stdout,
+                delta: "first chunk\n".to_string(),
+            }))
+            .expect("tool stream delta should encode"),
+            json!([
+                {
+                    "kind": "append_block",
+                    "block": {
+                        "kind": "tool_stream",
+                        "id": "tool:call-1:stdout",
+                        "parentToolCallId": "call-1",
+                        "stream": "stdout",
+                        "status": "streaming",
+                        "content": "first chunk\n"
+                    }
+                }
+            ])
+        );
+
+        assert_eq!(
+            serde_json::to_value(projector.project_live_event(&AgentEvent::ToolCallResult {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                result: ToolExecutionResult {
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "web".to_string(),
+                    ok: true,
+                    output: "first chunk\n".to_string(),
+                    error: None,
+                    metadata: None,
+                    duration_ms: 0,
+                    truncated: false,
+                },
+            }))
+            .expect("live tool result should encode"),
+            json!([
+                {
+                    "kind": "patch_block",
+                    "blockId": "tool:call-1:call",
+                    "patch": {
+                        "kind": "replace_summary",
+                        "summary": "first chunk"
+                    }
+                },
+                {
+                    "kind": "complete_block",
+                    "blockId": "tool:call-1:call",
+                    "status": "complete"
+                },
+                {
+                    "kind": "complete_block",
+                    "blockId": "tool:call-1:stdout",
+                    "status": "complete"
+                }
+            ])
+        );
+
+        assert_eq!(
+            serde_json::to_value(projector.project_record(&record(
+                "1.1",
+                AgentEvent::ToolCallStart {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "web".to_string(),
+                    input: serde_json::json!({}),
+                }
+            )))
+            .expect("durable tool call start should encode"),
+            json!([])
+        );
+
+        assert_eq!(
+            serde_json::to_value(projector.project_record(&record(
+                "1.2",
+                AgentEvent::ToolCallDelta {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "web".to_string(),
+                    stream: ToolOutputStream::Stdout,
+                    delta: "first chunk\n".to_string(),
+                }
+            )))
+            .expect("durable delta after live completion should still skip duplicated chunk"),
+            json!([])
+        );
+
+        assert_eq!(
+            serde_json::to_value(projector.project_record(&record(
+                "1.3",
+                AgentEvent::ToolCallResult {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    result: ToolExecutionResult {
+                        tool_call_id: "call-1".to_string(),
+                        tool_name: "web".to_string(),
+                        ok: true,
+                        output: "first chunk\n".to_string(),
+                        error: None,
+                        metadata: None,
+                        duration_ms: 0,
+                        truncated: false,
+                    },
+                }
+            )))
+            .expect("durable result should collapse to no-op after matching live completion"),
+            json!([])
         );
     }
 

@@ -1,411 +1,177 @@
-use ratatui::{
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-};
-use unicode_width::UnicodeWidthStr;
+mod bottom_pane;
+mod cells;
+mod overlay;
+mod theme;
+
+pub use bottom_pane::{BottomPaneView, ComposerPane};
+pub use cells::{RenderableCell, wrap_text};
+pub use overlay::{OverlayView, overlay_title};
+use ratatui::text::{Line, Span};
+pub use theme::{CodexTheme, ThemePalette};
 
 use crate::{
-    capability::{ColorLevel, TerminalCapabilities},
-    state::{
-        CliState, OverlayState, PaneFocus, ResumeOverlayState, SlashPaletteState, WrappedLine,
-        WrappedLineStyle,
-    },
+    capability::TerminalCapabilities,
+    state::{CliState, OverlayState, WrappedLine, WrappedLineStyle},
 };
 
 pub fn transcript_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
-    if state.conversation.transcript.is_empty() {
-        return vec![
-            WrappedLine {
-                style: WrappedLineStyle::Plain,
-                content: "Astrcode 已准备好。".to_string(),
-            },
-            WrappedLine {
-                style: WrappedLineStyle::Muted,
-                content: "输入 prompt 后，对话会从这里开始。".to_string(),
-            },
-            WrappedLine {
-                style: WrappedLineStyle::Muted,
-                content: "输入 / 可查看可用 skill 与命令。".to_string(),
-            },
-        ];
+    if state.conversation.transcript_cells.is_empty() {
+        return empty_state_lines(state, width);
     }
 
-    let available_width = width.max(8) as usize;
+    let theme = CodexTheme::new(state.shell.capabilities);
     let mut lines = Vec::new();
-    for block in &state.conversation.transcript {
-        let (style, title, body) = match block {
-            astrcode_client::AstrcodeConversationBlockDto::User(block) => (
-                WrappedLineStyle::Accent,
-                label(state.shell.capabilities, "你", "you"),
-                block.markdown.as_str(),
-            ),
-            astrcode_client::AstrcodeConversationBlockDto::Assistant(block) => (
-                WrappedLineStyle::Plain,
-                format!(
-                    "{}{}",
-                    label(state.shell.capabilities, "Astrcode", "astrcode"),
-                    status_suffix(block.status)
-                ),
-                block.markdown.as_str(),
-            ),
-            astrcode_client::AstrcodeConversationBlockDto::Thinking(block) => (
-                WrappedLineStyle::Muted,
-                format!(
-                    "{}{}",
-                    label(state.shell.capabilities, "思考", "think"),
-                    status_suffix(block.status)
-                ),
-                block.markdown.as_str(),
-            ),
-            astrcode_client::AstrcodeConversationBlockDto::ToolCall(block) => (
-                WrappedLineStyle::Warning,
-                format!(
-                    "{}/{}{}",
-                    label(state.shell.capabilities, "工具", "tool"),
-                    block.tool_name,
-                    status_suffix(block.status)
-                ),
-                block.summary.as_deref().unwrap_or("正在执行工具调用"),
-            ),
-            astrcode_client::AstrcodeConversationBlockDto::ToolStream(block) => (
-                WrappedLineStyle::Warning,
-                format!(
-                    "{}/{:?}{}",
-                    label(state.shell.capabilities, "流", "stream"),
-                    block.stream,
-                    status_suffix(block.status)
-                ),
-                block.content.as_str(),
-            ),
-            astrcode_client::AstrcodeConversationBlockDto::Error(block) => (
-                WrappedLineStyle::Error,
-                format!(
-                    "{} {:?}",
-                    label(state.shell.capabilities, "错误", "error"),
-                    block.code
-                ),
-                block.message.as_str(),
-            ),
-            astrcode_client::AstrcodeConversationBlockDto::SystemNote(block) => (
-                WrappedLineStyle::Muted,
-                format!(
-                    "{} {:?}",
-                    label(state.shell.capabilities, "系统", "note"),
-                    block.note_kind
-                ),
-                block.markdown.as_str(),
-            ),
-            astrcode_client::AstrcodeConversationBlockDto::ChildHandoff(block) => (
-                WrappedLineStyle::Accent,
-                format!(
-                    "{}/{} {:?}",
-                    label(state.shell.capabilities, "子代理", "child"),
-                    block.child.title,
-                    block.handoff_kind
-                ),
-                block.message.as_deref().unwrap_or("无摘要"),
-            ),
-        };
-        lines.extend(wrap_labeled_block(
-            &title,
-            body,
-            style,
-            available_width,
+    for cell in &state.conversation.transcript_cells {
+        lines.extend(cell.render_lines(
+            usize::from(width.max(18)),
             state.shell.capabilities,
+            &theme,
         ));
     }
     lines
 }
 
-pub fn child_pane_lines(state: &CliState) -> Vec<WrappedLine> {
-    if state.conversation.child_summaries.is_empty() {
-        return vec![WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: "暂无 child agent。".to_string(),
-        }];
-    }
+pub fn child_pane_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
+    let theme = CodexTheme::new(state.shell.capabilities);
+    let width = usize::from(width.max(18));
+    let mut lines = vec![
+        WrappedLine {
+            style: WrappedLineStyle::Header,
+            content: "child sessions".to_string(),
+        },
+        WrappedLine {
+            style: WrappedLineStyle::Dim,
+            content: format!(
+                "{} active  ·  {} total",
+                state
+                    .conversation
+                    .child_summaries
+                    .iter()
+                    .filter(|child| {
+                        matches!(
+                            child.lifecycle,
+                            astrcode_client::AstrcodeConversationAgentLifecycleDto::Running
+                                | astrcode_client::AstrcodeConversationAgentLifecycleDto::Pending
+                        )
+                    })
+                    .count(),
+                state.conversation.child_summaries.len()
+            ),
+        },
+        WrappedLine {
+            style: WrappedLineStyle::Border,
+            content: theme.divider().repeat(width),
+        },
+    ];
 
-    let mut lines = Vec::new();
     for (index, child) in state.conversation.child_summaries.iter().enumerate() {
-        let selected = index == state.interaction.child_pane.selected;
         let focused = state
             .interaction
             .child_pane
             .focused_child_session_id
             .as_deref()
             == Some(child.child_session_id.as_str());
+        let selected = index == state.interaction.child_pane.selected;
         let marker = if focused {
-            label(state.shell.capabilities, "◆", "*")
+            theme.glyph("◆", "*")
         } else if selected {
-            label(state.shell.capabilities, "›", ">")
+            theme.glyph("›", ">")
         } else {
-            " ".to_string()
+            " "
         };
         lines.push(WrappedLine {
-            style: if focused {
-                WrappedLineStyle::Accent
+            style: if focused || selected {
+                WrappedLineStyle::Selection
             } else {
                 WrappedLineStyle::Plain
             },
             content: format!(
-                "{marker} {} [{}]",
+                "{marker} {}  [{}]",
                 child.title,
                 lifecycle_label(child.lifecycle)
             ),
         });
         if let Some(summary) = child.latest_output_summary.as_deref() {
-            lines.push(WrappedLine {
-                style: WrappedLineStyle::Muted,
-                content: format!("  {summary}"),
-            });
+            for line in wrap_text(
+                summary,
+                width.saturating_sub(2).max(8),
+                state.shell.capabilities,
+            ) {
+                lines.push(WrappedLine {
+                    style: WrappedLineStyle::Dim,
+                    content: format!("  {line}"),
+                });
+            }
         }
-    }
-
-    if let Some(focused) = state.focused_child_summary() {
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: String::new(),
-        });
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::Accent,
-            content: format!(
-                "{} {}",
-                label(state.shell.capabilities, "聚焦", "FOCUS"),
-                focused.title
-            ),
-        });
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: format!("session: {}", focused.child_session_id),
-        });
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: format!("agent: {}", focused.child_agent_id),
-        });
     }
 
     lines
 }
 
-pub fn status_line(state: &CliState) -> String {
-    let session = state
+pub fn header_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
+    let theme = CodexTheme::new(state.shell.capabilities);
+    let title = state
         .conversation
         .active_session_title
         .as_deref()
-        .unwrap_or("未选择会话");
-    let phase = state.active_phase().map(phase_label).unwrap_or("unknown");
-    let focus = match state.interaction.pane_focus {
-        PaneFocus::Transcript => "transcript",
-        PaneFocus::ChildPane => "children",
-        PaneFocus::Composer => "composer",
-        PaneFocus::Overlay => "overlay",
-    };
-    let mut parts = vec![
-        format!("session {session}"),
-        format!("phase {phase}"),
-        format!("focus {focus}"),
-    ];
-    if state.stream_view.pending_chunks > 0 {
-        parts.push(format!(
-            "stream {:?}/{:?}",
-            state.stream_view.mode, state.stream_view.pending_chunks
-        ));
-    }
-    if !state.interaction.status.message.is_empty() {
-        parts.push(state.interaction.status.message.clone());
-    }
+        .unwrap_or("Astrcode workspace");
+    let model = "gpt-5.4 medium";
+    let phase = phase_label(
+        state
+            .active_phase()
+            .unwrap_or(astrcode_client::AstrcodePhaseDto::Idle),
+    );
+    let working_dir = state
+        .shell
+        .working_dir
+        .as_deref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "~".to_string());
 
-    if matches!(state.shell.capabilities.color, ColorLevel::None) {
-        parts.push("mono".to_string());
-    };
+    let meta = format!("model {model}  ·  phase {phase}  ·  {working_dir}");
+    let meta_width = usize::from(width.max(20)).saturating_sub(2);
 
-    parts.join(" · ")
+    vec![
+        WrappedLine {
+            style: WrappedLineStyle::Header,
+            content: title.to_string(),
+        },
+        WrappedLine {
+            style: WrappedLineStyle::Dim,
+            content: truncate_text(meta.as_str(), meta_width, state.shell.capabilities),
+        },
+        WrappedLine {
+            style: WrappedLineStyle::Border,
+            content: theme.divider().repeat(usize::from(width.max(1))),
+        },
+    ]
 }
 
-pub fn overlay_lines(state: &CliState) -> Vec<WrappedLine> {
+pub fn centered_overlay_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
+    let theme = CodexTheme::new(state.shell.capabilities);
     match &state.interaction.overlay {
-        OverlayState::Resume(resume) => resume_lines(resume),
-        OverlayState::SlashPalette(palette) => slash_lines(palette),
-        OverlayState::None => Vec::new(),
-    }
-}
-
-pub fn overlay_title(state: &CliState) -> Option<&'static str> {
-    match state.interaction.overlay {
-        OverlayState::None => None,
-        OverlayState::Resume(_) => Some("恢复会话"),
-        OverlayState::SlashPalette(_) => Some("Slash 候选"),
+        OverlayState::Resume(resume) => {
+            resume.lines(usize::from(width.max(20)), state.shell.capabilities, &theme)
+        },
+        OverlayState::DebugLogs(debug) => debug.lines(
+            usize::from(width.max(20)),
+            state.shell.capabilities,
+            &theme,
+            &state.debug,
+        ),
+        OverlayState::SlashPalette(_) | OverlayState::None => Vec::new(),
     }
 }
 
 pub fn line_to_ratatui(line: &WrappedLine, capabilities: TerminalCapabilities) -> Line<'static> {
+    let theme = CodexTheme::new(capabilities);
     Line::from(Span::styled(
         line.content.clone(),
-        line_style(line.style, capabilities),
+        theme.line_style(line.style),
     ))
 }
 
-fn line_style(style: WrappedLineStyle, capabilities: TerminalCapabilities) -> Style {
-    let base = Style::default();
-    if matches!(capabilities.color, ColorLevel::None) {
-        return if matches!(style, WrappedLineStyle::Accent | WrappedLineStyle::Warning) {
-            base.add_modifier(Modifier::BOLD)
-        } else {
-            base
-        };
-    }
-
-    match style {
-        WrappedLineStyle::Plain => base,
-        WrappedLineStyle::Muted => base.fg(Color::DarkGray),
-        WrappedLineStyle::Accent => base.fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        WrappedLineStyle::Warning => base.fg(Color::Yellow),
-        WrappedLineStyle::Error => base.fg(Color::Red).add_modifier(Modifier::BOLD),
-    }
-}
-
-fn resume_lines(resume: &ResumeOverlayState) -> Vec<WrappedLine> {
-    let mut lines = vec![WrappedLine {
-        style: WrappedLineStyle::Muted,
-        content: format!("query: {}", resume.query),
-    }];
-    if resume.items.is_empty() {
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: "没有匹配的会话。".to_string(),
-        });
-        return lines;
-    }
-
-    lines.extend(
-        resume
-            .items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| WrappedLine {
-                style: if index == resume.selected {
-                    WrappedLineStyle::Accent
-                } else {
-                    WrappedLineStyle::Plain
-                },
-                content: format!("{} | {}", item.title, item.working_dir),
-            }),
-    );
-    lines
-}
-
-fn slash_lines(palette: &SlashPaletteState) -> Vec<WrappedLine> {
-    let mut lines = vec![WrappedLine {
-        style: WrappedLineStyle::Muted,
-        content: format!("query: {}", palette.query),
-    }];
-    if palette.items.is_empty() {
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: "没有匹配的 slash 候选。".to_string(),
-        });
-        return lines;
-    }
-
-    lines.extend(
-        palette
-            .items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| WrappedLine {
-                style: if index == palette.selected {
-                    WrappedLineStyle::Accent
-                } else {
-                    WrappedLineStyle::Plain
-                },
-                content: format!("{} | {}", item.action_value, item.description),
-            }),
-    );
-    lines
-}
-
-fn wrap_labeled_block(
-    title: &str,
-    body: &str,
-    style: WrappedLineStyle,
-    width: usize,
-    capabilities: TerminalCapabilities,
-) -> Vec<WrappedLine> {
-    let prefix = format!("{title}: ");
-    let prefix_width = display_width(prefix.as_str(), capabilities);
-    let body_width = width.saturating_sub(prefix_width).max(8);
-    let wrapped = wrap_text(body, body_width, capabilities);
-    wrapped
-        .into_iter()
-        .enumerate()
-        .map(|(index, content)| WrappedLine {
-            style,
-            content: if index == 0 {
-                format!("{prefix}{content}")
-            } else {
-                format!("{}{}", " ".repeat(prefix_width), content)
-            },
-        })
-        .collect()
-}
-
-fn wrap_text(text: &str, width: usize, capabilities: TerminalCapabilities) -> Vec<String> {
-    let normalized = if text.trim().is_empty() {
-        " ".to_string()
-    } else {
-        text.to_string()
-    };
-    let mut lines = Vec::new();
-    for raw_line in normalized.lines() {
-        let mut current = String::new();
-        for word in raw_line.split_whitespace() {
-            let candidate = if current.is_empty() {
-                word.to_string()
-            } else {
-                format!("{current} {word}")
-            };
-            if display_width(candidate.as_str(), capabilities) > width && !current.is_empty() {
-                lines.push(current);
-                current = word.to_string();
-            } else {
-                current = candidate;
-            }
-        }
-        if current.is_empty() {
-            lines.push(String::new());
-        } else {
-            lines.push(current);
-        }
-    }
-    lines
-}
-
-fn display_width(text: &str, capabilities: TerminalCapabilities) -> usize {
-    if capabilities.ascii_only() {
-        text.chars().count()
-    } else {
-        UnicodeWidthStr::width(text)
-    }
-}
-
-fn label(capabilities: TerminalCapabilities, unicode: &str, ascii: &str) -> String {
-    if capabilities.ascii_only() {
-        ascii.to_string()
-    } else {
-        unicode.to_string()
-    }
-}
-
-fn status_suffix(status: astrcode_client::AstrcodeConversationBlockStatusDto) -> &'static str {
-    match status {
-        astrcode_client::AstrcodeConversationBlockStatusDto::Streaming => " · streaming",
-        astrcode_client::AstrcodeConversationBlockStatusDto::Complete => "",
-        astrcode_client::AstrcodeConversationBlockStatusDto::Failed => " · failed",
-        astrcode_client::AstrcodeConversationBlockStatusDto::Cancelled => " · cancelled",
-    }
-}
-
-fn phase_label(phase: astrcode_client::AstrcodePhaseDto) -> &'static str {
+pub fn phase_label(phase: astrcode_client::AstrcodePhaseDto) -> &'static str {
     match phase {
         astrcode_client::AstrcodePhaseDto::Idle => "idle",
         astrcode_client::AstrcodePhaseDto::Thinking => "thinking",
@@ -414,6 +180,29 @@ fn phase_label(phase: astrcode_client::AstrcodePhaseDto) -> &'static str {
         astrcode_client::AstrcodePhaseDto::Interrupted => "interrupted",
         astrcode_client::AstrcodePhaseDto::Done => "done",
     }
+}
+
+fn empty_state_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
+    let theme = CodexTheme::new(state.shell.capabilities);
+    let divider = theme.divider().repeat(usize::from(width.min(56)));
+    vec![
+        WrappedLine {
+            style: WrappedLineStyle::Header,
+            content: "OpenAI Codex style workspace".to_string(),
+        },
+        WrappedLine {
+            style: WrappedLineStyle::Dim,
+            content: "fresh session 已准备好。主区只显示会话语义内容，启动噪音已移出。".to_string(),
+        },
+        WrappedLine {
+            style: WrappedLineStyle::Accent,
+            content: "› 输入 prompt 开始；Tab 打开 commands；F2 查看 debug logs。".to_string(),
+        },
+        WrappedLine {
+            style: WrappedLineStyle::Border,
+            content: divider,
+        },
+    ]
 }
 
 fn lifecycle_label(
@@ -425,4 +214,27 @@ fn lifecycle_label(
         astrcode_client::AstrcodeConversationAgentLifecycleDto::Idle => "idle",
         astrcode_client::AstrcodeConversationAgentLifecycleDto::Terminated => "terminated",
     }
+}
+
+fn truncate_text(text: &str, width: usize, capabilities: TerminalCapabilities) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    let mut current_width = 0;
+    for ch in text.chars() {
+        let ch = ch.to_string();
+        let ch_width = if capabilities.ascii_only() {
+            1
+        } else {
+            unicode_width::UnicodeWidthStr::width(ch.as_str()).max(1)
+        };
+        if current_width + ch_width > width {
+            break;
+        }
+        current_width += ch_width;
+        out.push_str(ch.as_str());
+    }
+    out
 }

@@ -6,6 +6,7 @@ import AssistantMessage from './AssistantMessage';
 import CompactMessage from './CompactMessage';
 import SubRunBlock from './SubRunBlock';
 import ToolCallBlock from './ToolCallBlock';
+import ToolStreamBlock from './ToolStreamBlock';
 import UserMessage from './UserMessage';
 import { useChatScreenContext } from './ChatScreenContext';
 import { logger } from '../../lib/logger';
@@ -57,6 +58,19 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
                   status: message.status,
                   durationMs: message.durationMs,
                   error: message.error,
+                },
+                null,
+                2
+              )}
+            </pre>
+          ) : message.kind === 'toolStream' ? (
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
+              {JSON.stringify(
+                {
+                  toolCallId: message.toolCallId,
+                  stream: message.stream,
+                  status: message.status,
+                  contentLength: message.content.length,
                 },
                 null,
                 2
@@ -133,7 +147,9 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
 }
 
 function isAssistantLike(message: Message): boolean {
-  return message.kind === 'assistant' || message.kind === 'toolCall';
+  return (
+    message.kind === 'assistant' || message.kind === 'toolCall' || message.kind === 'toolStream'
+  );
 }
 
 function isRowNested(options?: { nested?: boolean }): boolean {
@@ -230,6 +246,9 @@ export default function MessageList({
       }
       if (msg.kind === 'toolCall') {
         return <ToolCallBlock message={msg} />;
+      }
+      if (msg.kind === 'toolStream') {
+        return <ToolStreamBlock message={msg} />;
       }
       if (msg.kind === 'promptMetrics') {
         return null;

@@ -3,9 +3,9 @@
 //! Session message conversion, project grouping, and session message replacement helpers.
 //! These were previously at the top of App.tsx and made the file harder to navigate.
 
-import type { Message, Project, SessionMeta } from '../types';
+import type { Message, Project, SessionMeta, SubRunThreadTree } from '../types';
 import { normalizeProjectIdentity } from '../lib/knownProjects';
-import { buildSubRunThreadTree, createEmptySubRunThreadTree } from '../lib/subRunView';
+import { createEmptySubRunThreadTree } from '../lib/subRunView';
 
 interface GroupSessionsOptions {
   includeSessionIds?: string[];
@@ -105,14 +105,13 @@ export function groupSessionsByProject(
 export function replaceSessionMessages(
   projects: Project[],
   sessionId: string,
-  messages: Message[]
+  messages: Message[],
+  subRunThreadTree: SubRunThreadTree
 ): Project[] {
   return projects.map((project) => ({
     ...project,
     sessions: project.sessions.map((session) =>
-      session.id === sessionId
-        ? { ...session, messages, subRunThreadTree: buildSubRunThreadTree(messages) }
-        : session
+      session.id === sessionId ? { ...session, messages, subRunThreadTree } : session
     ),
   }));
 }

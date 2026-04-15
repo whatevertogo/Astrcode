@@ -243,6 +243,26 @@ export interface ToolCallMessage {
   timestamp: number;
 }
 
+export interface ToolStreamMessage {
+  id: string;
+  kind: 'toolStream';
+  turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  parentSubRunId?: string;
+  agentProfile?: string;
+  subRunId?: string;
+  executionId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
+  toolCallId: string;
+  stream: ToolOutputStream;
+  status: ToolStatus;
+  content: string;
+  timestamp: number;
+}
+
 export interface CompactMessage {
   id: string;
   kind: 'compact';
@@ -367,6 +387,7 @@ export type Message =
   | UserMessage
   | AssistantMessage
   | ToolCallMessage
+  | ToolStreamMessage
   | PromptMetricsMessage
   | CompactMessage
   | SubRunStartMessage
@@ -684,6 +705,11 @@ export type AtomicAction =
       activeSessionId: string | null;
       activeSubRunPath?: string[];
     }
-  | { type: 'REPLACE_SESSION_MESSAGES'; sessionId: string; messages: Message[] };
+  | {
+      type: 'REPLACE_SESSION_MESSAGES';
+      sessionId: string;
+      messages: Message[];
+      subRunThreadTree: SubRunThreadTree;
+    };
 
 export type Action = AtomicAction;

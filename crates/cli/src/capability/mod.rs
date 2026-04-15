@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, io::IsTerminal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorLevel {
@@ -26,6 +26,8 @@ impl TerminalCapabilities {
     pub fn detect() -> Self {
         let term = env::var("TERM").unwrap_or_default().to_lowercase();
         let color_term = env::var("COLORTERM").unwrap_or_default().to_lowercase();
+        let term_program = env::var("TERM_PROGRAM").unwrap_or_default().to_lowercase();
+        let interactive_term = std::io::stdout().is_terminal();
         let no_color = env::var_os("NO_COLOR").is_some();
         let ascii_only = env_flag("ASTRCODE_ASCII_ONLY");
         let disable_alt_screen = env_flag("ASTRCODE_NO_ALT_SCREEN");
@@ -34,21 +36,26 @@ impl TerminalCapabilities {
 
         let color = if no_color {
             ColorLevel::None
-        } else if color_term.contains("truecolor") || color_term.contains("24bit") {
+        } else if color_term.contains("truecolor")
+            || color_term.contains("24bit")
+            || term_program == "wezterm"
+            || env::var_os("WT_SESSION").is_some()
+        {
             ColorLevel::TrueColor
+        } else if interactive_term {
+            ColorLevel::Ansi16
         } else if term.is_empty() || term == "dumb" {
             ColorLevel::None
         } else {
             ColorLevel::Ansi16
         };
 
-        let glyphs = if ascii_only || term == "dumb" {
+        let glyphs = if ascii_only || term == "dumb" || !interactive_term {
             GlyphMode::Ascii
         } else {
             GlyphMode::Unicode
         };
 
-        let interactive_term = !term.is_empty() && term != "dumb";
         Self {
             color,
             glyphs,

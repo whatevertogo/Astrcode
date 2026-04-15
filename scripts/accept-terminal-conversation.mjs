@@ -14,6 +14,16 @@ const checks = [
     args: ["test", "-p", "astrcode-cli", "spawns_local_server_when_run_info_is_missing", "--", "--nocapture"],
   },
   {
+    name: "cli launcher repo-aware fallback",
+    command: "cargo",
+    args: ["test", "-p", "astrcode-cli", "uses_repo_aware_cargo_fallback_when_default_binary_is_unavailable", "--", "--nocapture"],
+  },
+  {
+    name: "cli bootstrap fresh session",
+    command: "cargo",
+    args: ["test", "-p", "astrcode-cli", "bootstrap_creates_fresh_session_instead_of_restoring_existing_one", "--", "--nocapture"],
+  },
+  {
     name: "server conversation snapshot contract",
     command: "cargo",
     args: ["test", "-p", "astrcode-server", "conversation_snapshot_contract_rejects_invalid_focus", "--", "--nocapture"],

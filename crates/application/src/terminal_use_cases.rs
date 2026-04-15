@@ -471,10 +471,11 @@ fn summary_from_record(record: &SessionEventRecord) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc};
+    use std::{path::Path, sync::Arc, time::Duration};
 
     use astrcode_session_runtime::SessionRuntime;
     use async_trait::async_trait;
+    use tokio::time::timeout;
 
     use super::*;
     use crate::{
@@ -553,10 +554,20 @@ mod tests {
     }
 
     fn build_terminal_app_harness(skill_ids: &[&str]) -> TerminalAppHarness {
-        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
-            content: "子代理已完成。".to_string(),
-        })
-        .expect("agent test harness should build");
+        build_terminal_app_harness_with_behavior(
+            skill_ids,
+            TestLlmBehavior::Succeed {
+                content: "子代理已完成。".to_string(),
+            },
+        )
+    }
+
+    fn build_terminal_app_harness_with_behavior(
+        skill_ids: &[&str],
+        llm_behavior: TestLlmBehavior,
+    ) -> TerminalAppHarness {
+        let harness =
+            build_agent_test_harness(llm_behavior).expect("agent test harness should build");
         let kernel: Arc<dyn AppKernelPort> = harness.kernel.clone();
         let session_runtime = harness.session_runtime.clone();
         let session_port: Arc<dyn AppSessionPort> = session_runtime.clone();
@@ -583,6 +594,91 @@ mod tests {
             app,
             session_runtime,
         }
+    }
+
+    #[tokio::test]
+    async fn terminal_stream_facts_expose_live_llm_deltas_before_durable_completion() {
+        let harness = build_terminal_app_harness_with_behavior(
+            &[],
+            TestLlmBehavior::Stream {
+                reasoning_chunks: vec!["先".to_string(), "整理".to_string()],
+                text_chunks: vec!["流".to_string(), "式".to_string()],
+                final_content: "流式完成".to_string(),
+                final_reasoning: Some("先整理".to_string()),
+            },
+        );
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let session = harness
+            .app
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("session should be created");
+
+        let TerminalStreamFacts::Replay(replay) = harness
+            .app
+            .terminal_stream_facts(&session.session_id, None)
+            .await
+            .expect("stream facts should build")
+        else {
+            panic!("fresh stream should start from replay facts");
+        };
+        let mut live_receiver = replay.replay.live_receiver;
+
+        let accepted = harness
+            .app
+            .submit_prompt(&session.session_id, "请流式回答".to_string())
+            .await
+            .expect("prompt should submit");
+
+        let mut live_events = Vec::new();
+        for _ in 0..4 {
+            live_events.push(
+                timeout(Duration::from_secs(1), live_receiver.recv())
+                    .await
+                    .expect("live delta should arrive in time")
+                    .expect("live receiver should stay open"),
+            );
+        }
+
+        assert!(matches!(
+            &live_events[0],
+            AgentEvent::ThinkingDelta { delta, .. } if delta == "先"
+        ));
+        assert!(matches!(
+            &live_events[1],
+            AgentEvent::ThinkingDelta { delta, .. } if delta == "整理"
+        ));
+        assert!(matches!(
+            &live_events[2],
+            AgentEvent::ModelDelta { delta, .. } if delta == "流"
+        ));
+        assert!(matches!(
+            &live_events[3],
+            AgentEvent::ModelDelta { delta, .. } if delta == "式"
+        ));
+
+        harness
+            .session_runtime
+            .wait_for_turn_terminal_snapshot(&session.session_id, accepted.turn_id.as_str())
+            .await
+            .expect("turn should settle");
+
+        let snapshot = harness
+            .app
+            .terminal_snapshot_facts(&session.session_id)
+            .await
+            .expect("terminal snapshot should build");
+        assert!(snapshot.transcript.records.iter().any(|record| matches!(
+            &record.event,
+            AgentEvent::AssistantMessage {
+                content,
+                reasoning_content,
+                ..
+            } if content == "流式完成"
+                && reasoning_content
+                    .as_ref()
+                    .is_some_and(|reasoning| reasoning == "先整理")
+        )));
     }
 
     #[tokio::test]

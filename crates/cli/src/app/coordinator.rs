@@ -247,6 +247,7 @@ where
             OverlayState::SlashPalette(palette) => {
                 self.refresh_slash_candidates(palette.query.clone()).await;
             },
+            OverlayState::DebugLogs(_) => {},
             OverlayState::None => {},
         }
     }

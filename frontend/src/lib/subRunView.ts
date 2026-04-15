@@ -119,6 +119,9 @@ function buildMessageFingerprint(message: Message): string {
       message.error?.length ?? 0
     }`;
   }
+  if (message.kind === 'toolStream') {
+    return `${message.id}:toolStream:${message.toolCallId}:${message.stream}:${message.status}:${message.content.length}`;
+  }
   if (message.kind === 'promptMetrics') {
     return `${message.id}:promptMetrics:${message.stepIndex}:${message.estimatedTokens}:${
       message.cacheReadInputTokens ?? 0

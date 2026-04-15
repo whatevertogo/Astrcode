@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { makeInitialState, reducer } from './reducer';
-import { createEmptySubRunThreadTree } from '../lib/subRunView';
+import { buildSubRunThreadTree, createEmptySubRunThreadTree } from '../lib/subRunView';
 
 function makeSessionState() {
   return {
@@ -99,31 +99,28 @@ describe('reducer', () => {
 
   it('replaces session messages with the authoritative conversation projection', () => {
     const initial = makeSessionState();
+    const messages = [
+      {
+        id: 'assistant-1',
+        kind: 'assistant' as const,
+        turnId: 'turn-1',
+        text: 'hello world',
+        reasoningText: 'thinking',
+        streaming: false,
+        timestamp: 1,
+      },
+    ];
+    const projectedTree = buildSubRunThreadTree(messages);
 
     const next = reducer(initial, {
       type: 'REPLACE_SESSION_MESSAGES',
       sessionId: 'session-1',
-      messages: [
-        {
-          id: 'assistant-1',
-          kind: 'assistant',
-          turnId: 'turn-1',
-          text: 'hello world',
-          reasoningText: 'thinking',
-          streaming: false,
-          timestamp: 1,
-        },
-      ],
+      messages,
+      subRunThreadTree: projectedTree,
     });
 
     const session = next.projects[0].sessions[0];
-    expect(session.messages).toEqual([
-      expect.objectContaining({
-        kind: 'assistant',
-        turnId: 'turn-1',
-        text: 'hello world',
-      }),
-    ]);
-    expect(session.subRunThreadTree.rootThreadItems).toHaveLength(1);
+    expect(session.messages).toEqual([expect.objectContaining(messages[0])]);
+    expect(session.subRunThreadTree).toBe(projectedTree);
   });
 });

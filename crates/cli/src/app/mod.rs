@@ -16,8 +16,8 @@ use anyhow::{Context, Result};
 use astrcode_client::{
     AstrcodeClient, AstrcodeClientError, AstrcodeClientTransport,
     AstrcodeConversationSlashCandidatesResponseDto, AstrcodeConversationSnapshotResponseDto,
-    AstrcodeCreateSessionRequest, AstrcodePromptAcceptedResponse, AstrcodeReqwestTransport,
-    AstrcodeSessionListItem, ClientConfig, ConversationStreamItem,
+    AstrcodePromptAcceptedResponse, AstrcodeReqwestTransport, AstrcodeSessionListItem,
+    ClientConfig, ConversationStreamItem,
 };
 use clap::Parser;
 use crossterm::{
@@ -63,6 +63,7 @@ struct CliArgs {
 enum Action {
     Tick,
     Key(KeyEvent),
+    Paste(String),
     Resize {
         width: u16,
         height: u16,
@@ -109,7 +110,11 @@ pub async fn run_from_env() -> Result<()> {
 }
 
 async fn run_app(launcher_session: LauncherSession<SystemManagedServer>) -> Result<()> {
+    let mut launcher_session = launcher_session;
     let connection = launcher_session.connection().clone();
+    let debug_tap = launcher_session
+        .managed_server_mut()
+        .map(|server| server.debug_tap());
     let client = AstrcodeClient::new(ClientConfig::new(connection.origin.clone()));
     let capabilities = TerminalCapabilities::detect();
     client
@@ -125,6 +130,7 @@ async fn run_app(launcher_session: LauncherSession<SystemManagedServer>) -> Resu
             connection.working_dir.clone(),
             capabilities,
         ),
+        debug_tap,
         actions_tx.clone(),
         actions_rx,
     );
@@ -266,9 +272,11 @@ impl SharedStreamPacer {
 struct AppController<T = AstrcodeReqwestTransport> {
     client: AstrcodeClient<T>,
     state: CliState,
+    debug_tap: Option<crate::launcher::DebugLogTap>,
     actions_tx: mpsc::UnboundedSender<Action>,
     actions_rx: mpsc::UnboundedReceiver<Action>,
     pending_session_id: Option<String>,
+    pending_bootstrap_session_refresh: bool,
     stream_task: Option<JoinHandle<()>>,
     stream_pacer: SharedStreamPacer,
     should_quit: bool,
@@ -281,15 +289,18 @@ where
     fn new(
         client: AstrcodeClient<T>,
         state: CliState,
+        debug_tap: Option<crate::launcher::DebugLogTap>,
         actions_tx: mpsc::UnboundedSender<Action>,
         actions_rx: mpsc::UnboundedReceiver<Action>,
     ) -> Self {
         Self {
             client,
             state,
+            debug_tap,
             actions_tx,
             actions_rx,
             pending_session_id: None,
+            pending_bootstrap_session_refresh: false,
             stream_task: None,
             stream_pacer: SharedStreamPacer::default(),
             should_quit: false,
@@ -297,31 +308,8 @@ where
     }
 
     async fn bootstrap(&mut self) -> Result<()> {
-        self.refresh_sessions().await;
-        let sessions = self
-            .client
-            .list_sessions()
-            .await
-            .context("load sessions during bootstrap failed")?;
-        self.state.update_sessions(sessions.clone());
-
-        let session_id = if let Some(session) =
-            choose_initial_session(&sessions, self.state.shell.working_dir.as_deref())
-        {
-            session.session_id.clone()
-        } else {
-            let created = self
-                .client
-                .create_session(AstrcodeCreateSessionRequest {
-                    working_dir: required_working_dir(&self.state)?.display().to_string(),
-                })
-                .await
-                .context("create initial session failed")?;
-            self.state.update_sessions(vec![created.clone()]);
-            created.session_id
-        };
-
-        self.begin_session_hydration(session_id).await;
+        self.pending_bootstrap_session_refresh = true;
+        self.execute_command(crate::command::Command::New).await;
         Ok(())
     }
 
@@ -334,12 +322,18 @@ where
     async fn handle_action(&mut self, action: Action) -> Result<()> {
         match action {
             Action::Tick => {
+                if let Some(debug_tap) = &self.debug_tap {
+                    for line in debug_tap.drain() {
+                        self.state.push_debug_line(line);
+                    }
+                }
                 let (mode, pending, oldest) = self.stream_pacer.update_mode();
                 self.state.set_stream_mode(mode, pending, oldest);
             },
             Action::Quit => self.should_quit = true,
             Action::Resize { width, height } => self.state.set_viewport_size(width, height),
             Action::Key(key) => self.handle_key(key).await?,
+            Action::Paste(text) => self.handle_paste(text).await?,
             Action::SessionsRefreshed(result) => match result {
                 Ok(sessions) => {
                     self.state.update_sessions(sessions);
@@ -351,12 +345,19 @@ where
                 Ok(session) => {
                     let session_id = session.session_id.clone();
                     let mut sessions = self.state.conversation.sessions.clone();
+                    sessions.retain(|existing| existing.session_id != session_id);
                     sessions.push(session);
                     sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
                     self.state.update_sessions(sessions);
                     self.begin_session_hydration(session_id).await;
                 },
-                Err(error) => self.apply_status_error(error),
+                Err(error) => {
+                    self.apply_status_error(error);
+                    if self.pending_bootstrap_session_refresh {
+                        self.pending_bootstrap_session_refresh = false;
+                        self.refresh_sessions().await;
+                    }
+                },
             },
             Action::SnapshotLoaded { session_id, result } => {
                 if !self.pending_session_matches(session_id.as_str()) {
@@ -369,10 +370,18 @@ where
                         self.state
                             .set_status(format!("attached to session {}", session_id));
                         self.open_stream_for_active_session().await;
+                        if self.pending_bootstrap_session_refresh {
+                            self.pending_bootstrap_session_refresh = false;
+                            self.refresh_sessions().await;
+                        }
                     },
                     Err(error) => {
                         self.pending_session_id = None;
                         self.apply_hydration_error(error);
+                        if self.pending_bootstrap_session_refresh {
+                            self.pending_bootstrap_session_refresh = false;
+                            self.refresh_sessions().await;
+                        }
                     },
                 }
             },
@@ -444,6 +453,7 @@ where
         }
 
         match key.code {
+            KeyCode::F(2) => self.state.toggle_debug_overlay(),
             KeyCode::Esc => self.state.close_overlay(),
             KeyCode::Left => {
                 if !matches!(self.state.interaction.overlay, OverlayState::None) {
@@ -476,7 +486,13 @@ where
                 }
             },
             KeyCode::Enter => {
-                if let Some(selection) = self.state.selected_overlay() {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    if matches!(self.state.interaction.overlay, OverlayState::None)
+                        && matches!(self.state.interaction.pane_focus, PaneFocus::Composer)
+                    {
+                        self.state.insert_newline();
+                    }
+                } else if let Some(selection) = self.state.selected_overlay() {
                     self.execute_overlay_action(overlay_action(selection))
                         .await?;
                 } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
@@ -499,6 +515,7 @@ where
             },
             KeyCode::Char(ch) => {
                 if matches!(self.state.interaction.overlay, OverlayState::None) {
+                    self.state.interaction.pane_focus = PaneFocus::Composer;
                     self.state.push_input(ch);
                 } else {
                     self.state.overlay_query_push(ch);
@@ -508,6 +525,17 @@ where
             _ => {},
         }
 
+        Ok(())
+    }
+
+    async fn handle_paste(&mut self, text: String) -> Result<()> {
+        if matches!(self.state.interaction.overlay, OverlayState::None) {
+            self.state.interaction.pane_focus = PaneFocus::Composer;
+            self.state.append_input(text.as_str());
+        } else {
+            self.state.overlay_query_append(text.as_str());
+            self.refresh_overlay_query().await;
+        }
         Ok(())
     }
 
@@ -535,6 +563,11 @@ impl InputHandle {
                     match event::read() {
                         Ok(CrosstermEvent::Key(key)) => {
                             if actions_tx.send(Action::Key(key)).is_err() {
+                                break;
+                            }
+                        },
+                        Ok(CrosstermEvent::Paste(text)) => {
+                            if actions_tx.send(Action::Paste(text)).is_err() {
                                 break;
                             }
                         },
@@ -593,25 +626,6 @@ fn required_working_dir(state: &CliState) -> Result<&Path> {
         .working_dir
         .as_deref()
         .context("working directory is required for /new")
-}
-
-fn choose_initial_session<'a>(
-    sessions: &'a [AstrcodeSessionListItem],
-    working_dir: Option<&Path>,
-) -> Option<&'a AstrcodeSessionListItem> {
-    let working_dir = working_dir.map(|path| path.display().to_string());
-    sessions.iter().max_by(|left, right| {
-        let left_matches = working_dir
-            .as_ref()
-            .is_some_and(|working_dir| left.working_dir == *working_dir);
-        let right_matches = working_dir
-            .as_ref()
-            .is_some_and(|working_dir| right.working_dir == *working_dir);
-
-        left_matches
-            .cmp(&right_matches)
-            .then_with(|| left.updated_at.cmp(&right.updated_at))
-    })
 }
 
 fn filter_resume_sessions(
@@ -821,19 +835,6 @@ mod tests {
     }
 
     #[test]
-    fn chooses_most_recent_session_in_same_working_dir() {
-        let sessions = vec![
-            session("s1", "D:/repo-a", "older", "2026-04-15T10:00:00Z"),
-            session("s2", "D:/repo-b", "other", "2026-04-15T12:00:00Z"),
-            session("s3", "D:/repo-a", "newer", "2026-04-15T11:00:00Z"),
-        ];
-
-        let selected =
-            choose_initial_session(&sessions, Some(Path::new("D:/repo-a"))).expect("session");
-        assert_eq!(selected.session_id, "s3");
-    }
-
-    #[test]
     fn resume_filter_matches_title_and_working_dir() {
         let sessions = vec![
             session(
@@ -847,6 +848,173 @@ mod tests {
 
         assert_eq!(filter_resume_sessions(&sessions, "terminal").len(), 1);
         assert_eq!(filter_resume_sessions(&sessions, "repo-a").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_creates_fresh_session_instead_of_restoring_existing_one() {
+        let transport = MockTransport::default();
+        let existing = session("session-old", "D:/repo-a", "old", "2026-04-15T10:00:00Z");
+        let created = session("session-new", "D:/repo-a", "new", "2026-04-15T12:30:00Z");
+
+        transport.push(MockCall::Request {
+            expected: AstrcodeTransportRequest {
+                method: AstrcodeTransportMethod::Post,
+                url: "http://localhost:5529/api/sessions".to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: Some(json!({
+                    "workingDir": "D:/repo-a"
+                })),
+            },
+            result: Ok(AstrcodeTransportResponse {
+                status: 201,
+                body: serde_json::to_string(&created).expect("session should serialize"),
+            }),
+        });
+        transport.push(MockCall::Request {
+            expected: AstrcodeTransportRequest {
+                method: AstrcodeTransportMethod::Get,
+                url: "http://localhost:5529/api/v1/conversation/sessions/session-new/snapshot"
+                    .to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: None,
+            },
+            result: Ok(snapshot_response("session-new", "new")),
+        });
+        transport.push(MockCall::Stream {
+            expected: AstrcodeTransportRequest {
+                method: AstrcodeTransportMethod::Get,
+                url: "http://localhost:5529/api/v1/conversation/sessions/session-new/stream"
+                    .to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: vec![("cursor".to_string(), "cursor:session-new".to_string())],
+                json_body: None,
+            },
+            events: Vec::new(),
+        });
+        transport.push(MockCall::Request {
+            expected: AstrcodeTransportRequest {
+                method: AstrcodeTransportMethod::Get,
+                url: "http://localhost:5529/api/sessions".to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: None,
+            },
+            result: Ok(AstrcodeTransportResponse {
+                status: 200,
+                body: serde_json::to_string(&vec![created.clone(), existing])
+                    .expect("sessions should serialize"),
+            }),
+        });
+
+        let (actions_tx, actions_rx) = mpsc::unbounded_channel();
+        let mut controller = AppController::new(
+            client_with_transport(transport.clone()),
+            CliState::new(
+                "http://localhost:5529".to_string(),
+                Some(PathBuf::from("D:/repo-a")),
+                ascii_capabilities(),
+            ),
+            None,
+            actions_tx,
+            actions_rx,
+        );
+        controller.state.update_sessions(vec![session(
+            "session-old",
+            "D:/repo-a",
+            "old",
+            "2026-04-15T10:00:00Z",
+        )]);
+
+        controller
+            .bootstrap()
+            .await
+            .expect("bootstrap should succeed");
+        handle_next_action(&mut controller).await;
+        handle_next_action(&mut controller).await;
+        handle_next_action(&mut controller).await;
+
+        assert_eq!(
+            controller.state.conversation.active_session_id.as_deref(),
+            Some("session-new")
+        );
+        assert!(
+            controller
+                .state
+                .conversation
+                .sessions
+                .iter()
+                .any(|session| session.session_id == "session-new"),
+            "bootstrap should attach the freshly created session"
+        );
+        transport.assert_consumed();
+    }
+
+    #[tokio::test]
+    async fn bootstrap_create_failure_surfaces_error_without_attaching_old_session() {
+        let transport = MockTransport::default();
+        let existing = session("session-old", "D:/repo-a", "old", "2026-04-15T10:00:00Z");
+
+        transport.push(MockCall::Request {
+            expected: AstrcodeTransportRequest {
+                method: AstrcodeTransportMethod::Post,
+                url: "http://localhost:5529/api/sessions".to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: Some(json!({
+                    "workingDir": "D:/repo-a"
+                })),
+            },
+            result: Err(AstrcodeTransportError::Http {
+                status: 500,
+                body: json!({
+                    "code": "transport_unavailable",
+                    "message": "create failed"
+                })
+                .to_string(),
+            }),
+        });
+        transport.push(MockCall::Request {
+            expected: AstrcodeTransportRequest {
+                method: AstrcodeTransportMethod::Get,
+                url: "http://localhost:5529/api/sessions".to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: None,
+            },
+            result: Ok(AstrcodeTransportResponse {
+                status: 200,
+                body: serde_json::to_string(&vec![existing.clone()])
+                    .expect("sessions should serialize"),
+            }),
+        });
+
+        let (actions_tx, actions_rx) = mpsc::unbounded_channel();
+        let mut controller = AppController::new(
+            client_with_transport(transport.clone()),
+            CliState::new(
+                "http://localhost:5529".to_string(),
+                Some(PathBuf::from("D:/repo-a")),
+                ascii_capabilities(),
+            ),
+            None,
+            actions_tx,
+            actions_rx,
+        );
+        controller.state.update_sessions(vec![existing]);
+
+        controller
+            .bootstrap()
+            .await
+            .expect("bootstrap should succeed");
+        handle_next_action(&mut controller).await;
+        handle_next_action(&mut controller).await;
+
+        assert_eq!(controller.state.conversation.active_session_id, None);
+        assert!(controller.state.interaction.status.is_error);
+        assert_eq!(controller.state.interaction.status.message, "create failed");
+        transport.assert_consumed();
     }
 
     #[tokio::test]
@@ -969,6 +1137,7 @@ mod tests {
                 Some(PathBuf::from("D:/repo-a")),
                 ascii_capabilities(),
             ),
+            None,
             actions_tx,
             actions_rx,
         );
