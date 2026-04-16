@@ -784,7 +784,7 @@ mod tests {
         assert!(!result.ok);
         let error = result.error.unwrap_or_default();
         assert!(error.contains("device files"));
-        assert!(result.metadata.unwrap()["deviceFile"] == json!(true));
+        assert!(result.metadata.expect("metadata should exist")["deviceFile"] == json!(true));
     }
 
     #[tokio::test]

@@ -180,15 +180,15 @@ mod tests {
     #[tokio::test]
     async fn test_start_sets_active() {
         let mut transport = SseTransport::new("http://localhost:8080/sse", Vec::new());
-        transport.start().await.unwrap();
+        transport.start().await.expect("start should succeed");
         assert!(transport.is_active());
     }
 
     #[tokio::test]
     async fn test_close_deactivates() {
         let mut transport = SseTransport::new("http://localhost:8080/sse", Vec::new());
-        transport.start().await.unwrap();
-        transport.close().await.unwrap();
+        transport.start().await.expect("start should succeed");
+        transport.close().await.expect("close should succeed");
         assert!(!transport.is_active());
     }
 

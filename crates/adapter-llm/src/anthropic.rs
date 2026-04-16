@@ -2150,7 +2150,13 @@ mod tests {
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         assert!(body.get("system").is_some_and(Value::is_array));
-        assert_eq!(body["system"].as_array().unwrap().len(), 7);
+        assert_eq!(
+            body["system"]
+                .as_array()
+                .expect("system should be an array")
+                .len(),
+            7
+        );
 
         // Stable 层内的前两个 block 不应该有 cache_control
         assert!(

@@ -158,7 +158,7 @@ mod tests {
     fn test_resolve_mcp_json_path() {
         let dir = std::env::temp_dir().join("mcp_hot_reload_test_resolve");
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("temp dir should be created");
 
         let path = resolve_mcp_json_path(&dir);
         assert_eq!(path, dir.join(".mcp.json"));
@@ -170,8 +170,8 @@ mod tests {
     fn test_resolve_existing_mcp_json() {
         let dir = std::env::temp_dir().join("mcp_hot_reload_test_existing");
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(".mcp.json"), "{}").unwrap();
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        fs::write(dir.join(".mcp.json"), "{}").expect("write .mcp.json");
 
         let path = resolve_mcp_json_path(&dir);
         assert!(path.exists());

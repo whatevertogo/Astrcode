@@ -322,7 +322,7 @@ mod tests {
             version: String::new(),
             ..Config::default()
         };
-        let result = normalize_config(config).unwrap();
+        let result = normalize_config(config).expect("normalize should succeed");
         assert_eq!(result.version, "1");
     }
 

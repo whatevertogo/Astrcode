@@ -1709,7 +1709,7 @@ async fn wait_for_inbox_resolves_on_terminate_subtree() {
         result.is_some(),
         "wait_for_inbox should return Some after terminate"
     );
-    let handle = result.unwrap();
+    let handle = result.expect("result should be Some after terminate");
     assert!(
         handle.lifecycle.is_final(),
         "handle should be in final state after terminate, got {:?}",

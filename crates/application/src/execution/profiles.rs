@@ -290,9 +290,9 @@ mod tests {
             test_profile("plan"),
         ]));
         let service = ProfileResolutionService::new(provider.clone());
-        let dir = std::env::current_dir().unwrap();
+        let dir = std::env::current_dir().expect("current_dir should be available");
 
-        let profiles = service.resolve(&dir).unwrap();
+        let profiles = service.resolve(&dir).expect("resolve should succeed");
         assert_eq!(profiles.len(), 2);
         assert_eq!(provider.load_count(), 1);
     }
@@ -301,10 +301,10 @@ mod tests {
     fn resolve_hits_cache_on_second_call() {
         let provider = Arc::new(StubProfileProvider::new(vec![test_profile("explore")]));
         let service = ProfileResolutionService::new(provider.clone());
-        let dir = std::env::current_dir().unwrap();
+        let dir = std::env::current_dir().expect("current_dir should be available");
 
-        let _first = service.resolve(&dir).unwrap();
-        let second = service.resolve(&dir).unwrap();
+        let _first = service.resolve(&dir).expect("resolve should succeed");
+        let second = service.resolve(&dir).expect("resolve should succeed");
         assert_eq!(second.len(), 1);
         assert_eq!(provider.load_count(), 1, "不应重复加载");
     }
@@ -316,9 +316,11 @@ mod tests {
             test_profile("plan"),
         ]));
         let service = ProfileResolutionService::new(provider);
-        let dir = std::env::current_dir().unwrap();
+        let dir = std::env::current_dir().expect("current_dir should be available");
 
-        let profile = service.find_profile(&dir, "plan").unwrap();
+        let profile = service
+            .find_profile(&dir, "plan")
+            .expect("find_profile should find 'plan'");
         assert_eq!(profile.id, "plan");
     }
 
@@ -326,9 +328,11 @@ mod tests {
     fn find_profile_returns_not_found_when_missing() {
         let provider = Arc::new(StubProfileProvider::new(vec![test_profile("explore")]));
         let service = ProfileResolutionService::new(provider);
-        let dir = std::env::current_dir().unwrap();
+        let dir = std::env::current_dir().expect("current_dir should be available");
 
-        let err = service.find_profile(&dir, "nonexistent").unwrap_err();
+        let err = service
+            .find_profile(&dir, "nonexistent")
+            .expect_err("find_profile should fail for nonexistent");
         assert!(
             matches!(err, ApplicationError::NotFound(ref msg) if msg.contains("nonexistent")),
             "should be NotFound: {err}"
@@ -339,12 +343,14 @@ mod tests {
     fn find_profile_returns_not_found_even_with_cache_hit() {
         let provider = Arc::new(StubProfileProvider::new(vec![test_profile("explore")]));
         let service = ProfileResolutionService::new(provider);
-        let dir = std::env::current_dir().unwrap();
+        let dir = std::env::current_dir().expect("current_dir should be available");
 
         // 首次访问，缓存生效
-        let _ = service.resolve(&dir).unwrap();
+        let _ = service.resolve(&dir).expect("resolve should succeed");
         // 再次查询不存在的 profile：命中缓存但返回 NotFound
-        let err = service.find_profile(&dir, "missing").unwrap_err();
+        let err = service
+            .find_profile(&dir, "missing")
+            .expect_err("find_profile should fail for missing");
         assert!(
             matches!(err, ApplicationError::NotFound(_)),
             "缓存命中不影响业务校验: {err}"
@@ -355,13 +361,13 @@ mod tests {
     fn invalidate_clears_cache_for_path() {
         let provider = Arc::new(StubProfileProvider::new(vec![test_profile("explore")]));
         let service = ProfileResolutionService::new(provider.clone());
-        let dir = std::env::current_dir().unwrap();
+        let dir = std::env::current_dir().expect("current_dir should be available");
 
-        let _ = service.resolve(&dir).unwrap();
+        let _ = service.resolve(&dir).expect("resolve should succeed");
         assert_eq!(provider.load_count(), 1);
 
         service.invalidate(&dir);
-        let _ = service.resolve(&dir).unwrap();
+        let _ = service.resolve(&dir).expect("resolve should succeed");
         assert_eq!(provider.load_count(), 2, "失效后应重新加载");
     }
 
@@ -369,15 +375,19 @@ mod tests {
     fn invalidate_all_clears_everything() {
         let provider = Arc::new(StubProfileProvider::new(vec![test_profile("explore")]));
         let service = ProfileResolutionService::new(provider.clone());
-        let dir = std::env::current_dir().unwrap();
+        let dir = std::env::current_dir().expect("current_dir should be available");
 
-        let _ = service.resolve(&dir).unwrap();
-        let _ = service.resolve_global().unwrap();
+        let _ = service.resolve(&dir).expect("resolve should succeed");
+        let _ = service
+            .resolve_global()
+            .expect("resolve_global should succeed");
 
         service.invalidate_all();
 
-        let _ = service.resolve(&dir).unwrap();
-        let _ = service.resolve_global().unwrap();
+        let _ = service.resolve(&dir).expect("resolve should succeed");
+        let _ = service
+            .resolve_global()
+            .expect("resolve_global should succeed");
         assert_eq!(provider.load_count(), 2, "全部失效后应重新加载");
         assert_eq!(provider.global_count(), 2, "全部失效后应重新加载全局");
     }
@@ -387,8 +397,12 @@ mod tests {
         let provider = Arc::new(StubProfileProvider::new(vec![test_profile("explore")]));
         let service = ProfileResolutionService::new(provider.clone());
 
-        let _first = service.resolve_global().unwrap();
-        let second = service.resolve_global().unwrap();
+        let _first = service
+            .resolve_global()
+            .expect("resolve_global should succeed");
+        let second = service
+            .resolve_global()
+            .expect("resolve_global should succeed");
         assert_eq!(second.len(), 1);
         assert_eq!(provider.global_count(), 1, "全局缓存应命中");
     }
@@ -401,7 +415,9 @@ mod tests {
         ]));
         let service = ProfileResolutionService::new(provider);
 
-        let profile = service.find_global_profile("plan").unwrap();
+        let profile = service
+            .find_global_profile("plan")
+            .expect("find_global_profile should find 'plan'");
         assert_eq!(profile.id, "plan");
     }
 
@@ -410,7 +426,9 @@ mod tests {
         let provider = Arc::new(StubProfileProvider::new(vec![]));
         let service = ProfileResolutionService::new(provider);
 
-        let err = service.find_global_profile("nobody").unwrap_err();
+        let err = service
+            .find_global_profile("nobody")
+            .expect_err("find_global_profile should fail for 'nobody'");
         assert!(
             matches!(err, ApplicationError::NotFound(ref msg) if msg.contains("nobody")),
             "should be NotFound: {err}"
@@ -421,16 +439,20 @@ mod tests {
     fn invalidate_global_also_clears_scoped_cache() {
         let provider = Arc::new(MutableProfileProvider::new(vec![test_profile("explore")]));
         let service = ProfileResolutionService::new(provider.clone());
-        let dir = std::env::current_dir().unwrap();
+        let dir = std::env::current_dir().expect("current_dir should be available");
 
-        let _ = service.resolve(&dir).unwrap();
-        let _ = service.resolve_global().unwrap();
+        let _ = service.resolve(&dir).expect("resolve should succeed");
+        let _ = service
+            .resolve_global()
+            .expect("resolve_global should succeed");
         assert_eq!(provider.load_count(), 1);
         assert_eq!(provider.global_count(), 1);
 
         service.invalidate_global();
-        let _ = service.resolve(&dir).unwrap();
-        let _ = service.resolve_global().unwrap();
+        let _ = service.resolve(&dir).expect("resolve should succeed");
+        let _ = service
+            .resolve_global()
+            .expect("resolve_global should succeed");
         assert_eq!(provider.load_count(), 2, "全局失效也应清理 scoped cache");
         assert_eq!(provider.global_count(), 2, "全局 cache 应重新加载");
     }
@@ -439,9 +461,9 @@ mod tests {
     fn invalidate_reloads_future_requests_without_mutating_existing_snapshot() {
         let provider = Arc::new(MutableProfileProvider::new(vec![test_profile("explore")]));
         let service = ProfileResolutionService::new(provider.clone());
-        let dir = std::env::current_dir().unwrap();
+        let dir = std::env::current_dir().expect("current_dir should be available");
 
-        let first = service.resolve(&dir).unwrap();
+        let first = service.resolve(&dir).expect("resolve should succeed");
         assert_eq!(first[0].description, "test explore");
 
         provider.replace_profiles(vec![AgentProfile {
@@ -449,7 +471,7 @@ mod tests {
             ..test_profile("explore")
         }]);
         service.invalidate(&dir);
-        let second = service.resolve(&dir).unwrap();
+        let second = service.resolve(&dir).expect("resolve should succeed");
 
         assert_eq!(first[0].description, "test explore");
         assert_eq!(second[0].description, "updated explore");

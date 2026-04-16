@@ -219,7 +219,10 @@ mod tests {
 
         let file_path = dir.path().join("tool-results/call-abc123.txt");
         assert!(file_path.exists());
-        assert_eq!(fs::read_to_string(&file_path).unwrap(), content);
+        assert_eq!(
+            fs::read_to_string(&file_path).expect("persisted file should be readable"),
+            content
+        );
     }
 
     #[test]

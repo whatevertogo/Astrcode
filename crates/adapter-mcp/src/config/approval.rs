@@ -165,7 +165,11 @@ mod tests {
             &self,
             _project_path: &str,
         ) -> std::result::Result<Vec<McpApprovalData>, String> {
-            Ok(self.approvals.lock().unwrap().clone())
+            Ok(self
+                .approvals
+                .lock()
+                .expect("mock lock should not be poisoned")
+                .clone())
         }
 
         fn save_approval(
@@ -173,7 +177,10 @@ mod tests {
             _project_path: &str,
             data: &McpApprovalData,
         ) -> std::result::Result<(), String> {
-            let mut approvals = self.approvals.lock().unwrap();
+            let mut approvals = self
+                .approvals
+                .lock()
+                .expect("mock lock should not be poisoned");
             // 更新或新增
             if let Some(existing) = approvals
                 .iter_mut()
@@ -187,7 +194,10 @@ mod tests {
         }
 
         fn clear_approvals(&self, _project_path: &str) -> std::result::Result<(), String> {
-            self.approvals.lock().unwrap().clear();
+            self.approvals
+                .lock()
+                .expect("mock lock should not be poisoned")
+                .clear();
             Ok(())
         }
     }
@@ -209,7 +219,7 @@ mod tests {
 
         manager
             .approve("/project", "stdio:npx:server", "user")
-            .unwrap();
+            .expect("approve should succeed");
 
         assert!(manager.is_approved("/project", "stdio:npx:server"));
         assert_eq!(
@@ -223,7 +233,9 @@ mod tests {
         let store = MockSettingsStore::new();
         let manager = McpApprovalManager::new(Box::new(store));
 
-        manager.reject("/project", "stdio:npx:server").unwrap();
+        manager
+            .reject("/project", "stdio:npx:server")
+            .expect("reject should succeed");
 
         assert!(!manager.is_approved("/project", "stdio:npx:server"));
         assert_eq!(
@@ -237,12 +249,16 @@ mod tests {
         let store = MockSettingsStore::new();
 
         // 预先添加一个 pending 状态的服务器
-        store.approvals.lock().unwrap().push(McpApprovalData {
-            server_signature: "stdio:npx:server-a".to_string(),
-            status: McpApprovalStatus::Pending,
-            approved_at: None,
-            approved_by: None,
-        });
+        store
+            .approvals
+            .lock()
+            .expect("mock lock should not be poisoned")
+            .push(McpApprovalData {
+                server_signature: "stdio:npx:server-a".to_string(),
+                status: McpApprovalStatus::Pending,
+                approved_at: None,
+                approved_by: None,
+            });
 
         let manager = McpApprovalManager::new(Box::new(store));
 
@@ -256,33 +272,45 @@ mod tests {
         let store = MockSettingsStore::new();
         let manager = McpApprovalManager::new(Box::new(store));
 
-        manager.reject("/project", "stdio:npx:server").unwrap();
+        manager
+            .reject("/project", "stdio:npx:server")
+            .expect("reject should succeed");
         assert!(!manager.is_approved("/project", "stdio:npx:server"));
 
         manager
             .approve("/project", "stdio:npx:server", "admin")
-            .unwrap();
+            .expect("approve should succeed");
         assert!(manager.is_approved("/project", "stdio:npx:server"));
     }
 
     #[test]
     fn test_approve_all() {
         let store = MockSettingsStore::new();
-        store.approvals.lock().unwrap().push(McpApprovalData {
-            server_signature: "stdio:npx:server-a".to_string(),
-            status: McpApprovalStatus::Pending,
-            approved_at: None,
-            approved_by: None,
-        });
-        store.approvals.lock().unwrap().push(McpApprovalData {
-            server_signature: "stdio:npx:server-b".to_string(),
-            status: McpApprovalStatus::Rejected,
-            approved_at: None,
-            approved_by: None,
-        });
+        store
+            .approvals
+            .lock()
+            .expect("mock lock should not be poisoned")
+            .push(McpApprovalData {
+                server_signature: "stdio:npx:server-a".to_string(),
+                status: McpApprovalStatus::Pending,
+                approved_at: None,
+                approved_by: None,
+            });
+        store
+            .approvals
+            .lock()
+            .expect("mock lock should not be poisoned")
+            .push(McpApprovalData {
+                server_signature: "stdio:npx:server-b".to_string(),
+                status: McpApprovalStatus::Rejected,
+                approved_at: None,
+                approved_by: None,
+            });
 
         let manager = McpApprovalManager::new(Box::new(store));
-        let count = manager.approve_all("/project", "admin").unwrap();
+        let count = manager
+            .approve_all("/project", "admin")
+            .expect("approve_all should succeed");
         assert_eq!(count, 2);
 
         assert!(manager.is_approved("/project", "stdio:npx:server-a"));
@@ -292,18 +320,26 @@ mod tests {
     #[test]
     fn test_all_server_statuses() {
         let store = MockSettingsStore::new();
-        store.approvals.lock().unwrap().push(McpApprovalData {
-            server_signature: "stdio:npx:server-a".to_string(),
-            status: McpApprovalStatus::Approved,
-            approved_at: Some("t=123".to_string()),
-            approved_by: Some("user".to_string()),
-        });
-        store.approvals.lock().unwrap().push(McpApprovalData {
-            server_signature: "stdio:npx:server-b".to_string(),
-            status: McpApprovalStatus::Pending,
-            approved_at: None,
-            approved_by: None,
-        });
+        store
+            .approvals
+            .lock()
+            .expect("mock lock should not be poisoned")
+            .push(McpApprovalData {
+                server_signature: "stdio:npx:server-a".to_string(),
+                status: McpApprovalStatus::Approved,
+                approved_at: Some("t=123".to_string()),
+                approved_by: Some("user".to_string()),
+            });
+        store
+            .approvals
+            .lock()
+            .expect("mock lock should not be poisoned")
+            .push(McpApprovalData {
+                server_signature: "stdio:npx:server-b".to_string(),
+                status: McpApprovalStatus::Pending,
+                approved_at: None,
+                approved_by: None,
+            });
 
         let manager = McpApprovalManager::new(Box::new(store));
         let statuses = manager.all_server_statuses("/project");

@@ -234,7 +234,10 @@ mod tests {
         let normalized = catalog.base_skills();
         let git_skill = normalized.iter().find(|s| s.id == "git-commit");
         assert!(git_skill.is_some());
-        assert_eq!(git_skill.unwrap().source, SkillSource::Plugin);
+        assert_eq!(
+            git_skill.expect("git-commit skill should exist").source,
+            SkillSource::Plugin
+        );
     }
 
     #[test]

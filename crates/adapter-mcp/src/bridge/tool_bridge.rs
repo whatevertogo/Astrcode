@@ -263,7 +263,9 @@ mod tests {
     #[tokio::test]
     async fn test_bridge_capability_spec() {
         let (mock_transport, _) = create_connected_mock().await;
-        let client = McpClient::connect(mock_transport).await.unwrap();
+        let client = McpClient::connect(mock_transport)
+            .await
+            .expect("client connect should succeed");
 
         let bridge = McpToolBridge::new(
             "test-server",

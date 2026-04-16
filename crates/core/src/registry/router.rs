@@ -1,6 +1,6 @@
 //! # 能力路由契约
 //!
-//! core 仅保留能力调用相关的契约与 DTO，具体路由实现下沉到 runtime-registry。
+//! core 仅保留能力调用相关的契约与 DTO，具体路由实现下沉到 adapter 层
 
 use std::{fmt, path::PathBuf, sync::Arc};
 

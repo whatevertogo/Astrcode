@@ -145,10 +145,19 @@ async fn subrun_status_contract_returns_default_for_missing_subrun() {
     assert_eq!(payload["subRunId"], "missing-subrun");
     // lifecycle 和 source 序列化为小写枚举值
     assert_eq!(
-        payload["lifecycle"].as_str().unwrap().to_lowercase(),
+        payload["lifecycle"]
+            .as_str()
+            .expect("lifecycle should be a string")
+            .to_lowercase(),
         "idle"
     );
-    assert_eq!(payload["source"].as_str().unwrap().to_lowercase(), "live");
+    assert_eq!(
+        payload["source"]
+            .as_str()
+            .expect("source should be a string")
+            .to_lowercase(),
+        "live"
+    );
 }
 
 #[tokio::test]

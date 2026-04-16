@@ -267,15 +267,15 @@ mod tests {
     #[tokio::test]
     async fn test_start_sets_active() {
         let mut transport = StreamableHttpTransport::new("http://localhost:8080/mcp", Vec::new());
-        transport.start().await.unwrap();
+        transport.start().await.expect("start should succeed");
         assert!(transport.is_active());
     }
 
     #[tokio::test]
     async fn test_close_deactivates() {
         let mut transport = StreamableHttpTransport::new("http://localhost:8080/mcp", Vec::new());
-        transport.start().await.unwrap();
-        transport.close().await.unwrap();
+        transport.start().await.expect("start should succeed");
+        transport.close().await.expect("close should succeed");
         assert!(!transport.is_active());
     }
 
@@ -300,7 +300,7 @@ mod tests {
         let event =
             "id:1\nevent:message\ndata:{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}";
         let response = parse_sse_event_jsonrpc(event)
-            .unwrap()
+            .expect("parsing should succeed")
             .expect("json-rpc response");
         assert_eq!(response.id, Some(serde_json::json!(1)));
     }

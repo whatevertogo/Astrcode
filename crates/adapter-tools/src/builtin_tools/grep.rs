@@ -1309,12 +1309,50 @@ mod tests {
         let matches: Vec<GrepMatch> =
             serde_json::from_str(&result.output).expect("output should be valid json");
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].before.as_ref().unwrap().len(), 2);
-        assert_eq!(matches[0].before.as_ref().unwrap()[0], "line1");
-        assert_eq!(matches[0].before.as_ref().unwrap()[1], "line2");
-        assert_eq!(matches[0].after.as_ref().unwrap().len(), 2);
-        assert_eq!(matches[0].after.as_ref().unwrap()[0], "line4");
-        assert_eq!(matches[0].after.as_ref().unwrap()[1], "line5");
+        assert_eq!(
+            matches[0]
+                .before
+                .as_ref()
+                .expect("before context should exist")
+                .len(),
+            2
+        );
+        assert_eq!(
+            matches[0]
+                .before
+                .as_ref()
+                .expect("before context should exist")[0],
+            "line1"
+        );
+        assert_eq!(
+            matches[0]
+                .before
+                .as_ref()
+                .expect("before context should exist")[1],
+            "line2"
+        );
+        assert_eq!(
+            matches[0]
+                .after
+                .as_ref()
+                .expect("after context should exist")
+                .len(),
+            2
+        );
+        assert_eq!(
+            matches[0]
+                .after
+                .as_ref()
+                .expect("after context should exist")[0],
+            "line4"
+        );
+        assert_eq!(
+            matches[0]
+                .after
+                .as_ref()
+                .expect("after context should exist")[1],
+            "line5"
+        );
     }
 
     #[tokio::test]
@@ -1445,14 +1483,14 @@ mod tests {
 
     #[test]
     fn extract_match_text_returns_first_capture_group() {
-        let re = regex::Regex::new(r"fn\s+(\w+)").unwrap();
+        let re = regex::Regex::new(r"fn\s+(\w+)").expect("regex should compile");
         let text = extract_match_text(&re, "pub fn greet(name: &str)");
         assert_eq!(text, Some("greet".to_string()));
     }
 
     #[test]
     fn extract_match_text_returns_full_match_when_no_groups() {
-        let re = regex::Regex::new(r"pub fn").unwrap();
+        let re = regex::Regex::new(r"pub fn").expect("regex should compile");
         let text = extract_match_text(&re, "pub fn main()");
         assert_eq!(text, Some("pub fn".to_string()));
     }

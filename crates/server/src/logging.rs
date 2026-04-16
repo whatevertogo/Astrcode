@@ -385,20 +385,20 @@ mod tests {
 
     #[test]
     fn cleanup_removes_oldest_archives_over_limit() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir should be created");
         // 创建超过上限的归档文件
         for i in 0..12 {
             let name = format!("server-2026-04-12-{i:02}0000-000-pid12345.log");
-            File::create(dir.path().join(&name)).unwrap();
+            File::create(dir.path().join(&name)).expect("archive file should be created");
         }
-        File::create(dir.path().join("server-current.log")).unwrap();
-        File::create(dir.path().join("server-latest.txt")).unwrap();
-        File::create(dir.path().join("other.txt")).unwrap();
+        File::create(dir.path().join("server-current.log")).expect("create server-current.log");
+        File::create(dir.path().join("server-latest.txt")).expect("create server-latest.txt");
+        File::create(dir.path().join("other.txt")).expect("create other.txt");
 
         cleanup_old_archives(dir.path());
 
         let archive_count = fs::read_dir(dir.path())
-            .unwrap()
+            .expect("read_dir should succeed")
             .filter(|e| {
                 e.as_ref()
                     .ok()
@@ -412,14 +412,14 @@ mod tests {
 
     #[test]
     fn cleanup_ignores_current_latest_and_unrelated_files() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir should be created");
         for i in 0..12 {
             let name = format!("server-2026-04-12-{i:02}0000-000-pid12345.log");
-            File::create(dir.path().join(&name)).unwrap();
+            File::create(dir.path().join(&name)).expect("archive file should be created");
         }
-        File::create(dir.path().join("server-current.log")).unwrap();
-        File::create(dir.path().join("server-latest.txt")).unwrap();
-        File::create(dir.path().join("other.txt")).unwrap();
+        File::create(dir.path().join("server-current.log")).expect("create server-current.log");
+        File::create(dir.path().join("server-latest.txt")).expect("create server-latest.txt");
+        File::create(dir.path().join("other.txt")).expect("create other.txt");
 
         cleanup_old_archives(dir.path());
 
@@ -430,18 +430,23 @@ mod tests {
 
     #[test]
     fn cleanup_does_nothing_when_under_limit() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir should be created");
         for i in 0..5 {
             let name = format!("server-2026-04-12-{i:02}0000-000-pid12345.log");
-            File::create(dir.path().join(&name)).unwrap();
+            File::create(dir.path().join(&name)).expect("archive file should be created");
         }
         cleanup_old_archives(dir.path());
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 5);
+        assert_eq!(
+            fs::read_dir(dir.path())
+                .expect("read_dir should succeed")
+                .count(),
+            5
+        );
     }
 
     #[test]
     fn cleanup_handles_missing_dir_gracefully() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir should be created");
         let missing = dir.path().join("missing");
         // 不应 panic
         cleanup_old_archives(&missing);
@@ -449,7 +454,7 @@ mod tests {
 
     #[test]
     fn archive_file_retries_on_collision() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir should be created");
         let pid = std::process::id();
         let now = Local::now();
         // 覆盖当前秒和接下来 3 秒的所有毫秒候选文件名，
@@ -459,11 +464,12 @@ mod tests {
             let timestamp = t.format("%Y-%m-%d-%H%M%S");
             for ms in 0..1000u32 {
                 let name = format!("server-{timestamp}-{ms:03}-pid{pid}.log");
-                File::create(dir.path().join(&name)).unwrap();
+                File::create(dir.path().join(&name)).expect("archive file should be created");
             }
         }
         // 所有首选候选都被占，create_archive_file 必须走 -N 后缀重试
-        let (_file, retried_name) = create_archive_file(dir.path()).unwrap();
+        let (_file, retried_name) =
+            create_archive_file(dir.path()).expect("archive file should be created after retry");
         assert!(
             retried_name.contains("-1.log")
                 || retried_name.contains("-2.log")
@@ -474,13 +480,14 @@ mod tests {
 
     #[test]
     fn current_file_is_truncated_on_restart() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir should be created");
         // 先写入旧内容
-        fs::write(dir.path().join(CURRENT_LOG_NAME), "old content").unwrap();
+        fs::write(dir.path().join(CURRENT_LOG_NAME), "old content").expect("write old content");
         // 重新创建应截断
-        let file = create_current_file(dir.path()).unwrap();
+        let file = create_current_file(dir.path()).expect("create current file");
         drop(file);
-        let content = fs::read_to_string(dir.path().join(CURRENT_LOG_NAME)).unwrap();
+        let content =
+            fs::read_to_string(dir.path().join(CURRENT_LOG_NAME)).expect("read current file");
         assert!(content.is_empty());
     }
 }
