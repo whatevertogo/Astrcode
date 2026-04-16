@@ -1,30 +1,52 @@
 # AstrCode
 
-一个 AI 编程助手应用，支持桌面端（Tauri）和浏览器端，基于 HTTP/SSE Server 架构实现前后端解耦。
+一个 AI 编程助手，支持桌面端（Tauri）、浏览器端和终端（CLI），基于 Rust + React 构建的 HTTP/SSE 分层架构。
 
 ## 功能特性
 
-- **多模型支持**：支持 OpenAI 兼容 API（DeepSeek、OpenAI 等），运行时可切换 Profile 和 Model
-- **流式响应**：实时显示 AI 生成的代码和文本
-- **多工具调用**：内置文件操作、代码搜索、Shell 执行等工具
-- **会话管理**：支持多会话切换、按项目分组、会话历史浏览
-- **插件系统**：支持 stdio 插件扩展能力
-- **双模式运行**：
+- **多模型支持**：支持 Anthropic Claude、OpenAI 兼容 API（DeepSeek、OpenAI 等），运行时切换 Profile 和 Model
+- **流式响应**：实时显示 AI 生成的代码和文本，支持 thinking 内容展示
+- **内置工具集**：文件读写、编辑、搜索、Shell 执行、Skill 加载等
+- **Agent 协作**：支持主/子 Agent 模式，内置 spawn / send / observe / close 工具链
+- **Skill 系统**：Claude 风格两阶段 Skill 加载，支持项目级、用户级和内置 Skill
+- **MCP 支持**：完整的 Model Context Protocol 接入，支持 stdio / HTTP / SSE 传输
+- **插件系统**：基于 stdio JSON-RPC 的插件扩展，提供 Rust SDK(未完善)
+- **会话管理**：多会话切换、按项目分组、事件溯源持久化、会话历史浏览
+- **三种运行模式**：
   - **桌面端**：Tauri 打包，自动管理本地 Server
   - **浏览器端**：独立运行 Server，浏览器访问
+  - **终端**：ratatui TUI 界面，本地或远程连接 Server
+
+## 技术栈
+
+| 层级 | 技术 |
+|------|------|
+| 后端 | Rust (nightly), Axum, Tokio, Tower |
+| 前端 | React 18, TypeScript, Vite, Tailwind CSS |
+| 桌面端 | Tauri 2 |
+| 终端 | ratatui, crossterm |
+| 通信 | HTTP/SSE, JSON-RPC (stdio) |
+| 持久化 | JSONL 事件日志, 文件系统存储 |
+| CI | GitHub Actions, cargo-deny |
 
 ## 内置工具
 
 | 工具 | 描述 |
 |------|------|
 | `Skill` | 按需加载 Claude 风格 `SKILL.md` 指南与 `references/` / `scripts/` 等资源 |
-| `read_file` | 读取文件内容 |
-| `write_file` | 写入或创建文件，并返回结构化 diff metadata |
-| `edit_file` | 精确替换文件内容（唯一匹配验证），并返回结构化 diff metadata |
-| `list_dir` | 列出目录内容 |
-| `find_files` | Glob 模式文件搜索 |
+| `readFile` | 读取文件内容 |
+| `writeFile` | 写入或创建文件，并返回结构化 diff metadata |
+| `editFile` | 精确替换文件内容（唯一匹配验证），并返回结构化 diff metadata |
+| `apply_patch` | 应用 unified diff 格式的多文件批量变更 |
+| `listDir` | 列出目录内容 |
+| `findFiles` | Glob 模式文件搜索 |
 | `grep` | 正则表达式内容搜索 |
 | `shell` | 执行 Shell 命令，stdout/stderr 以流式事件增量展示 |
+| `tool_search` | 搜索可用工具 |
+| `spawn` | 创建子 Agent |
+| `send` | 向 Agent 发送消息 |
+| `observe` | 观察 Agent 状态 |
+| `close` | 关闭 Agent |
 
 ## 快速开始
 
@@ -44,11 +66,11 @@ npm install
 cd frontend && npm install
 ```
 
-执行根目录或 `frontend` 的 `npm install` 时，会自动把仓库的 `core.hooksPath` 指向 `.githooks/`。仓库现在按三层校验运行：
+执行 `npm install` 时，会自动把仓库的 `core.hooksPath` 指向 `.githooks/`。三层校验：
 
-- `pre-commit`：只做快检查，自动格式化 Rust / 前端改动，修复已暂存 TS/TSX 的 ESLint 问题，并阻止大文件、冲突标记和明显密钥泄漏进入提交。
-- `pre-push`：做中等检查，运行 `cargo check --workspace`、`cargo test --workspace --exclude astrcode --lib` 和前端 `typecheck`。
-- GitHub Actions：保留完整校验，执行格式检查、clippy、全量 Rust 测试、前端 lint/format 校验，以及依赖审查与发布构建流程。
+- `pre-commit`：快速检查 — 自动格式化 Rust / 前端改动，修复已暂存 TS/TSX 的 ESLint 问题，阻止大文件、冲突标记和密钥泄漏
+- `pre-push`：中等检查 — `cargo check --workspace`、`cargo test --workspace --exclude astrcode --lib` 和前端 `typecheck`
+- GitHub Actions：完整校验 — 格式检查、clippy、全量 Rust 测试、前端 lint/format、依赖审查与发布构建
 
 ### 开发模式
 
@@ -98,25 +120,10 @@ cd frontend && npm run build
           "id": "deepseek-chat",
           "maxTokens": 8096,
           "contextLimit": 128000
-        },
-        {
-          "id": "deepseek-reasoner",
-          "maxTokens": 8096,
-          "contextLimit": 128000
         }
       ]
     }
   ]
-}
-```
-
-`runtime` 用于放置 AstrCode 自己的进程级运行参数，例如：
-
-```json
-{
-  "runtime": {
-    "maxToolConcurrency": 10
-  }
 }
 ```
 
@@ -128,33 +135,14 @@ cd frontend && npm run build
 2. **明文字面量**：直接填写 API Key（如 `sk-xxxx`）
 3. **字面量前缀**：`literal:MY_VALUE`，用于强制把看起来像环境变量名的字符串按普通文本处理
 
-推荐优先使用 `env:...`，这样配置文件的含义最明确，不会让用户误以为 AstrCode 会自动把任意裸字符串当成环境变量读取。
+推荐优先使用 `env:...`，配置含义最明确。
 
-### 模型 limits 配置
+### 模型配置
 
-`models` 现在是对象列表，而不再是纯字符串数组：
+`models` 为对象列表，每个模型需要配置 `maxTokens` 和 `contextLimit`：
 
-- OpenAI-compatible profile 必须为每个模型手动设置 `maxTokens` 和 `contextLimit`
-- Anthropic profile 会在运行时通过 `GET /v1/models/{model_id}` 自动获取 `max_input_tokens` 和 `max_tokens`
-- 如果 Anthropic 远端探测失败，但本地模型对象里同时写了 `maxTokens` 和 `contextLimit`，运行时会回退到本地值
-
-这让上下文窗口和最大输出 token 的来源保持单一且清晰，不再由 provider 内部各自硬编码。
-
-### 内建环境变量
-
-项目自定义环境变量按类别集中维护在 `crates/application/src/config/constants.rs`，底层稳定常量源头在 `crates/core/src/env.rs`，避免低层 crate 反向依赖应用编排层。
-
-| 类别 | 环境变量 | 作用 |
-|------|------|------|
-| Home / 测试隔离 | `ASTRCODE_HOME_DIR` | 覆盖 Astrcode 的 home 目录 |
-| Home / 测试隔离 | `ASTRCODE_TEST_HOME` | 为测试隔离临时 home 目录 |
-| Plugin | `ASTRCODE_PLUGIN_DIRS` | 追加插件发现目录，按系统路径分隔符解析 |
-| Provider 默认值 | `DEEPSEEK_API_KEY` | DeepSeek 默认 profile 的 API Key |
-| Provider 默认值 | `ANTHROPIC_API_KEY` | Anthropic 默认 profile 的 API Key |
-| Runtime | `ASTRCODE_MAX_TOOL_CONCURRENCY` | `runtime.maxToolConcurrency` 未设置时的并发工具上限兜底 |
-| Build / Tauri | `TAURI_ENV_TARGET_TRIPLE` | 构建 sidecar 时指定目标 triple |
-
-像 `OPENAI_API_KEY` 这类自定义 profile 使用的环境变量仍然允许自由命名，但不属于平台内建环境变量目录。
+- **OpenAI-compatible profile**：手动设置 `maxTokens` 和 `contextLimit`
+- **Anthropic profile**：`contextLimit` 默认 200,000，`maxTokens` 默认 8,192；若配置中显式设置了这些值则使用配置值
 
 ### 多 Profile 配置
 
@@ -165,118 +153,176 @@ cd frontend && npm run build
   "profiles": [
     {
       "name": "deepseek",
+      "providerKind": "openai-compatible",
       "baseUrl": "https://api.deepseek.com",
       "apiKey": "env:DEEPSEEK_API_KEY",
-      "models": [
-        {
-          "id": "deepseek-chat",
-          "maxTokens": 8096,
-          "contextLimit": 128000
-        }
-      ]
+      "models": [{ "id": "deepseek-chat", "maxTokens": 8096, "contextLimit": 128000 }]
+    },
+    {
+      "name": "anthropic",
+      "providerKind": "anthropic",
+      "baseUrl": "https://api.anthropic.com",
+      "apiKey": "env:ANTHROPIC_API_KEY",
+      "models": [{ "id": "claude-sonnet-4-5-20250514" }]
     },
     {
       "name": "openai",
+      "providerKind": "openai-compatible",
       "baseUrl": "https://api.openai.com",
       "apiKey": "env:OPENAI_API_KEY",
       "models": [
-        {
-          "id": "gpt-4o",
-          "maxTokens": 16384,
-          "contextLimit": 200000
-        },
-        {
-          "id": "gpt-4o-mini",
-          "maxTokens": 16384,
-          "contextLimit": 128000
-        }
+        { "id": "gpt-4o", "maxTokens": 16384, "contextLimit": 200000 },
+        { "id": "gpt-4o-mini", "maxTokens": 16384, "contextLimit": 128000 }
       ]
     }
   ]
 }
 ```
 
+### Runtime 配置
+
+`runtime` 用于放置 AstrCode 进程级运行参数：
+
+```json
+{
+  "runtime": {
+    "maxToolConcurrency": 10
+  }
+}
+```
+
+### 内建环境变量
+
+项目自定义环境变量按类别集中维护在 `crates/application/src/config/constants.rs`：
+
+| 类别 | 环境变量 | 作用 |
+|------|----------|------|
+| Home / 测试隔离 | `ASTRCODE_HOME_DIR` | 覆盖 AstrCode 的 home 目录 |
+| Home / 测试隔离 | `ASTRCODE_TEST_HOME` | 为测试隔离临时 home 目录 |
+| Plugin | `ASTRCODE_PLUGIN_DIRS` | 追加插件发现目录，按系统路径分隔符解析 |
+| Provider 默认值 | `DEEPSEEK_API_KEY` | DeepSeek 默认 profile 的 API Key |
+| Provider 默认值 | `ANTHROPIC_API_KEY` | Anthropic 默认 profile 的 API Key |
+| Runtime | `ASTRCODE_MAX_TOOL_CONCURRENCY` | 并发工具上限兜底 |
+| Build / Tauri | `TAURI_ENV_TARGET_TRIPLE` | 构建 sidecar 时指定目标 triple |
+
 ## 项目结构
 
 ```
 AstrCode/
 ├── crates/
-│   ├── core/                 # 领域语义、强类型 ID、端口契约、稳定配置模型
-│   ├── protocol/             # HTTP / SSE / Plugin DTO
+│   ├── core/                 # 领域模型、强类型 ID、端口契约、CapabilitySpec、稳定配置
+│   ├── protocol/             # HTTP/SSE/Plugin DTO 与 wire 类型
 │   ├── kernel/               # 全局控制面：surface / registry / agent tree / events
 │   ├── session-runtime/      # 单会话真相：state / turn / replay / context window
 │   ├── application/          # 用例编排、执行控制、治理与观测
 │   ├── server/               # Axum HTTP/SSE 边界与唯一组合根
-│   ├── adapter-storage/      # EventStore、ConfigStore 等存储实现
-│   ├── adapter-llm/          # LLM provider 适配
-│   ├── adapter-prompt/       # Prompt provider 适配
-│   ├── adapter-tools/        # 内置工具与 capability 桥接
-│   ├── adapter-skills/       # Skill 加载与物化
-│   ├── adapter-mcp/          # MCP 传输、连接管理与资源接入
-│   ├── adapter-agents/       # Agent profile 加载
-│   ├── plugin/               # stdio 插件模型与宿主基础设施
-│   └── sdk/                  # 插件作者 API
-├── examples/           # 示例插件与示例 manifest
-├── src-tauri/          # Tauri 薄壳：sidecar 管理、窗口控制
-├── frontend/           # React + TypeScript + Vite UI
-│   ├── src/
-│   │   ├── components/ # React 组件
-│   │   ├── hooks/      # 自定义 hooks
-│   │   └── lib/        # 工具函数
-└── scripts/            # 开发脚本
+│   ├── adapter-storage/      # JSONL 事件日志持久化与文件系统存储
+│   ├── adapter-llm/          # LLM provider（Anthropic / OpenAI-compatible）
+│   ├── adapter-prompt/       # Prompt 组装（贡献者模式 + 分层缓存构建）
+│   ├── adapter-tools/        # 内置工具定义与 Agent 协作工具
+│   ├── adapter-skills/       # Skill 发现、解析、物化与目录管理
+│   ├── adapter-mcp/          # MCP 协议支持（stdio/HTTP/SSE 传输 + 能力桥接）
+│   ├── adapter-agents/       # Agent profile 加载与注册表（builtin/user/project 级）
+│   ├── client/               # 类型化 HTTP/SSE 客户端 SDK
+│   ├── cli/                  # 终端 TUI 客户端（ratatui）
+│   ├── plugin/               # stdio JSON-RPC 插件宿主基础设施
+│   ├── sdk/                  # 插件开发者 Rust SDK
+│   └── debug-workbench/      # 运行时调试读模型
+├── examples/                 # 示例插件与示例 manifest
+├── src-tauri/                # Tauri 薄壳：sidecar 管理、窗口控制、bootstrap 注入
+├── frontend/                 # React + TypeScript + Vite + Tailwind CSS
+│   └── src/
+│       ├── components/       # React 组件（Chat / Sidebar / Settings / Debug）
+│       ├── hooks/            # 自定义 hooks（useAgent 等）
+│       └── lib/              # API 客户端、SSE 事件处理、工具函数
+└── scripts/                  # 开发脚本（Git hooks、crate 边界检查等）
 ```
 
 ## 架构
 
-### HTTP/SSE Server 架构
-
-系统采用前后端分离架构，Server 是唯一的业务入口：
+### 分层架构概览
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      Frontend                           │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐ │
-│  │   React UI  │───▶│  useAgent   │───▶│ HostBridge  │ │
-│  └─────────────┘    │ fetch/SSE   │    │ (桌面/浏览器)│ │
-│                     └──────┬──────┘    └─────────────┘ │
-└────────────────────────────┼────────────────────────────┘
-                             │ HTTP/SSE
-                             ▼
-┌────────────────────────────────────────────────────────┐
-│                   astrcode-server                      │
-│  ┌─────────────┐    ┌──────────────┐   ┌────────────┐ │
-│  │  Axum Router│───▶│ application  │───▶│  kernel    │ │
-│  │  /api/*     │    │ App / Gov.   │   │ surface    │ │
-│  └─────────────┘    └──────┬───────┘   └─────┬──────┘ │
-│  ┌─────────────┐           │                 │        │
-│  │Protocol DTO │◀──────────┘          ┌──────▼──────┐ │
-│  └─────────────┘                      │session-     │ │
-│  ┌─────────────┐                      │runtime      │ │
-│  │Auth/Bootstrap│                     │turn/replay  │ │
-│  └─────────────┘                      └─────────────┘ │
-└────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     前端（三种接入方式）                       │
+│  ┌──────────┐   ┌──────────┐   ┌──────────────────────────┐ │
+│  │ Tauri UI │   │ Browser  │   │ CLI (ratatui TUI)        │ │
+│  │ HostBrdg │   │ fetch/SSE│   │ client crate + launcher  │ │
+│  └────┬─────┘   └────┬─────┘   └────────────┬─────────────┘ │
+└───────┼──────────────┼──────────────────────┼────────────────┘
+        │              │ HTTP/SSE             │ HTTP/SSE
+        ▼              ▼                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    astrcode-server                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
+│  │ Axum Router  │─▶│ application  │─▶│    kernel        │  │
+│  │ /api/*       │  │ App / Gov.   │  │ surface / events │  │
+│  └──────────────┘  └──────┬───────┘  └────────┬─────────┘  │
+│  ┌──────────────┐         │                    │            │
+│  │ Protocol DTO │◀────────┤           ┌────────▼────────┐  │
+│  └──────────────┘         │           │ session-runtime │  │
+│  ┌──────────────┐         │           │ turn / replay   │  │
+│  │ Auth/Bootstrp│         │           │ context window  │  │
+│  └──────────────┘         │           └─────────────────┘  │
+│                           ▼                                 │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │ adapter-* : storage | llm | prompt | tools | skills  │   │
+│  │            | mcp | agents                             │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 当前核心分层
+### 核心分层职责
 
-- `application::App` 是同步业务用例入口，`application::AppGovernance` 是治理与 reload 入口。
-- `kernel` 维护统一 capability surface、tool/router、agent tree 与全局控制合同。
-- `session-runtime` 只回答单个 session 的真相，包括 turn 执行、重放、compact、context window 和 mailbox 推进。
-- `server` 只负责 DTO 映射、HTTP/SSE 状态码与组合根，不再暴露旧式 `RuntimeService` 门面。
+- **`core`**：领域语义、强类型 ID、端口契约、`CapabilitySpec`、稳定配置模型。不依赖传输层或具体实现。
+- **`protocol`**：HTTP/SSE/Plugin 的 DTO 与 wire 类型，仅依赖 `core`。
+- **`kernel`**：全局控制面 — capability router/registry、agent tree、统一事件协调。
+- **`session-runtime`**：单会话真相 — turn 执行、事件回放、compact、context window、mailbox 推进。
+- **`application`**：用例编排入口（`App`）+ 治理入口（`AppGovernance`），负责参数校验、权限、策略、reload 编排。
+- **`server`**：HTTP/SSE 边界与唯一组合根（`bootstrap/runtime.rs`），只负责 DTO 映射和装配。
+- **`adapter-*`**：端口实现层，不持有业务真相，不偷渡业务策略。
 
-### Reload 与观测语义
+### Agent 协作
 
-- `POST /api/config/reload` 现在走统一治理入口，而不是“只重读配置文件”。
-- 一次 reload 会串起：配置重载、MCP 配置刷新、plugin 重新发现、skill base 更新，以及 kernel capability surface 的一次性替换。
-- 如果存在运行中的 session，请求会被拒绝并返回冲突错误，避免半刷新期间出现执行语义漂移。
-- runtime status 接口返回真实 observability 快照，包含 `sessionRehydrate`、`sseCatchUp`、`turnExecution`、`subrunExecution` 与 `executionDiagnostics`，不再长期返回零值占位。
+- 内置 Agent profile：explore、plan、reviewer、execute
+- Agent 文件来源：builtin + 用户级（`~/.astrcode/agents`）+ 项目级（`.astrcode/agents`，祖先链扫描）
+- 子 Agent spawn 时按 task-scoped capability grant 裁剪能力面
+- Agent 工具链：`spawn` -> `send` -> `observe` -> `close` 全生命周期管理
 
-### Skill 架构
+### Skill 系统
 
-- skill 采用 Claude 风格的两阶段模型：system prompt 先给模型看 skill 索引，命中后再调用内置 `Skill` tool 加载完整 `SKILL.md`。
-- skill 目录格式固定为 `skill-name/SKILL.md`，会读取 `name` 和 `description`，其余 Claude 风格 frontmatter 字段会被忽略。
-- 项目级 skill 会从工作目录祖先链上的 `.claude/skills/` 与 `.astrcode/skills/` 一并解析；用户级 skill 会从 `~/.claude/skills/` 与 `~/.astrcode/skills/` 解析。
-- `references/`、`scripts/` 等目录会作为 skill 资产一起索引；builtin skill 整目录会在运行时物化到 `~/.astrcode/runtime/builtin-skills/`，方便 shell 直接执行其中脚本。
+- 两阶段加载：system prompt 先展示 skill 索引，命中后再调用 `Skill` tool 加载完整 `SKILL.md`
+- 目录格式：`skill-name/SKILL.md`（Markdown + YAML frontmatter）
+- 加载来源：builtin（运行时物化到 `~/.astrcode/runtime/builtin-skills/`）+ 项目级 + 用户级
+- 资产目录（`references/`、`scripts/`）随 skill 一起索引
+
+### MCP 支持
+
+- 完整 MCP 协议实现：JSON-RPC 消息、工具/prompt/资源/skill 桥接
+- 传输方式：stdio、HTTP、SSE
+- 连接管理：状态机、自动重连、热加载
+- 配置集成：通过 config.json 声明 MCP server，reload 时统一刷新
+
+### 插件系统
+
+- 基于 stdio JSON-RPC 双向通信
+- 插件生命周期管理（discovered -> loaded -> failed -> disabled）
+- 能力路由与权限检查
+- 流式执行支持
+- 提供 Rust SDK（`crates/sdk`），包含 `ToolHandler`、`HookRegistry`、`PluginContext`、`StreamWriter`
+
+### 会话持久化
+
+- JSONL 格式追加写入（append-only event log）
+- 存储路径：`~/.astrcode/projects/<project>/sessions/<session-id>/`
+- 文件锁并发保护（`active-turn.lock`）
+- Query / Command 逻辑分离
+
+### 治理与重载
+
+- `POST /api/config/reload` 走统一治理入口，串起：配置重载 -> MCP 刷新 -> plugin 重新发现 -> skill 更新 -> kernel capability surface 原子替换
+- 运行中存在 session 时拒绝 reload，避免半刷新导致执行语义漂移
+- capability surface 替换失败时保留旧状态继续服务
 
 ### Tauri 桌面端
 
@@ -293,13 +339,13 @@ Tauri 仅作为"薄壳"，负责：
 | `/api/auth/exchange` | POST | Token 认证交换 |
 | `/api/sessions` | GET/POST | 会话列表/创建 |
 | `/api/sessions/{id}/messages` | GET | 获取会话消息 |
-| `/api/sessions/{id}/prompts` | POST | 提交 prompt |
+| `/api/sessions/{id}/prompts` | POST | 提交 prompt（支持 `tokenBudget` / `maxSteps` / `manualCompact` 执行控制） |
 | `/api/sessions/{id}/interrupt` | POST | 中断会话 |
 | `/api/sessions/{id}/events` | GET (SSE) | 实时事件流 |
 | `/api/sessions/{id}` | DELETE | 删除会话 |
 | `/api/projects` | DELETE | 删除项目（所有会话） |
 | `/api/config` | GET | 获取配置 |
-| `/api/config/reload` | POST | 通过治理入口重载配置与统一能力面 |
+| `/api/config/reload` | POST | 统一治理重载 |
 | `/api/config/active-selection` | POST | 保存当前选择 |
 | `/api/models/current` | GET | 当前模型信息 |
 | `/api/models` | GET | 可用模型列表 |
@@ -322,18 +368,12 @@ Tauri 仅作为"薄壳"，负责：
 | `turnDone` | 对话回合结束 |
 | `error` | 错误信息 |
 
-会话提交与 agent 执行入口都支持可选执行控制：
-
-- `tokenBudget`：只覆盖本次执行的 token 预算，不污染全局配置
-- `maxSteps`：只覆盖本次 turn 的最大 step 数
-- `manualCompact`：用于显式登记手动 compact；当 session 忙碌时会由服务端登记并在当前 turn 结束后执行
-
 ## 开发指南
 
 ### 代码检查
 
 ```bash
-# 本地 push 前检查
+# 本地 push 前快速检查
 cargo check --workspace
 cargo test --workspace --exclude astrcode --lib
 cd frontend && npm run typecheck
@@ -344,12 +384,6 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace --exclude astrcode
 node scripts/check-crate-boundaries.mjs
 cd frontend && npm run typecheck && npm run lint && npm run format:check
-
-# 前端检查
-cd frontend
-npm run typecheck
-npm run lint
-npm run format:check
 ```
 
 ### 代码格式化
@@ -383,27 +417,36 @@ cargo deny check bans
 
 ## CI/CD
 
-项目使用 4 个 GitHub Actions workflow，分工如下：
+项目使用 4 个 GitHub Actions workflow：
 
-- `rust-check`：完整 Rust 质量门禁，执行 `cargo fmt --all -- --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --workspace --exclude astrcode`
-- `frontend-check`：完整前端门禁，执行 `cd frontend && npm run typecheck && npm run lint && npm run format:check`
-- `dependency-audit`：当 `Cargo.lock` 或 `deny.toml` 变更时执行 `cargo deny check bans`
-- `tauri-build`：在发布 tag 时构建 Tauri 桌面端
+| Workflow | 触发条件 | 执行内容 |
+|----------|----------|----------|
+| `rust-check` | push/PR 到 master（Rust 文件变更） | fmt、clippy、crate 边界检查、回归测试、全量测试（Ubuntu + Windows） |
+| `frontend-check` | push/PR 到 master（前端文件变更） | typecheck、lint、format 检查 |
+| `dependency-audit` | `Cargo.lock` / `deny.toml` 变更 | `cargo deny check bans` |
+| `tauri-build` | 发布 tag (`v*`) | 三平台（Ubuntu/Windows/macOS）Tauri 构建 |
 
 ## 许可证
 
 本项目采用 **Apache License 2.0 with Commons Clause** 许可证。
 
-- ✅ 个人使用、学习和研究：**允许**
-- ✅ 非商业开源项目使用：**允许**
-- ⚠️ **商业用途**：需先获得作者许可，请联系作者
+- 允许个人使用、学习和研究
+- 允许非商业开源项目使用
+- **商业用途**需先获得作者许可
+
+联系方式：
+
+- Email: 1879483647@qq.com
+- GitHub Issues: https://github.com/whatevertogo/Astrcode/issues
 
 详见 [LICENSE](LICENSE) 文件了解详情。
 
 ## 致谢
 
 - [Tauri](https://tauri.app/) - 跨平台桌面应用框架
-- [React](https://react.dev/) - 前端框架
-- [Vite](https://vitejs.dev/) - 构建工具
 - [Axum](https://github.com/tokio-rs/axum) - Web 框架
 - [Tokio](https://tokio.rs/) - 异步运行时
+- [React](https://react.dev/) - 前端框架
+- [Vite](https://vitejs.dev/) - 构建工具
+- [Tailwind CSS](https://tailwindcss.com/) - CSS 框架
+- [ratatui](https://ratatui.rs/) - 终端 UI 框架

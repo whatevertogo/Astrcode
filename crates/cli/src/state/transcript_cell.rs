@@ -34,11 +34,12 @@ pub enum TranscriptCellKind {
         tool_name: String,
         summary: String,
         status: TranscriptCellStatus,
-    },
-    ToolStream {
-        stream: String,
-        content: String,
-        status: TranscriptCellStatus,
+        stdout: String,
+        stderr: String,
+        error: Option<String>,
+        duration_ms: Option<u64>,
+        truncated: bool,
+        child_session_id: Option<String>,
     },
     Error {
         code: String,
@@ -88,16 +89,26 @@ impl TranscriptCell {
                     summary: block
                         .summary
                         .clone()
+                        .or_else(|| block.error.clone())
+                        .or_else(|| {
+                            if block.streams.stdout.is_empty() && block.streams.stderr.is_empty() {
+                                None
+                            } else {
+                                Some("工具输出已更新".to_string())
+                            }
+                        })
+                        .clone()
                         .unwrap_or_else(|| "正在执行工具调用".to_string()),
                     status: block.status.into(),
-                },
-            },
-            AstrcodeConversationBlockDto::ToolStream(block) => Self {
-                id: block.id.clone(),
-                kind: TranscriptCellKind::ToolStream {
-                    stream: format!("{:?}", block.stream),
-                    content: block.content.clone(),
-                    status: block.status.into(),
+                    stdout: block.streams.stdout.clone(),
+                    stderr: block.streams.stderr.clone(),
+                    error: block.error.clone(),
+                    duration_ms: block.duration_ms,
+                    truncated: block.truncated,
+                    child_session_id: block
+                        .child_ref
+                        .as_ref()
+                        .map(|child_ref| child_ref.open_session_id.clone()),
                 },
             },
             AstrcodeConversationBlockDto::Error(block) => Self {

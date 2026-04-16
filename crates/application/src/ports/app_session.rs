@@ -3,8 +3,9 @@ use astrcode_core::{
     SessionMeta, StoredEvent,
 };
 use astrcode_session_runtime::{
-    AgentPromptSubmission, SessionCatalogEvent, SessionControlStateSnapshot, SessionReplay,
-    SessionRuntime, SessionTranscriptSnapshot,
+    AgentPromptSubmission, ConversationSnapshotFacts, ConversationStreamReplayFacts,
+    SessionCatalogEvent, SessionControlStateSnapshot, SessionReplay, SessionRuntime,
+    SessionTranscriptSnapshot,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -39,6 +40,10 @@ pub trait AppSessionPort: Send + Sync {
         &self,
         session_id: &str,
     ) -> astrcode_core::Result<SessionTranscriptSnapshot>;
+    async fn conversation_snapshot(
+        &self,
+        session_id: &str,
+    ) -> astrcode_core::Result<ConversationSnapshotFacts>;
     async fn session_control_state(
         &self,
         session_id: &str,
@@ -56,6 +61,11 @@ pub trait AppSessionPort: Send + Sync {
         session_id: &str,
         last_event_id: Option<&str>,
     ) -> astrcode_core::Result<SessionReplay>;
+    async fn conversation_stream_replay(
+        &self,
+        session_id: &str,
+        last_event_id: Option<&str>,
+    ) -> astrcode_core::Result<ConversationStreamReplayFacts>;
 }
 
 #[async_trait]
@@ -117,6 +127,13 @@ impl AppSessionPort for SessionRuntime {
         self.session_transcript_snapshot(session_id).await
     }
 
+    async fn conversation_snapshot(
+        &self,
+        session_id: &str,
+    ) -> astrcode_core::Result<ConversationSnapshotFacts> {
+        self.conversation_snapshot(session_id).await
+    }
+
     async fn session_control_state(
         &self,
         session_id: &str,
@@ -144,5 +161,14 @@ impl AppSessionPort for SessionRuntime {
         last_event_id: Option<&str>,
     ) -> astrcode_core::Result<SessionReplay> {
         self.session_replay(session_id, last_event_id).await
+    }
+
+    async fn conversation_stream_replay(
+        &self,
+        session_id: &str,
+        last_event_id: Option<&str>,
+    ) -> astrcode_core::Result<ConversationStreamReplayFacts> {
+        self.conversation_stream_replay(session_id, last_event_id)
+            .await
     }
 }

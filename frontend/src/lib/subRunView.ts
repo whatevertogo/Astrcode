@@ -117,10 +117,9 @@ function buildMessageFingerprint(message: Message): string {
   if (message.kind === 'toolCall') {
     return `${message.id}:tool:${message.status}:${message.output?.length ?? 0}:${
       message.error?.length ?? 0
+    }:${message.streams?.stdout.length ?? 0}:${message.streams?.stderr.length ?? 0}:${
+      message.childRef?.subRunId ?? ''
     }:${message.metadata === undefined ? '' : JSON.stringify(message.metadata)}`;
-  }
-  if (message.kind === 'toolStream') {
-    return `${message.id}:toolStream:${message.toolCallId}:${message.stream}:${message.status}:${message.content.length}`;
   }
   if (message.kind === 'promptMetrics') {
     return `${message.id}:promptMetrics:${message.stepIndex}:${message.estimatedTokens}:${
@@ -267,43 +266,15 @@ function getOrCreateRecord(
   return created;
 }
 
-function pickStringField(value: unknown, ...keys: string[]): string | undefined {
-  if (typeof value !== 'object' || value === null) {
-    return undefined;
-  }
-
-  for (const key of keys) {
-    const candidate = (value as Record<string, unknown>)[key];
-    if (typeof candidate === 'string' && candidate.length > 0) {
-      return candidate;
-    }
-  }
-
-  return undefined;
-}
-
 function pickSpawnedAgentRef(message: Message): SpawnedAgentRef | null {
-  if (message.kind !== 'toolCall' || message.toolName !== 'spawn' || message.status !== 'ok') {
-    return null;
-  }
-
-  const metadata =
-    typeof message.metadata === 'object' && message.metadata !== null ? message.metadata : null;
-  const agentRef = metadata
-    ? ((metadata as Record<string, unknown>).agentRef ??
-      (metadata as Record<string, unknown>).agent_ref)
-    : null;
-  const subRunId = pickStringField(agentRef, 'subRunId', 'sub_run_id');
-  if (!subRunId) {
+  if (message.kind !== 'toolCall' || message.status !== 'ok' || !message.childRef) {
     return null;
   }
 
   return {
-    subRunId,
-    agentId: pickStringField(agentRef, 'agentId', 'agent_id'),
-    childSessionId:
-      pickStringField(agentRef, 'openSessionId', 'open_session_id') ??
-      pickStringField(metadata, 'openSessionId', 'open_session_id'),
+    subRunId: message.childRef.subRunId,
+    agentId: message.childRef.agentId,
+    childSessionId: message.childRef.openSessionId,
   };
 }
 

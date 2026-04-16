@@ -18,7 +18,7 @@ const ENV_REFERENCE_PREFIX: &str = "env:";
 /// 默认受控子会话最大深度。
 pub const DEFAULT_MAX_SUBRUN_DEPTH: usize = 2;
 /// 默认单轮最多新建的子代理数量。
-pub const DEFAULT_MAX_SPAWN_PER_TURN: usize = 3;
+pub const DEFAULT_MAX_SPAWN_PER_TURN: usize = 6;
 
 /// 默认最大安全工具并发数。
 pub const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 10;

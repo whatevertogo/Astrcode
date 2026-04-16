@@ -681,6 +681,74 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StreamingStderrProbeTool;
+
+    #[async_trait]
+    impl Tool for StreamingStderrProbeTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "streaming_stderr_probe".to_string(),
+                description: "emits stderr probe events".to_string(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        fn capability_spec(
+            &self,
+        ) -> std::result::Result<
+            astrcode_core::CapabilitySpec,
+            astrcode_core::CapabilitySpecBuildError,
+        > {
+            astrcode_core::CapabilitySpec::builder("streaming_stderr_probe", CapabilityKind::Tool)
+                .description("emits stderr probe events")
+                .schema(json!({"type": "object"}), json!({"type": "string"}))
+                .build()
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _input: Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolExecutionResult> {
+            let turn_id = ctx
+                .turn_id()
+                .expect("stderr probe should receive turn id")
+                .to_string();
+            let sink = ctx
+                .event_sink()
+                .expect("stderr probe should receive tool event sink");
+            sink.emit(crate::turn::events::tool_call_delta_event(
+                &turn_id,
+                ctx.agent_context(),
+                tool_call_id.clone(),
+                "streaming_stderr_probe".to_string(),
+                ToolOutputStream::Stderr,
+                "durable-stderr".to_string(),
+            ))
+            .await?;
+            assert!(
+                ctx.emit_stderr(
+                    tool_call_id.clone(),
+                    "streaming_stderr_probe",
+                    "live-stderr"
+                ),
+                "stderr probe should be able to emit live stderr"
+            );
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "streaming_stderr_probe".to_string(),
+                ok: false,
+                output: String::new(),
+                error: Some("stderr failure".to_string()),
+                metadata: None,
+                duration_ms: 0,
+                truncated: false,
+            })
+        }
+    }
+
     #[tokio::test]
     async fn invoke_single_tool_preserves_turn_and_agent_context() {
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -972,5 +1040,108 @@ mod tests {
             ),
             "buffered mode should still broadcast tool result live"
         );
+    }
+
+    #[tokio::test]
+    async fn invoke_single_tool_forwards_stderr_to_durable_and_live_channels() {
+        let kernel = test_kernel_with_tool(Arc::new(StreamingStderrProbeTool), 8192);
+        let tool_call = ToolCallRequest {
+            id: "call-stderr".to_string(),
+            name: "streaming_stderr_probe".to_string(),
+            args: json!({}),
+        };
+        let agent = AgentEventContext::root_execution("root-agent:session-1", "default");
+        let session_state = test_session_state();
+        let mut live_receiver = session_state.subscribe_live();
+
+        let cancel = CancelToken::new();
+        let (result, fallback_events) = invoke_single_tool(SingleToolInvocation {
+            gateway: kernel.gateway(),
+            session_state: Arc::clone(&session_state),
+            tool_call: &tool_call,
+            session_id: "session-1",
+            working_dir: ".",
+            turn_id: "turn-stderr",
+            agent: &agent,
+            cancel: &cancel,
+            tool_result_inline_limit: 32 * 1024,
+            event_emission_mode: ToolEventEmissionMode::Immediate,
+        })
+        .await;
+
+        assert!(
+            !result.ok && result.error.as_deref() == Some("stderr failure"),
+            "stderr probe should surface failure result: {result:?}"
+        );
+        assert!(
+            fallback_events.is_empty(),
+            "immediate stderr event emission should avoid fallback buffering: {fallback_events:?}"
+        );
+
+        let stored = session_state
+            .snapshot_recent_stored_events()
+            .expect("snapshot recent stored events should work");
+        assert!(
+            stored.iter().any(|event| matches!(
+                &event.event.payload,
+                StorageEventPayload::ToolCallDelta {
+                    tool_call_id,
+                    tool_name,
+                    stream: ToolOutputStream::Stderr,
+                    delta,
+                    ..
+                } if tool_call_id == "call-stderr"
+                    && tool_name == "streaming_stderr_probe"
+                    && delta == "durable-stderr"
+            )),
+            "stderr durable delta should be recorded immediately"
+        );
+
+        let live_start = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool start in time")
+            .expect("live receiver should stay open");
+        let live_delta = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get stderr delta in time")
+            .expect("live receiver should stay open");
+        let live_result = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool result in time")
+            .expect("live receiver should stay open");
+
+        assert!(matches!(
+            live_start,
+            astrcode_core::AgentEvent::ToolCallStart {
+                turn_id,
+                tool_call_id,
+                tool_name,
+                ..
+            } if turn_id == "turn-stderr"
+                && tool_call_id == "call-stderr"
+                && tool_name == "streaming_stderr_probe"
+        ));
+        assert!(matches!(
+            live_delta,
+            astrcode_core::AgentEvent::ToolCallDelta {
+                turn_id,
+                tool_call_id,
+                tool_name,
+                stream: ToolOutputStream::Stderr,
+                delta,
+                ..
+            } if turn_id == "turn-stderr"
+                && tool_call_id == "call-stderr"
+                && tool_name == "streaming_stderr_probe"
+                && delta == "live-stderr"
+        ));
+        assert!(matches!(
+            live_result,
+            astrcode_core::AgentEvent::ToolCallResult { turn_id, result, .. }
+                if turn_id == "turn-stderr"
+                    && result.tool_call_id == "call-stderr"
+                    && result.tool_name == "streaming_stderr_probe"
+                    && result.error.as_deref() == Some("stderr failure")
+        ));
     }
 }

@@ -1,11 +1,13 @@
 use std::{cmp::Reverse, collections::HashSet, path::Path};
 
-use astrcode_core::{AgentEvent, SessionEventRecord};
-use astrcode_session_runtime::SessionControlStateSnapshot;
+use astrcode_session_runtime::{
+    ConversationBlockFacts, ConversationChildHandoffBlockFacts, ConversationErrorBlockFacts,
+    ConversationSnapshotFacts, ConversationSystemNoteBlockFacts, SessionControlStateSnapshot,
+    ToolCallBlockFacts,
+};
 
 use crate::{
     App, ApplicationError, ComposerOptionKind, ComposerOptionsRequest, SessionMeta,
-    SessionTranscriptSnapshot,
     terminal::{
         ConversationFocus, TerminalChildSummaryFacts, TerminalControlFacts, TerminalFacts,
         TerminalRehydrateFacts, TerminalRehydrateReason, TerminalResumeCandidateFacts,
@@ -26,7 +28,7 @@ impl App {
             .await?;
         let transcript = self
             .session_runtime
-            .session_transcript_snapshot(&focus_session_id)
+            .conversation_snapshot(&focus_session_id)
             .await?;
         let session_title = self
             .session_runtime
@@ -77,14 +79,15 @@ impl App {
             validate_cursor_format(requested_cursor)?;
             let transcript = self
                 .session_runtime
-                .session_transcript_snapshot(&focus_session_id)
+                .conversation_snapshot(&focus_session_id)
                 .await?;
-            if cursor_is_after_head(requested_cursor, transcript.cursor.as_deref())? {
+            let latest_cursor = latest_transcript_cursor(&transcript);
+            if cursor_is_after_head(requested_cursor, latest_cursor.as_deref())? {
                 return Ok(TerminalStreamFacts::RehydrateRequired(
                     TerminalRehydrateFacts {
                         session_id: session_id.to_string(),
                         requested_cursor: requested_cursor.to_string(),
-                        latest_cursor: transcript.cursor,
+                        latest_cursor,
                         reason: TerminalRehydrateReason::CursorExpired,
                     },
                 ));
@@ -93,13 +96,8 @@ impl App {
 
         let replay = self
             .session_runtime
-            .session_replay(&focus_session_id, last_event_id)
+            .conversation_stream_replay(&focus_session_id, last_event_id)
             .await?;
-        let seed_records = self
-            .session_runtime
-            .session_transcript_snapshot(&focus_session_id)
-            .await?
-            .records;
         let control = self.terminal_control_facts(session_id).await?;
         let child_summaries = self
             .conversation_child_summaries(session_id, &focus)
@@ -109,7 +107,6 @@ impl App {
         Ok(TerminalStreamFacts::Replay(Box::new(
             TerminalStreamReplayFacts {
                 active_session_id: session_id.to_string(),
-                seed_records,
                 replay,
                 control,
                 child_summaries,
@@ -194,7 +191,7 @@ impl App {
                     .find(|meta| meta.session_id == node.child_session_id);
                 let child_transcript = self
                     .session_runtime
-                    .session_transcript_snapshot(&node.child_session_id)
+                    .conversation_snapshot(&node.child_session_id)
                     .await?;
                 Ok::<_, ApplicationError>(TerminalChildSummaryFacts {
                     node,
@@ -432,47 +429,68 @@ fn slash_candidate_matches(candidate: &TerminalSlashCandidateFacts, query: &str)
             .any(|keyword| keyword.to_lowercase().contains(query))
 }
 
-fn latest_terminal_summary(transcript: &SessionTranscriptSnapshot) -> Option<String> {
-    transcript
-        .records
+fn latest_terminal_summary(snapshot: &ConversationSnapshotFacts) -> Option<String> {
+    snapshot
+        .blocks
         .iter()
         .rev()
-        .find_map(summary_from_record)
-        .or_else(|| {
-            latest_transcript_cursor(&transcript.records).map(|cursor| format!("cursor:{cursor}"))
-        })
+        .find_map(summary_from_block)
+        .or_else(|| latest_transcript_cursor(snapshot).map(|cursor| format!("cursor:{cursor}")))
 }
 
-fn summary_from_record(record: &SessionEventRecord) -> Option<String> {
-    match &record.event {
-        AgentEvent::AssistantMessage { content, .. } if !content.trim().is_empty() => {
-            Some(truncate_terminal_summary(content))
-        },
-        AgentEvent::ToolCallResult { result, .. } if !result.output.trim().is_empty() => {
-            Some(truncate_terminal_summary(&result.output))
-        },
-        AgentEvent::ToolCallResult { result, .. } => result
-            .error
-            .as_deref()
-            .filter(|error| !error.trim().is_empty())
-            .map(truncate_terminal_summary),
-        AgentEvent::ChildSessionNotification { notification, .. } => notification
-            .delivery
-            .as_ref()
-            .map(|delivery| delivery.payload.message())
-            .filter(|message| !message.trim().is_empty())
-            .map(truncate_terminal_summary),
-        AgentEvent::Error { message, .. } if !message.trim().is_empty() => {
-            Some(truncate_terminal_summary(message))
-        },
-        _ => None,
+fn summary_from_block(block: &ConversationBlockFacts) -> Option<String> {
+    match block {
+        ConversationBlockFacts::Assistant(block) => summary_from_markdown(&block.markdown),
+        ConversationBlockFacts::ToolCall(block) => summary_from_tool_call(block),
+        ConversationBlockFacts::ChildHandoff(block) => summary_from_child_handoff(block),
+        ConversationBlockFacts::Error(block) => summary_from_error_block(block),
+        ConversationBlockFacts::SystemNote(block) => summary_from_system_note(block),
+        ConversationBlockFacts::User(_) | ConversationBlockFacts::Thinking(_) => None,
     }
+}
+
+fn summary_from_markdown(markdown: &str) -> Option<String> {
+    (!markdown.trim().is_empty()).then(|| truncate_terminal_summary(markdown))
+}
+
+fn summary_from_tool_call(block: &ToolCallBlockFacts) -> Option<String> {
+    block
+        .summary
+        .as_deref()
+        .filter(|summary| !summary.trim().is_empty())
+        .map(truncate_terminal_summary)
+        .or_else(|| {
+            block
+                .error
+                .as_deref()
+                .filter(|error| !error.trim().is_empty())
+                .map(truncate_terminal_summary)
+        })
+        .or_else(|| summary_from_markdown(&block.streams.stderr))
+        .or_else(|| summary_from_markdown(&block.streams.stdout))
+}
+
+fn summary_from_child_handoff(block: &ConversationChildHandoffBlockFacts) -> Option<String> {
+    block
+        .message
+        .as_deref()
+        .filter(|message| !message.trim().is_empty())
+        .map(truncate_terminal_summary)
+}
+
+fn summary_from_error_block(block: &ConversationErrorBlockFacts) -> Option<String> {
+    summary_from_markdown(&block.message)
+}
+
+fn summary_from_system_note(block: &ConversationSystemNoteBlockFacts) -> Option<String> {
+    summary_from_markdown(&block.markdown)
 }
 
 #[cfg(test)]
 mod tests {
     use std::{path::Path, sync::Arc, time::Duration};
 
+    use astrcode_core::AgentEvent;
     use astrcode_session_runtime::SessionRuntime;
     use async_trait::async_trait;
     use tokio::time::timeout;
@@ -622,7 +640,7 @@ mod tests {
         else {
             panic!("fresh stream should start from replay facts");
         };
-        let mut live_receiver = replay.replay.live_receiver;
+        let mut live_receiver = replay.replay.replay.live_receiver;
 
         let accepted = harness
             .app
@@ -668,16 +686,13 @@ mod tests {
             .terminal_snapshot_facts(&session.session_id)
             .await
             .expect("terminal snapshot should build");
-        assert!(snapshot.transcript.records.iter().any(|record| matches!(
-            &record.event,
-            AgentEvent::AssistantMessage {
-                content,
-                reasoning_content,
-                ..
-            } if content == "流式完成"
-                && reasoning_content
-                    .as_ref()
-                    .is_some_and(|reasoning| reasoning == "先整理")
+        assert!(snapshot.transcript.blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlockFacts::Assistant(block) if block.markdown == "流式完成"
+        )));
+        assert!(snapshot.transcript.blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlockFacts::Thinking(block) if block.markdown == "先整理"
         )));
     }
 
@@ -703,7 +718,7 @@ mod tests {
             .expect("terminal snapshot should build");
 
         assert_eq!(facts.active_session_id, session.session_id);
-        assert!(!facts.transcript.records.is_empty());
+        assert!(!facts.transcript.blocks.is_empty());
         assert!(facts.transcript.cursor.is_some());
         assert!(
             facts
@@ -750,11 +765,7 @@ mod tests {
             .terminal_snapshot_facts(&session.session_id)
             .await
             .expect("snapshot should build");
-        let cursor = snapshot
-            .transcript
-            .records
-            .first()
-            .map(|record| record.event_id.clone());
+        let cursor = snapshot.transcript.cursor.clone();
 
         let facts = harness
             .app
@@ -765,7 +776,16 @@ mod tests {
         match facts {
             TerminalStreamFacts::Replay(replay) => {
                 assert_eq!(replay.active_session_id, session.session_id);
-                assert!(replay.replay.history.len() <= snapshot.transcript.records.len());
+                assert!(replay.replay.replay.history.is_empty());
+                assert!(replay.replay.replay_frames.is_empty());
+                assert_eq!(
+                    replay
+                        .replay
+                        .seed_records
+                        .last()
+                        .map(|record| record.event_id.as_str()),
+                    snapshot.transcript.cursor.as_deref()
+                );
             },
             TerminalStreamFacts::RehydrateRequired(_) => {
                 panic!("valid cursor should not require rehydrate");
@@ -1030,13 +1050,13 @@ mod tests {
             .expect("conversation focus snapshot should build");
 
         assert_eq!(facts.active_session_id, parent.session_id);
-        assert!(facts.transcript.records.iter().any(|record| matches!(
-            &record.event,
-            AgentEvent::UserMessage { content, .. } if content == "child prompt"
+        assert!(facts.transcript.blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlockFacts::User(block) if block.markdown == "child prompt"
         )));
-        assert!(facts.transcript.records.iter().all(|record| !matches!(
-            &record.event,
-            AgentEvent::UserMessage { content, .. } if content == "parent prompt"
+        assert!(facts.transcript.blocks.iter().all(|block| !matches!(
+            block,
+            ConversationBlockFacts::User(block) if block.markdown == "parent prompt"
         )));
         assert!(facts.child_summaries.is_empty());
     }

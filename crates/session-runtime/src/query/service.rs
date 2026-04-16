@@ -6,9 +6,11 @@ use astrcode_core::{
 use tokio::time::sleep;
 
 use crate::{
-    AgentObserveSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot, SessionRuntime,
-    SessionState, TurnTerminalSnapshot, build_agent_observe_snapshot, has_terminal_turn_signal,
-    project_turn_outcome, recoverable_parent_deliveries,
+    AgentObserveSnapshot, ConversationSnapshotFacts, ConversationStreamReplayFacts,
+    ProjectedTurnOutcome, SessionControlStateSnapshot, SessionReplay, SessionRuntime, SessionState,
+    TurnTerminalSnapshot, build_agent_observe_snapshot, build_conversation_replay_frames,
+    has_terminal_turn_signal, project_conversation_snapshot, project_turn_outcome,
+    recoverable_parent_deliveries,
 };
 
 pub struct SessionQueries<'a> {
@@ -109,6 +111,44 @@ impl<'a> SessionQueries<'a> {
         ))
     }
 
+    pub async fn conversation_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<ConversationSnapshotFacts> {
+        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let records = self.runtime.replay_history(&session_id, None).await?;
+        let phase = self.runtime.session_phase(&session_id).await?;
+        Ok(project_conversation_snapshot(&records, phase))
+    }
+
+    pub async fn conversation_stream_replay(
+        &self,
+        session_id: &str,
+        last_event_id: Option<&str>,
+    ) -> Result<ConversationStreamReplayFacts> {
+        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let actor = self.runtime.ensure_loaded_session(&session_id).await?;
+        let all_records = self.runtime.replay_history(&session_id, None).await?;
+        let replay_history = self
+            .runtime
+            .replay_history(&session_id, last_event_id)
+            .await?;
+        let seed_records = records_before_cursor(&all_records, last_event_id);
+        let phase = self.runtime.session_phase(&session_id).await?;
+
+        Ok(ConversationStreamReplayFacts {
+            cursor: replay_history.last().map(|record| record.event_id.clone()),
+            phase,
+            replay_frames: build_conversation_replay_frames(&seed_records, &replay_history),
+            seed_records,
+            replay: SessionReplay {
+                history: replay_history,
+                receiver: actor.state().broadcaster.subscribe(),
+                live_receiver: actor.state().subscribe_live(),
+            },
+        })
+    }
+
     pub async fn pending_delivery_ids_for_agent(
         &self,
         session_id: &str,
@@ -140,4 +180,20 @@ impl<'a> SessionQueries<'a> {
             .await?;
         Ok(project_turn_outcome(terminal.phase, &terminal.events))
     }
+}
+
+fn records_before_cursor(
+    records: &[astrcode_core::SessionEventRecord],
+    last_event_id: Option<&str>,
+) -> Vec<astrcode_core::SessionEventRecord> {
+    let Some(last_event_id) = last_event_id else {
+        return Vec::new();
+    };
+    let Some(index) = records
+        .iter()
+        .position(|record| record.event_id == last_event_id)
+    else {
+        return Vec::new();
+    };
+    records[..=index].to_vec()
 }

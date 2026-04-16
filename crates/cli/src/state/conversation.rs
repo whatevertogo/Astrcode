@@ -183,7 +183,6 @@ fn block_id_of(block: &AstrcodeConversationBlockDto) -> &str {
         AstrcodeConversationBlockDto::Assistant(block) => &block.id,
         AstrcodeConversationBlockDto::Thinking(block) => &block.id,
         AstrcodeConversationBlockDto::ToolCall(block) => &block.id,
-        AstrcodeConversationBlockDto::ToolStream(block) => &block.id,
         AstrcodeConversationBlockDto::Error(block) => &block.id,
         AstrcodeConversationBlockDto::SystemNote(block) => &block.id,
         AstrcodeConversationBlockDto::ChildHandoff(block) => &block.id,
@@ -200,7 +199,6 @@ fn apply_block_patch(
             AstrcodeConversationBlockDto::Thinking(block) => block.markdown.push_str(&markdown),
             AstrcodeConversationBlockDto::SystemNote(block) => block.markdown.push_str(&markdown),
             AstrcodeConversationBlockDto::User(block) => block.markdown.push_str(&markdown),
-            AstrcodeConversationBlockDto::ToolStream(block) => block.content.push_str(&markdown),
             AstrcodeConversationBlockDto::ToolCall(_)
             | AstrcodeConversationBlockDto::Error(_)
             | AstrcodeConversationBlockDto::ChildHandoff(_) => {},
@@ -210,14 +208,17 @@ fn apply_block_patch(
             AstrcodeConversationBlockDto::Thinking(block) => block.markdown = markdown,
             AstrcodeConversationBlockDto::SystemNote(block) => block.markdown = markdown,
             AstrcodeConversationBlockDto::User(block) => block.markdown = markdown,
-            AstrcodeConversationBlockDto::ToolStream(block) => block.content = markdown,
             AstrcodeConversationBlockDto::ToolCall(_)
             | AstrcodeConversationBlockDto::Error(_)
             | AstrcodeConversationBlockDto::ChildHandoff(_) => {},
         },
-        AstrcodeConversationBlockPatchDto::AppendToolStream { chunk, .. } => {
-            if let AstrcodeConversationBlockDto::ToolStream(block) = block {
-                block.content.push_str(&chunk);
+        AstrcodeConversationBlockPatchDto::AppendToolStream { stream, chunk } => {
+            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+                if format!("{stream:?}").eq_ignore_ascii_case("stderr") {
+                    block.streams.stderr.push_str(&chunk);
+                } else {
+                    block.streams.stdout.push_str(&chunk);
+                }
             }
         },
         AstrcodeConversationBlockPatchDto::ReplaceSummary { summary } => {
@@ -228,6 +229,26 @@ fn apply_block_patch(
         AstrcodeConversationBlockPatchDto::ReplaceMetadata { metadata } => {
             if let AstrcodeConversationBlockDto::ToolCall(block) = block {
                 block.metadata = Some(metadata);
+            }
+        },
+        AstrcodeConversationBlockPatchDto::ReplaceError { error } => {
+            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+                block.error = error;
+            }
+        },
+        AstrcodeConversationBlockPatchDto::ReplaceDuration { duration_ms } => {
+            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+                block.duration_ms = Some(duration_ms);
+            }
+        },
+        AstrcodeConversationBlockPatchDto::ReplaceChildRef { child_ref } => {
+            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+                block.child_ref = Some(child_ref);
+            }
+        },
+        AstrcodeConversationBlockPatchDto::SetTruncated { truncated } => {
+            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+                block.truncated = truncated;
             }
         },
         AstrcodeConversationBlockPatchDto::SetStatus { status } => set_block_status(block, status),
@@ -242,7 +263,6 @@ fn set_block_status(
         AstrcodeConversationBlockDto::Assistant(block) => block.status = status,
         AstrcodeConversationBlockDto::Thinking(block) => block.status = status,
         AstrcodeConversationBlockDto::ToolCall(block) => block.status = status,
-        AstrcodeConversationBlockDto::ToolStream(block) => block.status = status,
         AstrcodeConversationBlockDto::User(_)
         | AstrcodeConversationBlockDto::Error(_)
         | AstrcodeConversationBlockDto::SystemNote(_)

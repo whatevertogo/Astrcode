@@ -222,7 +222,7 @@ agent delegation experience 也遵循同样的分层边界：
   - allowed：replay/live 订阅语义、scope/filter、状态来源整合
   - forbidden：同步快照投影算法、turn 推进、副作用
 - `query`
-  - allowed：拉取、快照、投影、durable replay 后的只读恢复
+  - allowed：拉取、快照、投影、durable replay 后的只读恢复、conversation/tool display authoritative read model
   - forbidden：推进、副作用、长时间持有运行态协调逻辑
 - `factory`
   - allowed：执行输入或执行对象构造
@@ -230,8 +230,8 @@ agent delegation experience 也遵循同样的分层边界：
 
 `application` 在这个边界上继续保持：
 
-- allowed：参数校验、权限检查、错误归类、跨 session 编排、稳定 `SessionRuntime` API 调用
-- forbidden：单 session 终态投影细节、durable append 细节、observe 快照拼装细节
+- allowed：参数校验、权限检查、错误归类、跨 session 编排、稳定 `SessionRuntime` API 调用、conversation/tool display facts 编排
+- forbidden：单 session 终态投影细节、durable append 细节、observe 快照拼装细节、tool block 聚合与 replay/live 去重规则
 
 ### 4.6 `adapter-*`
 
@@ -271,7 +271,11 @@ agent delegation experience 也遵循同样的分层边界：
 
 - `conversation v1` 是当前唯一的产品读协议，统一承担 snapshot、stream、child summaries、slash candidates 与 control state 的 authoritative read model。
 - 旧 `/api/sessions/*/view`、`/history`、`/events` 产品读面已删除；客户端不得再通过本地 reducer 重放原始事件来重建 UI 真相。
-- `server` 内部的 `terminal_projection` 负责把 `application` 返回的 `ConversationFacts` 投影成 `protocol` DTO；它是纯 projection，不做业务校验。
+- `conversation` contract 必须直接表达后端收敛后的 tool display 语义：
+  - 一个 tool call 只对应一个 authoritative tool block
+  - stdout/stderr 通过同一 block 的 stream patch 增量更新
+  - error、duration、truncated 与 childRef 都是一等字段
+- `server` 内部的 `terminal_projection` 负责把 `application` 返回的 `ConversationFacts` 投影成 `protocol` DTO；它是纯 projection，不做业务校验，也不重新承担 tool 聚合。
 - `client` crate 只负责：
   - bootstrap exchange 后的 typed HTTP/SSE facade
   - 结构化错误归一化
@@ -295,6 +299,7 @@ agent delegation experience 也遵循同样的分层边界：
 - `cli` 不允许在本地复制平行业务语义：
   - slash command 只是输入壳，语义必须映射到稳定 server contract
   - child pane / transcript 只能消费 authoritative conversation surface
+  - 不得通过 sibling `tool_stream`、metadata fallback 或本地 regroup 恢复工具展示真相
 
 ## 5. 关键不变量
 

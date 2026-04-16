@@ -46,6 +46,9 @@
 - durable mailbox append 细节
 - child/open session observe 快照拼装
 - recoverable delivery 重放与投影细节
+- conversation/tool display 的底层 transcript/replay 聚合细节
+
+在 conversation/tool display 路径上，`application` MUST 通过 `SessionRuntime` 暴露的稳定 query/command 接口读取 authoritative read model facts，并把它们作为稳定用例结果返回给 `server`；`application` MUST NOT 再把 `SessionTranscriptSnapshot`、原始 replay receiver 或需要上层继续拼装的底层事实作为正式会话展示合同向上传递。
 
 #### Scenario: 非法请求在 application 层被拒绝
 
@@ -71,6 +74,13 @@
 - **WHEN** `application` 需要判断 turn 终态、读取 observe 视图或追加 mailbox durable 事件
 - **THEN** 统一通过 `SessionRuntime` 暴露的稳定 query/command 入口完成
 - **AND** 不直接操作 `SessionState`、event replay 细节或投影组装过程
+
+#### Scenario: conversation 工具展示用例返回稳定 facts
+
+- **WHEN** `server` 请求 conversation snapshot、stream catch-up 或工具展示相关会话事实
+- **THEN** `application` SHALL 返回已收敛的 conversation/tool display facts
+- **AND** `server` 只负责 DTO 映射、HTTP 状态码与 SSE framing
+- **AND** 前端消费合同 MUST NOT 依赖 `application` 之外的额外 transcript/replay 拼装
 
 ---
 
@@ -192,4 +202,3 @@
 
 - **WHEN** server 需要加载或保存配置
 - **THEN** 通过 `application/config` 完成
-

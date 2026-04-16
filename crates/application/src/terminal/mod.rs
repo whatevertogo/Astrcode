@@ -1,7 +1,11 @@
-use astrcode_core::{ChildSessionNode, Phase, SessionEventRecord};
+use astrcode_core::{ChildSessionNode, Phase};
+use astrcode_session_runtime::{
+    ConversationSnapshotFacts as RuntimeConversationSnapshotFacts,
+    ConversationStreamReplayFacts as RuntimeConversationStreamReplayFacts,
+};
 use chrono::{DateTime, Utc};
 
-use crate::{ComposerOptionKind, SessionReplay, SessionTranscriptSnapshot};
+use crate::ComposerOptionKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ConversationFocus {
@@ -74,7 +78,7 @@ pub type ConversationResumeCandidateFacts = TerminalResumeCandidateFacts;
 pub struct TerminalFacts {
     pub active_session_id: String,
     pub session_title: String,
-    pub transcript: SessionTranscriptSnapshot,
+    pub transcript: RuntimeConversationSnapshotFacts,
     pub control: TerminalControlFacts,
     pub child_summaries: Vec<TerminalChildSummaryFacts>,
     pub slash_candidates: Vec<TerminalSlashCandidateFacts>,
@@ -85,8 +89,7 @@ pub type ConversationFacts = TerminalFacts;
 #[derive(Debug)]
 pub struct TerminalStreamReplayFacts {
     pub active_session_id: String,
-    pub seed_records: Vec<SessionEventRecord>,
-    pub replay: SessionReplay,
+    pub replay: RuntimeConversationStreamReplayFacts,
     pub control: TerminalControlFacts,
     pub child_summaries: Vec<TerminalChildSummaryFacts>,
     pub slash_candidates: Vec<TerminalSlashCandidateFacts>,
@@ -119,8 +122,10 @@ pub enum TerminalStreamFacts {
 
 pub type ConversationStreamFacts = TerminalStreamFacts;
 
-pub(crate) fn latest_transcript_cursor(records: &[SessionEventRecord]) -> Option<String> {
-    records.last().map(|record| record.event_id.clone())
+pub(crate) fn latest_transcript_cursor(
+    snapshot: &RuntimeConversationSnapshotFacts,
+) -> Option<String> {
+    snapshot.cursor.clone()
 }
 
 pub fn truncate_terminal_summary(content: &str) -> String {

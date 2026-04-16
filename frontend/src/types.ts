@@ -218,6 +218,23 @@ export interface AssistantMessage {
 
 export type ToolStatus = 'running' | 'ok' | 'fail';
 
+export interface ToolChildRef {
+  agentId: string;
+  sessionId: string;
+  subRunId: string;
+  executionId?: string;
+  parentAgentId?: string;
+  parentSubRunId?: string;
+  lineageKind: 'spawn' | 'fork' | 'resume';
+  status: AgentLifecycle;
+  openSessionId: string;
+}
+
+export interface ToolCallStreams {
+  stdout: string;
+  stderr: string;
+}
+
 export interface ToolCallMessage {
   id: string;
   kind: 'toolCall';
@@ -238,28 +255,10 @@ export interface ToolCallMessage {
   output?: string;
   error?: string;
   metadata?: unknown;
+  childRef?: ToolChildRef;
+  streams?: ToolCallStreams;
   durationMs?: number;
   truncated?: boolean;
-  timestamp: number;
-}
-
-export interface ToolStreamMessage {
-  id: string;
-  kind: 'toolStream';
-  turnId?: string | null;
-  agentId?: string;
-  parentTurnId?: string;
-  parentSubRunId?: string;
-  agentProfile?: string;
-  subRunId?: string;
-  executionId?: string;
-  invocationKind?: InvocationKind;
-  storageMode?: SubRunStorageMode;
-  childSessionId?: string;
-  toolCallId: string;
-  stream: ToolOutputStream;
-  status: ToolStatus;
-  content: string;
   timestamp: number;
 }
 
@@ -365,17 +364,7 @@ export interface ChildSessionNotificationMessage {
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
-  childRef: {
-    agentId: string;
-    sessionId: string;
-    subRunId: string;
-    executionId?: string;
-    parentAgentId?: string;
-    parentSubRunId?: string;
-    lineageKind: 'spawn' | 'fork' | 'resume';
-    status: AgentLifecycle;
-    openSessionId: string;
-  };
+  childRef: ToolChildRef;
   notificationKind: ChildSessionNotificationKind;
   status: AgentLifecycle;
   sourceToolCallId?: string;
@@ -387,7 +376,6 @@ export type Message =
   | UserMessage
   | AssistantMessage
   | ToolCallMessage
-  | ToolStreamMessage
   | PromptMetricsMessage
   | CompactMessage
   | SubRunStartMessage

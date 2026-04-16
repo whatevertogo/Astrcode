@@ -18,6 +18,9 @@ fn fixture(name: &str) -> Value {
         "snapshot" => include_str!("fixtures/terminal/v1/snapshot.json"),
         "delta_append_block" => include_str!("fixtures/terminal/v1/delta_append_block.json"),
         "delta_patch_block" => include_str!("fixtures/terminal/v1/delta_patch_block.json"),
+        "delta_patch_tool_metadata" => {
+            include_str!("fixtures/terminal/v1/delta_patch_tool_metadata.json")
+        },
         "delta_patch_replace_markdown" => {
             include_str!("fixtures/terminal/v1/delta_patch_replace_markdown.json")
         },
@@ -202,6 +205,35 @@ fn terminal_delta_fixtures_freeze_append_patch_and_rehydrate_shapes() {
     assert_eq!(
         serde_json::to_value(&patch_decoded).expect("patch should encode"),
         patch_fixture
+    );
+
+    let tool_metadata_fixture = fixture("delta_patch_tool_metadata");
+    let tool_metadata_decoded: TerminalStreamEnvelopeDto =
+        serde_json::from_value(tool_metadata_fixture.clone())
+            .expect("tool metadata patch fixture should decode");
+    assert_eq!(
+        tool_metadata_decoded,
+        TerminalStreamEnvelopeDto {
+            session_id: "session-root".to_string(),
+            cursor: TerminalCursorDto("cursor:opaque:v1:session-root/44.5==".to_string()),
+            delta: TerminalDeltaDto::PatchBlock {
+                block_id: "block-tool-call-1".to_string(),
+                patch: TerminalBlockPatchDto::ReplaceMetadata {
+                    metadata: json!({
+                        "openSessionId": "session-child-1",
+                        "agentRef": {
+                            "agentId": "agent-child-1",
+                            "subRunId": "subrun-1",
+                            "openSessionId": "session-child-1"
+                        }
+                    }),
+                },
+            },
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&tool_metadata_decoded).expect("tool metadata patch should encode"),
+        tool_metadata_fixture
     );
 
     let replace_fixture = fixture("delta_patch_replace_markdown");

@@ -91,11 +91,7 @@ function isVisibleActivityItem(item: ThreadItem): boolean {
     return true;
   }
 
-  return (
-    item.message.kind === 'assistant' ||
-    item.message.kind === 'toolCall' ||
-    item.message.kind === 'toolStream'
-  );
+  return item.message.kind === 'assistant' || item.message.kind === 'toolCall';
 }
 
 function getDeliveryMessage(delivery?: ParentDelivery): string | null {

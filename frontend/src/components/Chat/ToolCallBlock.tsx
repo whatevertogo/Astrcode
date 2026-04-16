@@ -1,8 +1,7 @@
 import { memo, useRef } from 'react';
 
-import type { ToolCallMessage, ToolStreamMessage } from '../../types';
+import type { ToolCallMessage } from '../../types';
 import {
-  extractToolChildSessionTarget,
   extractStructuredArgs,
   extractStructuredJsonOutput,
   extractToolMetadataSummary,
@@ -18,7 +17,6 @@ import { useNestedScrollContainment } from './useNestedScrollContainment';
 
 interface ToolCallBlockProps {
   message: ToolCallMessage;
-  streams?: ToolStreamMessage[];
 }
 
 function statusPill(status: ToolCallMessage['status']): string {
@@ -43,13 +41,13 @@ function statusLabel(status: ToolCallMessage['status']): string {
   }
 }
 
-function streamBadge(stream: ToolStreamMessage['stream']): string {
+function streamBadge(stream: 'stdout' | 'stderr'): string {
   return stream === 'stderr' ? pillDanger : pillNeutral;
 }
 
 function streamTitle(
   toolName: string,
-  stream: ToolStreamMessage['stream'],
+  stream: 'stdout' | 'stderr',
   hasShellCommand: boolean
 ): string {
   if (hasShellCommand && stream === 'stdout') {
@@ -84,18 +82,24 @@ function resultTextSurface(text: string, tone: 'normal' | 'error') {
   );
 }
 
-function ToolCallBlock({ message, streams = [] }: ToolCallBlockProps) {
+function ToolCallBlock({ message }: ToolCallBlockProps) {
   const { onOpenChildSession, onOpenSubRun } = useChatScreenContext();
   const viewportRef = useRef<HTMLDivElement>(null);
   useNestedScrollContainment(viewportRef);
   const shellDisplay = extractToolShellDisplay(message.metadata);
-  const childSessionTarget = extractToolChildSessionTarget(message.metadata);
   const summary = formatToolCallSummary(
     message.toolName,
     message.args,
     message.status,
     message.metadata
   );
+  const streamSections = (['stdout', 'stderr'] as const)
+    .map((stream) => ({
+      id: `${message.id}:${stream}`,
+      stream,
+      content: message.streams?.[stream] ?? '',
+    }))
+    .filter((section) => section.content.trim().length > 0);
   const structuredArgs = extractStructuredArgs(message.args);
   const metadataSummary = extractToolMetadataSummary(message.metadata);
   const fallbackResult =
@@ -111,19 +115,19 @@ function ToolCallBlock({ message, streams = [] }: ToolCallBlockProps) {
       <summary className="flex min-w-0 cursor-pointer items-center gap-2 py-1.5 font-mono text-[13px] leading-relaxed text-text-secondary list-none [&::-webkit-details-marker]:hidden hover:opacity-85">
         <span className={cn('shrink-0', statusPill(message.status))}>{message.toolName}</span>
         <span className="min-w-0 flex-1 truncate text-text-primary">{summary}</span>
-        {childSessionTarget && (
+        {message.childRef && (
           <button
             type="button"
             className={cn(infoButton, 'min-h-[26px] px-2.5 py-0 text-[11px]')}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              if (childSessionTarget.openSessionId) {
-                void onOpenChildSession(childSessionTarget.openSessionId);
+              if (message.childRef?.openSessionId) {
+                void onOpenChildSession(message.childRef.openSessionId);
                 return;
               }
-              if (childSessionTarget.subRunId) {
-                void onOpenSubRun(childSessionTarget.subRunId);
+              if (message.childRef?.subRunId) {
+                void onOpenSubRun(message.childRef.subRunId);
               }
             }}
           >
@@ -152,8 +156,8 @@ function ToolCallBlock({ message, streams = [] }: ToolCallBlockProps) {
           className="min-w-0 overflow-y-auto overscroll-contain pr-1 max-h-[min(58vh,560px)]"
         >
           <div className="flex min-w-0 flex-col gap-3">
-            {streams.length > 0 ? (
-              streams.map((streamMessage) => (
+            {streamSections.length > 0 ? (
+              streamSections.map((streamMessage) => (
                 <section key={streamMessage.id} className="flex min-w-0 flex-col gap-2">
                   <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
                     <div className="flex min-w-0 items-center gap-2">
@@ -168,9 +172,7 @@ function ToolCallBlock({ message, streams = [] }: ToolCallBlockProps) {
                         {streamMessage.stream === 'stderr' ? '错误输出' : '工具结果'}
                       </span>
                     </div>
-                    <span className="shrink-0 text-text-muted">
-                      {statusLabel(streamMessage.status)}
-                    </span>
+                    <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
                   </div>
                   {resultTextSurface(
                     streamMessage.content,

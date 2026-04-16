@@ -52,7 +52,7 @@ pub use conversation::v1::{
     ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto,
     ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto,
     ConversationSystemNoteKindDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
-    ConversationToolStreamBlockDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
+    ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
 };
 pub use debug::{
     DebugAgentNodeKindDto, RuntimeDebugOverviewDto, RuntimeDebugTimelineDto,

@@ -37,10 +37,17 @@ pub use observe::{
     SessionEventFilterSpec, SubRunEventScope, SubRunStatusSnapshot, SubRunStatusSource,
 };
 pub use query::{
-    AgentObserveSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot, SessionReplay,
-    SessionTranscriptSnapshot, TurnTerminalSnapshot, build_agent_observe_snapshot,
-    current_turn_messages, has_terminal_turn_signal, project_turn_outcome,
-    recoverable_parent_deliveries,
+    AgentObserveSnapshot, ConversationAssistantBlockFacts, ConversationBlockFacts,
+    ConversationBlockPatchFacts, ConversationBlockStatus, ConversationChildHandoffBlockFacts,
+    ConversationChildHandoffKind, ConversationDeltaFacts, ConversationDeltaFrameFacts,
+    ConversationDeltaProjector, ConversationErrorBlockFacts, ConversationSnapshotFacts,
+    ConversationStreamProjector, ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts,
+    ConversationSystemNoteKind, ConversationThinkingBlockFacts, ConversationTranscriptErrorKind,
+    ConversationUserBlockFacts, ProjectedTurnOutcome, SessionControlStateSnapshot, SessionReplay,
+    SessionTranscriptSnapshot, ToolCallBlockFacts, ToolCallStreamsFacts, TurnTerminalSnapshot,
+    build_agent_observe_snapshot, build_conversation_replay_frames, current_turn_messages,
+    fallback_live_cursor, has_terminal_turn_signal, project_conversation_snapshot,
+    project_turn_outcome, recoverable_parent_deliveries,
 };
 pub use state::{
     MailboxEventAppend, SessionSnapshot, SessionState, SessionStateEventSink, SessionWriter,
@@ -267,6 +274,23 @@ impl SessionRuntime {
         session_id: &str,
     ) -> Result<SessionControlStateSnapshot> {
         self.query().session_control_state(session_id).await
+    }
+
+    pub async fn conversation_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<ConversationSnapshotFacts> {
+        self.query().conversation_snapshot(session_id).await
+    }
+
+    pub async fn conversation_stream_replay(
+        &self,
+        session_id: &str,
+        last_event_id: Option<&str>,
+    ) -> Result<ConversationStreamReplayFacts> {
+        self.query()
+            .conversation_stream_replay(session_id, last_event_id)
+            .await
     }
 
     /// 返回当前 session durable 可见的 direct child lineage 节点。

@@ -59,6 +59,12 @@ impl RenderableCell for TranscriptCell {
                 tool_name,
                 summary,
                 status,
+                stdout,
+                stderr,
+                error,
+                duration_ms,
+                truncated,
+                child_session_id,
             } => render_labeled_cell(
                 width,
                 capabilities,
@@ -69,27 +75,17 @@ impl RenderableCell for TranscriptCell {
                     tool_name,
                     status_suffix(*status)
                 ),
-                summary,
+                &tool_call_body(
+                    summary,
+                    stdout,
+                    stderr,
+                    error.as_deref(),
+                    *duration_ms,
+                    *truncated,
+                    child_session_id.as_deref(),
+                ),
                 WrappedLineStyle::Warning,
                 WrappedLineStyle::Dim,
-            ),
-            TranscriptCellKind::ToolStream {
-                stream,
-                content,
-                status,
-            } => render_labeled_cell(
-                width,
-                capabilities,
-                theme,
-                &format!(
-                    "{} {}{}",
-                    theme.glyph("│", "|"),
-                    stream.to_lowercase(),
-                    status_suffix(*status)
-                ),
-                content,
-                WrappedLineStyle::Warning,
-                WrappedLineStyle::Plain,
             ),
             TranscriptCellKind::Error { code, message } => render_labeled_cell(
                 width,
@@ -157,6 +153,43 @@ impl RenderableCell for TranscriptCell {
             },
         }
     }
+}
+
+fn tool_call_body(
+    summary: &str,
+    stdout: &str,
+    stderr: &str,
+    error: Option<&str>,
+    duration_ms: Option<u64>,
+    truncated: bool,
+    child_session_id: Option<&str>,
+) -> String {
+    let mut sections = Vec::new();
+    if !summary.trim().is_empty() {
+        sections.push(summary.trim().to_string());
+    }
+    if !stdout.trim().is_empty() {
+        sections.push(format!("stdout:\n{}", stdout.trim_end()));
+    }
+    if !stderr.trim().is_empty() {
+        sections.push(format!("stderr:\n{}", stderr.trim_end()));
+    }
+    if let Some(error) = error.filter(|value| !value.trim().is_empty()) {
+        sections.push(format!("error: {}", error.trim()));
+    }
+    if let Some(duration_ms) = duration_ms {
+        sections.push(format!("duration: {duration_ms} ms"));
+    }
+    if truncated {
+        sections.push("truncated: true".to_string());
+    }
+    if let Some(child_session_id) = child_session_id.filter(|value| !value.trim().is_empty()) {
+        sections.push(format!("child session: {child_session_id}"));
+    }
+    if sections.is_empty() {
+        return "正在执行工具调用".to_string();
+    }
+    sections.join("\n\n")
 }
 
 fn render_user_cell(

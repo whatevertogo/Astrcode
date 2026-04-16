@@ -36,7 +36,7 @@ const chatContextValue: ChatScreenContextValue = {
 };
 
 describe('ToolCallBlock', () => {
-  it('renders real tool args in the collapsed summary and grouped result output in the body', () => {
+  it('renders real tool args in the collapsed summary and embedded stdout in the body', () => {
     const html = renderToStaticMarkup(
       <ChatScreenProvider value={chatContextValue}>
         <ToolCallBlock
@@ -51,19 +51,12 @@ describe('ToolCallBlock', () => {
               limit: 220,
             },
             output: '[workspace]',
+            streams: {
+              stdout: '[workspace]\nmembers = [\n  "crates/core"\n]\n',
+              stderr: '',
+            },
             timestamp: Date.now(),
           }}
-          streams={[
-            {
-              id: 'tool-stream-1',
-              kind: 'toolStream',
-              toolCallId: 'call-1',
-              stream: 'stdout',
-              status: 'ok',
-              content: '[workspace]\nmembers = [\n  "crates/core"\n]\n',
-              timestamp: Date.now(),
-            },
-          ]}
         />
       </ChatScreenProvider>
     );
@@ -76,7 +69,7 @@ describe('ToolCallBlock', () => {
     expect(html).toContain('max-h-[min(58vh,560px)]');
   });
 
-  it('renders fallback result surface when no streamed output exists', () => {
+  it('renders fallback result surface when no embedded stream output exists', () => {
     const html = renderToStaticMarkup(
       <ChatScreenProvider value={chatContextValue}>
         <ToolCallBlock
@@ -90,6 +83,10 @@ describe('ToolCallBlock', () => {
               pattern: '*.rs',
             },
             output: '找到 12 个文件',
+            streams: {
+              stdout: '',
+              stderr: '',
+            },
             timestamp: Date.now(),
           }}
         />
@@ -100,7 +97,7 @@ describe('ToolCallBlock', () => {
     expect(html).toContain('结果');
   });
 
-  it('renders child session navigation action when spawn metadata exposes an open session', () => {
+  it('renders child session navigation action from explicit child ref', () => {
     const html = renderToStaticMarkup(
       <ChatScreenProvider value={chatContextValue}>
         <ToolCallBlock
@@ -114,13 +111,19 @@ describe('ToolCallBlock', () => {
               description: '探索当前项目',
             },
             output: '子 Agent 已启动',
-            metadata: {
+            childRef: {
+              agentId: 'agent-child-1',
+              sessionId: 'session-root',
+              subRunId: 'subrun-child-1',
+              parentAgentId: 'agent-root',
+              parentSubRunId: 'subrun-root',
+              lineageKind: 'spawn',
+              status: 'running',
               openSessionId: 'session-child-1',
-              agentRef: {
-                agentId: 'agent-child-1',
-                subRunId: 'subrun-child-1',
-                openSessionId: 'session-child-1',
-              },
+            },
+            streams: {
+              stdout: '',
+              stderr: '',
             },
             timestamp: Date.now(),
           }}
@@ -129,5 +132,41 @@ describe('ToolCallBlock', () => {
     );
 
     expect(html).toContain('打开子会话');
+  });
+
+  it('renders embedded stdout/stderr sections and failure pills for failed tools', () => {
+    const html = renderToStaticMarkup(
+      <ChatScreenProvider value={chatContextValue}>
+        <ToolCallBlock
+          message={{
+            id: 'tool-call-4',
+            kind: 'toolCall',
+            toolCallId: 'call-4',
+            toolName: 'shell',
+            status: 'fail',
+            args: {
+              command: 'rg missing-symbol',
+            },
+            error: 'rg exited with code 2',
+            durationMs: 88,
+            truncated: true,
+            streams: {
+              stdout: 'searching workspace\n',
+              stderr: 'rg: missing-symbol: The system cannot find the file specified.\n',
+            },
+            timestamp: Date.now(),
+          }}
+        />
+      </ChatScreenProvider>
+    );
+
+    expect(html).toContain('已运行 shell');
+    expect(html).toContain('工具结果');
+    expect(html).toContain('错误输出');
+    expect(html).toContain('searching workspace');
+    expect(html).toContain('missing-symbol');
+    expect(html).toContain('88 ms');
+    expect(html).toContain('truncated');
+    expect(html).toContain('失败');
   });
 });

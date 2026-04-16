@@ -76,6 +76,34 @@ function parseToolStatus(value: unknown): ToolStatus {
   }
 }
 
+function parseToolChildRef(value: unknown) {
+  const record = asRecord(value);
+  const agentId = pickString(record ?? {}, 'agentId');
+  const sessionId = pickString(record ?? {}, 'sessionId');
+  const subRunId = pickString(record ?? {}, 'subRunId');
+  const openSessionId = pickString(record ?? {}, 'openSessionId');
+  if (!agentId || !sessionId || !subRunId || !openSessionId) {
+    return undefined;
+  }
+
+  return {
+    agentId,
+    sessionId,
+    subRunId,
+    executionId: pickOptionalString(record ?? {}, 'executionId') ?? undefined,
+    parentAgentId: pickOptionalString(record ?? {}, 'parentAgentId') ?? undefined,
+    parentSubRunId: pickOptionalString(record ?? {}, 'parentSubRunId') ?? undefined,
+    lineageKind:
+      pickString(record ?? {}, 'lineageKind') === 'fork'
+        ? 'fork'
+        : pickString(record ?? {}, 'lineageKind') === 'resume'
+          ? 'resume'
+          : 'spawn',
+    status: parseAgentLifecycle(record?.status),
+    openSessionId,
+  } as const;
+}
+
 function buildConversationQueryString(options?: {
   cursor?: string | null;
   filter?: SessionEventFilterQuery;
@@ -258,6 +286,8 @@ function projectConversationMessages(
 
       case 'tool_call': {
         const toolCallId = pickOptionalString(block, 'toolCallId') ?? id;
+        const streams = asRecord(block.streams);
+        const childRef = parseToolChildRef(block.childRef);
         messages.push({
           id: `conversation-tool:${toolCallId}`,
           kind: 'toolCall',
@@ -267,26 +297,19 @@ function projectConversationMessages(
           status: parseToolStatus(block.status),
           args: block.input ?? null,
           output: pickOptionalString(block, 'summary') || undefined,
+          error: pickOptionalString(block, 'error') || undefined,
           metadata: block.metadata ?? undefined,
-          timestamp: index,
-        });
-        return;
-      }
-
-      case 'tool_stream': {
-        const toolCallId = pickOptionalString(block, 'parentToolCallId');
-        const stream = pickString(block, 'stream');
-        if (!toolCallId || (stream !== 'stdout' && stream !== 'stderr')) {
-          return;
-        }
-        messages.push({
-          id: `conversation-tool-stream:${id}`,
-          kind: 'toolStream',
-          turnId,
-          toolCallId,
-          stream,
-          status: parseToolStatus(block.status),
-          content: pickString(block, 'content') ?? '',
+          childRef,
+          childSessionId: childRef?.openSessionId,
+          streams: {
+            stdout: pickString(streams ?? {}, 'stdout') ?? '',
+            stderr: pickString(streams ?? {}, 'stderr') ?? '',
+          },
+          durationMs: (() => {
+            const value = block.durationMs;
+            return typeof value === 'number' ? value : undefined;
+          })(),
+          truncated: block.truncated === true,
           timestamp: index,
         });
         return;
@@ -452,10 +475,14 @@ function applyBlockPatch(block: ConversationRecord, patch: ConversationRecord): 
     }
     case 'append_tool_stream': {
       const chunk = pickString(patch, 'chunk') ?? '';
-      if (typeof block.content === 'string') {
-        block.content += chunk;
-      } else {
-        block.content = chunk;
+      const stream = pickString(patch, 'stream');
+      const streams = asRecord(block.streams) ?? {};
+      if (stream === 'stdout' || stream === 'stderr') {
+        const current = typeof streams[stream] === 'string' ? streams[stream] : '';
+        block.streams = {
+          ...streams,
+          [stream]: `${current}${chunk}`,
+        };
       }
       break;
     }
@@ -464,6 +491,27 @@ function applyBlockPatch(block: ConversationRecord, patch: ConversationRecord): 
       break;
     case 'replace_metadata':
       block.metadata = patch.metadata;
+      break;
+    case 'replace_error':
+      block.error = pickOptionalString(patch, 'error') ?? null;
+      break;
+    case 'replace_duration': {
+      const durationMs = patch.durationMs;
+      if (typeof durationMs === 'number') {
+        block.durationMs = durationMs;
+      }
+      break;
+    }
+    case 'replace_child_ref': {
+      const childRef = parseToolChildRef(patch.childRef);
+      if (childRef) {
+        block.childRef = childRef;
+        block.childSessionId = childRef.openSessionId;
+      }
+      break;
+    }
+    case 'set_truncated':
+      block.truncated = patch.truncated === true;
       break;
     case 'set_status':
       block.status = pickString(patch, 'status') ?? block.status;
