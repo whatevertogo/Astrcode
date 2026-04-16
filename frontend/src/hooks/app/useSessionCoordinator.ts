@@ -3,7 +3,13 @@ import { ensureKnownProjects } from '../../lib/knownProjects';
 import { groupSessionsByProject, replaceSessionMessages } from '../../store/utils';
 import { findMatchingSessionId, normalizeSessionIdForCompare } from '../../lib/sessionId';
 import { buildFocusedSubRunFilter, type SessionEventFilterQuery } from '../../lib/sessionView';
-import type { Action, Phase, SessionMeta, SubRunViewData } from '../../types';
+import type {
+  Action,
+  ConversationControlState,
+  Phase,
+  SessionMeta,
+  SubRunViewData,
+} from '../../types';
 import type { ConversationViewProjection } from '../../lib/api/conversation';
 
 interface ActiveSubRunChildren {
@@ -53,6 +59,8 @@ export function useSessionCoordinator({
     subRuns: [],
     contentFingerprint: '',
   });
+  const [activeConversationControl, setActiveConversationControl] =
+    useState<ConversationControlState | null>(null);
 
   const loadSessionBundle = useCallback(
     async (sessionId: string, subRunPath: string[]) => {
@@ -62,6 +70,7 @@ export function useSessionCoordinator({
         filter,
         cursor: projection.cursor,
         phase: projection.phase,
+        control: projection.control,
         messages: projection.messages,
         messageTree: projection.messageTree,
         messageFingerprint: projection.messageFingerprint,
@@ -92,6 +101,7 @@ export function useSessionCoordinator({
         subRuns: loaded.childSubRuns,
         contentFingerprint: loaded.childContentFingerprint,
       });
+      setActiveConversationControl(loaded.control);
       // 先写入快照，再切换 active，避免会话切换瞬间渲染空白列表。
       activeSessionIdRef.current = sessionId;
       dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
@@ -119,6 +129,7 @@ export function useSessionCoordinator({
           phaseRef.current = projection.phase;
           dispatch({ type: 'SET_PHASE', phase: projection.phase });
         }
+        setActiveConversationControl(projection.control);
       });
       if (activationGeneration !== sessionActivationGenerationRef.current) {
         return;
@@ -200,6 +211,7 @@ export function useSessionCoordinator({
           subRuns: loaded.childSubRuns,
           contentFingerprint: loaded.childContentFingerprint,
         });
+        setActiveConversationControl(loaded.control);
         dispatch({
           type: 'INITIALIZE',
           projects: hydratedProjects,
@@ -229,6 +241,7 @@ export function useSessionCoordinator({
             phaseRef.current = projection.phase;
             dispatch({ type: 'SET_PHASE', phase: projection.phase });
           }
+          setActiveConversationControl(projection.control);
         });
         if (activationGeneration !== sessionActivationGenerationRef.current) {
           return;
@@ -245,6 +258,7 @@ export function useSessionCoordinator({
         subRuns: [],
         contentFingerprint: '',
       });
+      setActiveConversationControl(null);
       dispatch({
         type: 'INITIALIZE',
         projects,
@@ -271,6 +285,7 @@ export function useSessionCoordinator({
 
   return {
     activeSubRunChildren,
+    activeConversationControl,
     loadAndActivateSession,
     refreshSessions,
   };

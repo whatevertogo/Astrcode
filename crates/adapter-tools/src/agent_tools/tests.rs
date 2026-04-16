@@ -191,6 +191,11 @@ fn send_observe_close_prompt_metadata_stays_action_oriented() {
     assert!(send_prompt.guide.contains("direct child"));
     assert!(send_prompt.guide.contains("direct parent"));
     assert!(send_prompt.guide.contains("both directions in one turn"));
+    assert!(
+        send_prompt.caveats.iter().any(
+            |caveat| caveat.contains("Do not alternate `sleep -> observe -> sleep -> observe`")
+        )
+    );
 
     let observe_prompt = ObserveAgentTool::new(boxed_collaboration_executor(executor.clone()))
         .capability_metadata()
@@ -199,6 +204,11 @@ fn send_observe_close_prompt_metadata_stays_action_oriented() {
     assert!(observe_prompt.summary.contains("decide the next action"));
     assert!(observe_prompt.guide.contains("`wait`, `send`, or `close`"));
     assert!(observe_prompt.guide.contains("current child state"));
+    assert!(
+        observe_prompt.caveats.iter().any(
+            |caveat| caveat.contains("Do not alternate `sleep -> observe -> sleep -> observe`")
+        )
+    );
     assert!(
         !observe_prompt
             .guide
@@ -1071,6 +1081,11 @@ fn collaboration_prompt_metadata_stays_action_oriented() {
     assert!(send_prompt.guide.contains("direct child"));
     assert!(send_prompt.guide.contains("direct parent"));
     assert!(send_prompt.guide.contains("both directions in one turn"));
+    assert!(
+        send_prompt.caveats.iter().any(
+            |caveat| caveat.contains("Do not alternate `sleep -> observe -> sleep -> observe`")
+        )
+    );
 
     let observe_prompt = ObserveAgentTool::new(boxed_collaboration_executor(executor.clone()))
         .capability_metadata()
@@ -1079,6 +1094,11 @@ fn collaboration_prompt_metadata_stays_action_oriented() {
     assert!(observe_prompt.summary.contains("decide the next action"));
     assert!(observe_prompt.guide.contains("`wait`, `send`, or `close`"));
     assert!(observe_prompt.guide.contains("current child state"));
+    assert!(
+        observe_prompt.caveats.iter().any(
+            |caveat| caveat.contains("Do not alternate `sleep -> observe -> sleep -> observe`")
+        )
+    );
 
     let close_prompt = CloseAgentTool::new(boxed_collaboration_executor(executor))
         .capability_metadata()

@@ -206,7 +206,9 @@ impl Tool for SendAgentTool {
                 .caveat(
                     "Do not use `send` for status checks. If you already know a child is still \
                      running and are simply waiting, do not call `observe` repeatedly either; wait \
-                     briefly with your current shell tool instead.",
+                     briefly with your current shell tool instead. Do not alternate \
+                     `sleep -> observe -> sleep -> observe` while the child has not produced a \
+                     new delivery.",
                 )
                 .caveat(
                     "Messages must stay on the direct parent/child edge. No sibling chat, no \

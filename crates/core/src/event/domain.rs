@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentEventContext, ChildSessionNotification, CompactTrigger, PromptMetricsPayload,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunResult,
-    ToolExecutionResult, ToolOutputStream,
+    AgentEventContext, ChildSessionNotification, CompactAppliedMeta, CompactTrigger,
+    PromptMetricsPayload, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SubRunResult, ToolExecutionResult, ToolOutputStream,
 };
 
 /// 会话阶段
@@ -120,6 +120,7 @@ pub enum AgentEvent {
         agent: AgentEventContext,
         trigger: CompactTrigger,
         summary: String,
+        meta: CompactAppliedMeta,
         preserved_recent_turns: u32,
     },
     /// 受控子会话开始。

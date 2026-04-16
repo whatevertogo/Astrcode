@@ -27,6 +27,8 @@ pub(crate) struct ManualCompactRequest<'a> {
     pub session_id: &'a str,
     pub working_dir: &'a Path,
     pub runtime: &'a ResolvedRuntimeConfig,
+    pub trigger: astrcode_core::CompactTrigger,
+    pub instructions: Option<&'a str>,
 }
 
 pub(crate) async fn build_manual_compact_events(
@@ -57,7 +59,10 @@ pub(crate) async fn build_manual_compact_events(
         Some(&prompt_output.system_prompt),
         CompactConfig {
             keep_recent_turns: settings.compact_keep_recent_turns,
-            trigger: astrcode_core::CompactTrigger::Manual,
+            trigger: request.trigger,
+            summary_reserve_tokens: settings.summary_reserve_tokens,
+            max_retry_attempts: settings.compact_max_retry_attempts,
+            custom_instructions: request.instructions.map(str::to_string),
         },
         CancelToken::new(),
     )
@@ -69,9 +74,10 @@ pub(crate) async fn build_manual_compact_events(
     let mut events = vec![compact_applied_event(
         None,
         &AgentEventContext::default(),
-        astrcode_core::CompactTrigger::Manual,
+        request.trigger,
         compaction.summary,
         CompactAppliedStats {
+            meta: compaction.meta,
             preserved_recent_turns: compaction.preserved_recent_turns,
             pre_tokens: compaction.pre_tokens,
             post_tokens_estimate: compaction.post_tokens_estimate,
@@ -104,10 +110,10 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::{
-        EventTranslator, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits, Phase,
-        PromptBuildOutput, PromptBuildRequest, PromptFactsProvider, PromptFactsRequest,
-        PromptProvider, ResourceProvider, ResourceReadResult, ResourceRequestContext, Result,
-        SessionId, StorageEventPayload, UserMessageOrigin,
+        CompactMode, EventTranslator, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
+        ModelLimits, Phase, PromptBuildOutput, PromptBuildRequest, PromptFactsProvider,
+        PromptFactsRequest, PromptProvider, ResourceProvider, ResourceReadResult,
+        ResourceRequestContext, Result, SessionId, StorageEventPayload, UserMessageOrigin,
     };
     use astrcode_kernel::Kernel;
     use async_trait::async_trait;
@@ -258,6 +264,8 @@ mod tests {
             session_id: "session-1",
             working_dir: Path::new("."),
             runtime: &ResolvedRuntimeConfig::default(),
+            trigger: astrcode_core::CompactTrigger::Manual,
+            instructions: Some("保留错误和文件路径"),
         })
         .await
         .expect("manual compact should succeed")
@@ -265,7 +273,10 @@ mod tests {
 
         assert!(matches!(
             &events[0].payload,
-            StorageEventPayload::CompactApplied { summary, .. } if summary == "manual compact summary"
+            StorageEventPayload::CompactApplied { summary, meta, .. }
+                if summary == "manual compact summary"
+                    && meta.mode == CompactMode::Full
+                    && meta.instructions_present
         ));
     }
 }

@@ -53,11 +53,12 @@ const SESSION_LIVE_BROADCAST_CAPACITY: usize = 2048;
 pub struct SessionState {
     pub phase: StdMutex<Phase>,
     pub running: AtomicBool,
+    pub compacting: AtomicBool,
     pub cancel: StdMutex<CancelToken>,
     pub active_turn_id: StdMutex<Option<String>>,
     pub turn_lease: StdMutex<Option<Box<dyn SessionTurnLease>>>,
     pub pending_manual_compact: StdMutex<bool>,
-    pub pending_manual_compact_runtime: StdMutex<Option<ResolvedRuntimeConfig>>,
+    pub pending_manual_compact_request: StdMutex<Option<PendingManualCompactRequest>>,
     pending_reactivation_messages: StdMutex<Vec<LlmMessage>>,
     pub compact_failure_count: StdMutex<u32>,
     pub broadcaster: broadcast::Sender<SessionEventRecord>,
@@ -88,6 +89,12 @@ pub struct SessionSnapshot {
     pub turn_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingManualCompactRequest {
+    pub runtime: ResolvedRuntimeConfig,
+    pub instructions: Option<String>,
+}
+
 impl SessionState {
     pub fn new(
         phase: Phase,
@@ -109,11 +116,12 @@ impl SessionState {
         Self {
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
+            compacting: AtomicBool::new(false),
             cancel: StdMutex::new(CancelToken::new()),
             active_turn_id: StdMutex::new(None),
             turn_lease: StdMutex::new(None),
             pending_manual_compact: StdMutex::new(false),
-            pending_manual_compact_runtime: StdMutex::new(None),
+            pending_manual_compact_request: StdMutex::new(None),
             pending_reactivation_messages: StdMutex::new(pending_reactivation_messages),
             compact_failure_count: StdMutex::new(0),
             broadcaster,
@@ -179,31 +187,40 @@ impl SessionState {
         });
     }
 
-    pub fn request_manual_compact(&self, runtime: ResolvedRuntimeConfig) -> Result<bool> {
+    pub fn compacting(&self) -> bool {
+        self.compacting.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_compacting(&self, compacting: bool) {
+        self.compacting
+            .store(compacting, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn request_manual_compact(&self, request: PendingManualCompactRequest) -> Result<bool> {
         let mut guard = support::lock_anyhow(
             &self.pending_manual_compact,
             "session pending manual compact",
         )?;
-        let mut runtime_guard = support::lock_anyhow(
-            &self.pending_manual_compact_runtime,
-            "session pending manual compact runtime",
+        let mut request_guard = support::lock_anyhow(
+            &self.pending_manual_compact_request,
+            "session pending manual compact request",
         )?;
         let already_pending = *guard;
         *guard = true;
-        *runtime_guard = Some(runtime);
+        *request_guard = Some(request);
         Ok(!already_pending)
     }
 
-    pub fn take_pending_manual_compact(&self) -> Result<Option<ResolvedRuntimeConfig>> {
+    pub fn take_pending_manual_compact(&self) -> Result<Option<PendingManualCompactRequest>> {
         let mut guard = support::lock_anyhow(
             &self.pending_manual_compact,
             "session pending manual compact",
         )?;
-        let mut runtime_guard = support::lock_anyhow(
-            &self.pending_manual_compact_runtime,
-            "session pending manual compact runtime",
+        let mut request_guard = support::lock_anyhow(
+            &self.pending_manual_compact_request,
+            "session pending manual compact request",
         )?;
-        let pending = if *guard { runtime_guard.take() } else { None };
+        let pending = if *guard { request_guard.take() } else { None };
         *guard = false;
         Ok(pending)
     }
@@ -313,8 +330,8 @@ fn pending_reactivation_messages_from_stored(stored_events: &[StoredEvent]) -> V
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, CompactTrigger, InvocationKind, LlmMessage, Phase, StorageEventPayload,
-        SubRunStorageMode, UserMessageOrigin,
+        AgentEventContext, CompactAppliedMeta, CompactMode, CompactTrigger, InvocationKind,
+        LlmMessage, Phase, StorageEventPayload, SubRunStorageMode, UserMessageOrigin,
     };
     use chrono::Utc;
 
@@ -485,6 +502,14 @@ mod tests {
                     StorageEventPayload::CompactApplied {
                         trigger: CompactTrigger::Manual,
                         summary: "summary".into(),
+                        meta: CompactAppliedMeta {
+                            mode: CompactMode::Full,
+                            instructions_present: false,
+                            fallback_used: false,
+                            retry_count: 0,
+                            input_units: 2,
+                            output_summary_chars: 7,
+                        },
                         preserved_recent_turns: 1,
                         pre_tokens: 100,
                         post_tokens_estimate: 40,
@@ -548,6 +573,14 @@ mod tests {
                 StorageEventPayload::CompactApplied {
                     trigger: CompactTrigger::Manual,
                     summary: "summary".into(),
+                    meta: CompactAppliedMeta {
+                        mode: CompactMode::Full,
+                        instructions_present: false,
+                        fallback_used: false,
+                        retry_count: 0,
+                        input_units: 2,
+                        output_summary_chars: 7,
+                    },
                     preserved_recent_turns: 1,
                     pre_tokens: 100,
                     post_tokens_estimate: 40,

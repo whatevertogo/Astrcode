@@ -19,7 +19,11 @@ mod terminal;
 pub(crate) mod test_support;
 mod wake;
 
-use std::{path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
@@ -665,6 +669,7 @@ pub struct AgentOrchestrationService {
     profiles: Arc<ProfileResolutionService>,
     task_registry: Arc<TaskRegistry>,
     metrics: Arc<dyn RuntimeMetricsRecorder>,
+    observe_guard: Arc<Mutex<HashMap<String, ObserveSnapshotSignature>>>,
 }
 
 impl AgentOrchestrationService {
@@ -683,6 +688,7 @@ impl AgentOrchestrationService {
             profiles,
             task_registry,
             metrics,
+            observe_guard: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1003,6 +1009,19 @@ impl AgentOrchestrationService {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObserveSnapshotSignature {
+    lifecycle_status: AgentLifecycleStatus,
+    last_turn_outcome: Option<AgentTurnOutcome>,
+    phase: String,
+    turn_count: u32,
+    pending_message_count: usize,
+    active_task: Option<String>,
+    pending_task: Option<String>,
+    recent_mailbox_messages: Vec<String>,
+    last_output: Option<String>,
 }
 
 // ── 实现 SubAgentExecutor（供 spawn 工具使用）──────────────────────

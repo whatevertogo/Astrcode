@@ -1,4 +1,4 @@
-use astrcode_core::{ChildSessionNode, Phase};
+use astrcode_core::{ChildSessionNode, CompactAppliedMeta, CompactTrigger, Phase};
 use astrcode_session_runtime::{
     ConversationSnapshotFacts as RuntimeConversationSnapshotFacts,
     ConversationStreamReplayFacts as RuntimeConversationStreamReplayFacts,
@@ -16,11 +16,19 @@ pub enum ConversationFocus {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalLastCompactMetaFacts {
+    pub trigger: CompactTrigger,
+    pub meta: CompactAppliedMeta,
+}
+
 #[derive(Debug, Clone)]
 pub struct TerminalControlFacts {
     pub phase: Phase,
     pub active_turn_id: Option<String>,
     pub manual_compact_pending: bool,
+    pub compacting: bool,
+    pub last_compact_meta: Option<TerminalLastCompactMetaFacts>,
 }
 
 pub type ConversationControlFacts = TerminalControlFacts;

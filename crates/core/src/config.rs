@@ -32,6 +32,7 @@ pub const DEFAULT_LLM_READ_TIMEOUT_SECS: u64 = 90;
 pub const DEFAULT_LLM_MAX_RETRIES: u32 = 2;
 pub const DEFAULT_LLM_RETRY_BASE_DELAY_MS: u64 = 250;
 pub const DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS: u8 = 3;
+pub const DEFAULT_RESERVED_CONTEXT_SIZE: usize = 20_000;
 pub const DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS: u8 = 3;
 pub const DEFAULT_MAX_CONTINUATIONS: u8 = 3;
 pub const DEFAULT_SUMMARY_RESERVE_TOKENS: usize = 20_000;
@@ -126,7 +127,9 @@ pub struct RuntimeConfig {
     pub llm_retry_base_delay_ms: Option<u64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_reactive_compact_attempts: Option<u8>,
+    pub compact_max_retry_attempts: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserved_context_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_continuation_attempts: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -214,7 +217,8 @@ pub struct ResolvedRuntimeConfig {
     pub llm_read_timeout_secs: u64,
     pub llm_max_retries: u32,
     pub llm_retry_base_delay_ms: u64,
-    pub max_reactive_compact_attempts: u8,
+    pub compact_max_retry_attempts: u8,
+    pub reserved_context_size: usize,
     pub max_output_continuation_attempts: u8,
     pub max_continuations: u8,
     pub summary_reserve_tokens: usize,
@@ -276,7 +280,8 @@ impl Default for ResolvedRuntimeConfig {
             llm_read_timeout_secs: DEFAULT_LLM_READ_TIMEOUT_SECS,
             llm_max_retries: DEFAULT_LLM_MAX_RETRIES,
             llm_retry_base_delay_ms: DEFAULT_LLM_RETRY_BASE_DELAY_MS,
-            max_reactive_compact_attempts: DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
+            compact_max_retry_attempts: DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
+            reserved_context_size: DEFAULT_RESERVED_CONTEXT_SIZE,
             max_output_continuation_attempts: DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
             max_continuations: DEFAULT_MAX_CONTINUATIONS,
             summary_reserve_tokens: DEFAULT_SUMMARY_RESERVE_TOKENS,
@@ -426,9 +431,10 @@ impl fmt::Debug for RuntimeConfig {
             .field("llm_read_timeout_secs", &self.llm_read_timeout_secs)
             .field("llm_max_retries", &self.llm_max_retries)
             .field(
-                "max_reactive_compact_attempts",
-                &self.max_reactive_compact_attempts,
+                "compact_max_retry_attempts",
+                &self.compact_max_retry_attempts,
             )
+            .field("reserved_context_size", &self.reserved_context_size)
             .field(
                 "max_output_continuation_attempts",
                 &self.max_output_continuation_attempts,
@@ -654,9 +660,13 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
             .llm_retry_base_delay_ms
             .unwrap_or(defaults.llm_retry_base_delay_ms)
             .max(1),
-        max_reactive_compact_attempts: runtime
-            .max_reactive_compact_attempts
-            .unwrap_or(defaults.max_reactive_compact_attempts)
+        compact_max_retry_attempts: runtime
+            .compact_max_retry_attempts
+            .unwrap_or(defaults.compact_max_retry_attempts)
+            .max(1),
+        reserved_context_size: runtime
+            .reserved_context_size
+            .unwrap_or(defaults.reserved_context_size)
             .max(1),
         max_output_continuation_attempts: runtime
             .max_output_continuation_attempts

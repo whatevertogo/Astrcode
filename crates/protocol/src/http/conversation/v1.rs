@@ -3,6 +3,10 @@
 //! conversation 是 authoritative hydration / delta 合同，直接表达后端收敛后的
 //! conversation/tool display 语义，不再借 terminal alias 维持假性独立。
 
+pub use astrcode_core::{
+    CompactAppliedMeta as ConversationCompactMetaDto,
+    CompactTrigger as ConversationCompactTriggerDto,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -246,6 +250,8 @@ pub struct ConversationSystemNoteBlockDto {
     pub id: String,
     pub note_kind: ConversationSystemNoteKindDto,
     pub markdown: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_meta: Option<ConversationLastCompactMetaDto>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -306,8 +312,20 @@ pub struct ConversationControlStateDto {
     pub can_request_compact: bool,
     #[serde(default)]
     pub compact_pending: bool,
+    #[serde(default)]
+    pub compacting: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_compact_meta: Option<ConversationLastCompactMetaDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationLastCompactMetaDto {
+    pub trigger: ConversationCompactTriggerDto,
+    #[serde(flatten)]
+    pub meta: ConversationCompactMetaDto,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

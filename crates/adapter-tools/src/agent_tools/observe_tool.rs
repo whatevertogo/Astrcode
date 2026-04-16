@@ -44,7 +44,8 @@ Use `observe` to decide the next action for one direct child.
 
 Do not poll repeatedly with no decision attached. If you are simply waiting for a running child,
 pause briefly with your current shell tool (for example `sleep`) instead of spending another
-tool call on `observe`. Do not use it for unrelated agents."#
+tool call on `observe`. Do not alternate `sleep -> observe -> sleep -> observe` while no new
+delivery or decision point has appeared. Do not use it for unrelated agents."#
             .to_string()
     }
 
@@ -99,7 +100,8 @@ impl Tool for ObserveAgentTool {
                 .caveat(
                     "Prefer one well-timed observe over repeated checking. If you are just \
                      waiting for a running child, use your current shell tool to sleep briefly and \
-                     then continue, instead of polling `observe` again.",
+                     then continue, instead of polling `observe` again. Do not alternate \
+                     `sleep -> observe -> sleep -> observe` while no new delivery has arrived.",
                 )
                 .caveat(
                     "`observe` only exposes a short mailbox tail and latest output excerpt. It is \

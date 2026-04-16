@@ -86,7 +86,12 @@ export default function App() {
     hostBridge,
   } = useAgent();
 
-  const { activeSubRunChildren, loadAndActivateSession, refreshSessions } = useSessionCoordinator({
+  const {
+    activeSubRunChildren,
+    activeConversationControl,
+    loadAndActivateSession,
+    refreshSessions,
+  } = useSessionCoordinator({
     dispatch,
     activeSessionIdRef,
     activeSubRunPathRef,
@@ -251,6 +256,7 @@ export default function App() {
       isChildSession: activeSession?.parentSessionId !== undefined,
       workingDir: activeProject?.workingDir ?? '',
       phase: state.phase,
+      conversationControl: activeConversationControl,
       activeSubRunPath: state.activeSubRunPath,
       activeSubRunTitle: activeSubRunView?.title ?? null,
       activeSubRunBreadcrumbs,
@@ -272,6 +278,7 @@ export default function App() {
     [
       activeProject?.name,
       activeProject?.workingDir,
+      activeConversationControl,
       activeSession?.id,
       activeSession?.parentSessionId,
       activeSession?.title,

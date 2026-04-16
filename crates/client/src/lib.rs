@@ -898,7 +898,13 @@ mod tests {
             )
             .await;
         let compact_error = client
-            .request_compact("session-1", CompactSessionRequest { control: None })
+            .request_compact(
+                "session-1",
+                CompactSessionRequest {
+                    control: None,
+                    instructions: None,
+                },
+            )
             .await
             .expect_err("compact should fail");
         assert_eq!(compact_error.kind, ClientErrorKind::AuthExpired);
@@ -969,7 +975,13 @@ mod tests {
             transport,
         );
         let response = client
-            .request_compact("session-1", CompactSessionRequest { control: None })
+            .request_compact(
+                "session-1",
+                CompactSessionRequest {
+                    control: None,
+                    instructions: None,
+                },
+            )
             .await
             .expect("compact should succeed");
         assert_eq!(
@@ -994,7 +1006,8 @@ mod tests {
                 json_body: Some(json!({
                     "control": {
                         "manualCompact": true
-                    }
+                    },
+                    "instructions": "保留错误和文件路径"
                 })),
             },
             result: Ok(TransportResponse {
@@ -1025,6 +1038,7 @@ mod tests {
                         max_steps: None,
                         manual_compact: None,
                     }),
+                    instructions: Some("保留错误和文件路径".to_string()),
                 },
             )
             .await

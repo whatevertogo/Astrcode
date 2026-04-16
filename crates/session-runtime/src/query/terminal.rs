@@ -1,4 +1,10 @@
-use astrcode_core::Phase;
+use astrcode_core::{CompactAppliedMeta, CompactTrigger, Phase};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastCompactMetaSnapshot {
+    pub trigger: CompactTrigger,
+    pub meta: CompactAppliedMeta,
+}
 
 /// terminal / interactive surface 需要的稳定控制态快照。
 ///
@@ -9,4 +15,6 @@ pub struct SessionControlStateSnapshot {
     pub phase: Phase,
     pub active_turn_id: Option<String>,
     pub manual_compact_pending: bool,
+    pub compacting: bool,
+    pub last_compact_meta: Option<LastCompactMetaSnapshot>,
 }

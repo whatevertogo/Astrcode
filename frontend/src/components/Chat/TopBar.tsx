@@ -6,6 +6,7 @@ export default function TopBar() {
   const {
     projectName,
     sessionTitle,
+    conversationControl,
     activeSubRunPath,
     activeSubRunBreadcrumbs,
     isSidebarOpen,
@@ -92,6 +93,19 @@ export default function TopBar() {
           <span className="text-[13px] text-text-muted">未选择会话</span>
         )}
       </div>
+      {conversationControl && (
+        <div className="ml-3 flex shrink-0 items-center gap-2">
+          {conversationControl.compacting ? (
+            <span className="inline-flex items-center rounded-full border border-amber-300/50 bg-amber-100/70 px-2.5 py-1 text-[11px] font-medium text-amber-900">
+              正在 compact
+            </span>
+          ) : conversationControl.compactPending ? (
+            <span className="inline-flex items-center rounded-full border border-sky-300/50 bg-sky-100/70 px-2.5 py-1 text-[11px] font-medium text-sky-900">
+              compact 已排队
+            </span>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

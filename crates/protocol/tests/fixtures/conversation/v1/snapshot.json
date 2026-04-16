@@ -8,6 +8,7 @@
     "canSubmitPrompt": false,
     "canRequestCompact": true,
     "compactPending": false,
+    "compacting": false,
     "activeTurnId": "turn-42"
   },
   "blocks": [

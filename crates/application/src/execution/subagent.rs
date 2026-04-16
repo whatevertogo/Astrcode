@@ -134,7 +134,7 @@ pub async fn launch_subagent(
         .await
         .map_err(ApplicationError::from)?;
     metrics.record_child_spawned();
-    accepted.agent_id = Some(handle.agent_id.into());
+    accepted.agent_id = Some(handle.agent_id);
     Ok(accepted)
 }
 

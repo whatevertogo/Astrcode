@@ -275,7 +275,9 @@ mod tests {
                 can_submit_prompt: true,
                 can_request_compact: true,
                 compact_pending: false,
+                compacting: false,
                 active_turn_id: None,
+                last_compact_meta: None,
             },
             blocks: vec![AstrcodeConversationBlockDto::Assistant(
                 AstrcodeConversationAssistantBlockDto {

@@ -29,9 +29,6 @@ use crate::{
     },
 };
 
-/// reactive compact 最大重试次数。
-pub const MAX_REACTIVE_COMPACT_ATTEMPTS: usize = 3;
-
 /// reactive compact 恢复成功后的结果。
 pub struct RecoveryResult {
     /// 压缩后的消息历史（含文件恢复消息）。
@@ -70,6 +67,7 @@ fn recovery_result_from_compaction(
         CompactTrigger::Auto,
         compaction.summary,
         CompactAppliedStats {
+            meta: compaction.meta,
             preserved_recent_turns: compaction.preserved_recent_turns,
             pre_tokens: compaction.pre_tokens,
             post_tokens_estimate: compaction.post_tokens_estimate,
@@ -111,6 +109,9 @@ pub async fn try_reactive_compact(
         CompactConfig {
             keep_recent_turns: ctx.settings.compact_keep_recent_turns,
             trigger: CompactTrigger::Auto,
+            summary_reserve_tokens: ctx.settings.summary_reserve_tokens,
+            max_retry_attempts: ctx.settings.compact_max_retry_attempts,
+            custom_instructions: None,
         },
         ctx.cancel.clone(),
     )
@@ -132,8 +133,8 @@ mod tests {
     use std::{fs, time::Duration};
 
     use astrcode_core::{
-        AgentEventContext, CompactTrigger, LlmMessage, StorageEventPayload, ToolCallRequest,
-        UserMessageOrigin,
+        AgentEventContext, CompactAppliedMeta, CompactMode, CompactTrigger, LlmMessage,
+        StorageEventPayload, ToolCallRequest, UserMessageOrigin,
     };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
@@ -146,6 +147,9 @@ mod tests {
         ContextWindowSettings {
             auto_compact_enabled: true,
             compact_threshold_percent: 80,
+            reserved_context_size: 20_000,
+            summary_reserve_tokens: 20_000,
+            compact_max_retry_attempts: 3,
             tool_result_max_bytes: 16_384,
             compact_keep_recent_turns: 1,
             max_tracked_files: 8,
@@ -198,6 +202,14 @@ mod tests {
             CompactResult {
                 messages: vec![compacted_message.clone()],
                 summary: "older context summary".to_string(),
+                meta: CompactAppliedMeta {
+                    mode: CompactMode::RetrySalvage,
+                    instructions_present: false,
+                    fallback_used: true,
+                    retry_count: 2,
+                    input_units: 5,
+                    output_summary_chars: 21,
+                },
                 preserved_recent_turns: 2,
                 pre_tokens: 1_500,
                 post_tokens_estimate: 400,
@@ -214,6 +226,7 @@ mod tests {
             StorageEventPayload::CompactApplied {
                 trigger,
                 summary,
+                meta,
                 preserved_recent_turns,
                 pre_tokens,
                 post_tokens_estimate,
@@ -222,6 +235,12 @@ mod tests {
                 timestamp: event_timestamp,
             } if *trigger == CompactTrigger::Auto
                 && summary == "older context summary"
+                && meta.mode == CompactMode::RetrySalvage
+                && !meta.instructions_present
+                && meta.fallback_used
+                && meta.retry_count == 2
+                && meta.input_units == 5
+                && meta.output_summary_chars == 21
                 && *preserved_recent_turns == 2
                 && *pre_tokens == 1_500
                 && *post_tokens_estimate == 400

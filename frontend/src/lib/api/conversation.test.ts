@@ -3,6 +3,14 @@ import { describe, expect, it } from 'vitest';
 import type { ConversationSnapshotState } from './conversation';
 import { applyConversationEnvelope, projectConversationState } from './conversation';
 
+const baseControl = {
+  phase: 'idle' as const,
+  canSubmitPrompt: true,
+  canRequestCompact: true,
+  compactPending: false,
+  compacting: false,
+};
+
 describe('projectConversationState', () => {
   it('keeps thinking blocks visible even when the same turn also has assistant output', () => {
     const state: ConversationSnapshotState = {
@@ -24,6 +32,7 @@ describe('projectConversationState', () => {
           status: 'streaming',
         },
       ],
+      control: baseControl,
       childSummaries: [],
     };
 
@@ -68,6 +77,7 @@ describe('projectConversationState', () => {
           },
         },
       ],
+      control: { ...baseControl, phase: 'callingTool' as const },
       childSummaries: [],
     };
 
@@ -135,6 +145,7 @@ describe('projectConversationState', () => {
           },
         },
       ],
+      control: { ...baseControl, phase: 'callingTool' as const },
       childSummaries: [],
     };
 
@@ -188,6 +199,7 @@ describe('projectConversationState', () => {
           },
         },
       ],
+      control: { ...baseControl, phase: 'callingTool' as const },
       childSummaries: [],
     };
 
@@ -246,6 +258,7 @@ describe('projectConversationState', () => {
           },
         },
       ],
+      control: { ...baseControl, phase: 'callingTool' as const },
       childSummaries: [],
     };
 
@@ -364,6 +377,7 @@ describe('projectConversationState', () => {
           },
         },
       ],
+      control: { ...baseControl, phase: 'callingTool' as const },
       childSummaries: [],
     };
 
@@ -428,6 +442,7 @@ describe('projectConversationState', () => {
           },
         },
       ],
+      control: { ...baseControl, phase: 'callingTool' as const },
       childSummaries: [],
     };
 

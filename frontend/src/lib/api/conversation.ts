@@ -2,6 +2,9 @@ import type {
   AgentLifecycle,
   ChildSessionNotificationKind,
   ChildSessionNotificationMessage,
+  CompactMeta,
+  ConversationControlState,
+  LastCompactMeta,
   Message,
   ParentDelivery,
   Phase,
@@ -23,6 +26,7 @@ type ConversationRecord = Record<string, unknown>;
 export interface ConversationSnapshotState {
   cursor: string | null;
   phase: Phase;
+  control: ConversationControlState;
   blocks: ConversationRecord[];
   childSummaries: ConversationRecord[];
 }
@@ -30,6 +34,7 @@ export interface ConversationSnapshotState {
 export interface ConversationViewProjection {
   cursor: string | null;
   phase: Phase;
+  control: ConversationControlState;
   messages: Message[];
   messageTree: SubRunThreadTree;
   messageFingerprint: string;
@@ -135,6 +140,70 @@ function childSummaryNotificationKind(lifecycle: AgentLifecycle): ChildSessionNo
   return lifecycle === 'idle' || lifecycle === 'terminated' ? 'delivered' : 'progress_summary';
 }
 
+function parseCompactTrigger(value: unknown): LastCompactMeta['trigger'] {
+  switch (value) {
+    case 'auto':
+    case 'manual':
+    case 'deferred':
+      return value;
+    default:
+      return 'manual';
+  }
+}
+
+function parseCompactMode(value: unknown): CompactMeta['mode'] {
+  switch (value) {
+    case 'full':
+    case 'incremental':
+    case 'retry_salvage':
+      return value;
+    default:
+      return 'full';
+  }
+}
+
+function parseCompactMeta(value: unknown): CompactMeta | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  return {
+    mode: parseCompactMode(record.mode),
+    instructionsPresent: record.instructionsPresent === true,
+    fallbackUsed: record.fallbackUsed === true,
+    retryCount: typeof record.retryCount === 'number' ? record.retryCount : 0,
+    inputUnits: typeof record.inputUnits === 'number' ? record.inputUnits : 0,
+    outputSummaryChars:
+      typeof record.outputSummaryChars === 'number' ? record.outputSummaryChars : 0,
+  };
+}
+
+function parseLastCompactMeta(value: unknown): LastCompactMeta | undefined {
+  const record = asRecord(value);
+  const meta = parseCompactMeta(record?.meta ?? record);
+  if (!record || !meta) {
+    return undefined;
+  }
+  return {
+    trigger: parseCompactTrigger(record.trigger),
+    meta,
+  };
+}
+
+function parseConversationControlState(record: ConversationRecord): ConversationControlState {
+  const controlRecord = asRecord(record.control);
+  const phase = parsePhase(controlRecord?.phase ?? record.phase);
+  return {
+    phase,
+    canSubmitPrompt: controlRecord?.canSubmitPrompt !== false,
+    canRequestCompact: controlRecord?.canRequestCompact !== false,
+    compactPending: controlRecord?.compactPending === true,
+    compacting: controlRecord?.compacting === true,
+    activeTurnId: pickOptionalString(controlRecord ?? {}, 'activeTurnId') ?? undefined,
+    lastCompactMeta: parseLastCompactMeta(controlRecord?.lastCompactMeta),
+  };
+}
+
 function childSummaryToMessage(
   summary: ConversationRecord,
   options?: {
@@ -211,9 +280,11 @@ function normalizeSnapshotState(payload: unknown): ConversationSnapshotState {
   if (!record) {
     throw new Error('invalid conversation snapshot response');
   }
+  const control = parseConversationControlState(record);
   return {
     cursor: pickOptionalString(record, 'cursor') ?? null,
-    phase: parsePhase(record.phase),
+    phase: control.phase,
+    control,
     blocks: Array.isArray(record.blocks)
       ? (record.blocks.filter(asRecord) as ConversationRecord[])
       : [],
@@ -323,7 +394,17 @@ function projectConversationMessages(
           id: `conversation-compact:${id}`,
           kind: 'compact',
           turnId,
-          trigger: 'manual',
+          trigger: parseCompactTrigger(
+            block.compactMeta ? asRecord(block.compactMeta)?.trigger : undefined
+          ),
+          meta: parseCompactMeta(block.compactMeta) ?? {
+            mode: 'full',
+            instructionsPresent: false,
+            fallbackUsed: false,
+            retryCount: 0,
+            inputUnits: 0,
+            outputSummaryChars: (pickString(block, 'markdown') ?? '').length,
+          },
           summary: pickString(block, 'markdown') ?? '',
           preservedRecentTurns: 0,
           timestamp: index,
@@ -428,7 +509,8 @@ export function projectConversationState(
 
   return {
     cursor: state.cursor,
-    phase: state.phase,
+    phase: state.control.phase,
+    control: state.control,
     messages,
     messageTree,
     messageFingerprint: messageTree.rootStreamFingerprint,
@@ -610,7 +692,16 @@ export function applyConversationEnvelope(
     case 'update_control_state': {
       const control = asRecord(envelope.control);
       if (control) {
-        state.phase = parsePhase(control.phase);
+        state.control = {
+          phase: parsePhase(control.phase),
+          canSubmitPrompt: control.canSubmitPrompt !== false,
+          canRequestCompact: control.canRequestCompact !== false,
+          compactPending: control.compactPending === true,
+          compacting: control.compacting === true,
+          activeTurnId: pickOptionalString(control, 'activeTurnId') ?? undefined,
+          lastCompactMeta: parseLastCompactMeta(control.lastCompactMeta),
+        };
+        state.phase = state.control.phase;
       }
       return;
     }

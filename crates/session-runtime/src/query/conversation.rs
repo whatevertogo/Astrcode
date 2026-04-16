@@ -6,8 +6,9 @@
 use std::collections::HashMap;
 
 use astrcode_core::{
-    AgentEvent, ChildAgentRef, ChildSessionNotification, ChildSessionNotificationKind, Phase,
-    SessionEventRecord, ToolExecutionResult, ToolOutputStream,
+    AgentEvent, ChildAgentRef, ChildSessionNotification, ChildSessionNotificationKind,
+    CompactAppliedMeta, CompactTrigger, Phase, SessionEventRecord, ToolExecutionResult,
+    ToolOutputStream,
 };
 use serde_json::Value;
 
@@ -101,6 +102,8 @@ pub struct ConversationSystemNoteBlockFacts {
     pub id: String,
     pub note_kind: ConversationSystemNoteKind,
     pub markdown: String,
+    pub compact_trigger: Option<CompactTrigger>,
+    pub compact_meta: Option<CompactAppliedMeta>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +119,7 @@ pub enum ConversationBlockFacts {
     User(ConversationUserBlockFacts),
     Assistant(ConversationAssistantBlockFacts),
     Thinking(ConversationThinkingBlockFacts),
-    ToolCall(ToolCallBlockFacts),
+    ToolCall(Box<ToolCallBlockFacts>),
     Error(ConversationErrorBlockFacts),
     SystemNote(ConversationSystemNoteBlockFacts),
     ChildHandoff(ConversationChildHandoffBlockFacts),
@@ -160,7 +163,7 @@ pub enum ConversationBlockPatchFacts {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConversationDeltaFacts {
     AppendBlock {
-        block: ConversationBlockFacts,
+        block: Box<ConversationBlockFacts>,
     },
     PatchBlock {
         block_id: String,
@@ -439,7 +442,11 @@ impl ConversationDeltaProjector {
                 turn_id, result, ..
             } => self.complete_tool_call(turn_id, result, source),
             AgentEvent::CompactApplied {
-                turn_id, summary, ..
+                turn_id,
+                trigger,
+                summary,
+                meta,
+                ..
             } if source.is_durable() => {
                 let block_id = format!(
                     "system:compact:{}",
@@ -448,7 +455,13 @@ impl ConversationDeltaProjector {
                         .or_else(|| durable_event_id.map(ToString::to_string))
                         .unwrap_or_else(|| "session".to_string())
                 );
-                self.append_system_note(&block_id, ConversationSystemNoteKind::Compact, summary)
+                self.append_system_note(
+                    &block_id,
+                    ConversationSystemNoteKind::Compact,
+                    summary,
+                    Some(*trigger),
+                    Some(meta.clone()),
+                )
             },
             AgentEvent::ChildSessionNotification { notification, .. } => {
                 self.apply_child_notification(notification, source)
@@ -660,21 +673,23 @@ impl ConversationDeltaProjector {
             turn_refs.split_after_durable_tool_boundary();
         }
 
-        self.push_block(ConversationBlockFacts::ToolCall(ToolCallBlockFacts {
-            id: block_id,
-            turn_id: Some(turn_id.to_string()),
-            tool_call_id: tool_call_id.to_string(),
-            tool_name: tool_name.to_string(),
-            status: ConversationBlockStatus::Streaming,
-            input: input.cloned(),
-            summary: None,
-            error: None,
-            duration_ms: None,
-            truncated: false,
-            metadata: None,
-            child_ref: None,
-            streams: ToolCallStreamsFacts::default(),
-        }))
+        self.push_block(ConversationBlockFacts::ToolCall(Box::new(
+            ToolCallBlockFacts {
+                id: block_id,
+                turn_id: Some(turn_id.to_string()),
+                tool_call_id: tool_call_id.to_string(),
+                tool_name: tool_name.to_string(),
+                status: ConversationBlockStatus::Streaming,
+                input: input.cloned(),
+                summary: None,
+                error: None,
+                duration_ms: None,
+                truncated: false,
+                metadata: None,
+                child_ref: None,
+                streams: ToolCallStreamsFacts::default(),
+            },
+        )))
     }
 
     fn append_tool_stream(
@@ -807,6 +822,8 @@ impl ConversationDeltaProjector {
         block_id: &str,
         note_kind: ConversationSystemNoteKind,
         markdown: &str,
+        compact_trigger: Option<CompactTrigger>,
+        compact_meta: Option<CompactAppliedMeta>,
     ) -> Vec<ConversationDeltaFacts> {
         if self.block_index.contains_key(block_id) {
             return Vec::new();
@@ -816,6 +833,8 @@ impl ConversationDeltaProjector {
                 id: block_id.to_string(),
                 note_kind,
                 markdown: markdown.to_string(),
+                compact_trigger,
+                compact_meta,
             },
         ))
     }
@@ -941,7 +960,9 @@ impl ConversationDeltaProjector {
         let id = block_id(&block).to_string();
         self.block_index.insert(id, self.blocks.len());
         self.blocks.push(block.clone());
-        vec![ConversationDeltaFacts::AppendBlock { block }]
+        vec![ConversationDeltaFacts::AppendBlock {
+            block: Box::new(block),
+        }]
     }
 
     fn complete_block(
@@ -967,9 +988,7 @@ impl ConversationDeltaProjector {
         block_id: &str,
         status: ConversationBlockStatus,
     ) -> Option<ConversationDeltaFacts> {
-        let Some(index) = self.block_index.get(block_id).copied() else {
-            return None;
-        };
+        let index = self.block_index.get(block_id).copied()?;
         if self.block_status(index) != Some(ConversationBlockStatus::Streaming) {
             return None;
         }
@@ -1303,7 +1322,7 @@ mod tests {
     use super::{
         ConversationBlockFacts, ConversationBlockPatchFacts, ConversationBlockStatus,
         ConversationChildHandoffKind, ConversationDeltaFacts, ConversationDeltaProjector,
-        ConversationStreamProjector, ConversationStreamReplayFacts, ToolCallBlockFacts,
+        ConversationStreamProjector, ConversationStreamReplayFacts,
         build_conversation_replay_frames, fallback_live_cursor, project_conversation_snapshot,
     };
     use crate::{
@@ -1517,8 +1536,12 @@ mod tests {
         assert!(deltas.iter().any(|delta| matches!(
             delta,
             ConversationDeltaFacts::AppendBlock {
-                block: ConversationBlockFacts::ChildHandoff(block),
-            } if block.handoff_kind == ConversationChildHandoffKind::Returned
+                block,
+            } if matches!(
+                block.as_ref(),
+                ConversationBlockFacts::ChildHandoff(block)
+                    if block.handoff_kind == ConversationChildHandoffKind::Returned
+            )
         )));
     }
 
@@ -1601,8 +1624,8 @@ mod tests {
             .expect("snapshot should build");
         assert!(snapshot.blocks.iter().any(|block| matches!(
             block,
-            ConversationBlockFacts::ToolCall(ToolCallBlockFacts { tool_call_id, .. })
-                if tool_call_id == "call-1"
+            ConversationBlockFacts::ToolCall(block)
+                if block.tool_call_id == "call-1"
         )));
 
         let transcript = runtime

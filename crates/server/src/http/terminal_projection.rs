@@ -13,11 +13,12 @@ use astrcode_protocol::http::{
     ConversationBlockPatchDto, ConversationBlockStatusDto, ConversationChildHandoffBlockDto,
     ConversationChildHandoffKindDto, ConversationChildSummaryDto, ConversationControlStateDto,
     ConversationCursorDto, ConversationDeltaDto, ConversationErrorBlockDto,
-    ConversationErrorEnvelopeDto, ConversationSlashActionKindDto, ConversationSlashCandidateDto,
-    ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
-    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
-    ConversationThinkingBlockDto, ConversationToolCallBlockDto, ConversationToolStreamsDto,
-    ConversationTranscriptErrorCodeDto, ConversationUserBlockDto, PhaseDto, ToolOutputStreamDto,
+    ConversationErrorEnvelopeDto, ConversationLastCompactMetaDto, ConversationSlashActionKindDto,
+    ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto,
+    ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto,
+    ConversationSystemNoteKindDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
+    ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
+    PhaseDto, ToolOutputStreamDto,
 };
 use astrcode_session_runtime::{
     ConversationBlockFacts, ConversationBlockPatchFacts, ConversationBlockStatus,
@@ -186,7 +187,7 @@ fn project_delta(
 ) -> ConversationDeltaDto {
     match delta {
         ConversationDeltaFacts::AppendBlock { block } => ConversationDeltaDto::AppendBlock {
-            block: project_block(&block, child_lookup),
+            block: project_block(block.as_ref(), child_lookup),
         },
         ConversationDeltaFacts::PatchBlock { block_id, patch } => {
             ConversationDeltaDto::PatchBlock {
@@ -292,6 +293,14 @@ fn project_block(
                     },
                 },
                 markdown: block.markdown.clone(),
+                compact_meta: block.compact_meta.as_ref().and_then(|meta| {
+                    block
+                        .compact_trigger
+                        .map(|trigger| ConversationLastCompactMetaDto {
+                            trigger,
+                            meta: meta.clone(),
+                        })
+                }),
             })
         },
         ConversationBlockFacts::ChildHandoff(block) => {
@@ -398,9 +407,23 @@ fn project_control_state(control: &TerminalControlFacts) -> ConversationControlS
     ConversationControlStateDto {
         phase: to_phase_dto(control.phase),
         can_submit_prompt,
-        can_request_compact: !control.manual_compact_pending,
+        can_request_compact: !control.manual_compact_pending && !control.compacting,
         compact_pending: control.manual_compact_pending,
+        compacting: control.compacting,
         active_turn_id: control.active_turn_id.clone(),
+        last_compact_meta: control
+            .last_compact_meta
+            .as_ref()
+            .map(project_last_compact_meta),
+    }
+}
+
+fn project_last_compact_meta(
+    facts: &astrcode_application::terminal::TerminalLastCompactMetaFacts,
+) -> ConversationLastCompactMetaDto {
+    ConversationLastCompactMetaDto {
+        trigger: facts.trigger,
+        meta: facts.meta.clone(),
     }
 }
 

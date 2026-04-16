@@ -80,6 +80,8 @@ pub struct PromptAcceptedResponse {
 pub struct CompactSessionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control: Option<ExecutionControlDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 /// `POST /api/sessions/:id/compact` 响应体。

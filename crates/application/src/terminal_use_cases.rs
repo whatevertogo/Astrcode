@@ -10,9 +10,10 @@ use crate::{
     App, ApplicationError, ComposerOptionKind, ComposerOptionsRequest, SessionMeta,
     terminal::{
         ConversationFocus, TerminalChildSummaryFacts, TerminalControlFacts, TerminalFacts,
-        TerminalRehydrateFacts, TerminalRehydrateReason, TerminalResumeCandidateFacts,
-        TerminalSlashAction, TerminalSlashCandidateFacts, TerminalStreamFacts,
-        TerminalStreamReplayFacts, latest_transcript_cursor, truncate_terminal_summary,
+        TerminalLastCompactMetaFacts, TerminalRehydrateFacts, TerminalRehydrateReason,
+        TerminalResumeCandidateFacts, TerminalSlashAction, TerminalSlashCandidateFacts,
+        TerminalStreamFacts, TerminalStreamReplayFacts, latest_transcript_cursor,
+        truncate_terminal_summary,
     },
 };
 
@@ -310,6 +311,13 @@ fn map_control_facts(control: SessionControlStateSnapshot) -> TerminalControlFac
         phase: control.phase,
         active_turn_id: control.active_turn_id,
         manual_compact_pending: control.manual_compact_pending,
+        compacting: control.compacting,
+        last_compact_meta: control
+            .last_compact_meta
+            .map(|meta| TerminalLastCompactMetaFacts {
+                trigger: meta.trigger,
+                meta: meta.meta,
+            }),
     }
 }
 
@@ -406,7 +414,7 @@ fn terminal_builtin_candidates(control: &TerminalControlFacts) -> Vec<TerminalSl
         },
     ];
 
-    if !control.manual_compact_pending {
+    if !control.manual_compact_pending && !control.compacting {
         candidates.push(TerminalSlashCandidateFacts {
             kind: ComposerOptionKind::Command,
             id: "compact".to_string(),

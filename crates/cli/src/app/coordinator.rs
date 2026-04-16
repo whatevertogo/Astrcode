@@ -123,6 +123,7 @@ where
                                     max_steps: None,
                                     manual_compact: Some(true),
                                 }),
+                                instructions: None,
                             },
                         )
                         .await;

@@ -144,6 +144,8 @@ fn assembled_prompt(messages: Vec<LlmMessage>) -> AssemblePromptResult {
                 context_window: 100,
                 effective_window: 90,
                 threshold_tokens: 80,
+                remaining_context_tokens: 80,
+                reserved_context_size: 20,
             },
             0,
             Default::default(),

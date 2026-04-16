@@ -11,6 +11,7 @@ const chatContextValue: ChatScreenContextValue = {
   isChildSession: false,
   workingDir: 'D:/GitObjectsOwn/Astrcode',
   phase: 'idle',
+  conversationControl: null,
   activeSubRunPath: [],
   activeSubRunTitle: null,
   activeSubRunBreadcrumbs: [],

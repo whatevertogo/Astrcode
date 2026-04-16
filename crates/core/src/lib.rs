@@ -94,9 +94,9 @@ pub use config::{
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
-    AgentEvent, CompactTrigger, EventTranslator, Phase, PromptMetricsPayload, StorageEvent,
-    StorageEventPayload, StoredEvent, generate_session_id, normalize_recovered_phase,
-    phase_of_storage_event, replay_records,
+    AgentEvent, CompactAppliedMeta, CompactMode, CompactTrigger, EventTranslator, Phase,
+    PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent, generate_session_id,
+    normalize_recovered_phase, phase_of_storage_event, replay_records,
 };
 pub use execution_result::ExecutionResultCommon;
 pub use hook::{

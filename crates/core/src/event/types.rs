@@ -59,6 +59,40 @@ pub enum CompactTrigger {
     Auto,
     /// 手动触发（用户主动请求）
     Manual,
+    /// 手动请求登记后在当前 turn 结束时执行。
+    Deferred,
+}
+
+/// 上下文压缩的执行模式。
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactMode {
+    /// 标准全量 compact。
+    Full,
+    /// 基于历史 compact summary 的滚动 incremental compact。
+    Incremental,
+    /// 为了从 PTL/超窗中恢复而触发的裁剪重试 compact。
+    RetrySalvage,
+}
+
+/// compact 执行元数据。
+///
+/// Why: compact 不再只是“有一段 summary”，还要暴露触发方式、回退路径和
+/// 产出质量，让前端、调试面板和后续治理逻辑使用同一份事实。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactAppliedMeta {
+    pub mode: CompactMode,
+    #[serde(default)]
+    pub instructions_present: bool,
+    #[serde(default)]
+    pub fallback_used: bool,
+    #[serde(default)]
+    pub retry_count: u32,
+    #[serde(default)]
+    pub input_units: u32,
+    #[serde(default)]
+    pub output_summary_chars: u32,
 }
 
 /// 存储事件载荷。
@@ -151,6 +185,8 @@ pub enum StorageEventPayload {
     CompactApplied {
         trigger: CompactTrigger,
         summary: String,
+        #[serde(flatten)]
+        meta: CompactAppliedMeta,
         preserved_recent_turns: u32,
         pre_tokens: u32,
         post_tokens_estimate: u32,
@@ -348,7 +384,10 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use serde_json::Value;
 
-    use super::{CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload};
+    use super::{
+        CompactAppliedMeta, CompactMode, CompactTrigger, PromptMetricsPayload, StorageEvent,
+        StorageEventPayload,
+    };
     use crate::{
         AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
         SubRunStorageMode, format_local_rfc3339,
@@ -478,6 +517,14 @@ mod tests {
             payload: StorageEventPayload::CompactApplied {
                 trigger: CompactTrigger::Manual,
                 summary: "condensed work".to_string(),
+                meta: CompactAppliedMeta {
+                    mode: CompactMode::Full,
+                    instructions_present: true,
+                    fallback_used: true,
+                    retry_count: 2,
+                    input_units: 9,
+                    output_summary_chars: 14,
+                },
                 preserved_recent_turns: 2,
                 pre_tokens: 2_000,
                 post_tokens_estimate: 600,
@@ -498,6 +545,7 @@ mod tests {
                     StorageEventPayload::CompactApplied {
                         trigger,
                         summary,
+                        meta,
                         preserved_recent_turns,
                         pre_tokens,
                         post_tokens_estimate,
@@ -510,6 +558,12 @@ mod tests {
                 assert_eq!(turn_id.as_deref(), Some("turn-2"));
                 assert_eq!(trigger, CompactTrigger::Manual);
                 assert_eq!(summary, "condensed work");
+                assert_eq!(meta.mode, CompactMode::Full);
+                assert!(meta.instructions_present);
+                assert!(meta.fallback_used);
+                assert_eq!(meta.retry_count, 2);
+                assert_eq!(meta.input_units, 9);
+                assert_eq!(meta.output_summary_chars, 14);
                 assert_eq!(preserved_recent_turns, 2);
                 assert_eq!(pre_tokens, 2_000);
                 assert_eq!(post_tokens_estimate, 600);
@@ -527,6 +581,12 @@ mod tests {
                 "turn_id": "turn-2",
                 "trigger": "manual",
                 "summary": "condensed work",
+                "mode": "full",
+                "instructionsPresent": true,
+                "fallbackUsed": true,
+                "retryCount": 2,
+                "inputUnits": 9,
+                "outputSummaryChars": 14,
                 "preserved_recent_turns": 2,
                 "pre_tokens": 2000,
                 "post_tokens_estimate": 600,

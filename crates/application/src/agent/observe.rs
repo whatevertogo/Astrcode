@@ -12,7 +12,7 @@ use astrcode_core::{
     CollaborationResult, ObserveAgentResult, ObserveParams,
 };
 
-use super::AgentOrchestrationService;
+use super::{AgentOrchestrationService, ObserveSnapshotSignature};
 
 impl AgentOrchestrationService {
     /// 获取目标 child agent 的增强快照（四工具模型 observe）。
@@ -104,6 +104,29 @@ impl AgentOrchestrationService {
             recommended_reason,
             delivery_freshness,
         };
+        let signature = observe_signature(&observe_result);
+        if self.observe_snapshot_is_unchanged(&child, &collaboration, &signature)? {
+            let error = super::AgentOrchestrationError::InvalidInput(
+                "child state is unchanged since the previous observe in this turn; wait with \
+                 shell sleep and observe again only after a new delivery or state change"
+                    .to_string(),
+            );
+            return self
+                .reject_with_fact(
+                    collaboration.runtime(),
+                    collaboration
+                        .fact(
+                            AgentCollaborationActionKind::Observe,
+                            AgentCollaborationOutcomeKind::Rejected,
+                        )
+                        .child(&child)
+                        .reason_code("state_unchanged")
+                        .summary(error.to_string()),
+                    error,
+                )
+                .await;
+        }
+        self.remember_observe_snapshot(&child, &collaboration, signature)?;
 
         log::info!(
             "observe: snapshot for child agent '{}' (lifecycle={:?}, pending={})",
@@ -131,6 +154,62 @@ impl AgentOrchestrationService {
             observe_result: Box::new(observe_result),
             delegation: child.delegation.clone(),
         })
+    }
+
+    fn observe_snapshot_is_unchanged(
+        &self,
+        child: &astrcode_core::SubRunHandle,
+        collaboration: &super::ToolCollaborationContext,
+        signature: &ObserveSnapshotSignature,
+    ) -> std::result::Result<bool, super::AgentOrchestrationError> {
+        let guard_key = observe_guard_key(child, collaboration);
+        let guard = self.observe_guard.lock().map_err(|_| {
+            super::AgentOrchestrationError::Internal("observe guard lock poisoned".to_string())
+        })?;
+        Ok(guard
+            .get(&guard_key)
+            .is_some_and(|previous| previous == signature))
+    }
+
+    fn remember_observe_snapshot(
+        &self,
+        child: &astrcode_core::SubRunHandle,
+        collaboration: &super::ToolCollaborationContext,
+        signature: ObserveSnapshotSignature,
+    ) -> std::result::Result<(), super::AgentOrchestrationError> {
+        let guard_key = observe_guard_key(child, collaboration);
+        let mut guard = self.observe_guard.lock().map_err(|_| {
+            super::AgentOrchestrationError::Internal("observe guard lock poisoned".to_string())
+        })?;
+        guard.insert(guard_key, signature);
+        Ok(())
+    }
+}
+
+fn observe_guard_key(
+    child: &astrcode_core::SubRunHandle,
+    collaboration: &super::ToolCollaborationContext,
+) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        collaboration.session_id(),
+        collaboration.turn_id(),
+        collaboration.parent_agent_id().unwrap_or_default(),
+        child.agent_id
+    )
+}
+
+fn observe_signature(result: &ObserveAgentResult) -> ObserveSnapshotSignature {
+    ObserveSnapshotSignature {
+        lifecycle_status: result.lifecycle_status,
+        last_turn_outcome: result.last_turn_outcome,
+        phase: result.phase.clone(),
+        turn_count: result.turn_count,
+        pending_message_count: result.pending_message_count,
+        active_task: result.active_task.clone(),
+        pending_task: result.pending_task.clone(),
+        recent_mailbox_messages: result.recent_mailbox_messages.clone(),
+        last_output: result.last_output.clone(),
     }
 }
 
@@ -503,6 +582,115 @@ mod tests {
                     && fact.outcome == AgentCollaborationOutcomeKind::Accepted
                     && fact.child_agent_id().map(|id| id.as_str())
                         == Some(observe_result.agent_id.as_str())
+        )));
+    }
+
+    #[tokio::test]
+    async fn observe_child_rejects_unchanged_snapshot_in_same_turn() {
+        let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+            content: "初始工作完成。".to_string(),
+        })
+        .expect("test harness should build");
+        let project = tempfile::tempdir().expect("tempdir should be created");
+        let parent = harness
+            .session_runtime
+            .create_session(project.path().display().to_string())
+            .await
+            .expect("parent session should be created");
+        harness
+            .kernel
+            .agent_control()
+            .register_root_agent(
+                "root-agent".to_string(),
+                parent.session_id.clone(),
+                "root-profile".to_string(),
+            )
+            .await
+            .expect("root agent should be registered");
+        let parent_ctx = ToolContext::new(
+            parent.session_id.clone().into(),
+            project.path().to_path_buf(),
+            CancelToken::new(),
+        )
+        .with_turn_id("turn-parent")
+        .with_agent_context(super::super::root_execution_event_context(
+            "root-agent",
+            "root-profile",
+        ));
+
+        let launched = harness
+            .service
+            .launch(
+                astrcode_core::SpawnAgentParams {
+                    r#type: Some("reviewer".to_string()),
+                    description: "检查 crates".to_string(),
+                    prompt: "请检查 crates 目录".to_string(),
+                    context: None,
+                    capability_grant: None,
+                },
+                &parent_ctx,
+            )
+            .await
+            .expect("spawn should succeed");
+        let child_agent_id = launched
+            .handoff()
+            .and_then(|handoff| {
+                handoff
+                    .artifacts
+                    .iter()
+                    .find(|artifact| artifact.kind == "agent")
+                    .map(|artifact| artifact.id.clone())
+            })
+            .expect("child agent artifact should exist");
+        for _ in 0..20 {
+            if harness
+                .kernel
+                .agent()
+                .get_lifecycle(&child_agent_id)
+                .await
+                .is_some_and(|lifecycle| lifecycle == astrcode_core::AgentLifecycleStatus::Idle)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+
+        harness
+            .service
+            .observe(
+                ObserveParams {
+                    agent_id: child_agent_id.clone(),
+                },
+                &parent_ctx,
+            )
+            .await
+            .expect("first observe should succeed");
+
+        let error = harness
+            .service
+            .observe(
+                ObserveParams {
+                    agent_id: child_agent_id.clone(),
+                },
+                &parent_ctx,
+            )
+            .await
+            .expect_err("second observe should reject unchanged snapshot");
+
+        assert!(error.to_string().contains("child state is unchanged"));
+
+        let parent_events = harness
+            .session_runtime
+            .replay_stored_events(&SessionId::from(parent.session_id.clone()))
+            .await
+            .expect("parent events should replay");
+        assert!(parent_events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::AgentCollaborationFact { fact, .. }
+                if fact.action == AgentCollaborationActionKind::Observe
+                    && fact.outcome == AgentCollaborationOutcomeKind::Rejected
+                    && fact.reason_code.as_deref() == Some("state_unchanged")
+                    && fact.child_agent_id().map(|id| id.as_str()) == Some(child_agent_id.as_str())
         )));
     }
 }

@@ -10,12 +10,12 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentCollaborationFact, AgentId, AgentStateProjector, AstrError, EventLogWriter, EventStore,
-    EventTranslator, LlmOutput, LlmProvider, LlmRequest, ModelLimits, Phase, PromptBuildOutput,
-    PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider,
-    ResourceProvider, ResourceReadResult, ResourceRequestContext, Result, RuntimeMetricsRecorder,
-    SessionMeta, SessionTurnAcquireResult, StorageEvent, StorageEventPayload, StoreResult,
-    StoredEvent, Tool,
+    AgentCollaborationFact, AgentId, AgentStateProjector, AstrError, CompactAppliedMeta,
+    CompactMode, EventLogWriter, EventStore, EventTranslator, LlmOutput, LlmProvider, LlmRequest,
+    ModelLimits, Phase, PromptBuildOutput, PromptBuildRequest, PromptFacts, PromptFactsProvider,
+    PromptFactsRequest, PromptProvider, ResourceProvider, ResourceReadResult,
+    ResourceRequestContext, Result, RuntimeMetricsRecorder, SessionMeta, SessionTurnAcquireResult,
+    StorageEvent, StorageEventPayload, StoreResult, StoredEvent, Tool,
 };
 use astrcode_kernel::{Kernel, KernelGateway, ToolCapabilityInvoker};
 use async_trait::async_trait;
@@ -344,6 +344,14 @@ pub(crate) fn root_compact_applied_event(
         astrcode_core::CompactTrigger::Auto,
         summary.into(),
         CompactAppliedStats {
+            meta: CompactAppliedMeta {
+                mode: CompactMode::Full,
+                instructions_present: false,
+                fallback_used: false,
+                retry_count: 0,
+                input_units: 0,
+                output_summary_chars: 0,
+            },
             preserved_recent_turns,
             pre_tokens,
             post_tokens_estimate,

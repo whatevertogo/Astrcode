@@ -113,13 +113,24 @@ impl App {
         &self,
         session_id: &str,
     ) -> Result<CompactSessionAccepted, ApplicationError> {
-        self.compact_session_with_control(session_id, None).await
+        self.compact_session_with_options(session_id, None, None)
+            .await
     }
 
     pub async fn compact_session_with_control(
         &self,
         session_id: &str,
         control: Option<ExecutionControl>,
+    ) -> Result<CompactSessionAccepted, ApplicationError> {
+        self.compact_session_with_options(session_id, control, None)
+            .await
+    }
+
+    pub async fn compact_session_with_options(
+        &self,
+        session_id: &str,
+        control: Option<ExecutionControl>,
+        instructions: Option<String>,
     ) -> Result<CompactSessionAccepted, ApplicationError> {
         if let Some(control) = &control {
             control.validate()?;
@@ -143,7 +154,7 @@ impl App {
             .load_resolved_runtime_config(Some(Path::new(&working_dir)))?;
         let deferred = self
             .session_runtime
-            .compact_session(session_id, runtime)
+            .compact_session(session_id, runtime, instructions)
             .await
             .map_err(ApplicationError::from)?;
         Ok(CompactSessionAccepted { deferred })

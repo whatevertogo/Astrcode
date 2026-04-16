@@ -1,16 +1,17 @@
 use std::{sync::Arc, time::Duration};
 
 use astrcode_core::{
-    AgentLifecycleStatus, ChildSessionNode, Phase, Result, SessionId, StoredEvent,
+    AgentLifecycleStatus, ChildSessionNode, Phase, Result, SessionId, StorageEventPayload,
+    StoredEvent,
 };
 use tokio::time::sleep;
 
 use crate::{
     AgentObserveSnapshot, ConversationSnapshotFacts, ConversationStreamReplayFacts,
-    ProjectedTurnOutcome, SessionControlStateSnapshot, SessionReplay, SessionRuntime, SessionState,
-    TurnTerminalSnapshot, build_agent_observe_snapshot, build_conversation_replay_frames,
-    has_terminal_turn_signal, project_conversation_snapshot, project_turn_outcome,
-    recoverable_parent_deliveries,
+    LastCompactMetaSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot, SessionReplay,
+    SessionRuntime, SessionState, TurnTerminalSnapshot, build_agent_observe_snapshot,
+    build_conversation_replay_frames, has_terminal_turn_signal, project_conversation_snapshot,
+    project_turn_outcome, recoverable_parent_deliveries,
 };
 
 pub struct SessionQueries<'a> {
@@ -43,10 +44,23 @@ impl<'a> SessionQueries<'a> {
     ) -> Result<SessionControlStateSnapshot> {
         let session_id = SessionId::from(crate::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
+        let last_compact_meta = actor
+            .state()
+            .snapshot_recent_stored_events()?
+            .into_iter()
+            .rev()
+            .find_map(|stored| match stored.event.payload {
+                StorageEventPayload::CompactApplied { trigger, meta, .. } => {
+                    Some(LastCompactMetaSnapshot { trigger, meta })
+                },
+                _ => None,
+            });
         Ok(SessionControlStateSnapshot {
             phase: actor.state().current_phase()?,
             active_turn_id: actor.state().active_turn_id_snapshot()?,
             manual_compact_pending: actor.state().manual_compact_pending()?,
+            compacting: actor.state().compacting(),
+            last_compact_meta,
         })
     }
 

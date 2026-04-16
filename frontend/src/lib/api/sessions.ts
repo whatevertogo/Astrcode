@@ -104,14 +104,15 @@ export async function closeChildAgent(
 
 export async function compactSession(
   sessionId: string,
-  control?: ExecutionControl
+  control?: ExecutionControl,
+  instructions?: string
 ): Promise<CompactSessionAcceptance> {
   return requestJson<CompactSessionAcceptance>(
     `/api/sessions/${encodeURIComponent(sessionId)}/compact`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ control }),
+      body: JSON.stringify({ control, instructions }),
     }
   );
 }

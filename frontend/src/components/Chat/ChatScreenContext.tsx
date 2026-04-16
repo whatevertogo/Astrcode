@@ -1,5 +1,11 @@
 import { createContext, useContext } from 'react';
-import type { ComposerOption, CurrentModelInfo, ModelOption, Phase } from '../../types';
+import type {
+  ComposerOption,
+  ConversationControlState,
+  CurrentModelInfo,
+  ModelOption,
+  Phase,
+} from '../../types';
 
 export interface ChatScreenContextValue {
   projectName: string | null;
@@ -8,6 +14,7 @@ export interface ChatScreenContextValue {
   isChildSession: boolean;
   workingDir: string;
   phase: Phase;
+  conversationControl: ConversationControlState | null;
   activeSubRunPath: string[];
   activeSubRunTitle: string | null;
   activeSubRunBreadcrumbs: Array<{ subRunId: string; title: string }>;

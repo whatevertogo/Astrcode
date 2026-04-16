@@ -128,6 +128,8 @@ pub async fn assemble_prompt_request(
         Some(&prompt_output.system_prompt),
         request.gateway.model_limits(),
         request.settings.compact_threshold_percent,
+        request.settings.summary_reserve_tokens,
+        request.settings.reserved_context_size,
     );
 
     if should_compact(snapshot) {
@@ -139,6 +141,9 @@ pub async fn assemble_prompt_request(
                 CompactConfig {
                     keep_recent_turns: request.settings.compact_keep_recent_turns,
                     trigger: CompactTrigger::Auto,
+                    summary_reserve_tokens: request.settings.summary_reserve_tokens,
+                    max_retry_attempts: request.settings.compact_max_retry_attempts,
+                    custom_instructions: None,
                 },
                 request.cancel.clone(),
             )
@@ -160,6 +165,7 @@ pub async fn assemble_prompt_request(
                     CompactTrigger::Auto,
                     compaction.summary,
                     CompactAppliedStats {
+                        meta: compaction.meta,
                         preserved_recent_turns: compaction.preserved_recent_turns,
                         pre_tokens: compaction.pre_tokens,
                         post_tokens_estimate: compaction.post_tokens_estimate,
@@ -186,6 +192,8 @@ pub async fn assemble_prompt_request(
                     Some(&prompt_output.system_prompt),
                     request.gateway.model_limits(),
                     request.settings.compact_threshold_percent,
+                    request.settings.summary_reserve_tokens,
+                    request.settings.reserved_context_size,
                 );
             }
         } else {

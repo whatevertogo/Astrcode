@@ -4,7 +4,8 @@
 
 export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interrupted' | 'done';
 export type ToolOutputStream = 'stdout' | 'stderr';
-export type CompactTrigger = 'auto' | 'manual';
+export type CompactTrigger = 'auto' | 'manual' | 'deferred';
+export type CompactMode = 'full' | 'incremental' | 'retry_salvage';
 export type InvocationKind = 'subRun' | 'rootExecution';
 // Why: 当前写路径只允许 `independentSession`，前端读侧保持同样约束，
 // 避免把已经移除的历史模式继续编码成正式类型。
@@ -131,6 +132,30 @@ export interface ResolvedExecutionLimits {
 export interface ExecutionControl {
   maxSteps?: number;
   manualCompact?: boolean;
+}
+
+export interface CompactMeta {
+  mode: CompactMode;
+  instructionsPresent: boolean;
+  fallbackUsed: boolean;
+  retryCount: number;
+  inputUnits: number;
+  outputSummaryChars: number;
+}
+
+export interface LastCompactMeta {
+  trigger: CompactTrigger;
+  meta: CompactMeta;
+}
+
+export interface ConversationControlState {
+  phase: Phase;
+  canSubmitPrompt: boolean;
+  canRequestCompact: boolean;
+  compactPending: boolean;
+  compacting: boolean;
+  activeTurnId?: string;
+  lastCompactMeta?: LastCompactMeta;
 }
 
 export type SubRunResult =
@@ -283,6 +308,7 @@ export interface CompactMessage {
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
   trigger: CompactTrigger;
+  meta: CompactMeta;
   summary: string;
   preservedRecentTurns: number;
   timestamp: number;

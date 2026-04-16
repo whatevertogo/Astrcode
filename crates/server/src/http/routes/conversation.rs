@@ -805,12 +805,14 @@ mod tests {
                                 },
                             },
                             _ => ConversationDeltaFacts::AppendBlock {
-                                block: astrcode_session_runtime::ConversationBlockFacts::User(
-                                    astrcode_session_runtime::ConversationUserBlockFacts {
-                                        id: "noop".to_string(),
-                                        turn_id: None,
-                                        markdown: String::new(),
-                                    },
+                                block: Box::new(
+                                    astrcode_session_runtime::ConversationBlockFacts::User(
+                                        astrcode_session_runtime::ConversationUserBlockFacts {
+                                            id: "noop".to_string(),
+                                            turn_id: None,
+                                            markdown: String::new(),
+                                        },
+                                    ),
                                 ),
                             },
                         },
@@ -826,6 +828,8 @@ mod tests {
                 phase: Phase::CallingTool,
                 active_turn_id: Some("turn-1".to_string()),
                 manual_compact_pending: false,
+                compacting: false,
+                last_compact_meta: None,
             },
             child_summaries: Vec::new(),
             slash_candidates: Vec::new(),

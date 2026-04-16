@@ -81,7 +81,7 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// - `GET /api/v1/sessions/{id}/subruns/{sub_run_id}` — 查询子会话执行状态
 /// - `POST /api/v1/sessions/{id}/agents/{agent_id}/close` — 关闭 agent 及其子树
 pub(crate) fn build_api_router() -> Router<AppState> {
-    let router = Router::<AppState>::new()
+    Router::<AppState>::new()
         .route("/__astrcode__/run-info", get(serve_run_info))
         .route("/api/auth/exchange", post(exchange_auth))
         .route(
@@ -147,9 +147,7 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         )
         .route("/api/mcp/server", post(mcp::upsert_mcp_server))
         .route("/api/mcp/server/remove", post(mcp::remove_mcp_server))
-        .route("/api/mcp/server/enabled", post(mcp::set_mcp_server_enabled));
-
-    router
+        .route("/api/mcp/server/enabled", post(mcp::set_mcp_server_enabled))
 }
 
 async fn exchange_auth(

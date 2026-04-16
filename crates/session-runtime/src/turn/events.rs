@@ -1,8 +1,8 @@
 #[cfg(test)]
 use astrcode_core::ToolOutputStream;
 use astrcode_core::{
-    AgentEventContext, CompactTrigger, LlmUsage, PromptMetricsPayload, StorageEvent,
-    StorageEventPayload, ToolCallRequest, ToolExecutionResult, UserMessageOrigin,
+    AgentEventContext, CompactAppliedMeta, CompactTrigger, LlmUsage, PromptMetricsPayload,
+    StorageEvent, StorageEventPayload, ToolCallRequest, ToolExecutionResult, UserMessageOrigin,
     ports::PromptBuildCacheMetrics,
 };
 use chrono::{DateTime, Utc};
@@ -14,6 +14,7 @@ fn saturating_u32(value: usize) -> u32 {
 }
 
 pub(crate) struct CompactAppliedStats {
+    pub meta: CompactAppliedMeta,
     pub preserved_recent_turns: usize,
     pub pre_tokens: usize,
     pub post_tokens_estimate: usize,
@@ -119,6 +120,7 @@ pub(crate) fn compact_applied_event(
         payload: StorageEventPayload::CompactApplied {
             trigger,
             summary,
+            meta: stats.meta,
             preserved_recent_turns: saturating_u32(stats.preserved_recent_turns),
             pre_tokens: saturating_u32(stats.pre_tokens),
             post_tokens_estimate: saturating_u32(stats.post_tokens_estimate),
@@ -272,8 +274,9 @@ pub(crate) fn tool_result_reference_applied_event(
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, CompactTrigger, LlmUsage, StorageEventPayload, ToolCallRequest,
-        ToolExecutionResult, ToolOutputStream, UserMessageOrigin, ports::PromptBuildCacheMetrics,
+        AgentEventContext, CompactAppliedMeta, CompactMode, CompactTrigger, LlmUsage,
+        StorageEventPayload, ToolCallRequest, ToolExecutionResult, ToolOutputStream,
+        UserMessageOrigin, ports::PromptBuildCacheMetrics,
     };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
@@ -427,6 +430,14 @@ mod tests {
             CompactTrigger::Auto,
             "condensed older work".to_string(),
             CompactAppliedStats {
+                meta: CompactAppliedMeta {
+                    mode: CompactMode::RetrySalvage,
+                    instructions_present: true,
+                    fallback_used: true,
+                    retry_count: u32::MAX,
+                    input_units: u32::MAX,
+                    output_summary_chars: u32::MAX,
+                },
                 preserved_recent_turns: usize::MAX,
                 pre_tokens: usize::MAX,
                 post_tokens_estimate: 512,
@@ -443,6 +454,7 @@ mod tests {
             StorageEventPayload::CompactApplied {
                 trigger,
                 summary,
+                meta,
                 preserved_recent_turns,
                 pre_tokens,
                 post_tokens_estimate,
@@ -451,6 +463,12 @@ mod tests {
                 timestamp: event_timestamp,
             } if trigger == CompactTrigger::Auto
                 && summary == "condensed older work"
+                && meta.mode == CompactMode::RetrySalvage
+                && meta.instructions_present
+                && meta.fallback_used
+                && meta.retry_count == u32::MAX
+                && meta.input_units == u32::MAX
+                && meta.output_summary_chars == u32::MAX
                 && preserved_recent_turns == u32::MAX
                 && pre_tokens == u32::MAX
                 && post_tokens_estimate == 512
@@ -473,6 +491,8 @@ mod tests {
                 context_window: 128_000,
                 effective_window: 108_000,
                 threshold_tokens: 97_200,
+                remaining_context_tokens: 95_655,
+                reserved_context_size: 20_000,
             },
             3,
             PromptBuildCacheMetrics {
@@ -516,6 +536,8 @@ mod tests {
                 context_window: 128_000,
                 effective_window: 108_000,
                 threshold_tokens: 97_200,
+                remaining_context_tokens: 106_976,
+                reserved_context_size: 20_000,
             },
             0,
             PromptBuildCacheMetrics::default(),

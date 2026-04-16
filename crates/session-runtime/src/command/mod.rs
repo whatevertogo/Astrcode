@@ -136,6 +136,7 @@ impl<'a> SessionCommands<'a> {
         &self,
         session_id: &str,
         runtime: &astrcode_core::ResolvedRuntimeConfig,
+        instructions: Option<&str>,
     ) -> Result<bool> {
         let session_id = astrcode_core::SessionId::from(crate::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
@@ -144,11 +145,17 @@ impl<'a> SessionCommands<'a> {
             .running
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            actor.state().request_manual_compact(runtime.clone())?;
+            actor
+                .state()
+                .request_manual_compact(crate::state::PendingManualCompactRequest {
+                    runtime: runtime.clone(),
+                    instructions: instructions.map(str::to_string),
+                })?;
             return Ok(true);
         }
         let mut translator = EventTranslator::new(actor.state().current_phase()?);
-        if let Some(events) = crate::turn::manual_compact::build_manual_compact_events(
+        actor.state().set_compacting(true);
+        let built = crate::turn::manual_compact::build_manual_compact_events(
             crate::turn::manual_compact::ManualCompactRequest {
                 gateway: self.runtime.kernel.gateway(),
                 prompt_facts_provider: self.runtime.prompt_facts_provider.as_ref(),
@@ -156,10 +163,13 @@ impl<'a> SessionCommands<'a> {
                 session_id: session_id.as_str(),
                 working_dir: Path::new(actor.working_dir()),
                 runtime,
+                trigger: astrcode_core::CompactTrigger::Manual,
+                instructions,
             },
         )
-        .await?
-        {
+        .await;
+        actor.state().set_compacting(false);
+        if let Some(events) = built? {
             for event in &events {
                 append_and_broadcast(actor.state(), event, &mut translator).await?;
             }

@@ -197,6 +197,7 @@ impl EventTranslator {
             StorageEventPayload::CompactApplied {
                 trigger,
                 summary,
+                meta,
                 preserved_recent_turns,
                 ..
             } => {
@@ -205,6 +206,7 @@ impl EventTranslator {
                     agent: agent.clone(),
                     trigger: *trigger,
                     summary: summary.clone(),
+                    meta: meta.clone(),
                     preserved_recent_turns: *preserved_recent_turns,
                 });
             },
@@ -455,8 +457,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentEvent, AgentEventContext, PromptMetricsPayload, StoredEvent, ToolOutputStream,
-        UserMessageOrigin, format_compact_summary, phase_of_storage_event,
+        AgentEvent, AgentEventContext, CompactAppliedMeta, CompactMode, PromptMetricsPayload,
+        StoredEvent, ToolOutputStream, UserMessageOrigin, format_compact_summary,
+        phase_of_storage_event,
     };
 
     #[test]
@@ -676,6 +679,14 @@ mod tests {
                     payload: StorageEventPayload::CompactApplied {
                         trigger: crate::CompactTrigger::Manual,
                         summary: "保留最近上下文".to_string(),
+                        meta: CompactAppliedMeta {
+                            mode: CompactMode::Incremental,
+                            instructions_present: true,
+                            fallback_used: false,
+                            retry_count: 1,
+                            input_units: 4,
+                            output_summary_chars: 24,
+                        },
                         preserved_recent_turns: 2,
                         pre_tokens: 200,
                         post_tokens_estimate: 80,
@@ -696,9 +707,17 @@ mod tests {
                 turn_id: None,
                 trigger: crate::CompactTrigger::Manual,
                 summary,
+                meta,
                 preserved_recent_turns,
                 ..
-            } if summary == "保留最近上下文" && *preserved_recent_turns == 2
+            } if summary == "保留最近上下文"
+                && meta.mode == CompactMode::Incremental
+                && meta.instructions_present
+                && !meta.fallback_used
+                && meta.retry_count == 1
+                && meta.input_units == 4
+                && meta.output_summary_chars == 24
+                && *preserved_recent_turns == 2
         ));
     }
 

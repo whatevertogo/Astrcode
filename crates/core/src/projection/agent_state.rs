@@ -341,7 +341,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentEventContext, CompactTrigger, StorageEvent, StorageEventPayload, SubRunStorageMode,
+        AgentEventContext, CompactAppliedMeta, CompactMode, CompactTrigger, StorageEvent,
+        StorageEventPayload, SubRunStorageMode,
     };
 
     fn ts() -> chrono::DateTime<chrono::Utc> {
@@ -526,6 +527,14 @@ mod tests {
             StorageEventPayload::CompactApplied {
                 trigger: CompactTrigger::Manual,
                 summary: summary.into(),
+                meta: CompactAppliedMeta {
+                    mode: CompactMode::Full,
+                    instructions_present: false,
+                    fallback_used: false,
+                    retry_count: 0,
+                    input_units: 3,
+                    output_summary_chars: 15,
+                },
                 preserved_recent_turns,
                 pre_tokens: 400,
                 post_tokens_estimate: 120,

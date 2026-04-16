@@ -730,7 +730,7 @@ impl AgentOrchestrationService {
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
         let delivery_id = format!("delivery-{}", uuid::Uuid::new_v4());
         let envelope = astrcode_core::AgentInboxEnvelope {
-            delivery_id: delivery_id.clone().into(),
+            delivery_id: delivery_id.clone(),
             from_agent_id: ctx
                 .agent_context()
                 .agent_id
@@ -1141,7 +1141,7 @@ mod tests {
             .service
             .observe(
                 ObserveParams {
-                    agent_id: child_agent_id.clone().into(),
+                    agent_id: child_agent_id.clone(),
                 },
                 &other_ctx,
             )
@@ -1403,8 +1403,7 @@ mod tests {
             resumed_child
                 .child_session_id
                 .clone()
-                .expect("child session id should exist")
-                .into(),
+                .expect("child session id should exist"),
             project.path().to_path_buf(),
             CancelToken::new(),
         )
@@ -1549,8 +1548,7 @@ mod tests {
             child_handle
                 .child_session_id
                 .clone()
-                .expect("child session id should exist")
-                .into(),
+                .expect("child session id should exist"),
             project.path().to_path_buf(),
             CancelToken::new(),
         )
@@ -1612,8 +1610,7 @@ mod tests {
             child_handle
                 .child_session_id
                 .clone()
-                .expect("child session id should exist")
-                .into(),
+                .expect("child session id should exist"),
             project.path().to_path_buf(),
             CancelToken::new(),
         )

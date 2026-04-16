@@ -47,11 +47,12 @@ pub use conversation::v1::{
     ConversationBlockDto, ConversationBlockPatchDto, ConversationBlockStatusDto,
     ConversationChildHandoffBlockDto, ConversationChildHandoffKindDto, ConversationChildSummaryDto,
     ConversationControlStateDto, ConversationCursorDto, ConversationDeltaDto,
-    ConversationErrorBlockDto, ConversationErrorEnvelopeDto, ConversationSlashActionKindDto,
-    ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto,
-    ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto,
-    ConversationSystemNoteKindDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
-    ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
+    ConversationErrorBlockDto, ConversationErrorEnvelopeDto, ConversationLastCompactMetaDto,
+    ConversationSlashActionKindDto, ConversationSlashCandidateDto,
+    ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
+    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
+    ConversationThinkingBlockDto, ConversationToolCallBlockDto, ConversationToolStreamsDto,
+    ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
 };
 pub use event::{
     ArtifactRefDto, CloseRequestParentDeliveryPayloadDto, CompletedParentDeliveryPayloadDto,

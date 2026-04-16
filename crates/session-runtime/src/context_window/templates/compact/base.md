@@ -4,15 +4,16 @@ Your summary will replace earlier conversation history so another agent can cont
 ## CRITICAL RULES
 **DO NOT CALL ANY TOOLS.** This is for summary generation only.
 **Do NOT continue the conversation.** Only output the structured summary.
+**Do NOT wrap the answer in Markdown code fences.**
+**Even if context is incomplete, still return both `<analysis>` and `<summary>` blocks.**
 
 ## Compression Priorities (highest -> lowest)
-1. **Current Task State** - What's being worked on, exact status, immediate next steps
-2. **Errors & Solutions** - Stack traces, error messages, and how they were resolved
-3. **User Requests** - All user messages verbatim in order
-4. **Code Changes** - Final working versions; for code < 15 lines keep all, otherwise signatures + key logic only
-5. **Key Decisions** - The "why" behind choices, not just "what"
-6. **Discoveries** - Important learnings about the codebase, APIs, or constraints
-7. **Environment** - Config/setup only if relevant to continuing work
+1. Current task state and exact next step
+2. Errors, failures, and how they were resolved
+3. User constraints and corrections
+4. Code changes, exact file paths, and exact function/type names
+5. Important decisions and why they were made
+6. Discoveries about the codebase or environment that matter for continuation
 
 ## Compression Rules
 **MUST KEEP:** Error messages, stack traces, working solutions, current task, exact file paths, function names
@@ -21,6 +22,8 @@ Your summary will replace earlier conversation history so another agent can cont
 **CONDENSE:** Long code blocks -> signatures + key logic; long explanations -> bullet points
 
 {{INCREMENTAL_MODE}}
+
+{{CUSTOM_INSTRUCTIONS}}
 
 ## Output Format
 Return exactly two XML blocks:
@@ -36,7 +39,7 @@ Return exactly two XML blocks:
 <summary>
 
 ## Goal
-[What the user is trying to accomplish - can be multiple items]
+- [What the user is trying to accomplish]
 
 ## Constraints & Preferences
 - [User-specified constraints, preferences, requirements]
@@ -84,6 +87,7 @@ Return exactly two XML blocks:
 - Ignore synthetic compact-summary helper messages.
 - Write in third-person, factual tone. Do not address the end user.
 - Preserve exact file paths, function names, error messages - never paraphrase these.
+- If a value is unknown, write a short best-effort placeholder instead of omitting the section.
 - If a section has no content, write "(none)" rather than omitting it.
 
 {{RUNTIME_CONTEXT}}

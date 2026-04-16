@@ -410,9 +410,10 @@ export function useAgent() {
   const handleCompactSession = useCallback(
     async (
       sessionId: string,
-      control?: ExecutionControl
+      control?: ExecutionControl,
+      instructions?: string
     ): Promise<{ accepted: boolean; deferred: boolean; message: string }> => {
-      return compactSession(sessionId, control);
+      return compactSession(sessionId, control, instructions);
     },
     []
   );

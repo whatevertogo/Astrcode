@@ -43,11 +43,12 @@ pub use query::{
     ConversationDeltaProjector, ConversationErrorBlockFacts, ConversationSnapshotFacts,
     ConversationStreamProjector, ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts,
     ConversationSystemNoteKind, ConversationThinkingBlockFacts, ConversationTranscriptErrorKind,
-    ConversationUserBlockFacts, ProjectedTurnOutcome, SessionControlStateSnapshot, SessionReplay,
-    SessionTranscriptSnapshot, ToolCallBlockFacts, ToolCallStreamsFacts, TurnTerminalSnapshot,
-    build_agent_observe_snapshot, build_conversation_replay_frames, current_turn_messages,
-    fallback_live_cursor, has_terminal_turn_signal, project_conversation_snapshot,
-    project_turn_outcome, recoverable_parent_deliveries,
+    ConversationUserBlockFacts, LastCompactMetaSnapshot, ProjectedTurnOutcome,
+    SessionControlStateSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
+    ToolCallStreamsFacts, TurnTerminalSnapshot, build_agent_observe_snapshot,
+    build_conversation_replay_frames, current_turn_messages, fallback_live_cursor,
+    has_terminal_turn_signal, project_conversation_snapshot, project_turn_outcome,
+    recoverable_parent_deliveries,
 };
 pub use state::{
     MailboxEventAppend, SessionSnapshot, SessionState, SessionStateEventSink, SessionWriter,
@@ -481,8 +482,11 @@ impl SessionRuntime {
         &self,
         session_id: &str,
         runtime: ResolvedRuntimeConfig,
+        instructions: Option<String>,
     ) -> Result<bool> {
-        self.command().compact_session(session_id, &runtime).await
+        self.command()
+            .compact_session(session_id, &runtime, instructions.as_deref())
+            .await
     }
 
     async fn session_phase(&self, session_id: &SessionId) -> Result<Phase> {

@@ -122,25 +122,30 @@ impl PromptContributor for WorkflowExamplesContributor {
                          there are clearly separate workstreams. Do not blanket-spawn agents just \
                          to explore a repo broadly.\n\nAvoid waste:\n- Do not loop on `observe` \
                          with no decision attached.\n- If a child is still running and you are \
-                         simply waiting, use your current shell tool to sleep briefly instead of \
-                         spending another tool call on `observe`.\n- Do not stack speculative \
-                         `send` calls.\n- Do not spawn a new child when an existing idle child \
-                         already owns the responsibility.\n\nIf a delivery satisfies the request, \
-                         `close` the branch. If the same child should continue, `send` one \
-                         precise follow-up. If you see the same `deliveryId` again after \
-                         recovery, treat it as the same delivery, not a new task.\n\nWhen you are \
-                         the child on a delegated task, use upstream `send(kind + payload)` to \
-                         deliver a formal message to your direct parent. Report `progress`, \
-                         `completed`, `failed`, or `close_request` explicitly. Do not wait for \
-                         the parent to infer state from raw intermediate steps, and do not end \
-                         with an open loop like '继续观察中' unless you are also sending a \
-                         non-terminal `progress` delivery that keeps the branch alive.\n\nWhen \
-                         you are the parent and receive a child delivery, treat it as a decision \
-                         point. Do not leave it hanging and do not immediately re-observe the \
-                         same child unless the state is unclear. Decide immediately whether the \
-                         result is complete enough to `close` the branch, or whether the same \
-                         child should continue with one concrete `send` follow-up that names the \
-                         exact next step."
+                         simply waiting, prefer a brief shell sleep over spending another tool \
+                         call on `observe`.\n- Pick one wait mode per pause: either `observe` now \
+                         because you need a snapshot for the next decision, or sleep briefly \
+                         because you are only waiting. Do not alternate `shell` and `observe` in \
+                         a polling loop.\n- After a wait, call `observe` only when the next \
+                         decision depends on the child's current state.\n- Do not immediately \
+                         re-`observe` the same child after a fresh delivery unless the state is \
+                         genuinely ambiguous.\n- Do not stack speculative `send` calls.\n- Do not \
+                         spawn a new child when an existing idle child already owns the \
+                         responsibility.\n\nIf a delivery satisfies the request, `close` the \
+                         branch. If the same child should continue, `send` one precise follow-up. \
+                         If you see the same `deliveryId` again after recovery, treat it as the \
+                         same delivery, not a new task.\n\nWhen you are the child on a delegated \
+                         task, use upstream `send(kind + payload)` to deliver a formal message to \
+                         your direct parent. Report `progress`, `completed`, `failed`, or \
+                         `close_request` explicitly. Do not wait for the parent to infer state \
+                         from raw intermediate steps, and do not end with an open loop like \
+                         '继续观察中' unless you are also sending a non-terminal `progress` \
+                         delivery that keeps the branch alive.\n\nWhen you are the parent and \
+                         receive a child delivery, treat it as a decision point. Do not leave it \
+                         hanging and do not immediately re-observe the same child unless the \
+                         state is unclear. Decide immediately whether the result is complete \
+                         enough to `close` the branch, or whether the same child should continue \
+                         with one concrete `send` follow-up that names the exact next step."
                     ),
                 )
                 .with_priority(600),
@@ -351,6 +356,16 @@ mod tests {
             collaboration_block
                 .content
                 .contains("Do not loop on `observe`")
+        );
+        assert!(
+            collaboration_block.content.contains(
+                "prefer a brief shell sleep over spending another tool call on `observe`"
+            )
+        );
+        assert!(
+            collaboration_block
+                .content
+                .contains("Do not alternate `shell` and `observe` in a polling loop")
         );
         assert!(
             collaboration_block

@@ -124,25 +124,14 @@ async fn finalize_turn_execution(
     }
 
     complete_session_execution(finalize.actor.state(), terminal_phase);
-    if terminal_phase == Phase::Idle {
-        let pending_runtime = finalize
-            .actor
-            .state()
-            .take_pending_manual_compact()
-            .ok()
-            .flatten();
-        if let Some(runtime) = pending_runtime {
-            persist_deferred_manual_compact(
-                finalize.kernel.gateway(),
-                finalize.prompt_facts_provider.as_ref(),
-                finalize.actor.working_dir(),
-                finalize.actor.state(),
-                &finalize.session_id,
-                &runtime,
-            )
-            .await;
-        }
-    }
+    persist_pending_manual_compact_if_any(
+        finalize.kernel.gateway(),
+        finalize.prompt_facts_provider.as_ref(),
+        finalize.actor.working_dir(),
+        finalize.actor.state(),
+        &finalize.session_id,
+    )
+    .await;
 }
 
 fn terminal_phase_for_result(result: &Result<crate::TurnRunResult>) -> Phase {
@@ -212,20 +201,24 @@ async fn persist_deferred_manual_compact(
     working_dir: &str,
     session_state: &Arc<crate::SessionState>,
     session_id: &str,
-    runtime: &ResolvedRuntimeConfig,
+    request: &crate::state::PendingManualCompactRequest,
 ) {
-    let events = match crate::turn::manual_compact::build_manual_compact_events(
+    session_state.set_compacting(true);
+    let built = crate::turn::manual_compact::build_manual_compact_events(
         crate::turn::manual_compact::ManualCompactRequest {
             gateway,
             prompt_facts_provider,
             session_state,
             session_id,
             working_dir: std::path::Path::new(working_dir),
-            runtime,
+            runtime: &request.runtime,
+            trigger: astrcode_core::CompactTrigger::Deferred,
+            instructions: request.instructions.as_deref(),
         },
     )
-    .await
-    {
+    .await;
+    session_state.set_compacting(false);
+    let events = match built {
         Ok(Some(events)) => events,
         Ok(None) => return,
         Err(error) => {
@@ -250,6 +243,27 @@ async fn persist_deferred_manual_compact(
             );
             break;
         }
+    }
+}
+
+pub(crate) async fn persist_pending_manual_compact_if_any(
+    gateway: &astrcode_kernel::KernelGateway,
+    prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
+    working_dir: &str,
+    session_state: &Arc<crate::SessionState>,
+    session_id: &str,
+) {
+    let pending_runtime = session_state.take_pending_manual_compact().ok().flatten();
+    if let Some(request) = pending_runtime {
+        persist_deferred_manual_compact(
+            gateway,
+            prompt_facts_provider,
+            working_dir,
+            session_state,
+            session_id,
+            &request,
+        )
+        .await;
     }
 }
 
@@ -820,7 +834,10 @@ mod tests {
         .await;
         actor
             .state()
-            .request_manual_compact(ResolvedRuntimeConfig::default())
+            .request_manual_compact(crate::state::PendingManualCompactRequest {
+                runtime: ResolvedRuntimeConfig::default(),
+                instructions: None,
+            })
             .expect("manual compact flag should set");
 
         finalize_turn_execution(
@@ -840,6 +857,48 @@ mod tests {
             .state()
             .snapshot_recent_stored_events()
             .expect("stored events should be available");
+        assert_contains_compact_summary(&stored, "manual compact summary");
+    }
+
+    #[tokio::test]
+    async fn finalize_turn_execution_persists_deferred_manual_compact_after_interrupt() {
+        let actor = test_actor().await;
+        append_root_turn_event_to_actor(
+            &actor,
+            crate::turn::test_support::root_user_message_event("turn-1", "hello"),
+        )
+        .await;
+        append_root_turn_event_to_actor(
+            &actor,
+            crate::turn::test_support::root_assistant_final_event("turn-1", "latest answer"),
+        )
+        .await;
+        actor
+            .state()
+            .request_manual_compact(crate::state::PendingManualCompactRequest {
+                runtime: ResolvedRuntimeConfig::default(),
+                instructions: None,
+            })
+            .expect("manual compact flag should set");
+
+        finalize_turn_execution(
+            finalize_context(Arc::clone(&actor)),
+            Err(astrcode_core::AstrError::Internal("boom".to_string())),
+        )
+        .await;
+
+        assert_eq!(
+            actor
+                .state()
+                .current_phase()
+                .expect("phase should be readable"),
+            Phase::Interrupted
+        );
+        let stored = actor
+            .state()
+            .snapshot_recent_stored_events()
+            .expect("stored events should be available");
+        assert_contains_error_message(&stored, "internal error: boom");
         assert_contains_compact_summary(&stored, "manual compact summary");
     }
 

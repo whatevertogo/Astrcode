@@ -35,6 +35,7 @@ pub trait AppSessionPort: Send + Sync {
         &self,
         session_id: &str,
         runtime: ResolvedRuntimeConfig,
+        instructions: Option<String>,
     ) -> astrcode_core::Result<bool>;
     async fn session_transcript_snapshot(
         &self,
@@ -116,8 +117,10 @@ impl AppSessionPort for SessionRuntime {
         &self,
         session_id: &str,
         runtime: ResolvedRuntimeConfig,
+        instructions: Option<String>,
     ) -> astrcode_core::Result<bool> {
-        self.compact_session(session_id, runtime).await
+        self.compact_session(session_id, runtime, instructions)
+            .await
     }
 
     async fn session_transcript_snapshot(

@@ -24,7 +24,7 @@ pub use conversation::{
 };
 pub use mailbox::recoverable_parent_deliveries;
 pub use service::SessionQueries;
-pub use terminal::SessionControlStateSnapshot;
+pub use terminal::{LastCompactMetaSnapshot, SessionControlStateSnapshot};
 pub use transcript::{SessionReplay, SessionTranscriptSnapshot, current_turn_messages};
 pub use turn::{
     ProjectedTurnOutcome, TurnTerminalSnapshot, has_terminal_turn_signal, project_turn_outcome,
