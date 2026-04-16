@@ -41,7 +41,7 @@ impl App {
                 agent_id
             )));
         };
-        if handle.session_id != session_id {
+        if handle.session_id.as_str() != session_id {
             // 显式校验归属，避免仅凭 agent_id 跨 session 关闭不相关子树。
             return Err(ApplicationError::NotFound(format!(
                 "agent '{}' not found in session '{}'",

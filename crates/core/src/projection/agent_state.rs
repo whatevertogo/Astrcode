@@ -170,6 +170,7 @@ impl AgentStateProjector {
                 success,
                 error,
                 metadata,
+                child_ref,
                 duration_ms,
                 ..
             } => {
@@ -181,6 +182,7 @@ impl AgentStateProjector {
                     output: output.clone(),
                     error: error.clone(),
                     metadata: metadata.clone(),
+                    child_ref: child_ref.clone(),
                     duration_ms: *duration_ms,
                     truncated: false,
                 };
@@ -358,7 +360,7 @@ mod tests {
             "subrun-1",
             None,
             SubRunStorageMode::IndependentSession,
-            Some(session_id.to_string()),
+            Some(session_id.into()),
         )
     }
 
@@ -460,6 +462,7 @@ mod tests {
                 success: true,
                 error: None,
                 metadata: None,
+                child_ref: None,
                 duration_ms,
             },
         )

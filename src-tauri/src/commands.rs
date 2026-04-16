@@ -1,6 +1,4 @@
-use std::{path::PathBuf, sync::mpsc::sync_channel, time::Duration};
-
-use tauri::{Emitter, Manager};
+use std::path::PathBuf;
 
 use crate::paths::default_config_path;
 
@@ -55,73 +53,4 @@ pub fn open_config_in_editor(path: Option<String>) -> Result<(), String> {
     }
 
     open::that(path).map_err(|error| error.to_string())
-}
-
-#[cfg(debug_assertions)]
-#[tauri::command]
-pub fn open_debug_workbench(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, crate::ServerState>,
-    session_id: Option<String>,
-) -> Result<(), String> {
-    if let Some(window) = app_handle.get_webview_window("debug-workbench") {
-        if let Some(next_session_id) = session_id
-            .as_ref()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-        {
-            window
-                .emit("debug-workbench:set-session", next_session_id.to_string())
-                .map_err(|error| error.to_string())?;
-        }
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-
-    let app_handle = app_handle.clone();
-    let bootstrap_script = state.bootstrap_script.clone();
-    let next_session_id = session_id
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let (result_tx, result_rx) = sync_channel(1);
-
-    std::thread::spawn(move || {
-        let open_result = (|| -> Result<(), String> {
-            let window = crate::create_debug_workbench_window(
-                &app_handle,
-                &bootstrap_script,
-                next_session_id.as_deref(),
-            )
-            .map_err(|error| format!("{error:#}"))?;
-
-            window
-                .show()
-                .map_err(|error| format!("failed to show debug workbench: {error}"))?;
-            window
-                .set_focus()
-                .map_err(|error| format!("failed to focus debug workbench: {error}"))?;
-
-            Ok(())
-        })();
-
-        if let Err(error) = result_tx.send(open_result) {
-            eprintln!("[astrcode-debug-workbench] failed to report open result: {error}");
-        }
-    });
-
-    result_rx
-        .recv_timeout(Duration::from_secs(10))
-        .map_err(|error| format!("等待 Debug Workbench 启动结果超时: {error}"))?
-}
-
-#[cfg(not(debug_assertions))]
-#[tauri::command]
-pub fn open_debug_workbench(
-    _app_handle: tauri::AppHandle,
-    _session_id: Option<String>,
-) -> Result<(), String> {
-    Err("Debug Workbench 仅在 debug 构建可用".to_string())
 }

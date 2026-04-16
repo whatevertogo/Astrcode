@@ -177,21 +177,22 @@ impl App {
 
         let summaries = children
             .into_iter()
-            .filter(|node| node.parent_sub_run_id.is_none())
+            .filter(|node| node.parent_sub_run_id().is_none())
             .map(|node| async {
                 self.require_permission(
-                    node.parent_session_id == focus_session_id,
+                    node.parent_session_id.as_str() == focus_session_id,
                     format!(
                         "child '{}' is not visible from session '{}'",
-                        node.sub_run_id, focus_session_id
+                        node.sub_run_id(),
+                        focus_session_id
                     ),
                 )?;
                 let child_meta = session_metas
                     .iter()
-                    .find(|meta| meta.session_id == node.child_session_id);
+                    .find(|meta| meta.session_id == node.child_session_id.as_str());
                 let child_transcript = self
                     .session_runtime
-                    .conversation_snapshot(&node.child_session_id)
+                    .conversation_snapshot(node.child_session_id.as_str())
                     .await?;
                 Ok::<_, ApplicationError>(TerminalChildSummaryFacts {
                     node,
@@ -207,7 +208,7 @@ impl App {
         for summary in summaries {
             resolved.push(summary.await?);
         }
-        resolved.sort_by(|left, right| left.node.sub_run_id.cmp(&right.node.sub_run_id));
+        resolved.sort_by(|left, right| left.node.sub_run_id().cmp(right.node.sub_run_id()));
         Ok(resolved)
     }
 
@@ -231,10 +232,10 @@ impl App {
                         .session_child_nodes(&session_id)
                         .await?
                     {
-                        if node.sub_run_id == *sub_run_id {
-                            return Ok(node.child_session_id);
+                        if node.sub_run_id().as_str() == *sub_run_id {
+                            return Ok(node.child_session_id.to_string());
                         }
-                        pending.push(node.child_session_id);
+                        pending.push(node.child_session_id.to_string());
                     }
                 }
 
@@ -902,20 +903,23 @@ mod tests {
                 "turn-parent",
                 root.clone(),
                 astrcode_core::ChildSessionNotification {
-                    notification_id: "child-1".to_string(),
+                    notification_id: "child-1".to_string().into(),
                     child_ref: astrcode_core::ChildAgentRef {
-                        agent_id: "agent-child".to_string(),
-                        session_id: parent.session_id.clone(),
-                        sub_run_id: "subrun-child".to_string(),
-                        parent_agent_id: root.agent_id.clone(),
-                        parent_sub_run_id: None,
+                        identity: astrcode_core::ChildExecutionIdentity {
+                            agent_id: "agent-child".to_string().into(),
+                            session_id: parent.session_id.clone().into(),
+                            sub_run_id: "subrun-child".to_string().into(),
+                        },
+                        parent: astrcode_core::ParentExecutionRef {
+                            parent_agent_id: root.agent_id.clone(),
+                            parent_sub_run_id: None,
+                        },
                         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
                         status: astrcode_core::AgentLifecycleStatus::Running,
-                        open_session_id: child.session_id.clone(),
+                        open_session_id: child.session_id.clone().into(),
                     },
                     kind: astrcode_core::ChildSessionNotificationKind::Started,
-                    status: astrcode_core::AgentLifecycleStatus::Running,
-                    source_tool_call_id: Some("tool-call-1".to_string()),
+                    source_tool_call_id: Some("tool-call-1".to_string().into()),
                     delivery: Some(astrcode_core::ParentDelivery {
                         idempotency_key: "child-1".to_string(),
                         origin: astrcode_core::ParentDeliveryOrigin::Explicit,
@@ -956,7 +960,7 @@ mod tests {
             .expect("child summaries should build");
 
         assert_eq!(children.len(), 1);
-        assert_eq!(children[0].node.child_session_id, child.session_id);
+        assert_eq!(children[0].node.child_session_id, child.session_id.into());
         assert!(
             children[0]
                 .recent_output
@@ -996,20 +1000,23 @@ mod tests {
                 "turn-parent",
                 root.clone(),
                 astrcode_core::ChildSessionNotification {
-                    notification_id: "child-1".to_string(),
+                    notification_id: "child-1".to_string().into(),
                     child_ref: astrcode_core::ChildAgentRef {
-                        agent_id: "agent-child".to_string(),
-                        session_id: parent.session_id.clone(),
-                        sub_run_id: "subrun-child".to_string(),
-                        parent_agent_id: root.agent_id.clone(),
-                        parent_sub_run_id: None,
+                        identity: astrcode_core::ChildExecutionIdentity {
+                            agent_id: "agent-child".to_string().into(),
+                            session_id: parent.session_id.clone().into(),
+                            sub_run_id: "subrun-child".to_string().into(),
+                        },
+                        parent: astrcode_core::ParentExecutionRef {
+                            parent_agent_id: root.agent_id.clone(),
+                            parent_sub_run_id: None,
+                        },
                         lineage_kind: astrcode_core::ChildSessionLineageKind::Spawn,
                         status: astrcode_core::AgentLifecycleStatus::Running,
-                        open_session_id: child.session_id.clone(),
+                        open_session_id: child.session_id.clone().into(),
                     },
                     kind: astrcode_core::ChildSessionNotificationKind::Started,
-                    status: astrcode_core::AgentLifecycleStatus::Running,
-                    source_tool_call_id: Some("tool-call-1".to_string()),
+                    source_tool_call_id: Some("tool-call-1".to_string().into()),
                     delivery: Some(astrcode_core::ParentDelivery {
                         idempotency_key: "child-1".to_string(),
                         origin: astrcode_core::ParentDeliveryOrigin::Explicit,

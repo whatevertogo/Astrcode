@@ -136,7 +136,7 @@ function buildMessageFingerprint(message: Message): string {
     return `${message.id}:subRunStart:${message.subRunId ?? 'unknown'}`;
   }
   if (message.kind === 'childSessionNotification') {
-    return `${message.id}:childNotification:${message.childRef.subRunId}:${message.notificationKind}:${message.status}:${message.delivery?.idempotencyKey ?? 'legacy'}`;
+    return `${message.id}:childNotification:${message.childRef.subRunId}:${message.notificationKind}:${message.status}:${message.delivery?.idempotencyKey ?? 'missing-delivery'}`;
   }
   return `${message.id}:subRunFinish:${message.subRunId ?? 'unknown'}:${message.result.status}`;
 }

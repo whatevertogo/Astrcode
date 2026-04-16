@@ -82,6 +82,8 @@ crates/
   - HTTP request/response DTO
   - SSE event DTO
   - wire-level enum / payload
+- `CapabilityWireDescriptor` 是 plugin/protocol 边界上的 transport DTO；
+  `CapabilitySpec` 仍然是运行时内部唯一的能力语义真相
 - `protocol` 可以表达：
   - 字段命名
   - 可选字段
@@ -304,6 +306,7 @@ agent delegation experience 也遵循同样的分层边界：
 ## 5. 关键不变量
 
 - `CapabilitySpec` 是运行时内部唯一能力语义模型。
+- `CapabilityWireDescriptor` 只允许出现在协议边界与 transport adapter 中，不能成为运行时内部事实源。
 - HTTP 状态码映射只在 `server` 层发生。
 - `SessionActor` 不直接持有 provider；统一经由 `kernel` gateway 或已解析句柄。
 - `application::App` 不保存 session shadow state；session 列表、history、replay、turn 推进都由 `session-runtime` 提供。

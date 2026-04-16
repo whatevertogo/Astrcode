@@ -2,7 +2,7 @@
 //!
 //! 这些 DTO 服务于前端输入框的候选面板，而不是运行时内部的 prompt 组装。
 //! 单独建模的原因是：UI 需要一个稳定、轻量的“可选项投影视图”，
-//! 不能直接复用 `SkillSpec` / `CapabilityDescriptor` 这类内部结构。
+//! 不能直接复用 `SkillSpec` / `CapabilityWireDescriptor` 这类内部结构。
 
 use serde::{Deserialize, Serialize};
 

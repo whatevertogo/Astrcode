@@ -5,14 +5,12 @@ use std::{
     sync::Arc,
 };
 
-use astrcode_core::{AstrError, CancelToken, CapabilitySpec, Result};
-use astrcode_plugin::{
-    CapabilityHandler, CapabilityRouter, EventEmitter, Worker, descriptor_to_spec,
+use astrcode_core::{
+    AstrError, CancelToken, CapabilityKind, CapabilitySpec, InvocationMode, Result, SideEffect,
+    Stability,
 };
-use astrcode_protocol::plugin::{
-    CapabilityDescriptor, CapabilityKind, InvocationContext, PeerDescriptor, PeerRole,
-    SideEffectLevel, StabilityLevel,
-};
+use astrcode_plugin::{CapabilityHandler, CapabilityRouter, EventEmitter, Worker};
+use astrcode_protocol::plugin::{InvocationContext, PeerDescriptor, PeerRole};
 use astrcode_sdk::{
     DeserializeOwned, PluginContext, Serialize, StreamWriter, ToolHandler, ToolRegistration,
     ToolResult,
@@ -40,8 +38,7 @@ impl RegisteredToolAdapter {
 #[async_trait]
 impl CapabilityHandler for RegisteredToolAdapter {
     fn capability_spec(&self) -> CapabilitySpec {
-        descriptor_to_spec(self.registration.descriptor())
-            .expect("tool descriptor from SDK must map to core capability spec")
+        self.registration.descriptor().clone()
     }
 
     async fn invoke(
@@ -53,7 +50,7 @@ impl CapabilityHandler for RegisteredToolAdapter {
     ) -> Result<Value> {
         let plugin_context = PluginContext::from(context);
         let stream = StreamWriter::default();
-        let tool_name = self.registration.descriptor().name.clone();
+        let tool_name = self.registration.descriptor().name.to_string();
         if cancel.is_cancelled() {
             return Err(AstrError::Cancelled);
         }
@@ -83,34 +80,31 @@ impl CapabilityHandler for RegisteredToolAdapter {
 struct WorkspaceSummaryTool;
 
 impl ToolHandler for WorkspaceSummaryTool {
-    fn descriptor(&self) -> CapabilityDescriptor {
-        CapabilityDescriptor {
-            name: "workspace.summary".to_string(),
-            kind: CapabilityKind::tool(),
-            description: "Summarize the active coding workspace".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "workspaceRoot": { "type": "string" },
-                    "entries": { "type": "array" },
-                    "markerFiles": { "type": "array" }
-                }
-            }),
-            streaming: false,
-            concurrency_safe: true,
-            compact_clearable: false,
-            profiles: vec!["coding".to_string()],
-            tags: vec!["example".to_string(), "workspace".to_string()],
-            permissions: vec![],
-            side_effect: SideEffectLevel::None,
-            stability: StabilityLevel::Stable,
-            metadata: Value::Null,
-            max_result_inline_size: None,
-        }
+    fn descriptor(&self) -> CapabilitySpec {
+        CapabilitySpec::builder("workspace.summary", CapabilityKind::tool())
+            .description("Summarize the active coding workspace")
+            .schema(
+                json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "workspaceRoot": { "type": "string" },
+                        "entries": { "type": "array" },
+                        "markerFiles": { "type": "array" }
+                    }
+                }),
+            )
+            .invocation_mode(InvocationMode::Unary)
+            .concurrency_safe(true)
+            .profiles(["coding"])
+            .tags(["example", "workspace"])
+            .side_effect(SideEffect::None)
+            .stability(Stability::Stable)
+            .build()
+            .expect("workspace summary capability spec should build")
     }
 
     fn execute(
@@ -169,38 +163,35 @@ impl ToolHandler for WorkspaceSummaryTool {
 struct FilePreviewTool;
 
 impl ToolHandler for FilePreviewTool {
-    fn descriptor(&self) -> CapabilityDescriptor {
-        CapabilityDescriptor {
-            name: "file.preview".to_string(),
-            kind: CapabilityKind::tool(),
-            description: "Read a short preview from a file inside the active workspace".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "required": ["path"],
-                "properties": {
-                    "path": { "type": "string" },
-                    "maxLines": { "type": "integer", "minimum": 1, "maximum": 200 }
-                }
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "preview": { "type": "string" },
-                    "truncated": { "type": "boolean" }
-                }
-            }),
-            streaming: false,
-            concurrency_safe: true,
-            compact_clearable: false,
-            profiles: vec!["coding".to_string()],
-            tags: vec!["example".to_string(), "file".to_string()],
-            permissions: vec![],
-            side_effect: SideEffectLevel::None,
-            stability: StabilityLevel::Stable,
-            metadata: Value::Null,
-            max_result_inline_size: None,
-        }
+    fn descriptor(&self) -> CapabilitySpec {
+        CapabilitySpec::builder("file.preview", CapabilityKind::tool())
+            .description("Read a short preview from a file inside the active workspace")
+            .schema(
+                json!({
+                    "type": "object",
+                    "required": ["path"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "maxLines": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    }
+                }),
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "preview": { "type": "string" },
+                        "truncated": { "type": "boolean" }
+                    }
+                }),
+            )
+            .invocation_mode(InvocationMode::Unary)
+            .concurrency_safe(true)
+            .profiles(["coding"])
+            .tags(["example", "file"])
+            .side_effect(SideEffect::None)
+            .stability(Stability::Stable)
+            .build()
+            .expect("file preview capability spec should build")
     }
 
     fn execute(

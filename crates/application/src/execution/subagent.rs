@@ -6,9 +6,10 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted,
-    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, RuntimeMetricsRecorder,
-    SpawnCapabilityGrant, normalize_non_empty_unique_string_list,
+    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, ForkMode, LlmMessage,
+    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
+    RuntimeMetricsRecorder, SessionId, SpawnCapabilityGrant, UserMessageOrigin,
+    normalize_non_empty_unique_string_list, project,
 };
 use astrcode_kernel::AgentControlError;
 use astrcode_session_runtime::AgentPromptSubmission;
@@ -65,6 +66,13 @@ pub async fn launch_subagent(
         .subset_for_tools_checked(&resolved_limits.allowed_tools)
         .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
     let scoped_router = scoped_gateway.capabilities().clone();
+    let resolved_overrides = ResolvedSubagentContextOverrides::default();
+    let inherited_messages = resolve_inherited_parent_messages(
+        session_runtime,
+        &request.parent_session_id,
+        &resolved_overrides,
+    )
+    .await?;
     let delegation = build_delegation_metadata(
         request.description.as_str(),
         request.task.as_str(),
@@ -118,6 +126,8 @@ pub async fn launch_subagent(
                 capability_router: Some(scoped_router),
                 prompt_declarations: vec![contract],
                 resolved_limits: Some(resolved_limits),
+                resolved_overrides: Some(resolved_overrides),
+                injected_messages: inherited_messages,
                 source_tool_call_id: request.source_tool_call_id,
             },
         )
@@ -185,6 +195,107 @@ fn validate_subagent_request(request: &SubagentExecutionRequest) -> Result<(), A
     Ok(())
 }
 
+async fn resolve_inherited_parent_messages(
+    session_runtime: &dyn AgentSessionPort,
+    parent_session_id: &str,
+    overrides: &ResolvedSubagentContextOverrides,
+) -> Result<Vec<LlmMessage>, ApplicationError> {
+    let parent_events = session_runtime
+        .session_stored_events(&SessionId::from(parent_session_id.to_string()))
+        .await
+        .map_err(ApplicationError::from)?;
+    let projected = project(
+        &parent_events
+            .iter()
+            .map(|stored| stored.event.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    Ok(build_inherited_messages(&projected.messages, overrides))
+}
+
+fn build_inherited_messages(
+    parent_messages: &[LlmMessage],
+    overrides: &ResolvedSubagentContextOverrides,
+) -> Vec<LlmMessage> {
+    let mut inherited = Vec::new();
+
+    if overrides.include_compact_summary {
+        if let Some(summary) = parent_messages.iter().find(|message| {
+            matches!(
+                message,
+                LlmMessage::User {
+                    origin: UserMessageOrigin::CompactSummary,
+                    ..
+                }
+            )
+        }) {
+            inherited.push(summary.clone());
+        }
+    }
+
+    if overrides.include_recent_tail {
+        inherited.extend(select_inherited_recent_tail(
+            parent_messages,
+            overrides.fork_mode.as_ref(),
+        ));
+    }
+
+    inherited
+}
+
+fn select_inherited_recent_tail(
+    parent_messages: &[LlmMessage],
+    fork_mode: Option<&ForkMode>,
+) -> Vec<LlmMessage> {
+    let non_summary_messages = parent_messages
+        .iter()
+        .filter(|message| {
+            !matches!(
+                message,
+                LlmMessage::User {
+                    origin: UserMessageOrigin::CompactSummary,
+                    ..
+                }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    match fork_mode {
+        Some(ForkMode::LastNTurns(turns)) => {
+            tail_messages_for_last_n_turns(&non_summary_messages, *turns)
+        },
+        Some(ForkMode::FullHistory) | None => non_summary_messages,
+    }
+}
+
+fn tail_messages_for_last_n_turns(messages: &[LlmMessage], turns: usize) -> Vec<LlmMessage> {
+    if turns == 0 || messages.is_empty() {
+        return Vec::new();
+    }
+
+    let mut remaining_turns = turns;
+    let mut start_index = 0usize;
+    for (index, message) in messages.iter().enumerate().rev() {
+        if matches!(
+            message,
+            LlmMessage::User {
+                origin: UserMessageOrigin::User,
+                ..
+            }
+        ) {
+            remaining_turns = remaining_turns.saturating_sub(1);
+            start_index = index;
+            if remaining_turns == 0 {
+                break;
+            }
+        }
+    }
+
+    messages[start_index..].to_vec()
+}
+
 fn ensure_subagent_profile_mode(profile: &AgentProfile) -> Result<(), ApplicationError> {
     ensure_profile_mode(profile, &[AgentMode::SubAgent, AgentMode::All], "subagent")
 }
@@ -212,7 +323,7 @@ fn map_spawn_error(error: AgentControlError) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{AgentMode, AgentProfile};
+    use astrcode_core::{AgentMode, AgentProfile, ForkMode, LlmMessage, UserMessageOrigin};
 
     use super::*;
 
@@ -366,5 +477,96 @@ mod tests {
         .expect_err("disjoint grants should fail fast");
 
         assert!(error.to_string().contains("无交集"));
+    }
+
+    #[test]
+    fn build_inherited_messages_uses_compact_summary_and_last_n_turn_tail() {
+        let inherited = build_inherited_messages(
+            &[
+                LlmMessage::User {
+                    content: "<summary>older summary</summary>".to_string(),
+                    origin: UserMessageOrigin::CompactSummary,
+                },
+                LlmMessage::User {
+                    content: "turn-1".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "answer-1".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+                LlmMessage::User {
+                    content: "turn-2".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "answer-2".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+            ],
+            &ResolvedSubagentContextOverrides {
+                include_compact_summary: true,
+                include_recent_tail: true,
+                fork_mode: Some(ForkMode::LastNTurns(1)),
+                ..ResolvedSubagentContextOverrides::default()
+            },
+        );
+
+        assert_eq!(inherited.len(), 3);
+        assert!(matches!(
+            &inherited[0],
+            LlmMessage::User {
+                origin: UserMessageOrigin::CompactSummary,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &inherited[1],
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::User,
+            } if content == "turn-2"
+        ));
+        assert!(matches!(
+            &inherited[2],
+            LlmMessage::Assistant { content, .. } if content == "answer-2"
+        ));
+    }
+
+    #[test]
+    fn select_inherited_recent_tail_uses_full_history_by_default() {
+        let inherited = select_inherited_recent_tail(
+            &[
+                LlmMessage::User {
+                    content: "<summary>older summary</summary>".to_string(),
+                    origin: UserMessageOrigin::CompactSummary,
+                },
+                LlmMessage::User {
+                    content: "turn-1".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "answer-1".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+            ],
+            None,
+        );
+
+        assert_eq!(inherited.len(), 2);
+        assert!(matches!(
+            &inherited[0],
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::User,
+            } if content == "turn-1"
+        ));
+        assert!(matches!(
+            &inherited[1],
+            LlmMessage::Assistant { content, .. } if content == "answer-1"
+        ));
     }
 }

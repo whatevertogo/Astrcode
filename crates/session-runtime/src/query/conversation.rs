@@ -784,6 +784,16 @@ impl ConversationDeltaProjector {
                     });
                 }
             }
+            if let Some(child_ref) = &result.child_ref {
+                if self.replace_tool_child_ref(index, child_ref) {
+                    deltas.push(ConversationDeltaFacts::PatchBlock {
+                        block_id: call_block_id.clone(),
+                        patch: ConversationBlockPatchFacts::ReplaceChildRef {
+                            child_ref: child_ref.clone(),
+                        },
+                    });
+                }
+            }
             if let Some(delta) = self.complete_block(&call_block_id, status) {
                 deltas.push(delta);
             }
@@ -1278,12 +1288,12 @@ mod tests {
     use std::{path::Path, sync::Arc};
 
     use astrcode_core::{
-        AgentEvent, AgentEventContext, AgentLifecycleStatus, ChildAgentRef,
+        AgentEvent, AgentEventContext, AgentLifecycleStatus, ChildAgentRef, ChildExecutionIdentity,
         ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
         DeleteProjectResult, EventStore, ParentDelivery, ParentDeliveryOrigin,
-        ParentDeliveryPayload, ParentDeliveryTerminalSemantics, Phase, SessionEventRecord,
-        SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent, StorageEventPayload,
-        StoredEvent, ToolExecutionResult, ToolOutputStream, UserMessageOrigin,
+        ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ParentExecutionRef, Phase,
+        SessionEventRecord, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
+        StorageEventPayload, StoredEvent, ToolExecutionResult, ToolOutputStream, UserMessageOrigin,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -1348,6 +1358,7 @@ mod tests {
                         output: "line-1\n".to_string(),
                         error: Some("permission denied".to_string()),
                         metadata: Some(json!({ "path": "/tmp", "truncated": true })),
+                        child_ref: None,
                         duration_ms: 42,
                         truncated: true,
                     },
@@ -1399,6 +1410,7 @@ mod tests {
                         output: String::new(),
                         error: Some("command not found".to_string()),
                         metadata: None,
+                        child_ref: None,
                         duration_ms: 127,
                         truncated: false,
                     },
@@ -1558,6 +1570,7 @@ mod tests {
                         success: true,
                         error: None,
                         metadata: None,
+                        child_ref: None,
                         duration_ms: 7,
                     },
                 ),
@@ -1642,20 +1655,23 @@ mod tests {
 
     fn sample_child_notification() -> ChildSessionNotification {
         ChildSessionNotification {
-            notification_id: "child-note-1".to_string(),
+            notification_id: "child-note-1".to_string().into(),
             child_ref: ChildAgentRef {
-                agent_id: "agent-child-1".to_string(),
-                session_id: "session-root".to_string(),
-                sub_run_id: "subrun-child-1".to_string(),
-                parent_agent_id: Some("agent-root".to_string()),
-                parent_sub_run_id: Some("subrun-root".to_string()),
+                identity: ChildExecutionIdentity {
+                    agent_id: "agent-child-1".to_string().into(),
+                    session_id: "session-root".to_string().into(),
+                    sub_run_id: "subrun-child-1".to_string().into(),
+                },
+                parent: ParentExecutionRef {
+                    parent_agent_id: Some("agent-root".to_string().into()),
+                    parent_sub_run_id: Some("subrun-root".to_string().into()),
+                },
                 lineage_kind: ChildSessionLineageKind::Spawn,
                 status: AgentLifecycleStatus::Running,
-                open_session_id: "session-child-1".to_string(),
+                open_session_id: "session-child-1".to_string().into(),
             },
             kind: ChildSessionNotificationKind::Delivered,
-            status: AgentLifecycleStatus::Idle,
-            source_tool_call_id: Some("call-spawn".to_string()),
+            source_tool_call_id: Some("call-spawn".to_string().into()),
             delivery: Some(ParentDelivery {
                 idempotency_key: "delivery-1".to_string(),
                 origin: ParentDeliveryOrigin::Explicit,

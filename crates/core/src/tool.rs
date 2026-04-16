@@ -18,7 +18,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     AgentEventContext, CancelToken, CapabilityKind, CapabilitySpec, CapabilitySpecBuildError,
     InvocationKind, InvocationMode, PermissionSpec, Result, SessionId, SideEffect, Stability,
-    StorageEvent, ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream,
+    StorageEvent, ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream, TurnId,
     tool_result_persist::DEFAULT_TOOL_RESULT_INLINE_LIMIT,
 };
 
@@ -38,7 +38,7 @@ pub struct ExecutionOwner {
     /// 根执行所在的 session。
     pub root_session_id: SessionId,
     /// 根执行所在的 turn。
-    pub root_turn_id: String,
+    pub root_turn_id: TurnId,
     /// 当前工具调用若属于子执行域，则记录 sub-run id。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub_run_id: Option<String>,
@@ -50,7 +50,7 @@ impl ExecutionOwner {
     /// 为顶层执行构造 owner。
     pub fn root(
         root_session_id: impl Into<SessionId>,
-        root_turn_id: impl Into<String>,
+        root_turn_id: impl Into<TurnId>,
         invocation_kind: InvocationKind,
     ) -> Self {
         Self {

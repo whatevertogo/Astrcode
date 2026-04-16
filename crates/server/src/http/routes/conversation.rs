@@ -519,7 +519,7 @@ fn child_summary_lookup(
     let mut lookup = HashMap::new();
     for summary in summaries {
         let dto = project_child_summary(summary);
-        lookup.insert(summary.node.child_session_id.clone(), dto.clone());
+        lookup.insert(summary.node.child_session_id.to_string(), dto.clone());
         if let Some(child_ref) = &dto.child_ref {
             lookup.insert(child_ref.open_session_id.clone(), dto.clone());
             lookup.insert(child_ref.session_id.clone(), dto.clone());
@@ -609,8 +609,9 @@ mod tests {
         TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
     };
     use astrcode_core::{
-        AgentEventContext, AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNode,
-        ChildSessionStatusSource, Phase, SessionEventRecord, ToolExecutionResult, ToolOutputStream,
+        AgentEventContext, AgentLifecycleStatus, ChildExecutionIdentity, ChildSessionLineageKind,
+        ChildSessionNode, ChildSessionStatusSource, ParentExecutionRef, Phase, SessionEventRecord,
+        ToolExecutionResult, ToolOutputStream,
     };
     use astrcode_session_runtime::{
         ConversationBlockPatchFacts, ConversationDeltaFacts, ConversationDeltaFrameFacts,
@@ -714,6 +715,7 @@ mod tests {
                 tool_name: "shell_command".to_string(),
                 ok: true,
                 output: "D:/GitObjectsOwn/Astrcode\n".to_string(),
+                child_ref: None,
                 error: None,
                 metadata: None,
                 duration_ms: 8,
@@ -833,18 +835,22 @@ mod tests {
     fn sample_child_summary() -> TerminalChildSummaryFacts {
         TerminalChildSummaryFacts {
             node: ChildSessionNode {
-                agent_id: "agent-child-1".to_string(),
-                session_id: "session-root".to_string(),
-                child_session_id: "session-child-1".to_string(),
-                sub_run_id: "subrun-child-1".to_string(),
-                parent_session_id: "session-root".to_string(),
-                parent_agent_id: Some("agent-root".to_string()),
-                parent_sub_run_id: Some("subrun-root".to_string()),
-                parent_turn_id: "turn-1".to_string(),
+                identity: ChildExecutionIdentity {
+                    agent_id: "agent-child-1".into(),
+                    session_id: "session-root".into(),
+                    sub_run_id: "subrun-child-1".into(),
+                },
+                child_session_id: "session-child-1".into(),
+                parent_session_id: "session-root".into(),
+                parent: ParentExecutionRef {
+                    parent_agent_id: Some("agent-root".into()),
+                    parent_sub_run_id: Some("subrun-root".into()),
+                },
+                parent_turn_id: "turn-1".into(),
                 lineage_kind: ChildSessionLineageKind::Spawn,
                 status: AgentLifecycleStatus::Running,
                 status_source: ChildSessionStatusSource::Durable,
-                created_by_tool_call_id: Some("call-2".to_string()),
+                created_by_tool_call_id: Some("call-2".into()),
                 lineage_snapshot: None,
             },
             phase: Phase::CallingTool,

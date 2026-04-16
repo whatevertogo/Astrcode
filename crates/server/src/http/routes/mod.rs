@@ -19,8 +19,6 @@ pub(crate) mod agents;
 pub(crate) mod composer;
 pub(crate) mod config;
 pub(crate) mod conversation;
-#[cfg(feature = "debug-workbench")]
-pub(crate) mod debug;
 pub(crate) mod logs;
 pub(crate) mod mcp;
 pub(crate) mod model;
@@ -150,25 +148,6 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         .route("/api/mcp/server", post(mcp::upsert_mcp_server))
         .route("/api/mcp/server/remove", post(mcp::remove_mcp_server))
         .route("/api/mcp/server/enabled", post(mcp::set_mcp_server_enabled));
-
-    #[cfg(feature = "debug-workbench")]
-    let router = router
-        .route(
-            "/api/debug/runtime/overview",
-            get(debug::get_runtime_overview),
-        )
-        .route(
-            "/api/debug/runtime/timeline",
-            get(debug::get_runtime_timeline),
-        )
-        .route(
-            "/api/debug/sessions/{id}/trace",
-            get(debug::get_session_trace),
-        )
-        .route(
-            "/api/debug/sessions/{id}/agents",
-            get(debug::get_session_agents),
-        );
 
     router
 }

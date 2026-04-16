@@ -302,6 +302,7 @@ impl Tool for ReadFileTool {
                     "path": raw_path.to_string_lossy(),
                     "deviceFile": true,
                 })),
+                child_ref: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -328,6 +329,7 @@ impl Tool for ReadFileTool {
                         "bytes": file_size,
                         "fileType": "image",
                     })),
+                    child_ref: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 }),
@@ -340,6 +342,7 @@ impl Tool for ReadFileTool {
                     metadata: Some(json!({
                         "path": path.to_string_lossy(),
                     })),
+                    child_ref: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 }),
@@ -367,6 +370,7 @@ impl Tool for ReadFileTool {
                     "bytes": file_size,
                     "binary": true,
                 })),
+                child_ref: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -449,6 +453,7 @@ impl Tool for ReadFileTool {
             output: final_output,
             error: None,
             metadata: Some(serde_json::Value::Object(meta_object)),
+            child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })

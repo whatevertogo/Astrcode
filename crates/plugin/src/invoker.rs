@@ -16,13 +16,13 @@ use astrcode_core::{
     InvocationMode, Result,
 };
 use astrcode_protocol::plugin::{
-    CapabilityDescriptor, EventPhase, InvocationContext, WorkspaceRef,
+    CapabilityWireDescriptor, EventPhase, InvocationContext, WorkspaceRef,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{Peer, StreamExecution, Supervisor, capability_mapping::descriptor_to_spec};
+use crate::{Peer, StreamExecution, Supervisor, capability_mapping::wire_descriptor_to_spec};
 
 /// 插件能力的调用器实现。
 ///
@@ -46,15 +46,15 @@ impl PluginCapabilityInvoker {
     ///
     /// `remote_name` 保存原始的能力名称，因为 `descriptor.name` 可能在
     /// 适配过程中被修改（如添加命名空间前缀）。
-    pub fn from_protocol_descriptor(peer: Peer, descriptor: CapabilityDescriptor) -> Result<Self> {
-        let capability_spec = descriptor_to_spec(&descriptor).map_err(|error| {
+    pub fn from_wire_descriptor(peer: Peer, descriptor: CapabilityWireDescriptor) -> Result<Self> {
+        let capability_spec = wire_descriptor_to_spec(&descriptor).map_err(|error| {
             AstrError::Validation(format!(
-                "invalid protocol capability descriptor '{}': {}",
+                "invalid protocol capability wire descriptor '{}': {}",
                 descriptor.name, error
             ))
         })?;
         Ok(Self {
-            remote_name: descriptor.name.clone(),
+            remote_name: descriptor.name.to_string(),
             capability_spec,
             peer,
         })
@@ -131,11 +131,17 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
                 capability_name: self.capability_spec.name.to_string(),
                 success,
                 output: result.output,
+                error: None,
+                metadata: None,
+                duration_ms: 0,
+                truncated: false,
+            }
+            .with_common(astrcode_core::ExecutionResultCommon {
                 error,
                 metadata: Some(result.metadata),
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
-            })
+            }))
         }
     }
 }
@@ -151,10 +157,10 @@ impl Supervisor {
             .iter()
             .cloned()
             .filter_map(|descriptor| {
-                match PluginCapabilityInvoker::from_protocol_descriptor(self.peer(), descriptor) {
+                match PluginCapabilityInvoker::from_wire_descriptor(self.peer(), descriptor) {
                     Ok(invoker) => Some(Arc::new(invoker) as Arc<dyn CapabilityInvoker>),
                     Err(error) => {
-                        log::error!("failed to adapt plugin capability descriptor: {error}");
+                        log::error!("failed to adapt plugin capability wire descriptor: {error}");
                         None
                     },
                 }
@@ -162,11 +168,11 @@ impl Supervisor {
             .collect()
     }
 
-    /// 获取此插件声明的核心能力描述符列表。
+    /// 获取此插件声明的 wire 能力描述符列表。
     ///
     /// 与 `capability_invokers()` 不同，此方法返回原始的描述符，
     /// 不包装为调用器。用于向宿主展示插件提供了哪些能力。
-    pub fn core_capabilities(&self) -> Vec<CapabilityDescriptor> {
+    pub fn wire_capabilities(&self) -> Vec<CapabilityWireDescriptor> {
         self.remote_initialize().capabilities.clone()
     }
 
@@ -211,10 +217,15 @@ async fn finish_stream_invocation(
                     success: true,
                     output: event.payload,
                     error: None,
-                    metadata: Some(json!({ "streamEvents": deltas })),
-                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    metadata: None,
+                    duration_ms: 0,
                     truncated: false,
-                });
+                }
+                .with_common(astrcode_core::ExecutionResultCommon::success(
+                    Some(json!({ "streamEvents": deltas })),
+                    started_at.elapsed().as_millis() as u64,
+                    false,
+                )));
             },
             EventPhase::Failed => {
                 let error = event
@@ -225,11 +236,17 @@ async fn finish_stream_invocation(
                     capability_name,
                     success: false,
                     output: Value::Null,
-                    error: Some(error),
-                    metadata: Some(json!({ "streamEvents": deltas })),
-                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    error: None,
+                    metadata: None,
+                    duration_ms: 0,
                     truncated: false,
-                });
+                }
+                .with_common(astrcode_core::ExecutionResultCommon::failure(
+                    error,
+                    Some(json!({ "streamEvents": deltas })),
+                    started_at.elapsed().as_millis() as u64,
+                    false,
+                )));
             },
         }
     }

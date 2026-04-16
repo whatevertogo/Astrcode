@@ -15,9 +15,9 @@ use astrcode_application::{ConfigService, resolve_current_model};
 use async_trait::async_trait;
 
 use super::deps::core::{
-    AstrError, PromptAgentProfileSummary, PromptDeclaration, PromptDeclarationKind,
-    PromptDeclarationRenderTarget, PromptDeclarationSource, PromptFacts, PromptFactsProvider,
-    PromptFactsRequest, PromptSkillSummary, Result, SystemPromptLayer, resolve_runtime_config,
+    AstrError, PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    PromptDeclarationSource, PromptEntrySummary, PromptFacts, PromptFactsProvider,
+    PromptFactsRequest, Result, SystemPromptLayer, resolve_runtime_config,
 };
 
 pub(crate) fn build_prompt_facts_provider(
@@ -63,10 +63,7 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
             .skill_catalog
             .resolve_for_working_dir(&working_dir.to_string_lossy())
             .into_iter()
-            .map(|skill| PromptSkillSummary {
-                id: skill.id,
-                description: skill.description,
-            })
+            .map(|skill| PromptEntrySummary::new(skill.id, skill.description))
             .collect();
         let agent_profiles = self
             .agent_loader
@@ -74,10 +71,7 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
             .map_err(|error| AstrError::Internal(error.to_string()))?
             .list_subagent_profiles()
             .into_iter()
-            .map(|profile| PromptAgentProfileSummary {
-                id: profile.id.clone(),
-                description: profile.description.clone(),
-            })
+            .map(|profile| PromptEntrySummary::new(profile.id.clone(), profile.description.clone()))
             .collect();
         let prompt_declarations = self
             .mcp_manager

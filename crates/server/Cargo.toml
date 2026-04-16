@@ -5,10 +5,6 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
-[features]
-default = []
-debug-workbench = ["dep:astrcode-debug-workbench"]
-
 [dependencies]
 astrcode-application = { path = "../application" }
 astrcode-adapter-agents = { path = "../adapter-agents" }
@@ -19,7 +15,6 @@ astrcode-adapter-skills = { path = "../adapter-skills" }
 astrcode-adapter-storage = { path = "../adapter-storage" }
 astrcode-adapter-tools = { path = "../adapter-tools" }
 astrcode-core = { path = "../core" }
-astrcode-debug-workbench = { path = "../debug-workbench", optional = true }
 astrcode-kernel = { path = "../kernel" }
 astrcode-plugin = { path = "../plugin" }
 astrcode-protocol = { path = "../protocol" }

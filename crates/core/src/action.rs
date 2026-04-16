@@ -12,6 +12,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::{ChildAgentRef, ExecutionResultCommon};
+
 /// LLM 推理/思考内容。
 ///
 /// 用于支持扩展思考模型（如 Claude extended thinking），
@@ -73,6 +75,9 @@ pub struct ToolExecutionResult {
     /// 额外元数据（如 diff 信息、终端显示提示等）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// 工具结果关联的稳定 child reference。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_ref: Option<ChildAgentRef>,
     /// 执行耗时（毫秒）
     pub duration_ms: u64,
     /// 输出是否因大小限制被截断
@@ -137,32 +142,39 @@ impl ToolExecutionResult {
     }
 
     fn child_agent_reference_hint(&self) -> Option<String> {
-        let metadata = self.metadata.as_ref()?.as_object()?;
-        let agent_ref = metadata.get("agentRef")?.as_object()?;
-        let agent_id = agent_ref.get("agentId")?.as_str()?;
+        let child_ref = self.child_ref.as_ref()?;
 
         let mut lines = vec![
             "Child agent reference:".to_string(),
-            format!("- agentId: {agent_id}"),
+            format!("- agentId: {}", child_ref.agent_id()),
         ];
 
-        if let Some(sub_run_id) = agent_ref.get("subRunId").and_then(Value::as_str) {
-            lines.push(format!("- subRunId: {sub_run_id}"));
-        }
-        if let Some(session_id) = agent_ref.get("sessionId").and_then(Value::as_str) {
-            lines.push(format!("- sessionId: {session_id}"));
-        }
-        if let Some(open_session_id) = agent_ref.get("openSessionId").and_then(Value::as_str) {
-            lines.push(format!("- openSessionId: {open_session_id}"));
-        }
-        if let Some(status) = agent_ref.get("status").and_then(Value::as_str) {
-            lines.push(format!("- status: {status}"));
-        }
+        lines.push(format!("- subRunId: {}", child_ref.sub_run_id()));
+        lines.push(format!("- sessionId: {}", child_ref.session_id()));
+        lines.push(format!("- openSessionId: {}", child_ref.open_session_id));
+        lines.push(format!("- status: {:?}", child_ref.status).to_lowercase());
 
         // 这里显式强调“精确复用原值”，避免模型把 `agent-1` 自作主张改写成
         // `agent-01` 之类的展示型编号，导致后续协作工具命中不存在的 agent。
         lines.push("Use this exact `agentId` value in later send/observe/close calls.".to_string());
         Some(lines.join("\n"))
+    }
+
+    pub fn common(&self) -> ExecutionResultCommon {
+        ExecutionResultCommon {
+            error: self.error.clone(),
+            metadata: self.metadata.clone(),
+            duration_ms: self.duration_ms,
+            truncated: self.truncated,
+        }
+    }
+
+    pub fn with_common(mut self, common: ExecutionResultCommon) -> Self {
+        self.error = common.error;
+        self.metadata = common.metadata;
+        self.duration_ms = common.duration_ms;
+        self.truncated = common.truncated;
+        self
     }
 }
 
@@ -338,6 +350,7 @@ mod tests {
     use serde_json::json;
 
     use super::{ToolExecutionResult, split_assistant_content};
+    use crate::{AgentId, SessionId, SubRunId};
 
     #[test]
     fn split_assistant_content_extracts_inline_thinking_blocks() {
@@ -354,16 +367,16 @@ mod tests {
     }
 
     #[test]
-    fn split_assistant_content_prefers_explicit_reasoning_and_strips_legacy_tags() {
+    fn split_assistant_content_prefers_explicit_reasoning_and_strips_inline_think_tags() {
         let parts = split_assistant_content(
-            "<think>legacy</think>\nvisible",
+            "<think>hidden</think>\nvisible",
             Some("persisted reasoning"),
         );
 
         assert_eq!(parts.visible_content, "visible");
         assert_eq!(
             parts.reasoning_content.as_deref(),
-            Some("persisted reasoning\n\nlegacy")
+            Some("persisted reasoning\n\nhidden")
         );
     }
 
@@ -376,22 +389,25 @@ mod tests {
     }
 
     #[test]
-    fn model_content_appends_exact_child_agent_reference_from_metadata() {
+    fn model_content_appends_exact_child_agent_reference_from_child_ref() {
         let result = ToolExecutionResult {
             tool_call_id: "call-1".to_string(),
             tool_name: "spawn".to_string(),
             ok: true,
             output: "spawn 已在后台启动。".to_string(),
             error: None,
-            metadata: Some(json!({
-                "agentRef": {
-                    "agentId": "agent-1",
-                    "subRunId": "subrun-1",
-                    "sessionId": "session-parent",
-                    "openSessionId": "session-parent",
-                    "status": "running"
-                }
-            })),
+            metadata: Some(json!({ "schema": "subRunResult" })),
+            child_ref: Some(crate::ChildAgentRef {
+                identity: crate::ChildExecutionIdentity {
+                    agent_id: AgentId::from("agent-1"),
+                    session_id: SessionId::from("session-parent"),
+                    sub_run_id: SubRunId::from("subrun-1"),
+                },
+                parent: crate::ParentExecutionRef::default(),
+                lineage_kind: crate::ChildSessionLineageKind::Spawn,
+                status: crate::AgentLifecycleStatus::Running,
+                open_session_id: SessionId::from("session-parent"),
+            }),
             duration_ms: 0,
             truncated: false,
         };

@@ -73,15 +73,19 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
             .await;
 
         match result {
-            Ok(result) => Ok(CapabilityExecutionResult {
-                capability_name: result.tool_name,
-                success: result.ok,
-                output: Value::String(result.output),
-                error: result.error,
-                metadata: result.metadata,
-                duration_ms: result.duration_ms,
-                truncated: result.truncated,
-            }),
+            Ok(result) => {
+                let common = result.common();
+                Ok(CapabilityExecutionResult {
+                    capability_name: result.tool_name,
+                    success: result.ok,
+                    output: Value::String(result.output),
+                    error: None,
+                    metadata: None,
+                    duration_ms: 0,
+                    truncated: false,
+                }
+                .with_common(common))
+            },
             Err(error) => Ok(CapabilityExecutionResult::failure(
                 self.capability_spec.name.to_string(),
                 error.to_string(),

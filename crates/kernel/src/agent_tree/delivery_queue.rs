@@ -15,7 +15,7 @@ fn mark_parent_deliveries_queued(
 ) -> usize {
     let mut updated = 0usize;
     for entry in &mut queue.deliveries {
-        if delivery_ids.contains(&entry.delivery.delivery_id) {
+        if delivery_ids.contains(&entry.delivery.delivery_id.to_string()) {
             entry.state = PendingParentDeliveryState::Queued;
             updated += 1;
         }
@@ -30,13 +30,13 @@ fn consume_front_deliveries(queue: &mut ParentDeliveryQueue, delivery_ids: &[Str
         let Some(front) = queue.deliveries.front() else {
             return false;
         };
-        if front.delivery.delivery_id != *delivery_id {
+        if front.delivery.delivery_id.as_str() != delivery_id {
             return false;
         }
         if let Some(removed) = queue.deliveries.pop_front() {
             queue
                 .known_delivery_ids
-                .remove(&removed.delivery.delivery_id);
+                .remove(removed.delivery.delivery_id.as_str());
         }
     }
     true
@@ -56,7 +56,7 @@ pub(super) fn enqueue_parent_delivery_locked(
         .parent_delivery_queues
         .entry(parent_session_id.clone())
         .or_default();
-    if !queue.known_delivery_ids.insert(delivery_id.clone()) {
+    if !queue.known_delivery_ids.insert(delivery_id.to_string()) {
         return false;
     }
     if queue.deliveries.len() >= parent_delivery_capacity {
@@ -66,12 +66,12 @@ pub(super) fn enqueue_parent_delivery_locked(
             parent_delivery_capacity,
             delivery_id
         );
-        queue.known_delivery_ids.remove(&delivery_id);
+        queue.known_delivery_ids.remove(delivery_id.as_str());
         return false;
     }
     queue.deliveries.push_back(PendingParentDeliveryEntry {
         delivery: PendingParentDelivery {
-            delivery_id,
+            delivery_id: delivery_id.into(),
             parent_session_id,
             parent_turn_id,
             queued_at_ms: std::time::SystemTime::now()
@@ -115,14 +115,21 @@ pub(super) fn checkout_parent_delivery_batch_locked(
         .delivery
         .notification
         .child_ref
-        .parent_agent_id
-        .clone();
+        .parent_agent_id()
+        .cloned();
     let mut batch_len = 0usize;
     for entry in &queue.deliveries {
         if !matches!(entry.state, PendingParentDeliveryState::Queued) {
             break;
         }
-        if entry.delivery.notification.child_ref.parent_agent_id != target_parent_agent_id {
+        if entry
+            .delivery
+            .notification
+            .child_ref
+            .parent_agent_id()
+            .cloned()
+            != target_parent_agent_id
+        {
             break;
         }
         batch_len += 1;
@@ -152,7 +159,7 @@ pub(super) fn requeue_parent_delivery_locked(
     let Some(entry) = queue
         .deliveries
         .iter_mut()
-        .find(|entry| entry.delivery.delivery_id == delivery_id)
+        .find(|entry| entry.delivery.delivery_id.as_str() == delivery_id)
     else {
         return false;
     };

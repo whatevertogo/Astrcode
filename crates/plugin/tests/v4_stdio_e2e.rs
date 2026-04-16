@@ -78,7 +78,7 @@ async fn stdio_supervisor_initializes_and_invokes_unary_capability() -> Result<(
             .remote_initialize()
             .capabilities
             .iter()
-            .any(|capability| capability.name == "tool.echo")
+            .any(|capability| capability.name.as_str() == "tool.echo")
     );
 
     let response = supervisor

@@ -8,13 +8,14 @@ use std::path::PathBuf;
 use astrcode_application::{
     AgentEventContext, AgentLifecycleStatus, AgentTurnOutcome, InvocationKind,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, StorageEventPayload,
-    StoredEvent, SubRunFailure, SubRunFailureCode, SubRunResult, SubRunStatusView,
+    StoredEvent, SubRunFailure, SubRunResult, SubRunStatusView,
 };
+use astrcode_core::{CompletedSubRunOutcome, FailedSubRunOutcome};
 use astrcode_protocol::http::{
     AgentExecuteRequestDto, AgentExecuteResponseDto, AgentLifecycleDto, AgentProfileDto,
     AgentTurnOutcomeDto, ExecutionControlDto, ResolvedExecutionLimitsDto,
-    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunOutcomeDto,
-    SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto, SubRunStorageModeDto,
+    ResolvedSubagentContextOverridesDto, SubRunFailureDto, SubRunResultDto, SubRunStatusDto,
+    SubRunStatusSourceDto, SubRunStorageModeDto,
 };
 use axum::{
     Json,
@@ -290,12 +291,14 @@ fn project_durable_subrun_status(
                     sub_run_id: agent
                         .sub_run_id
                         .clone()
-                        .unwrap_or_else(|| requested_subrun_id.to_string()),
+                        .unwrap_or_else(|| requested_subrun_id.to_string().into())
+                        .to_string(),
                     tool_call_id: tool_call_id.clone(),
                     agent_id: agent
                         .agent_id
                         .clone()
-                        .unwrap_or_else(|| requested_subrun_id.to_string()),
+                        .unwrap_or_else(|| requested_subrun_id.to_string().into())
+                        .to_string(),
                     agent_profile: agent
                         .agent_profile
                         .clone()
@@ -303,7 +306,7 @@ fn project_durable_subrun_status(
                     child_session_id: child_session_id.to_string(),
                     depth: 1,
                     parent_agent_id: None,
-                    parent_sub_run_id: agent.parent_sub_run_id.clone(),
+                    parent_sub_run_id: agent.parent_sub_run_id.clone().map(|id| id.to_string()),
                     lifecycle: AgentLifecycleStatus::Running,
                     last_turn_outcome: None,
                     result: None,
@@ -324,12 +327,14 @@ fn project_durable_subrun_status(
                     sub_run_id: agent
                         .sub_run_id
                         .clone()
-                        .unwrap_or_else(|| requested_subrun_id.to_string()),
+                        .unwrap_or_else(|| requested_subrun_id.to_string().into())
+                        .to_string(),
                     tool_call_id: None,
                     agent_id: agent
                         .agent_id
                         .clone()
-                        .unwrap_or_else(|| requested_subrun_id.to_string()),
+                        .unwrap_or_else(|| requested_subrun_id.to_string().into())
+                        .to_string(),
                     agent_profile: agent
                         .agent_profile
                         .clone()
@@ -337,9 +342,9 @@ fn project_durable_subrun_status(
                     child_session_id: child_session_id.to_string(),
                     depth: 1,
                     parent_agent_id: None,
-                    parent_sub_run_id: agent.parent_sub_run_id.clone(),
-                    lifecycle: result.lifecycle,
-                    last_turn_outcome: result.last_turn_outcome,
+                    parent_sub_run_id: agent.parent_sub_run_id.clone().map(|id| id.to_string()),
+                    lifecycle: result.status().lifecycle(),
+                    last_turn_outcome: result.status().last_turn_outcome(),
                     result: None,
                     step_count: None,
                     estimated_tokens: None,
@@ -347,8 +352,8 @@ fn project_durable_subrun_status(
                     resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
                 });
                 entry.tool_call_id = tool_call_id.clone().or_else(|| entry.tool_call_id.clone());
-                entry.lifecycle = result.lifecycle;
-                entry.last_turn_outcome = result.last_turn_outcome;
+                entry.lifecycle = result.status().lifecycle();
+                entry.last_turn_outcome = result.status().last_turn_outcome();
                 entry.result = Some(result.clone());
                 entry.step_count = Some(*step_count);
                 entry.estimated_tokens = Some(*estimated_tokens);
@@ -357,33 +362,28 @@ fn project_durable_subrun_status(
         }
     }
 
-    projection.map(|projection| {
-        let sub_run_id = projection.sub_run_id.clone();
-        SubRunStatusDto {
-            sub_run_id: projection.sub_run_id,
-            tool_call_id: projection.tool_call_id,
-            source: SubRunStatusSourceDto::Durable,
-            agent_id: projection.agent_id,
-            agent_profile: projection.agent_profile,
-            session_id: parent_session_id.to_string(),
-            child_session_id: Some(projection.child_session_id),
-            depth: projection.depth,
-            parent_agent_id: projection.parent_agent_id,
-            parent_sub_run_id: projection.parent_sub_run_id,
-            storage_mode: SubRunStorageModeDto::IndependentSession,
-            lifecycle: to_lifecycle_dto(projection.lifecycle),
-            last_turn_outcome: projection.last_turn_outcome.map(to_turn_outcome_dto),
-            result: projection
-                .result
-                .map(|result| to_subrun_result_dto(result, Some(sub_run_id.as_str()))),
-            step_count: projection.step_count,
-            estimated_tokens: projection.estimated_tokens,
-            resolved_overrides: projection.resolved_overrides.map(to_resolved_overrides_dto),
-            resolved_limits: Some(ResolvedExecutionLimitsDto {
-                allowed_tools: projection.resolved_limits.allowed_tools,
-                max_steps: projection.resolved_limits.max_steps,
-            }),
-        }
+    projection.map(|projection| SubRunStatusDto {
+        sub_run_id: projection.sub_run_id,
+        tool_call_id: projection.tool_call_id,
+        source: SubRunStatusSourceDto::Durable,
+        agent_id: projection.agent_id,
+        agent_profile: projection.agent_profile,
+        session_id: parent_session_id.to_string(),
+        child_session_id: Some(projection.child_session_id),
+        depth: projection.depth,
+        parent_agent_id: projection.parent_agent_id,
+        parent_sub_run_id: projection.parent_sub_run_id,
+        storage_mode: SubRunStorageModeDto::IndependentSession,
+        lifecycle: to_lifecycle_dto(projection.lifecycle),
+        last_turn_outcome: projection.last_turn_outcome.map(to_turn_outcome_dto),
+        result: projection.result.map(to_subrun_result_dto),
+        step_count: projection.step_count,
+        estimated_tokens: projection.estimated_tokens,
+        resolved_overrides: projection.resolved_overrides.map(to_resolved_overrides_dto),
+        resolved_limits: Some(ResolvedExecutionLimitsDto {
+            allowed_tools: projection.resolved_limits.allowed_tools,
+            max_steps: projection.resolved_limits.max_steps,
+        }),
     })
 }
 
@@ -400,7 +400,7 @@ fn to_resolved_overrides_dto(
     overrides: ResolvedSubagentContextOverrides,
 ) -> ResolvedSubagentContextOverridesDto {
     ResolvedSubagentContextOverridesDto {
-        storage_mode: SubRunStorageModeDto::IndependentSession,
+        storage_mode: overrides.storage_mode,
         inherit_system_instructions: overrides.inherit_system_instructions,
         inherit_project_instructions: overrides.inherit_project_instructions,
         inherit_working_dir: overrides.inherit_working_dir,
@@ -410,45 +410,31 @@ fn to_resolved_overrides_dto(
         include_recent_tail: overrides.include_recent_tail,
         include_recovery_refs: overrides.include_recovery_refs,
         include_parent_findings: overrides.include_parent_findings,
-        fork_mode: None,
+        fork_mode: overrides.fork_mode,
     }
 }
 
-fn to_subrun_result_dto(result: SubRunResult, sub_run_id: Option<&str>) -> SubRunResultDto {
-    SubRunResultDto {
-        status: to_subrun_outcome_dto(result.lifecycle, result.last_turn_outcome),
-        handoff: result
-            .handoff
-            .map(|handoff| crate::mapper::to_subrun_handoff_dto(handoff, sub_run_id, None)),
-        failure: result.failure.map(to_subrun_failure_dto),
-    }
-}
-
-fn to_subrun_outcome_dto(
-    lifecycle: AgentLifecycleStatus,
-    last_turn_outcome: Option<AgentTurnOutcome>,
-) -> SubRunOutcomeDto {
-    match last_turn_outcome {
-        Some(AgentTurnOutcome::Completed) => SubRunOutcomeDto::Completed,
-        Some(AgentTurnOutcome::Failed) => SubRunOutcomeDto::Failed,
-        Some(AgentTurnOutcome::Cancelled) => SubRunOutcomeDto::Aborted,
-        Some(AgentTurnOutcome::TokenExceeded) => SubRunOutcomeDto::TokenExceeded,
-        None => match lifecycle {
-            AgentLifecycleStatus::Terminated => SubRunOutcomeDto::Aborted,
-            _ => SubRunOutcomeDto::Running,
+fn to_subrun_result_dto(result: SubRunResult) -> SubRunResultDto {
+    match result {
+        SubRunResult::Running { handoff } => SubRunResultDto::Running { handoff },
+        SubRunResult::Completed { outcome, handoff } => match outcome {
+            CompletedSubRunOutcome::Completed => SubRunResultDto::Completed { handoff },
+            CompletedSubRunOutcome::TokenExceeded => SubRunResultDto::TokenExceeded { handoff },
+        },
+        SubRunResult::Failed { outcome, failure } => match outcome {
+            FailedSubRunOutcome::Failed => SubRunResultDto::Failed {
+                failure: to_subrun_failure_dto(failure),
+            },
+            FailedSubRunOutcome::Cancelled => SubRunResultDto::Cancelled {
+                failure: to_subrun_failure_dto(failure),
+            },
         },
     }
 }
 
 fn to_subrun_failure_dto(failure: SubRunFailure) -> SubRunFailureDto {
     SubRunFailureDto {
-        code: match failure.code {
-            SubRunFailureCode::Transport => SubRunFailureCodeDto::Transport,
-            SubRunFailureCode::ProviderHttp => SubRunFailureCodeDto::ProviderHttp,
-            SubRunFailureCode::StreamParse => SubRunFailureCodeDto::StreamParse,
-            SubRunFailureCode::Interrupted => SubRunFailureCodeDto::Interrupted,
-            SubRunFailureCode::Internal => SubRunFailureCodeDto::Internal,
-        },
+        code: failure.code,
         display_message: failure.display_message,
         technical_message: failure.technical_message,
         retryable: failure.retryable,
@@ -482,12 +468,13 @@ pub(crate) struct CloseAgentResponse {
 #[cfg(test)]
 mod tests {
     use astrcode_application::{
-        AgentEventContext, AgentLifecycleStatus, AgentTurnOutcome, StoredEvent, SubRunHandoff,
-        SubRunResult, SubRunStorageMode,
+        AgentEventContext, StoredEvent, SubRunHandoff, SubRunResult, SubRunStorageMode,
     };
     use astrcode_core::{
-        ArtifactRef, CompletedParentDeliveryPayload, ParentDelivery, ParentDeliveryOrigin,
-        ParentDeliveryPayload, ParentDeliveryTerminalSemantics, StorageEvent, StorageEventPayload,
+        ArtifactRef, CompletedParentDeliveryPayload, CompletedSubRunOutcome, ForkMode,
+        ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
+        ParentDeliveryTerminalSemantics, ResolvedSubagentContextOverrides, StorageEvent,
+        StorageEventPayload,
     };
 
     use super::project_durable_subrun_status;
@@ -499,9 +486,9 @@ mod tests {
             "turn-parent",
             "reviewer",
             "subrun-child",
-            Some("subrun-parent".to_string()),
+            Some("subrun-parent".into()),
             SubRunStorageMode::IndependentSession,
-            Some("session-child".to_string()),
+            Some("session-child".into()),
         );
         let explicit_delivery = ParentDelivery {
             idempotency_key: "delivery-explicit".to_string(),
@@ -528,10 +515,9 @@ mod tests {
                 agent: child_agent.clone(),
                 payload: StorageEventPayload::SubRunFinished {
                     tool_call_id: Some("call-1".to_string()),
-                    result: SubRunResult {
-                        lifecycle: AgentLifecycleStatus::Idle,
-                        last_turn_outcome: Some(AgentTurnOutcome::Completed),
-                        handoff: Some(SubRunHandoff {
+                    result: SubRunResult::Completed {
+                        outcome: CompletedSubRunOutcome::Completed,
+                        handoff: SubRunHandoff {
                             findings: vec!["finding-1".to_string()],
                             artifacts: vec![ArtifactRef {
                                 kind: "session".to_string(),
@@ -542,8 +528,7 @@ mod tests {
                                 uri: None,
                             }],
                             delivery: Some(explicit_delivery.clone()),
-                        }),
-                        failure: None,
+                        },
                     },
                     timestamp: Some(chrono::Utc::now()),
                     step_count: 3,
@@ -561,7 +546,15 @@ mod tests {
         .expect("projection should exist");
 
         let result = projection.result.expect("durable result should exist");
-        let handoff = result.handoff.expect("handoff should exist");
+        let handoff = match result {
+            astrcode_protocol::http::SubRunResultDto::Running { handoff }
+            | astrcode_protocol::http::SubRunResultDto::Completed { handoff }
+            | astrcode_protocol::http::SubRunResultDto::TokenExceeded { handoff } => handoff,
+            astrcode_protocol::http::SubRunResultDto::Failed { .. }
+            | astrcode_protocol::http::SubRunResultDto::Cancelled { .. } => {
+                panic!("expected successful durable handoff")
+            },
+        };
         let delivery = handoff
             .delivery
             .expect("typed delivery should survive durable projection");
@@ -581,5 +574,72 @@ mod tests {
             },
             payload => panic!("unexpected delivery payload: {payload:?}"),
         }
+    }
+
+    #[test]
+    fn resolved_overrides_projection_preserves_fork_mode() {
+        let dto = super::to_resolved_overrides_dto(ResolvedSubagentContextOverrides {
+            fork_mode: Some(ForkMode::LastNTurns(7)),
+            ..ResolvedSubagentContextOverrides::default()
+        });
+
+        assert_eq!(
+            dto.fork_mode,
+            Some(astrcode_protocol::http::ForkModeDto::LastNTurns(7))
+        );
+    }
+
+    #[test]
+    fn durable_subrun_projection_maps_token_exceeded_to_successful_handoff_result() {
+        let child_agent = AgentEventContext::sub_run(
+            "agent-child",
+            "turn-parent",
+            "reviewer",
+            "subrun-child",
+            Some("subrun-parent".into()),
+            SubRunStorageMode::IndependentSession,
+            Some("session-child".into()),
+        );
+        let stored_events = vec![StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent {
+                turn_id: Some("turn-child".to_string()),
+                agent: child_agent,
+                payload: StorageEventPayload::SubRunFinished {
+                    tool_call_id: Some("call-1".to_string()),
+                    result: SubRunResult::Completed {
+                        outcome: CompletedSubRunOutcome::TokenExceeded,
+                        handoff: SubRunHandoff {
+                            findings: vec!["partial-finding".to_string()],
+                            artifacts: Vec::new(),
+                            delivery: None,
+                        },
+                    },
+                    timestamp: Some(chrono::Utc::now()),
+                    step_count: 5,
+                    estimated_tokens: 2048,
+                },
+            },
+        }];
+
+        let projection = project_durable_subrun_status(
+            "session-parent",
+            "session-child",
+            "subrun-child",
+            &stored_events,
+        )
+        .expect("projection should exist");
+
+        let result = projection.result.expect("durable result should exist");
+        match result {
+            astrcode_protocol::http::SubRunResultDto::TokenExceeded { handoff } => {
+                assert_eq!(handoff.findings, vec!["partial-finding".to_string()]);
+            },
+            other => panic!("expected token exceeded handoff result, got {other:?}"),
+        }
+        assert_eq!(
+            projection.last_turn_outcome,
+            Some(astrcode_protocol::http::AgentTurnOutcomeDto::TokenExceeded)
+        );
     }
 }

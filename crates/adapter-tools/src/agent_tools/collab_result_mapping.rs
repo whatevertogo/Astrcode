@@ -2,16 +2,17 @@
 //!
 //! 与 `result_mapping` 拆开是因为协作工具的返回类型是 `CollaborationResult`，
 //! 其结构与 spawn 的 `SubRunResult` 完全不同：
-//! - CollaborationResult 侧重 accepted/failure/summary 三元组
+//! - CollaborationResult 侧重 variant + summary/delegation 的稳定组合
 //! - SubRunResult 侧重 status/handoff/artifacts 组合
 //!
 //! 映射策略：
-//! - `accepted` → ok（表示操作被 runtime 接受）
-//! - `failure` → error（描述拒绝或运行时错误的原因）
+//! - 协作结果本身已经表示 accepted 的动作结果，因此 `ok` 固定为 `true`
 //! - `summary` → output（LLM 可见的文本摘要）
 //! - 整个 CollaborationResult 序列化为 metadata（供前端消费）
 
-use astrcode_core::{CollaborationResult, DelegationMetadata, ToolExecutionResult};
+use astrcode_core::{
+    CollaborationResult, DelegationMetadata, ExecutionResultCommon, ToolExecutionResult,
+};
 use serde_json::json;
 
 /// 协作工具的错误结果（参数校验失败等）。
@@ -27,11 +28,13 @@ pub(crate) fn collaboration_error_result(
         tool_name: tool_name.to_string(),
         ok: false,
         output: String::new(),
-        error: Some(message),
+        error: None,
         metadata: None,
+        child_ref: None,
         duration_ms: 0,
         truncated: false,
     }
+    .with_common(ExecutionResultCommon::failure(message, None, 0, false))
 }
 
 /// 将 CollaborationResult 映射为 ToolExecutionResult。
@@ -42,8 +45,7 @@ pub(crate) fn map_collaboration_result(
     tool_name: &str,
     result: CollaborationResult,
 ) -> ToolExecutionResult {
-    let error = result.failure.clone();
-    let output = result.summary.clone().unwrap_or_default();
+    let output = result.summary().unwrap_or_default().to_string();
     let metadata = Some(match serde_json::to_value(&result) {
         Ok(mut value) => {
             inject_advisory_projection(&mut value, &result);
@@ -51,8 +53,8 @@ pub(crate) fn map_collaboration_result(
         },
         Err(serialization_error) => json!({
             "schema": "collaborationResult",
-            "accepted": result.accepted,
-            "kind": format!("{:?}", result.kind),
+            "accepted": true,
+            "kind": result_kind_label(&result),
             "serializationError": serialization_error.to_string(),
         }),
     });
@@ -60,12 +62,27 @@ pub(crate) fn map_collaboration_result(
     ToolExecutionResult {
         tool_call_id,
         tool_name: tool_name.to_string(),
-        ok: result.accepted,
+        ok: true,
         output,
-        error,
+        error: None,
+        metadata: None,
+        child_ref: result.agent_ref().cloned(),
+        duration_ms: 0,
+        truncated: false,
+    }
+    .with_common(ExecutionResultCommon {
+        error: None,
         metadata,
         duration_ms: 0,
         truncated: false,
+    })
+}
+
+fn result_kind_label(result: &CollaborationResult) -> &'static str {
+    match result {
+        CollaborationResult::Sent { .. } => "sent",
+        CollaborationResult::Observed { .. } => "observed",
+        CollaborationResult::Closed { .. } => "closed",
     }
 }
 
@@ -79,13 +96,12 @@ fn inject_advisory_projection(metadata: &mut serde_json::Value, result: &Collabo
 }
 
 fn build_advisory_projection(result: &CollaborationResult) -> Option<serde_json::Value> {
-    let delegation = result.delegation.as_ref().or_else(|| {
+    let delegation = result.delegation().or_else(|| {
         result
-            .observe_result
-            .as_ref()
+            .observe_result()
             .and_then(|observe| observe.delegation.as_ref())
     });
-    let next_step = result.observe_result.as_ref().map(|observe| {
+    let next_step = result.observe_result().map(|observe| {
         json!({
             "preferredAction": observe.recommended_next_action,
             "reason": observe.recommended_reason,

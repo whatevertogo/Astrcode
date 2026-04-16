@@ -47,7 +47,7 @@ pub struct SubRunExecutionMetricsSnapshot {
     pub total: u64,
     pub failures: u64,
     pub completed: u64,
-    pub aborted: u64,
+    pub cancelled: u64,
     pub token_exceeded: u64,
     pub independent_session_total: u64,
     pub total_duration_ms: u64,
@@ -58,7 +58,7 @@ pub struct SubRunExecutionMetricsSnapshot {
     pub last_estimated_tokens: u64,
 }
 
-/// 子会话/缓存/legacy cutover 的结构化观测指标快照。
+/// 子会话与缓存切换相关的结构化观测指标快照。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExecutionDiagnosticsSnapshot {
     pub child_spawned: u64,
@@ -120,7 +120,7 @@ pub struct RuntimeObservabilitySnapshot {
     pub turn_execution: OperationMetricsSnapshot,
     /// 子执行域共享观测指标
     pub subrun_execution: SubRunExecutionMetricsSnapshot,
-    /// 子会话/缓存/legacy cutover 的结构化观测指标
+    /// 子会话与缓存切换相关的结构化观测指标
     pub execution_diagnostics: ExecutionDiagnosticsSnapshot,
     /// agent-tool 协作效果评估读模型
     pub agent_collaboration: AgentCollaborationScorecardSnapshot,

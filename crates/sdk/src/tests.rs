@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    CapabilityDescriptor, CapabilityKind, HookRegistry, PluginContext, PolicyDecision, PolicyHook,
-    PolicyHookChain, SdkError, SideEffectLevel, StreamWriter, ToolFuture, ToolHandler,
+    CapabilityKind, CapabilitySpec, HookRegistry, InvocationMode, PluginContext, PolicyDecision,
+    PolicyHook, PolicyHookChain, SdkError, SideEffect, StreamWriter, ToolFuture, ToolHandler,
     ToolRegistration, ToolSerdeStage,
 };
 
@@ -53,16 +53,16 @@ struct SampleOutput {
 }
 
 impl ToolHandler<SampleInput, SampleOutput> for SampleTool {
-    fn descriptor(&self) -> CapabilityDescriptor {
-        CapabilityDescriptor::builder("tool.sample", CapabilityKind::tool())
+    fn descriptor(&self) -> CapabilitySpec {
+        CapabilitySpec::builder("tool.sample", CapabilityKind::tool())
             .description("Sample tool")
             .schema(json!({ "type": "object" }), json!({ "type": "object" }))
-            .streaming(true)
+            .invocation_mode(InvocationMode::Streaming)
             .profile("coding")
             .tag("sample")
-            .side_effect(SideEffectLevel::None)
+            .side_effect(SideEffect::None)
             .build()
-            .expect("sample descriptor should build")
+            .expect("sample capability spec should build")
     }
 
     fn execute(
@@ -89,7 +89,7 @@ struct TrackingPolicyHook {
 impl PolicyHook for TrackingPolicyHook {
     fn before_invoke(
         &self,
-        _capability: &CapabilityDescriptor,
+        _capability: &CapabilitySpec,
         _context: &PluginContext,
     ) -> PolicyDecision {
         self.calls

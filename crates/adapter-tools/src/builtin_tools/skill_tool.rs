@@ -127,6 +127,7 @@ impl Tool for SkillTool {
             output: render_skill_content(skill, parsed_input.args.as_deref(), ctx.session_id()),
             error: None,
             metadata: None,
+            child_ref: None,
             duration_ms: 0,
             truncated: false,
         })
@@ -141,6 +142,7 @@ fn skill_error(tool_call_id: String, error: String) -> ToolExecutionResult {
         output: String::new(),
         error: Some(error),
         metadata: None,
+        child_ref: None,
         duration_ms: 0,
         truncated: false,
     }

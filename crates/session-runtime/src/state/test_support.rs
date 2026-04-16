@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentEventContext, AgentLifecycleStatus, AgentStateProjector, ChildAgentRef,
-    ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
-    EventLogWriter, InvocationKind, Phase, StorageEvent, StorageEventPayload, StoreResult,
-    StoredEvent, SubRunStorageMode,
+    ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNotification,
+    ChildSessionNotificationKind, EventLogWriter, InvocationKind, ParentExecutionRef, Phase,
+    StorageEvent, StorageEventPayload, StoreResult, StoredEvent, SubRunStorageMode,
 };
 
 use super::{SessionState, SessionWriter};
@@ -35,14 +35,14 @@ pub(crate) fn root_agent() -> AgentEventContext {
 
 pub(crate) fn independent_session_sub_run_agent() -> AgentEventContext {
     AgentEventContext {
-        agent_id: Some("agent-child".to_string()),
-        parent_turn_id: Some("turn-root".to_string()),
+        agent_id: Some("agent-child".to_string().into()),
+        parent_turn_id: Some("turn-root".to_string().into()),
         parent_sub_run_id: None,
         agent_profile: Some("explore".to_string()),
-        sub_run_id: Some("subrun-1".to_string()),
+        sub_run_id: Some("subrun-1".to_string().into()),
         invocation_kind: Some(InvocationKind::SubRun),
         storage_mode: Some(SubRunStorageMode::IndependentSession),
-        child_session_id: Some("session-child".to_string()),
+        child_session_id: Some("session-child".to_string().into()),
     }
 }
 
@@ -71,19 +71,22 @@ pub(crate) fn child_notification_event(
         independent_session_sub_run_agent(),
         StorageEventPayload::ChildSessionNotification {
             notification: ChildSessionNotification {
-                notification_id: format!("child:{kind:?}"),
+                notification_id: format!("child:{kind:?}").into(),
                 child_ref: ChildAgentRef {
-                    agent_id: "agent-child".into(),
-                    session_id: "session-parent".into(),
-                    sub_run_id: "subrun-1".into(),
-                    parent_agent_id: Some("agent-parent".into()),
-                    parent_sub_run_id: Some("subrun-parent".into()),
+                    identity: ChildExecutionIdentity {
+                        agent_id: "agent-child".into(),
+                        session_id: "session-parent".into(),
+                        sub_run_id: "subrun-1".into(),
+                    },
+                    parent: ParentExecutionRef {
+                        parent_agent_id: Some("agent-parent".into()),
+                        parent_sub_run_id: Some("subrun-parent".into()),
+                    },
                     lineage_kind: ChildSessionLineageKind::Spawn,
                     status,
                     open_session_id: "session-child".into(),
                 },
                 kind,
-                status,
                 source_tool_call_id: Some("call-1".into()),
                 delivery: Some(astrcode_core::ParentDelivery {
                     idempotency_key: format!("child:{kind:?}"),

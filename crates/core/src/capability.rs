@@ -1,6 +1,6 @@
 //! 运行时能力语义模型。
 //!
-//! `CapabilitySpec` 是 runtime 内部唯一能力模型；协议层 `CapabilityDescriptor`
+//! `CapabilitySpec` 是 runtime 内部唯一能力模型；协议层 `CapabilityWireDescriptor`
 //! 只应作为边界 DTO 使用。
 
 use std::fmt;
@@ -28,6 +28,42 @@ pub enum CapabilityKind {
 }
 
 impl CapabilityKind {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::from(value.into())
+    }
+
+    pub fn tool() -> Self {
+        Self::Tool
+    }
+
+    pub fn agent() -> Self {
+        Self::Agent
+    }
+
+    pub fn context_provider() -> Self {
+        Self::ContextProvider
+    }
+
+    pub fn memory_provider() -> Self {
+        Self::MemoryProvider
+    }
+
+    pub fn policy_hook() -> Self {
+        Self::PolicyHook
+    }
+
+    pub fn renderer() -> Self {
+        Self::Renderer
+    }
+
+    pub fn resource() -> Self {
+        Self::Resource
+    }
+
+    pub fn prompt() -> Self {
+        Self::Prompt
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Self::Tool => "tool",
@@ -96,6 +132,7 @@ impl<'de> Deserialize<'de> for CapabilityKind {
 /// 调用模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+// TODO: 未来可以扩展为支持更多调用模式，如批量调用、双向流等
 pub enum InvocationMode {
     #[default]
     Unary,
@@ -298,6 +335,11 @@ impl CapabilitySpecBuilder {
         self
     }
 
+    pub fn profile(mut self, profile: impl Into<String>) -> Self {
+        self.profiles.push(profile.into());
+        self
+    }
+
     pub fn tags<I, S>(mut self, tags: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -307,8 +349,33 @@ impl CapabilitySpecBuilder {
         self
     }
 
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tags.push(tag.into());
+        self
+    }
+
     pub fn permissions(mut self, permissions: Vec<PermissionSpec>) -> Self {
         self.permissions.extend(permissions);
+        self
+    }
+
+    pub fn permission(mut self, name: impl Into<String>) -> Self {
+        self.permissions.push(PermissionSpec {
+            name: name.into(),
+            rationale: None,
+        });
+        self
+    }
+
+    pub fn permission_with_rationale(
+        mut self,
+        name: impl Into<String>,
+        rationale: impl Into<String>,
+    ) -> Self {
+        self.permissions.push(PermissionSpec {
+            name: name.into(),
+            rationale: Some(rationale.into()),
+        });
         self
     }
 

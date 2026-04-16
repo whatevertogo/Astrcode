@@ -10,3 +10,5 @@
 
 5. 终端的输入输出功能
 6. fork agent
+7. pending messages
+8. 更好的compact功能

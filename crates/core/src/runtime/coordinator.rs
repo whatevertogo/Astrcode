@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     AstrError, CapabilitySpec, ManagedRuntimeComponent, PluginRegistry, Result, RuntimeHandle,
-    plugin::PluginEntry,
+    plugin::PluginEntry, support,
 };
 
 /// 运行时协调器。
@@ -68,10 +68,11 @@ impl RuntimeCoordinator {
         self,
         managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     ) -> Self {
-        *self
-            .managed_components
-            .write()
-            .expect("runtime coordinator managed components lock poisoned") = managed_components;
+        support::with_write_lock_recovery(
+            &self.managed_components,
+            "runtime coordinator managed components",
+            |components| *components = managed_components,
+        );
         self
     }
 
@@ -87,19 +88,19 @@ impl RuntimeCoordinator {
 
     /// 获取当前可用能力描述符列表的副本。
     pub fn capabilities(&self) -> Vec<CapabilitySpec> {
-        self.capabilities
-            .read()
-            .expect("runtime coordinator capabilities lock poisoned")
-            .iter()
-            .cloned()
-            .collect()
+        support::with_read_lock_recovery(
+            &self.capabilities,
+            "runtime coordinator capabilities",
+            |capabilities| capabilities.iter().cloned().collect(),
+        )
     }
 
     pub fn managed_components(&self) -> Vec<Arc<dyn ManagedRuntimeComponent>> {
-        self.managed_components
-            .read()
-            .expect("runtime coordinator managed components lock poisoned")
-            .clone()
+        support::with_read_lock_recovery(
+            &self.managed_components,
+            "runtime coordinator managed components",
+            Clone::clone,
+        )
     }
 
     /// 原子替换运行时表面。
@@ -114,15 +115,16 @@ impl RuntimeCoordinator {
         managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     ) -> Vec<Arc<dyn ManagedRuntimeComponent>> {
         self.plugin_registry.replace_snapshot(plugin_entries);
-        *self
-            .capabilities
-            .write()
-            .expect("runtime coordinator capabilities lock poisoned") = Arc::from(capabilities);
-        let mut guard = self
-            .managed_components
-            .write()
-            .expect("runtime coordinator managed components lock poisoned");
-        std::mem::replace(&mut *guard, managed_components)
+        support::with_write_lock_recovery(
+            &self.capabilities,
+            "runtime coordinator capabilities",
+            |current_capabilities| *current_capabilities = Arc::from(capabilities),
+        );
+        support::with_write_lock_recovery(
+            &self.managed_components,
+            "runtime coordinator managed components",
+            |current_components| std::mem::replace(current_components, managed_components),
+        )
     }
 
     /// 关闭运行时和所有托管组件。
@@ -148,11 +150,11 @@ impl RuntimeCoordinator {
 
         // Keep the shutdown order deterministic so tests and operational logs can explain
         // exactly which managed component was closed after the runtime stopped accepting work.
-        let managed_components = self
-            .managed_components
-            .read()
-            .expect("runtime coordinator managed components lock poisoned")
-            .clone();
+        let managed_components = support::with_read_lock_recovery(
+            &self.managed_components,
+            "runtime coordinator managed components",
+            Clone::clone,
+        );
 
         for component in managed_components {
             if let Err(error) = component.shutdown_component().await {

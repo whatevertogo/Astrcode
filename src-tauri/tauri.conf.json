@@ -30,15 +30,6 @@
         "height": 700,
         "minWidth": 600,
         "minHeight": 400
-      },
-      {
-        "create": false,
-        "label": "debug-workbench",
-        "title": "AstrCode Debug Workbench",
-        "width": 1440,
-        "height": 960,
-        "minWidth": 1100,
-        "minHeight": 720
       }
     ],
     "security": {

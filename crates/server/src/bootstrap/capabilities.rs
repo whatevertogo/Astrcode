@@ -253,6 +253,7 @@ mod tests {
                 tool_name: self.name.to_string(),
                 ok: true,
                 output: String::new(),
+                child_ref: None,
                 error: None,
                 metadata: None,
                 duration_ms: 0,

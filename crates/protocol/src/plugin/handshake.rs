@@ -14,13 +14,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    CapabilityDescriptor, HandlerDescriptor, PeerDescriptor, ProfileDescriptor, SkillDescriptor,
+    CapabilityWireDescriptor, HandlerDescriptor, PeerDescriptor, ProfileDescriptor, SkillDescriptor,
 };
 
 /// 插件协议版本号。
 ///
-/// 当前版本为 "4"，与 ADR 0001 中定义的 wire model 版本一致。
-pub const PROTOCOL_VERSION: &str = "4";
+/// 当前版本为 "5"，与 capability wire shape 的 `invocationMode` 收口一致。
+pub const PROTOCOL_VERSION: &str = "5";
 
 /// 握手初始化消息，由 host 发送给插件。
 ///
@@ -41,7 +41,7 @@ pub struct InitializeMessage {
     pub peer: PeerDescriptor,
     /// host 暴露的能力列表
     #[serde(default)]
-    pub capabilities: Vec<CapabilityDescriptor>,
+    pub capabilities: Vec<CapabilityWireDescriptor>,
     /// host 注册的事件处理器列表
     #[serde(default)]
     pub handlers: Vec<HandlerDescriptor>,
@@ -72,7 +72,7 @@ pub struct InitializeResultData {
     pub peer: PeerDescriptor,
     /// 插件注册的能力列表
     #[serde(default)]
-    pub capabilities: Vec<CapabilityDescriptor>,
+    pub capabilities: Vec<CapabilityWireDescriptor>,
     /// 插件注册的事件处理器列表
     #[serde(default)]
     pub handlers: Vec<HandlerDescriptor>,

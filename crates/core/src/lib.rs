@@ -23,6 +23,7 @@ pub mod config;
 pub mod env;
 mod error;
 pub mod event;
+mod execution_result;
 pub mod home;
 pub mod hook;
 pub mod ids;
@@ -56,16 +57,17 @@ pub use action::{
 pub use agent::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
     AgentCollaborationPolicyContext, AgentEventContext, AgentInboxEnvelope, AgentMode,
-    AgentProfile, AgentProfileCatalog, ArtifactRef, ChildAgentRef, ChildSessionLineageKind,
-    ChildSessionNode, ChildSessionNotification, ChildSessionNotificationKind,
-    ChildSessionStatusSource, CloseAgentParams, CloseRequestParentDeliveryPayload,
-    CollaborationResult, CollaborationResultKind, CompletedParentDeliveryPayload,
-    DelegationMetadata, FailedParentDeliveryPayload, ForkMode, InboxEnvelopeKind, InvocationKind,
-    LineageSnapshot, ParentDelivery, ParentDeliveryKind, ParentDeliveryOrigin,
-    ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload,
+    AgentProfile, AgentProfileCatalog, ArtifactRef, ChildAgentRef, ChildExecutionIdentity,
+    ChildSessionLineageKind, ChildSessionNode, ChildSessionNotification,
+    ChildSessionNotificationKind, ChildSessionStatusSource, CloseAgentParams,
+    CloseRequestParentDeliveryPayload, CollaborationResult, CompletedParentDeliveryPayload,
+    CompletedSubRunOutcome, DelegationMetadata, FailedParentDeliveryPayload, FailedSubRunOutcome,
+    ForkMode, InboxEnvelopeKind, InvocationKind, LineageSnapshot, ParentDelivery,
+    ParentDeliveryKind, ParentDeliveryOrigin, ParentDeliveryPayload,
+    ParentDeliveryTerminalSemantics, ParentExecutionRef, ProgressParentDeliveryPayload,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SendAgentParams,
     SendToChildParams, SendToParentParams, SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure,
-    SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStorageMode,
+    SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStatus, SubRunStorageMode,
     SubagentContextOverrides,
     executor::{CollaborationExecutor, SubAgentExecutor},
     lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
@@ -78,8 +80,8 @@ pub use agent::{
 };
 pub use cancel::CancelToken;
 pub use capability::{
-    CapabilityKind, CapabilitySpec, CapabilitySpecBuildError, InvocationMode, PermissionSpec,
-    SideEffect, Stability,
+    CapabilityKind, CapabilitySpec, CapabilitySpecBuildError, CapabilitySpecBuilder,
+    InvocationMode, PermissionSpec, SideEffect, Stability,
 };
 pub use compact_summary::{
     COMPACT_SUMMARY_CONTINUATION, COMPACT_SUMMARY_PREFIX, CompactSummaryEnvelope,
@@ -87,8 +89,8 @@ pub use compact_summary::{
 };
 pub use config::{
     ActiveSelection, AgentConfig, Config, ConfigOverlay, CurrentModelSelection, ModelConfig,
-    ModelOption, Profile, ResolvedAgentConfig, ResolvedRuntimeConfig, RuntimeConfig,
-    max_tool_concurrency, resolve_agent_config, resolve_runtime_config,
+    ModelOption, ModelSelection, Profile, ResolvedAgentConfig, ResolvedRuntimeConfig,
+    RuntimeConfig, max_tool_concurrency, resolve_agent_config, resolve_runtime_config,
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
@@ -96,13 +98,14 @@ pub use event::{
     StorageEventPayload, StoredEvent, generate_session_id, normalize_recovered_phase,
     phase_of_storage_event, replay_records,
 };
+pub use execution_result::ExecutionResultCommon;
 pub use hook::{
-    CompactionHookContext, CompactionHookResultContext, HookCompactionReason, HookEvent,
-    HookHandler, HookInput, HookOutcome, ToolHookContext, ToolHookResultContext,
+    CompactionHookContext, CompactionHookResultContext, HookEvent, HookHandler, HookInput,
+    HookOutcome, ToolHookContext, ToolHookResultContext,
 };
-pub use ids::{AgentId, CapabilityName, SessionId, TurnId};
+pub use ids::{AgentId, CapabilityName, SessionId, SubRunId, TurnId};
 pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
-pub use observability::{RuntimeMetricsRecorder, SubRunExecutionOutcome};
+pub use observability::RuntimeMetricsRecorder;
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
@@ -113,8 +116,9 @@ pub use ports::{
     EventStore, LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
     LlmUsage, ModelLimits, PromptAgentProfileSummary, PromptBuildCacheMetrics, PromptBuildOutput,
     PromptBuildRequest, PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider,
-    PromptSkillSummary, ResourceProvider, ResourceReadResult, ResourceRequestContext,
+    PromptDeclarationSource, PromptEntrySummary, PromptFacts, PromptFactsProvider,
+    PromptFactsRequest, PromptProvider, PromptSkillSummary, ResourceProvider, ResourceReadResult,
+    ResourceRequestContext,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};

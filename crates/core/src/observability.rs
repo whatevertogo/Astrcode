@@ -1,4 +1,4 @@
-use crate::{AgentCollaborationFact, SubRunStorageMode};
+use crate::{AgentCollaborationFact, AgentTurnOutcome, SubRunStorageMode};
 
 /// 统一的运行时观测记录接口。
 ///
@@ -19,7 +19,7 @@ pub trait RuntimeMetricsRecorder: Send + Sync {
     fn record_subrun_execution(
         &self,
         duration_ms: u64,
-        outcome: SubRunExecutionOutcome,
+        outcome: AgentTurnOutcome,
         step_count: Option<u32>,
         estimated_tokens: Option<u64>,
         storage_mode: Option<SubRunStorageMode>,
@@ -37,12 +37,4 @@ pub trait RuntimeMetricsRecorder: Send + Sync {
     fn record_cache_reuse_hit(&self);
     fn record_cache_reuse_miss(&self);
     fn record_agent_collaboration_fact(&self, fact: &AgentCollaborationFact);
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubRunExecutionOutcome {
-    Completed,
-    Failed,
-    Aborted,
-    TokenExceeded,
 }

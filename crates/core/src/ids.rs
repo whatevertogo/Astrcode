@@ -80,4 +80,6 @@ macro_rules! typed_id {
 typed_id!(SessionId);
 typed_id!(TurnId);
 typed_id!(AgentId);
+typed_id!(SubRunId);
+typed_id!(DeliveryId);
 typed_id!(CapabilityName);

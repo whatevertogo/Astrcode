@@ -79,6 +79,9 @@
 - **配置模型**：稳定的配置结构和解析逻辑
 - **事件模型**：`AgentEvent`、`StorageEvent` 等领域事件
 
+与之对应，`CapabilityWireDescriptor` 只存在于 `protocol/plugin` 边界，
+用于插件握手和 wire 传输；它不是运行时内部的第二能力模型。
+
 **设计亮点**：
 - 完全不依赖其他 crate，保证领域模型的纯粹性
 - 使用 `async-trait` 定义异步接口，支持依赖倒置
@@ -158,6 +161,12 @@ pub struct CapabilitySpec {
 - JSON Schema 验证
 - 权限和副作用声明
 - 稳定性标记
+
+对应的 `CapabilityWireDescriptor` 只是协议载荷名称：
+
+- 它在当前实现里复用 `CapabilitySpec` 的结构与校验
+- 但职责上仍然只是 transport DTO
+- 运行时内部的 prompt、router、policy、plugin supervisor 决策都应围绕 `CapabilitySpec`
 
 ### 2. 事件驱动架构
 

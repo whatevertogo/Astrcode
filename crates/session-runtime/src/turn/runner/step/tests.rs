@@ -218,6 +218,7 @@ impl Tool for StreamingSafeProbeTool {
             output: "streamed safe result".to_string(),
             error: None,
             metadata: None,
+            child_ref: None,
             duration_ms: 0,
             truncated: false,
         })
@@ -261,6 +262,7 @@ impl Tool for StreamingUnsafeProbeTool {
             output: "unsafe result".to_string(),
             error: None,
             metadata: None,
+            child_ref: None,
             duration_ms: 0,
             truncated: false,
         })
@@ -275,6 +277,7 @@ fn tool_result(tool_call_id: &str, tool_name: &str, output: &str) -> ToolExecuti
         output: output.to_string(),
         error: None,
         metadata: None,
+        child_ref: None,
         duration_ms: 0,
         truncated: false,
     }

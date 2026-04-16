@@ -19,7 +19,6 @@ mod auth;
 mod composer;
 mod config;
 pub mod conversation;
-mod debug;
 mod event;
 mod model;
 mod runtime;
@@ -30,7 +29,7 @@ mod tool;
 
 pub use agent::{
     AgentExecuteRequestDto, AgentExecuteResponseDto, AgentLifecycleDto, AgentProfileDto,
-    AgentTurnOutcomeDto, ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationDto,
+    AgentTurnOutcomeDto, ChildAgentRefDto, ChildSessionLineageKindDto,
     ChildSessionNotificationKindDto, LineageSnapshotDto, SubRunStatusDto, SubRunStatusSourceDto,
     SubagentContextOverridesDto,
 };
@@ -54,20 +53,13 @@ pub use conversation::v1::{
     ConversationSystemNoteKindDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
     ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
 };
-pub use debug::{
-    DebugAgentNodeKindDto, RuntimeDebugOverviewDto, RuntimeDebugTimelineDto,
-    RuntimeDebugTimelineSampleDto, SessionDebugAgentNodeDto, SessionDebugAgentsDto,
-    SessionDebugTraceDto, SessionDebugTraceItemDto, SessionDebugTraceItemKindDto,
-};
 pub use event::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto,
-    CloseRequestParentDeliveryPayloadDto, CompactTriggerDto, CompletedParentDeliveryPayloadDto,
-    ExecutionControlDto, FailedParentDeliveryPayloadDto, ForkModeDto, InvocationKindDto,
-    MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto, PROTOCOL_VERSION, ParentDeliveryDto,
-    ParentDeliveryOriginDto, ParentDeliveryPayloadDto, ParentDeliveryTerminalSemanticsDto,
-    PhaseDto, ProgressParentDeliveryPayloadDto, ResolvedExecutionLimitsDto,
-    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-    SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto, ToolCallResultDto,
+    ArtifactRefDto, CloseRequestParentDeliveryPayloadDto, CompletedParentDeliveryPayloadDto,
+    ExecutionControlDto, FailedParentDeliveryPayloadDto, ForkModeDto, PROTOCOL_VERSION,
+    ParentDeliveryDto, ParentDeliveryOriginDto, ParentDeliveryPayloadDto,
+    ParentDeliveryTerminalSemanticsDto, PhaseDto, ProgressParentDeliveryPayloadDto,
+    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto,
+    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
     ToolOutputStreamDto,
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};

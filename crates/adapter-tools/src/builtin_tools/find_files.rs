@@ -199,6 +199,7 @@ impl Tool for FindFilesTool {
                 "truncated": truncated,
                 "respectGitignore": args.respect_gitignore,
             })),
+            child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })

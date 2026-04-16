@@ -31,7 +31,7 @@
 
 - **WHEN** 检查 `core`、`kernel`、`session-runtime`、`application`、`adapter-*`
 - **THEN** 内部能力语义类型为 `core::CapabilitySpec`
-- **AND** 不再以 `protocol::CapabilityDescriptor` 作为内部主模型
+- **AND** 不再以 `protocol::CapabilityWireDescriptor` 作为内部主模型
 
 ---
 
@@ -66,23 +66,23 @@
 
 - **WHEN** prompt、turn loop 或 plugin 需要判断 profile、compaction、streaming 语义
 - **THEN** 从 `CapabilitySpec` 读取
-- **AND** 不再从 `CapabilityDescriptor` 读取执行语义
+- **AND** 不再从 `CapabilityWireDescriptor` 读取执行语义
 
 ---
 
-### Requirement: `CapabilityDescriptor` 降级为边界 DTO
+### Requirement: `CapabilityWireDescriptor` 降级为边界 DTO
 
-`astrcode-protocol::CapabilityDescriptor` SHALL 仅承担 wire DTO 职责，不承担运行时内部语义职责。
+`astrcode-protocol::CapabilityWireDescriptor` SHALL 仅承担 wire DTO 职责，不承担运行时内部语义职责。
 
 #### Scenario: 协议边界统一映射
 
 - **WHEN** server 响应、插件握手或其他协议边界输出能力描述
-- **THEN** 通过显式 mapper 将 `CapabilitySpec` 映射为 `CapabilityDescriptor`
+- **THEN** 通过显式 mapper 将 `CapabilitySpec` 映射为 `CapabilityWireDescriptor`
 
 #### Scenario: 非边界层不依赖 DTO 语义
 
 - **WHEN** 检查 `core`、`kernel`、`session-runtime`、`application`
-- **THEN** 不存在围绕 `CapabilityDescriptor` 的业务判断逻辑
+- **THEN** 不存在围绕 `CapabilityWireDescriptor` 的业务判断逻辑
 
 ---
 

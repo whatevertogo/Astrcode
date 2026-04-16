@@ -8,7 +8,7 @@ pub(crate) fn rebuild_child_nodes(events: &[StoredEvent]) -> HashMap<String, Chi
     let mut nodes = HashMap::new();
     for stored in events {
         if let Some(node) = child_node_from_stored_event(stored) {
-            nodes.insert(node.sub_run_id.clone(), node);
+            nodes.insert(node.sub_run_id().to_string(), node);
         }
     }
     nodes
@@ -17,21 +17,12 @@ pub(crate) fn rebuild_child_nodes(events: &[StoredEvent]) -> HashMap<String, Chi
 pub(crate) fn child_node_from_stored_event(stored: &StoredEvent) -> Option<ChildSessionNode> {
     match &stored.event.payload {
         StorageEventPayload::ChildSessionNotification { notification, .. } => {
-            Some(ChildSessionNode {
-                agent_id: notification.child_ref.agent_id.clone(),
-                session_id: notification.child_ref.session_id.clone(),
-                child_session_id: notification.child_ref.open_session_id.clone(),
-                sub_run_id: notification.child_ref.sub_run_id.clone(),
-                parent_session_id: notification.child_ref.session_id.clone(),
-                parent_agent_id: notification.child_ref.parent_agent_id.clone(),
-                parent_sub_run_id: notification.child_ref.parent_sub_run_id.clone(),
-                parent_turn_id: stored.event.turn_id.clone().unwrap_or_default(),
-                lineage_kind: notification.child_ref.lineage_kind,
-                status: notification.status,
-                status_source: astrcode_core::ChildSessionStatusSource::Durable,
-                created_by_tool_call_id: notification.source_tool_call_id.clone(),
-                lineage_snapshot: None,
-            })
+            Some(notification.child_ref.to_child_session_node(
+                stored.event.turn_id.clone().unwrap_or_default().into(),
+                astrcode_core::ChildSessionStatusSource::Durable,
+                notification.source_tool_call_id.clone(),
+                None,
+            ))
         },
         _ => None,
     }
@@ -41,7 +32,7 @@ impl SessionState {
     /// 写入或覆盖一个 child-session durable 节点（按 sub_run_id 去重）。
     pub fn upsert_child_session_node(&self, node: ChildSessionNode) -> Result<()> {
         support::lock_anyhow(&self.child_nodes, "session child nodes")?
-            .insert(node.sub_run_id.clone(), node);
+            .insert(node.sub_run_id().to_string(), node);
         Ok(())
     }
 
@@ -58,7 +49,7 @@ impl SessionState {
     pub fn list_child_session_nodes(&self) -> Result<Vec<ChildSessionNode>> {
         let nodes = support::lock_anyhow(&self.child_nodes, "session child nodes")?;
         let mut result: Vec<_> = nodes.values().cloned().collect();
-        result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
+        result.sort_by(|a, b| a.sub_run_id().cmp(b.sub_run_id()));
         Ok(result)
     }
 
@@ -67,10 +58,13 @@ impl SessionState {
         let nodes = support::lock_anyhow(&self.child_nodes, "session child nodes")?;
         let mut result: Vec<_> = nodes
             .values()
-            .filter(|node| node.parent_agent_id.as_deref() == Some(parent_agent_id))
+            .filter(|node| {
+                node.parent_agent_id()
+                    .is_some_and(|id| id.as_str() == parent_agent_id)
+            })
             .cloned()
             .collect();
-        result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
+        result.sort_by(|a, b| a.sub_run_id().cmp(b.sub_run_id()));
         Ok(result)
     }
 
@@ -82,13 +76,16 @@ impl SessionState {
         queue.push_back(root_agent_id.to_string());
         while let Some(agent_id) = queue.pop_front() {
             for node in nodes.values() {
-                if node.parent_agent_id.as_deref() == Some(&agent_id) {
-                    queue.push_back(node.agent_id.clone());
+                if node
+                    .parent_agent_id()
+                    .is_some_and(|id| id.as_str() == agent_id)
+                {
+                    queue.push_back(node.agent_id().to_string());
                     result.push(node.clone());
                 }
             }
         }
-        result.sort_by(|a, b| a.sub_run_id.cmp(&b.sub_run_id));
+        result.sort_by(|a, b| a.sub_run_id().cmp(b.sub_run_id()));
         Ok(result)
     }
 }
@@ -137,8 +134,8 @@ mod tests {
             .expect("child node lookup should succeed")
             .expect("child node should exist");
 
-        assert_eq!(node.child_session_id, "session-child");
-        assert_eq!(node.parent_session_id, "session-parent");
+        assert_eq!(node.child_session_id, "session-child".into());
+        assert_eq!(node.parent_session_id, "session-parent".into());
         assert_eq!(node.status, AgentLifecycleStatus::Idle);
         assert_eq!(node.created_by_tool_call_id.as_deref(), Some("call-1"));
     }

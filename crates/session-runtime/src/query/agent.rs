@@ -106,12 +106,12 @@ fn pending_task_summary(
 }
 
 fn first_delivery_summary<'a>(
-    delivery_ids: impl IntoIterator<Item = &'a String>,
+    delivery_ids: impl IntoIterator<Item = &'a astrcode_core::DeliveryId>,
     mailbox_messages: &HashMap<String, AgentMailboxEnvelope>,
 ) -> Option<String> {
     delivery_ids.into_iter().find_map(|delivery_id| {
         mailbox_messages
-            .get(delivery_id)
+            .get(delivery_id.as_str())
             .and_then(|envelope| summarize_task_text(&envelope.message))
     })
 }
@@ -134,7 +134,7 @@ fn collect_mailbox_messages(
         if let StorageEventPayload::AgentMailboxQueued { payload } = &stored.event.payload {
             if payload.envelope.to_agent_id == target_agent_id {
                 messages.insert(
-                    payload.envelope.delivery_id.clone(),
+                    payload.envelope.delivery_id.to_string(),
                     payload.envelope.clone(),
                 );
             }
@@ -215,7 +215,7 @@ mod tests {
                 payload: StorageEventPayload::AgentMailboxQueued {
                     payload: MailboxQueuedPayload {
                         envelope: AgentMailboxEnvelope {
-                            delivery_id: delivery_id.to_string(),
+                            delivery_id: delivery_id.to_string().into(),
                             from_agent_id: "parent".to_string(),
                             to_agent_id: target_agent_id.to_string(),
                             message: message.to_string(),

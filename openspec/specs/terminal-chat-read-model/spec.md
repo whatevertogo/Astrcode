@@ -98,13 +98,13 @@
 
 - **WHEN** 终端客户端进入某个 session
 - **THEN** 它 SHALL 使用 conversation snapshot 作为 authoritative hydration 来源
-- **AND** MUST NOT 依赖 legacy `/view` 或 `/history` 来重建 terminal 初始状态
+- **AND** MUST NOT 依赖已删除的 `/view` 或 `/history` 来重建 terminal 初始状态
 
 #### Scenario: 终端前端使用 conversation stream 消费增量
 
 - **WHEN** 终端客户端需要消费 live delta
 - **THEN** 它 SHALL 订阅 conversation surface 暴露的专属 stream
-- **AND** MUST NOT 把 legacy `/events` 解释为 terminal block 语义
+- **AND** MUST NOT 把已删除的 `/events` 解释为 terminal block 语义
 
 #### Scenario: 工具展示直接消费 authoritative tool block
 

@@ -11,7 +11,6 @@ import { useComposerActions, type ConfirmDialogState } from './hooks/app/useComp
 import { useSessionCoordinator } from './hooks/app/useSessionCoordinator';
 import { useSubRunNavigation } from './hooks/app/useSubRunNavigation';
 import { forgetProject } from './lib/knownProjects';
-import { isDebugWorkbenchEnabled } from './lib/debugWorkbench';
 import { logger } from './lib/logger';
 import { buildSessionViewLocationHref, readSessionViewLocation } from './lib/sessionView';
 import { cn } from './lib/utils';
@@ -125,7 +124,6 @@ export default function App() {
     state.projects.find((project) => project.id === state.activeProjectId) ?? null;
   const activeSession =
     activeProject?.sessions.find((session) => session.id === state.activeSessionId) ?? null;
-  const debugWorkbenchEnabled = isDebugWorkbenchEnabled();
   const activeSubRunThreadTree = activeSession?.subRunThreadTree ?? null;
 
   useEffect(() => {
@@ -331,22 +329,6 @@ export default function App() {
                 handleDeleteSession(sessionId);
               }}
               onOpenSettings={() => setShowSettings(true)}
-              showDebugWorkbenchEntry={debugWorkbenchEnabled && hostBridge.canOpenDebugWorkbench}
-              onOpenDebugWorkbench={() => {
-                void hostBridge.openDebugWorkbench(activeSession?.id ?? null).catch((error) => {
-                  const message = error instanceof Error ? error.message : String(error);
-                  logger.error('App', 'Failed to open Debug Workbench:', error);
-                  setConfirmDialog({
-                    title: '无法打开 Debug Workbench',
-                    message,
-                    confirmLabel: '知道了',
-                    cancelLabel: '关闭',
-                    onConfirm: () => {
-                      setConfirmDialog(null);
-                    },
-                  });
-                });
-              }}
               onNewSession={() => {
                 void handleNewSession();
               }}

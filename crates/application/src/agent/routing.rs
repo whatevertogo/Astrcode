@@ -6,10 +6,10 @@
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentInboxEnvelope,
     AgentLifecycleStatus, ChildAgentRef, ChildSessionNotification, ChildSessionNotificationKind,
-    CloseAgentParams, CollaborationResult, CollaborationResultKind, InboxEnvelopeKind,
-    MailboxDiscardedPayload, MailboxQueuedPayload, ParentDelivery, ParentDeliveryOrigin,
-    ParentDeliveryPayload, ParentDeliveryTerminalSemantics, SendAgentParams, SendToChildParams,
-    SendToParentParams, SubRunHandle,
+    CloseAgentParams, CollaborationResult, InboxEnvelopeKind, MailboxDiscardedPayload,
+    MailboxQueuedPayload, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
+    ParentDeliveryTerminalSemantics, SendAgentParams, SendToChildParams, SendToParentParams,
+    SubRunHandle,
 };
 
 use super::{
@@ -383,20 +383,14 @@ impl AgentOrchestrationService {
         .await;
 
         let child_ref = self.build_child_ref_from_handle(&child).await;
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Sent,
+        Ok(CollaborationResult::Sent {
             agent_ref: Some(self.project_child_ref_status(child_ref).await),
             delivery_id: Some(notification.notification_id.clone()),
             summary: Some(format!(
                 "已向 direct parent 发送 {} 消息。",
                 parent_delivery_label(&payload)
             )),
-            observe_result: None,
             delegation: child.delegation.clone(),
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
         })
     }
 
@@ -418,11 +412,11 @@ impl AgentOrchestrationService {
         };
 
         Ok(super::ToolCollaborationContext::new(
-            self.resolve_runtime_config_for_session(&child.session_id)
+            self.resolve_runtime_config_for_session(child.session_id.as_str())
                 .await?,
-            child.session_id.clone(),
-            parent_turn_id,
-            child.parent_agent_id.clone(),
+            child.session_id.to_string(),
+            parent_turn_id.to_string(),
+            child.parent_agent_id.clone().map(Into::into),
             ctx.tool_call_id().map(ToString::to_string),
         ))
     }
@@ -447,20 +441,10 @@ impl AgentOrchestrationService {
         );
 
         ChildSessionNotification {
-            notification_id: notification_id.clone(),
-            child_ref: ChildAgentRef {
-                agent_id: child.agent_id.clone(),
-                session_id: child.session_id.clone(),
-                sub_run_id: child.sub_run_id.clone(),
-                parent_agent_id: child.parent_agent_id.clone(),
-                parent_sub_run_id: child.parent_sub_run_id.clone(),
-                lineage_kind: child.lineage_kind,
-                status,
-                open_session_id: super::child_open_session_id(child),
-            },
+            notification_id: notification_id.clone().into(),
+            child_ref: child.child_ref_with_status(status),
             kind: parent_delivery_notification_kind(payload),
-            status,
-            source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
+            source_tool_call_id: ctx.tool_call_id().map(ToString::to_string).map(Into::into),
             delivery: Some(ParentDelivery {
                 idempotency_key: notification_id,
                 origin: ParentDeliveryOrigin::Explicit,
@@ -533,35 +517,16 @@ impl AgentOrchestrationService {
         )
         .await;
 
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Closed,
-            agent_ref: None,
-            delivery_id: None,
+        Ok(CollaborationResult::Closed {
             summary: Some(summary),
-            observe_result: None,
-            delegation: None,
-            cascade: Some(true),
-            closed_root_agent_id: Some(cancelled.agent_id.clone()),
-            failure: None,
+            cascade: true,
+            closed_root_agent_id: cancelled.agent_id.clone(),
         })
     }
 
     /// 从 SubRunHandle 构造 ChildAgentRef。
     pub(super) async fn build_child_ref_from_handle(&self, handle: &SubRunHandle) -> ChildAgentRef {
-        ChildAgentRef {
-            agent_id: handle.agent_id.clone(),
-            session_id: handle.session_id.clone(),
-            sub_run_id: handle.sub_run_id.clone(),
-            parent_agent_id: handle.parent_agent_id.clone(),
-            parent_sub_run_id: handle.parent_sub_run_id.clone(),
-            lineage_kind: handle.lineage_kind,
-            status: handle.lifecycle,
-            open_session_id: handle
-                .child_session_id
-                .clone()
-                .unwrap_or_else(|| handle.session_id.clone()),
-        }
+        handle.child_ref()
     }
 
     /// 用 live 控制面的最新 lifecycle 投影更新 ChildAgentRef。
@@ -569,8 +534,8 @@ impl AgentOrchestrationService {
         &self,
         mut child_ref: ChildAgentRef,
     ) -> ChildAgentRef {
-        let lifecycle = self.kernel.get_lifecycle(&child_ref.agent_id).await;
-        let last_turn_outcome = self.kernel.get_turn_outcome(&child_ref.agent_id).await;
+        let lifecycle = self.kernel.get_lifecycle(child_ref.agent_id()).await;
+        let last_turn_outcome = self.kernel.get_turn_outcome(child_ref.agent_id()).await;
         if let Some(lifecycle) = lifecycle {
             child_ref.status =
                 project_collaboration_lifecycle(lifecycle, last_turn_outcome, child_ref.status);
@@ -706,6 +671,8 @@ impl AgentOrchestrationService {
                         params.context.as_deref(),
                     )],
                     resolved_limits: Some(reused_handle.resolved_limits.clone()),
+                    resolved_overrides: None,
+                    injected_messages: Vec::new(),
                     source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
                 },
             )
@@ -743,20 +710,14 @@ impl AgentOrchestrationService {
                 .summary("idle child resumed"),
         )
         .await;
-        Ok(Some(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Sent,
+        Ok(Some(CollaborationResult::Sent {
             agent_ref: Some(self.project_child_ref_status(child_ref).await),
             delivery_id: None,
             summary: Some(format!(
                 "子 Agent {} 已恢复，并开始处理新的具体指令。",
                 params.agent_id
             )),
-            observe_result: None,
             delegation: reused_handle.delegation.clone(),
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
         }))
     }
 
@@ -769,9 +730,14 @@ impl AgentOrchestrationService {
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
         let delivery_id = format!("delivery-{}", uuid::Uuid::new_v4());
         let envelope = astrcode_core::AgentInboxEnvelope {
-            delivery_id: delivery_id.clone(),
-            from_agent_id: ctx.agent_context().agent_id.clone().unwrap_or_default(),
-            to_agent_id: params.agent_id.clone(),
+            delivery_id: delivery_id.clone().into(),
+            from_agent_id: ctx
+                .agent_context()
+                .agent_id
+                .clone()
+                .unwrap_or_default()
+                .to_string(),
+            to_agent_id: params.agent_id.to_string(),
             kind: InboxEnvelopeKind::ParentMessage,
             message: params.message.clone(),
             context: params.context.clone(),
@@ -812,20 +778,14 @@ impl AgentOrchestrationService {
         )
         .await;
 
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Sent,
+        Ok(CollaborationResult::Sent {
             agent_ref: Some(self.project_child_ref_status(child_ref).await),
-            delivery_id: Some(delivery_id),
+            delivery_id: Some(delivery_id.into()),
             summary: Some(format!(
                 "子 Agent {} 正在运行；消息已进入 mailbox 排队，待当前工作完成后处理。",
                 params.agent_id
             )),
-            observe_result: None,
             delegation: child.delegation.clone(),
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
         })
     }
 }
@@ -930,7 +890,8 @@ impl AgentOrchestrationService {
         let target_session_id = child
             .child_session_id
             .clone()
-            .unwrap_or_else(|| child.session_id.clone());
+            .unwrap_or_else(|| child.session_id.clone())
+            .to_string();
 
         let sender_agent_id = ctx.agent_context().agent_id.clone().unwrap_or_default();
         let sender_lifecycle_status = if sender_agent_id.is_empty() {
@@ -950,11 +911,11 @@ impl AgentOrchestrationService {
             .agent_context()
             .child_session_id
             .clone()
-            .unwrap_or_else(|| ctx.session_id().to_string());
+            .unwrap_or_else(|| ctx.session_id().to_string().into());
 
         let payload = MailboxQueuedPayload {
             envelope: astrcode_core::AgentMailboxEnvelope {
-                delivery_id: envelope.delivery_id.clone(),
+                delivery_id: envelope.delivery_id.clone().into(),
                 from_agent_id: envelope.from_agent_id.clone(),
                 to_agent_id: envelope.to_agent_id.clone(),
                 message: render_parent_message_input(
@@ -964,14 +925,14 @@ impl AgentOrchestrationService {
                 queued_at: chrono::Utc::now(),
                 sender_lifecycle_status,
                 sender_last_turn_outcome,
-                sender_open_session_id,
+                sender_open_session_id: sender_open_session_id.to_string(),
             },
         };
 
         self.session_runtime
             .append_agent_mailbox_queued(
                 &target_session_id,
-                ctx.turn_id().unwrap_or(&child.parent_turn_id),
+                ctx.turn_id().unwrap_or(child.parent_turn_id.as_str()),
                 subrun_event_context(child),
                 payload,
             )
@@ -1013,8 +974,8 @@ impl AgentOrchestrationService {
                 ctx.turn_id().unwrap_or(&handle.parent_turn_id),
                 astrcode_core::AgentEventContext::default(),
                 MailboxDiscardedPayload {
-                    target_agent_id: handle.agent_id.clone(),
-                    delivery_ids: pending_delivery_ids,
+                    target_agent_id: handle.agent_id.to_string(),
+                    delivery_ids: pending_delivery_ids.into_iter().map(Into::into).collect(),
                 },
             )
             .await?;
@@ -1100,8 +1061,7 @@ mod tests {
             .await
             .expect("spawn should succeed");
         let child_agent_id = launched
-            .handoff
-            .as_ref()
+            .handoff()
             .and_then(|handoff| {
                 handoff
                     .artifacts
@@ -1167,7 +1127,7 @@ mod tests {
             .service
             .send(
                 SendAgentParams::ToChild(SendToChildParams {
-                    agent_id: child_agent_id.clone(),
+                    agent_id: child_agent_id.clone().into(),
                     message: "继续".to_string(),
                     context: None,
                 }),
@@ -1181,7 +1141,7 @@ mod tests {
             .service
             .observe(
                 ObserveParams {
-                    agent_id: child_agent_id.clone(),
+                    agent_id: child_agent_id.clone().into(),
                 },
                 &other_ctx,
             )
@@ -1193,7 +1153,7 @@ mod tests {
             .service
             .close(
                 CloseAgentParams {
-                    agent_id: child_agent_id,
+                    agent_id: child_agent_id.into(),
                 },
                 &other_ctx,
             )
@@ -1241,7 +1201,7 @@ mod tests {
             .service
             .send(
                 SendAgentParams::ToChild(SendToChildParams {
-                    agent_id: child_agent_id,
+                    agent_id: child_agent_id.into(),
                     message: "请继续整理结论".to_string(),
                     context: None,
                 }),
@@ -1250,26 +1210,21 @@ mod tests {
             .await
             .expect("send should succeed");
 
-        assert_eq!(result.delivery_id, None);
+        assert_eq!(result.delivery_id(), None);
         assert!(
             result
-                .summary
-                .as_deref()
+                .summary()
                 .is_some_and(|summary| summary.contains("已恢复"))
         );
         assert_eq!(
             result
-                .delegation
-                .as_ref()
+                .delegation()
                 .map(|metadata| metadata.responsibility_summary.as_str()),
             Some("检查 crates"),
             "resumed child should keep the original responsibility branch metadata"
         );
         assert_eq!(
-            result
-                .agent_ref
-                .as_ref()
-                .map(|child_ref| child_ref.lineage_kind),
+            result.agent_ref().map(|child_ref| child_ref.lineage_kind),
             Some(astrcode_core::ChildSessionLineageKind::Resume),
             "resumed child projection should expose resume lineage instead of masquerading as \
              spawn"
@@ -1278,14 +1233,13 @@ mod tests {
             .kernel
             .get_handle(
                 result
-                    .agent_ref
-                    .as_ref()
-                    .map(|child_ref| child_ref.agent_id.as_str())
+                    .agent_ref()
+                    .map(|child_ref| child_ref.agent_id().as_str())
                     .expect("child ref should exist"),
             )
             .await
             .expect("resumed child handle should exist");
-        assert_eq!(resumed_child.parent_turn_id, "turn-parent-2");
+        assert_eq!(resumed_child.parent_turn_id, "turn-parent-2".into());
         assert_eq!(
             resumed_child.lineage_kind,
             astrcode_core::ChildSessionLineageKind::Resume
@@ -1327,7 +1281,7 @@ mod tests {
             .service
             .send(
                 SendAgentParams::ToChild(SendToChildParams {
-                    agent_id: child_agent_id,
+                    agent_id: child_agent_id.into(),
                     message: "继续第二轮".to_string(),
                     context: Some("只看 CI".to_string()),
                 }),
@@ -1336,11 +1290,10 @@ mod tests {
             .await
             .expect("send should succeed");
 
-        assert!(result.delivery_id.is_some());
+        assert!(result.delivery_id().is_some());
         assert!(
             result
-                .summary
-                .as_deref()
+                .summary()
                 .is_some_and(|summary| summary.contains("mailbox 排队"))
         );
     }
@@ -1432,7 +1385,7 @@ mod tests {
             .service
             .send(
                 SendAgentParams::ToChild(SendToChildParams {
-                    agent_id: child_agent_id.clone(),
+                    agent_id: child_agent_id.clone().into(),
                     message: "继续整理并向我汇报".to_string(),
                     context: None,
                 }),
@@ -1474,7 +1427,7 @@ mod tests {
             .await
             .expect("resumed child should be able to send upward");
 
-        assert!(result.delivery_id.is_some());
+        assert!(result.delivery_id().is_some());
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if harness
@@ -1502,7 +1455,7 @@ mod tests {
             &stored.event.payload,
             StorageEventPayload::ChildSessionNotification { notification, .. }
                 if stored.event.turn_id.as_deref() == Some("turn-parent-2")
-                    && notification.child_ref.sub_run_id == resumed_child.sub_run_id
+                    && notification.child_ref.sub_run_id() == &resumed_child.sub_run_id
                     && notification.child_ref.lineage_kind
                         == astrcode_core::ChildSessionLineageKind::Resume
                     && notification.delivery.as_ref().is_some_and(|delivery| {
@@ -1693,18 +1646,17 @@ mod tests {
             .service
             .close(
                 CloseAgentParams {
-                    agent_id: child_agent_id,
+                    agent_id: child_agent_id.into(),
                 },
                 &parent_ctx,
             )
             .await
             .expect("close should succeed");
 
-        assert_eq!(result.cascade, Some(true));
+        assert_eq!(result.cascade(), Some(true));
         assert!(
             result
-                .summary
-                .as_deref()
+                .summary()
                 .is_some_and(|summary| summary.contains("1 个后代"))
         );
     }

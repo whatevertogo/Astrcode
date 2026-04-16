@@ -85,7 +85,7 @@ pub struct SubRunExecutionMetricsDto {
     pub total: u64,
     pub failures: u64,
     pub completed: u64,
-    pub aborted: u64,
+    pub cancelled: u64,
     pub token_exceeded: u64,
     pub independent_session_total: u64,
     pub total_duration_ms: u64,

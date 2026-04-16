@@ -155,7 +155,7 @@ conversation v1 不再叠加第二套 surface 内部版本号：
 
 - terminal DTO 内不再额外放 `PROTOCOL_VERSION`
 - cursor 保持 opaque
-- 旧事件流里的 `PROTOCOL_VERSION=1` 继续只服务 legacy event surface
+- 旧事件流里的 `PROTOCOL_VERSION=1` 继续只服务已删除前的 event surface 兼容说明
 
 协议冻结策略优先采用仓库现有模式：
 
@@ -406,8 +406,8 @@ v1 的终端运行策略明确收口为：
 - [Risk] conversation v1 从一开始就版本化，短期会让新旧 `/api/*` 风格并存  
   Mitigation：只对新 conversation surface 启用显式版本；不在本次顺手改写全仓库旧路由。
 
-- [Risk] 旧 `/events` 与新 terminal `/stream` 并存，容易让实现者误复用 legacy 语义  
-  Mitigation：在 design/spec 中明确 terminal snapshot/stream 是 authoritative surface，legacy `/view`/`history`/`events` 仅保留旧职责。
+- [Risk] 旧 `/events` 与新 terminal `/stream` 并存，容易让实现者误复用已删除接口的语义  
+  Mitigation：在 design/spec 中明确 terminal snapshot/stream 是 authoritative surface，已删除的 `/view`/`history`/`events` 只作为历史背景说明。
 
 - [Risk] slash command UX 可能诱导在 CLI 本地偷偷堆业务逻辑  
   Mitigation：明确 slash palette 只是输入壳，所有语义都映射到既有 server 合同或新的 terminal read model。

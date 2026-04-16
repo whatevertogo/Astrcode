@@ -19,11 +19,11 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use astrcode_core::{AstrError, CancelToken, CapabilitySpec, Result};
-use astrcode_protocol::plugin::{CapabilityDescriptor, InvocationContext};
+use astrcode_protocol::plugin::{CapabilityWireDescriptor, InvocationContext};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::{EventEmitter, capability_mapping::spec_to_descriptor};
+use crate::{EventEmitter, capability_mapping::spec_to_wire_descriptor};
 
 /// 能力处理器 trait。
 ///
@@ -150,14 +150,14 @@ impl CapabilityRouter {
     /// 获取所有已注册能力的描述符列表。
     ///
     /// 返回顺序由内部 `BTreeMap` 的键顺序决定（按能力名称字典序）。
-    pub fn capabilities(&self) -> Result<Vec<CapabilityDescriptor>> {
+    pub fn capabilities(&self) -> Result<Vec<CapabilityWireDescriptor>> {
         self.handlers
             .values()
             .map(|handler| {
                 let spec = handler.capability_spec();
-                spec_to_descriptor(&spec).map_err(|error| {
+                spec_to_wire_descriptor(&spec).map_err(|error| {
                     AstrError::Validation(format!(
-                        "failed to project capability spec '{}' to descriptor: {}",
+                        "failed to project capability spec '{}' to wire descriptor: {}",
                         spec.name, error
                     ))
                 })

@@ -373,19 +373,30 @@ pub struct ActiveSelection {
 
 /// 运行时当前将使用的有效模型信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CurrentModelSelection {
+pub struct ModelSelection {
     pub profile_name: String,
     pub model: String,
     pub provider_kind: String,
 }
 
-/// 扁平化的模型选项。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelOption {
-    pub profile_name: String,
-    pub model: String,
-    pub provider_kind: String,
+impl ModelSelection {
+    pub fn new(
+        profile_name: impl Into<String>,
+        model: impl Into<String>,
+        provider_kind: impl Into<String>,
+    ) -> Self {
+        Self {
+            profile_name: profile_name.into(),
+            model: model.into(),
+            provider_kind: provider_kind.into(),
+        }
+    }
 }
+
+pub type CurrentModelSelection = ModelSelection;
+
+/// 扁平化的模型选项。
+pub type ModelOption = ModelSelection;
 
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

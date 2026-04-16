@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentCollaborationFact, AgentEventContext, AstrError, ChildSessionNotification,
+    AgentCollaborationFact, AgentEventContext, AstrError, ChildAgentRef, ChildSessionNotification,
     MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
     MailboxQueuedPayload, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
     Result, SubRunResult, ToolOutputStream, UserMessageOrigin,
@@ -131,6 +131,8 @@ pub enum StorageEventPayload {
         error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        child_ref: Option<ChildAgentRef>,
         duration_ms: u64,
     },
     /// 将大型工具结果替换为 `<persisted-output>` 引用后的 durable 决策。
@@ -348,8 +350,8 @@ mod tests {
 
     use super::{CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload};
     use crate::{
-        AgentEventContext, AgentLifecycleStatus, ResolvedExecutionLimitsSnapshot,
-        ResolvedSubagentContextOverrides, SubRunResult, SubRunStorageMode, format_local_rfc3339,
+        AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+        SubRunStorageMode, format_local_rfc3339,
     };
 
     #[test]
@@ -571,7 +573,7 @@ mod tests {
                 "subrun-1",
                 None,
                 SubRunStorageMode::IndependentSession,
-                Some("child-session".to_string()),
+                Some("child-session".into()),
             ),
             payload: StorageEventPayload::SubRunStarted {
                 tool_call_id: Some("call-1".to_string()),
@@ -589,15 +591,17 @@ mod tests {
                 "subrun-1",
                 None,
                 SubRunStorageMode::IndependentSession,
-                Some("child-session".to_string()),
+                Some("child-session".into()),
             ),
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-1".to_string()),
-                result: SubRunResult {
-                    lifecycle: AgentLifecycleStatus::Idle,
-                    last_turn_outcome: Some(crate::AgentTurnOutcome::Completed),
-                    handoff: None,
-                    failure: None,
+                result: crate::SubRunResult::Completed {
+                    outcome: crate::CompletedSubRunOutcome::Completed,
+                    handoff: crate::SubRunHandoff {
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                        delivery: None,
+                    },
                 },
                 step_count: 3,
                 estimated_tokens: 99,
@@ -652,10 +656,10 @@ mod tests {
         let error = StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: AgentEventContext {
-                agent_id: Some("agent-child".to_string()),
-                parent_turn_id: Some("turn-parent".to_string()),
+                agent_id: Some("agent-child".into()),
+                parent_turn_id: Some("turn-parent".into()),
                 agent_profile: Some("review".to_string()),
-                sub_run_id: Some("subrun-1".to_string()),
+                sub_run_id: Some("subrun-1".into()),
                 parent_sub_run_id: None,
                 invocation_kind: Some(crate::InvocationKind::SubRun),
                 storage_mode: Some(crate::SubRunStorageMode::IndependentSession),
@@ -686,14 +690,18 @@ mod tests {
             ("resume", crate::ChildSessionLineageKind::Resume),
         ] {
             let child_ref = crate::ChildAgentRef {
-                agent_id: "agent-child".to_string(),
-                session_id: "session-parent".to_string(),
-                sub_run_id: "subrun-1".to_string(),
-                parent_agent_id: Some("agent-parent".to_string()),
-                parent_sub_run_id: Some("subrun-parent".to_string()),
+                identity: crate::ChildExecutionIdentity {
+                    agent_id: "agent-child".into(),
+                    session_id: "session-parent".into(),
+                    sub_run_id: "subrun-1".into(),
+                },
+                parent: crate::ParentExecutionRef {
+                    parent_agent_id: Some("agent-parent".into()),
+                    parent_sub_run_id: Some("subrun-parent".into()),
+                },
                 lineage_kind: kind,
                 status: crate::AgentLifecycleStatus::Running,
-                open_session_id: "session-child".to_string(),
+                open_session_id: "session-child".into(),
             };
 
             let json = serde_json::to_value(&child_ref).expect("serialize child ref");
@@ -720,14 +728,18 @@ mod tests {
             crate::ChildSessionLineageKind::Resume,
         ] {
             let node = crate::ChildSessionNode {
-                agent_id: "agent-child".to_string(),
-                session_id: "session-parent".to_string(),
-                child_session_id: "session-child".to_string(),
-                sub_run_id: "subrun-1".to_string(),
-                parent_session_id: "session-parent".to_string(),
-                parent_agent_id: Some("agent-parent".to_string()),
-                parent_sub_run_id: Some("subrun-parent".to_string()),
-                parent_turn_id: "turn-1".to_string(),
+                identity: crate::ChildExecutionIdentity {
+                    agent_id: "agent-child".into(),
+                    session_id: "session-parent".into(),
+                    sub_run_id: "subrun-1".into(),
+                },
+                child_session_id: "session-child".into(),
+                parent_session_id: "session-parent".into(),
+                parent: crate::ParentExecutionRef {
+                    parent_agent_id: Some("agent-parent".into()),
+                    parent_sub_run_id: Some("subrun-parent".into()),
+                },
+                parent_turn_id: "turn-1".into(),
                 lineage_kind: kind,
                 status: crate::AgentLifecycleStatus::Idle,
                 status_source: crate::ChildSessionStatusSource::Durable,

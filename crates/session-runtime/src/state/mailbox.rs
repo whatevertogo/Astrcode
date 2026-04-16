@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn mailbox_event_append_maps_to_expected_storage_payload() {
         let envelope = AgentMailboxEnvelope {
-            delivery_id: "delivery-1".to_string(),
+            delivery_id: "delivery-1".to_string().into(),
             from_agent_id: "agent-parent".to_string(),
             to_agent_id: "agent-child".to_string(),
             message: "hello".to_string(),
@@ -193,14 +193,14 @@ mod tests {
             })
             .into_storage_payload(),
             StorageEventPayload::AgentMailboxQueued { payload }
-                if payload.envelope.delivery_id == "delivery-1"
+                if payload.envelope.delivery_id == "delivery-1".into()
         ));
         assert!(matches!(
             MailboxEventAppend::BatchStarted(MailboxBatchStartedPayload {
                 target_agent_id: "agent-child".to_string(),
                 turn_id: "turn-1".to_string(),
                 batch_id: "batch-1".to_string(),
-                delivery_ids: vec!["delivery-1".to_string()],
+                delivery_ids: vec!["delivery-1".to_string().into()],
             })
             .into_storage_payload(),
             StorageEventPayload::AgentMailboxBatchStarted { payload }
@@ -211,16 +211,16 @@ mod tests {
                 target_agent_id: "agent-child".to_string(),
                 turn_id: "turn-1".to_string(),
                 batch_id: "batch-1".to_string(),
-                delivery_ids: vec!["delivery-1".to_string()],
+                delivery_ids: vec!["delivery-1".to_string().into()],
             })
             .into_storage_payload(),
             StorageEventPayload::AgentMailboxBatchAcked { payload }
-                if payload.delivery_ids == vec!["delivery-1".to_string()]
+                if payload.delivery_ids == vec!["delivery-1".to_string().into()]
         ));
         assert!(matches!(
             MailboxEventAppend::Discarded(MailboxDiscardedPayload {
                 target_agent_id: "agent-child".to_string(),
-                delivery_ids: vec!["delivery-1".to_string()],
+                delivery_ids: vec!["delivery-1".to_string().into()],
             })
             .into_storage_payload(),
             StorageEventPayload::AgentMailboxDiscarded { payload }

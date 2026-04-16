@@ -529,6 +529,7 @@ impl Tool for ShellTool {
                             "exitCode": -1,
                         },
                     })),
+                    child_ref: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 });
@@ -611,6 +612,7 @@ impl Tool for ShellTool {
                 },
                 "truncated": truncated,
             })),
+            child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })

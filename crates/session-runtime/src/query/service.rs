@@ -158,7 +158,10 @@ impl<'a> SessionQueries<'a> {
         let session_state = self.session_state(&session_id).await?;
         Ok(session_state
             .mailbox_projection_for_agent(agent_id)?
-            .pending_delivery_ids)
+            .pending_delivery_ids
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     pub async fn recoverable_parent_deliveries(

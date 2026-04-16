@@ -211,7 +211,7 @@ cd frontend && npm run build
 AstrCode/
 ├── crates/
 │   ├── core/                 # 领域模型、强类型 ID、端口契约、CapabilitySpec、稳定配置
-│   ├── protocol/             # HTTP/SSE/Plugin DTO 与 wire 类型
+│   ├── protocol/             # HTTP/SSE/Plugin DTO 与 wire 类型（含 CapabilityWireDescriptor）
 │   ├── kernel/               # 全局控制面：surface / registry / agent tree / events
 │   ├── session-runtime/      # 单会话真相：state / turn / replay / context window
 │   ├── application/          # 用例编排、执行控制、治理与观测
@@ -226,13 +226,12 @@ AstrCode/
 │   ├── client/               # 类型化 HTTP/SSE 客户端 SDK
 │   ├── cli/                  # 终端 TUI 客户端（ratatui）
 │   ├── plugin/               # stdio JSON-RPC 插件宿主基础设施
-│   ├── sdk/                  # 插件开发者 Rust SDK
-│   └── debug-workbench/      # 运行时调试读模型
+│   └── sdk/                  # 插件开发者 Rust SDK
 ├── examples/                 # 示例插件与示例 manifest
 ├── src-tauri/                # Tauri 薄壳：sidecar 管理、窗口控制、bootstrap 注入
 ├── frontend/                 # React + TypeScript + Vite + Tailwind CSS
 │   └── src/
-│       ├── components/       # React 组件（Chat / Sidebar / Settings / Debug）
+│       ├── components/       # React 组件（Chat / Sidebar / Settings）
 │       ├── hooks/            # 自定义 hooks（useAgent 等）
 │       └── lib/              # API 客户端、SSE 事件处理、工具函数
 └── scripts/                  # 开发脚本（Git hooks、crate 边界检查等）
@@ -274,8 +273,8 @@ AstrCode/
 
 ### 核心分层职责
 
-- **`core`**：领域语义、强类型 ID、端口契约、`CapabilitySpec`、稳定配置模型。不依赖传输层或具体实现。
-- **`protocol`**：HTTP/SSE/Plugin 的 DTO 与 wire 类型，仅依赖 `core`。
+- **`core`**：领域语义、强类型 ID、端口契约、`CapabilitySpec`、稳定配置模型。不依赖传输层或具体实现；`CapabilitySpec` 是运行时内部的能力语义真相。
+- **`protocol`**：HTTP/SSE/Plugin 的 DTO 与 wire 类型，仅依赖 `core`；其中 `CapabilityWireDescriptor` 只承担协议边界传输职责，不是运行时内部的能力真相。
 - **`kernel`**：全局控制面 — capability router/registry、agent tree、统一事件协调。
 - **`session-runtime`**：单会话真相 — turn 执行、事件回放、compact、context window、mailbox 推进。
 - **`application`**：用例编排入口（`App`）+ 治理入口（`AppGovernance`），负责参数校验、权限、策略、reload 编排。
@@ -310,6 +309,7 @@ AstrCode/
 - 能力路由与权限检查
 - 流式执行支持
 - 提供 Rust SDK（`crates/sdk`），包含 `ToolHandler`、`HookRegistry`、`PluginContext`、`StreamWriter`
+- 插件握手交换的是 `CapabilityWireDescriptor`；宿主内部消费和决策始终基于 `CapabilitySpec`
 
 ### 会话持久化
 

@@ -208,7 +208,7 @@ pub(super) fn cancel_tree_collect(
 /// 如果 queue 被清空则移除整个 session 的 queue 条目，避免空 map 条目累积。
 pub(super) fn discard_parent_deliveries_locked(
     state: &mut AgentRegistryState,
-    terminated_agent_ids: &HashSet<String>,
+    terminated_agent_ids: &HashSet<astrcode_core::AgentId>,
 ) -> usize {
     if terminated_agent_ids.is_empty() {
         return 0;
@@ -221,7 +221,7 @@ pub(super) fn discard_parent_deliveries_locked(
         let mut removed_delivery_ids = Vec::new();
 
         while let Some(entry) = queue.deliveries.pop_front() {
-            if terminated_agent_ids.contains(&entry.delivery.notification.child_ref.agent_id) {
+            if terminated_agent_ids.contains(entry.delivery.notification.child_ref.agent_id()) {
                 removed_delivery_ids.push(entry.delivery.delivery_id.clone());
             } else {
                 retained.push_back(entry);
@@ -229,7 +229,7 @@ pub(super) fn discard_parent_deliveries_locked(
         }
 
         for delivery_id in &removed_delivery_ids {
-            queue.known_delivery_ids.remove(delivery_id);
+            queue.known_delivery_ids.remove(delivery_id.as_str());
         }
         removed_count += removed_delivery_ids.len();
         queue.deliveries = retained;
@@ -289,7 +289,7 @@ pub(super) fn prune_finalized_agents_locked(
             }
         }
         if let Some(entry) = state.entries.remove(&agent_id) {
-            state.agent_index.remove(&entry.handle.agent_id);
+            state.agent_index.remove(entry.handle.agent_id.as_str());
         }
     }
 }

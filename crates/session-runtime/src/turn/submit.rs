@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, CancelToken, CompletedParentDeliveryPayload, EventTranslator,
-    ExecutionAccepted, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
+    ExecutionAccepted, LlmMessage, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
     ParentDeliveryTerminalSemantics, Phase, PromptDeclaration, ResolvedExecutionLimitsSnapshot,
     ResolvedRuntimeConfig, ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder,
     SessionId, StorageEvent, StorageEventPayload, TurnId, UserMessageOrigin,
@@ -38,6 +38,8 @@ pub struct AgentPromptSubmission {
     pub capability_router: Option<CapabilityRouter>,
     pub prompt_declarations: Vec<PromptDeclaration>,
     pub resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
+    pub resolved_overrides: Option<ResolvedSubagentContextOverrides>,
+    pub injected_messages: Vec<LlmMessage>,
     pub source_tool_call_id: Option<String>,
 }
 
@@ -398,6 +400,8 @@ impl SessionRuntime {
             capability_router,
             prompt_declarations,
             resolved_limits,
+            resolved_overrides,
+            injected_messages,
             source_tool_call_id,
         } = submission;
 
@@ -429,11 +433,16 @@ impl SessionRuntime {
             turn_id.as_str(),
             &agent,
             resolved_limits.clone(),
+            resolved_overrides.clone(),
             source_tool_call_id.clone(),
         ) {
             append_and_broadcast(submit_target.actor.state(), &event, &mut translator).await?;
         }
         let mut messages = current_turn_messages(submit_target.actor.state())?;
+        if !injected_messages.is_empty() {
+            let insert_at = messages.len().saturating_sub(1);
+            messages.splice(insert_at..insert_at, injected_messages);
+        }
         if !pending_reactivation_messages.is_empty() {
             let insert_at = messages.len().saturating_sub(1);
             messages.splice(insert_at..insert_at, pending_reactivation_messages);
@@ -489,6 +498,7 @@ fn subrun_started_event(
     turn_id: &str,
     agent: &AgentEventContext,
     resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
+    resolved_overrides: Option<ResolvedSubagentContextOverrides>,
     source_tool_call_id: Option<String>,
 ) -> Option<StorageEvent> {
     if agent.invocation_kind != Some(astrcode_core::InvocationKind::SubRun) {
@@ -500,7 +510,7 @@ fn subrun_started_event(
         agent: agent.clone(),
         payload: StorageEventPayload::SubRunStarted {
             tool_call_id: source_tool_call_id,
-            resolved_overrides: ResolvedSubagentContextOverrides::default(),
+            resolved_overrides: resolved_overrides.unwrap_or_default(),
             resolved_limits: resolved_limits.unwrap_or_default(),
             timestamp: Some(Utc::now()),
         },
@@ -534,15 +544,14 @@ fn subrun_finished_event(
         });
 
     let result = match &turn_result.outcome {
-        crate::TurnOutcome::Completed => astrcode_core::SubRunResult {
-            lifecycle: astrcode_core::AgentLifecycleStatus::Idle,
-            last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
-            handoff: Some(astrcode_core::SubRunHandoff {
+        crate::TurnOutcome::Completed => astrcode_core::SubRunResult::Completed {
+            outcome: astrcode_core::CompletedSubRunOutcome::Completed,
+            handoff: astrcode_core::SubRunHandoff {
                 findings: Vec::new(),
                 artifacts: Vec::new(),
                 delivery: Some(ParentDelivery {
                     idempotency_key: format!(
-                        "legacy-subrun-finished:{}:{}",
+                        "subrun-finished:{}:{}",
                         agent.sub_run_id.as_deref().unwrap_or("unknown-subrun"),
                         turn_id
                     ),
@@ -555,30 +564,25 @@ fn subrun_finished_event(
                         artifacts: Vec::new(),
                     }),
                 }),
-            }),
-            failure: None,
+            },
         },
-        crate::TurnOutcome::Cancelled => astrcode_core::SubRunResult {
-            lifecycle: astrcode_core::AgentLifecycleStatus::Idle,
-            last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Cancelled),
-            handoff: None,
-            failure: Some(astrcode_core::SubRunFailure {
+        crate::TurnOutcome::Cancelled => astrcode_core::SubRunResult::Failed {
+            outcome: astrcode_core::FailedSubRunOutcome::Cancelled,
+            failure: astrcode_core::SubRunFailure {
                 code: astrcode_core::SubRunFailureCode::Interrupted,
                 display_message: summary,
                 technical_message: "interrupted".to_string(),
                 retryable: false,
-            }),
+            },
         },
-        crate::TurnOutcome::Error { message } => astrcode_core::SubRunResult {
-            lifecycle: astrcode_core::AgentLifecycleStatus::Idle,
-            last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Failed),
-            handoff: None,
-            failure: Some(astrcode_core::SubRunFailure {
+        crate::TurnOutcome::Error { message } => astrcode_core::SubRunResult::Failed {
+            outcome: astrcode_core::FailedSubRunOutcome::Failed,
+            failure: astrcode_core::SubRunFailure {
                 code: astrcode_core::SubRunFailureCode::Internal,
                 display_message: summary,
                 technical_message: message.clone(),
                 retryable: true,
-            }),
+            },
         },
     };
 
@@ -842,7 +846,8 @@ mod tests {
     #[test]
     fn subrun_lifecycle_events_ignore_non_subrun_context() {
         assert!(
-            subrun_started_event("turn-1", &AgentEventContext::default(), None, None).is_none()
+            subrun_started_event("turn-1", &AgentEventContext::default(), None, None, None)
+                .is_none()
         );
         assert!(
             subrun_finished_event(
@@ -1072,5 +1077,115 @@ mod tests {
             )),
             "reactivation prompt should only be injected into the first post-compact turn"
         );
+    }
+
+    #[tokio::test]
+    async fn submit_prompt_inner_inserts_injected_messages_before_live_user_prompt() {
+        let requests = Arc::new(Mutex::new(Vec::<Vec<LlmMessage>>::new()));
+        let kernel = Arc::new(
+            Kernel::builder()
+                .with_capabilities(astrcode_kernel::CapabilityRouter::empty())
+                .with_llm_provider(Arc::new(RecordingLlmProvider {
+                    requests: Arc::clone(&requests),
+                }))
+                .with_prompt_provider(Arc::new(TestPromptProvider))
+                .with_resource_provider(Arc::new(TestResourceProvider))
+                .build()
+                .expect("kernel should build"),
+        );
+        let event_store = Arc::new(BranchingTestEventStore::default());
+        let runtime = SessionRuntime::new(
+            kernel,
+            Arc::new(crate::turn::test_support::NoopPromptFactsProvider),
+            event_store,
+            Arc::new(NoopMetrics),
+        );
+        let session = runtime
+            .create_session(".")
+            .await
+            .expect("test session should be created");
+
+        let accepted = runtime
+            .submit_prompt_inner(
+                &session.session_id,
+                None,
+                "child task".to_string(),
+                ResolvedRuntimeConfig::default(),
+                SubmitBusyPolicy::RejectOnBusy,
+                AgentPromptSubmission {
+                    injected_messages: vec![
+                        LlmMessage::User {
+                            content: "parent turn".to_string(),
+                            origin: UserMessageOrigin::User,
+                        },
+                        LlmMessage::Assistant {
+                            content: "parent answer".to_string(),
+                            tool_calls: Vec::new(),
+                            reasoning: None,
+                        },
+                    ],
+                    ..AgentPromptSubmission::default()
+                },
+            )
+            .await
+            .expect("submit should not error")
+            .expect("submit should be accepted");
+        runtime
+            .wait_for_turn_terminal_snapshot(
+                accepted.session_id.as_str(),
+                accepted.turn_id.as_str(),
+            )
+            .await
+            .expect("turn should finish");
+
+        let requests = requests.lock().expect("recorded requests lock should work");
+        assert!(matches!(
+            requests[0].as_slice(),
+            [
+                LlmMessage::User {
+                    content: inherited_user,
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant { content: inherited_answer, .. },
+                LlmMessage::User {
+                    content: child_task,
+                    origin: UserMessageOrigin::User,
+                },
+            ] if inherited_user == "parent turn"
+                && inherited_answer == "parent answer"
+                && child_task == "child task"
+        ));
+    }
+
+    #[test]
+    fn subrun_started_event_persists_resolved_overrides_snapshot() {
+        let event = subrun_started_event(
+            "turn-1",
+            &AgentEventContext::sub_run(
+                "agent-child",
+                "turn-parent",
+                "explore",
+                "subrun-1",
+                None,
+                astrcode_core::SubRunStorageMode::IndependentSession,
+                Some("session-child".into()),
+            ),
+            None,
+            Some(ResolvedSubagentContextOverrides {
+                include_compact_summary: true,
+                fork_mode: Some(astrcode_core::ForkMode::LastNTurns(3)),
+                ..ResolvedSubagentContextOverrides::default()
+            }),
+            None,
+        )
+        .expect("subrun event should be built");
+
+        assert!(matches!(
+            event.payload,
+            StorageEventPayload::SubRunStarted { resolved_overrides, .. }
+                if resolved_overrides.include_compact_summary
+                    && resolved_overrides.fork_mode
+                        == Some(astrcode_core::ForkMode::LastNTurns(3))
+        ));
     }
 }

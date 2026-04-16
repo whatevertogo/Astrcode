@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+astrcode-core = { path = "../core" }
 astrcode-protocol = { path = "../protocol" }
 serde.workspace = true
 serde_json.workspace = true

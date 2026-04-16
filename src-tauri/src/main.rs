@@ -22,9 +22,7 @@ use anyhow::{Context, Result, anyhow};
 use astrcode_core::LocalServerInfo;
 use instance::{DesktopInstanceCoordinator, InstanceBootstrap};
 use serde::Deserialize;
-use tauri::{
-    Emitter, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, async_runtime,
-};
+use tauri::{Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, async_runtime};
 use tauri_plugin_shell::{
     ShellExt,
     process::{CommandChild, CommandEvent},
@@ -39,7 +37,6 @@ struct ServerState {
     child: Mutex<Option<CommandChild>>,
     shutting_down: Arc<AtomicBool>,
     spawned_sidecar_path: SpawnedSidecarPath,
-    bootstrap_script: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,7 +83,6 @@ fn run_desktop_shell() -> Result<()> {
             commands::close_window,
             commands::select_directory,
             commands::open_config_in_editor,
-            commands::open_debug_workbench,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -118,7 +114,6 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Stri
                 child: Mutex::new(None),
                 shutting_down: Arc::new(AtomicBool::new(false)),
                 spawned_sidecar_path: Arc::new(Mutex::new(None)),
-                bootstrap_script: bootstrap_script.clone(),
             },
             bootstrap_script,
         ));
@@ -161,7 +156,6 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Stri
             child: Mutex::new(child),
             shutting_down,
             spawned_sidecar_path,
-            bootstrap_script: bootstrap_script.clone(),
         },
         bootstrap_script,
     ))
@@ -172,19 +166,6 @@ fn create_main_window(
     bootstrap_script: &str,
 ) -> Result<WebviewWindow> {
     create_named_window(app_handle, "main", "index.html", bootstrap_script)
-}
-
-pub(crate) fn create_debug_workbench_window(
-    app_handle: &tauri::AppHandle,
-    bootstrap_script: &str,
-    session_id: Option<&str>,
-) -> Result<WebviewWindow> {
-    let entry_path = debug_workbench_entry_path(session_id);
-    let window = create_named_window(app_handle, "debug-workbench", &entry_path, bootstrap_script)?;
-    if let Some(next_session_id) = session_id.filter(|value| !value.is_empty()) {
-        window.emit("debug-workbench:set-session", next_session_id)?;
-    }
-    Ok(window)
 }
 
 fn try_connect_existing_server() -> Result<Option<LocalServerInfo>> {
@@ -305,13 +286,6 @@ fn build_bootstrap_script(run_info: &LocalServerInfo) -> Result<String> {
         "window.__ASTRCODE_BOOTSTRAP__ = {};",
         serde_json::to_string(&bootstrap)?
     ))
-}
-
-fn debug_workbench_entry_path(session_id: Option<&str>) -> String {
-    match session_id.filter(|value| !value.is_empty()) {
-        Some(session_id) => format!("debug.html?sessionId={session_id}"),
-        None => "debug.html".to_string(),
-    }
 }
 
 fn resolve_window_url(
@@ -924,23 +898,6 @@ mod tests {
         match url {
             WebviewUrl::App(path) => assert_eq!(path.to_string_lossy(), "index.html"),
             other => panic!("expected resource app url, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn explicit_embedded_debug_url_uses_debug_entry() {
-        let url = explicit_embedded_frontend_url(false, "debug.html")
-            .expect("embedded debug url should build");
-
-        match url {
-            WebviewUrl::External(url) => {
-                if cfg!(windows) || cfg!(target_os = "android") {
-                    assert_eq!(url.as_str(), "http://tauri.localhost/debug.html");
-                } else {
-                    assert_eq!(url.as_str(), "tauri://localhost/debug.html");
-                }
-            },
-            other => panic!("expected explicit external embedded url, got {other:?}"),
         }
     }
 }

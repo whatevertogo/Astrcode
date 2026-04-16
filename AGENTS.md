@@ -40,7 +40,7 @@ node scripts/check-crate-boundaries.mjs --strict  # 严格模式
 - `server` 是唯一组合根，通过 `bootstrap_server_runtime()` 组装所有组件
 - `application` 不依赖任何 `adapter-*`，只依赖 `core` + `kernel` + `session-runtime`
 - 治理层使用 `AppGovernance`（`astrcode-application`）
-- 能力语义统一使用 `CapabilitySpec`（`astrcode-core`），传输层使用 `CapabilityDescriptor`（`astrcode-protocol`）
+- 能力语义统一使用 `CapabilitySpec`（`astrcode-core`），传输层使用 `CapabilityWireDescriptor`（`astrcode-protocol`）
 
 ## 代码规范
 

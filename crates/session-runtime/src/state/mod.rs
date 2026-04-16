@@ -450,10 +450,10 @@ mod tests {
             event(
                 Some("turn-child"),
                 AgentEventContext {
-                    agent_id: Some("agent-child".to_string()),
-                    parent_turn_id: Some("turn-root".to_string()),
+                    agent_id: Some("agent-child".to_string().into()),
+                    parent_turn_id: Some("turn-root".to_string().into()),
                     agent_profile: Some("explore".to_string()),
-                    sub_run_id: Some("subrun-1".to_string()),
+                    sub_run_id: Some("subrun-1".to_string().into()),
                     parent_sub_run_id: None,
                     invocation_kind: Some(InvocationKind::SubRun),
                     storage_mode: Some(SubRunStorageMode::IndependentSession),

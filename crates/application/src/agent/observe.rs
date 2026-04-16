@@ -9,7 +9,7 @@
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
-    CollaborationResult, CollaborationResultKind, ObserveAgentResult, ObserveParams,
+    CollaborationResult, ObserveAgentResult, ObserveParams,
 };
 
 use super::AgentOrchestrationService;
@@ -81,11 +81,15 @@ impl AgentOrchestrationService {
         .to_string();
 
         let observe_result = ObserveAgentResult {
-            agent_id: child.agent_id.clone(),
-            sub_run_id: child.sub_run_id.clone(),
-            session_id: child.session_id.clone(),
-            open_session_id,
-            parent_agent_id: child.parent_agent_id.clone().unwrap_or_default(),
+            agent_id: child.agent_id.to_string(),
+            sub_run_id: child.sub_run_id.to_string(),
+            session_id: child.session_id.to_string(),
+            open_session_id: open_session_id.to_string(),
+            parent_agent_id: child
+                .parent_agent_id
+                .clone()
+                .unwrap_or_default()
+                .to_string(),
             lifecycle_status,
             last_turn_outcome,
             phase: format!("{:?}", observe_snapshot.phase),
@@ -119,20 +123,13 @@ impl AgentOrchestrationService {
         )
         .await;
 
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Observed,
-            agent_ref: Some(
-                self.project_child_ref_status(self.build_child_ref_from_handle(&child).await)
-                    .await,
-            ),
-            delivery_id: None,
-            summary: Some(format_observe_summary(&observe_result)),
-            observe_result: Some(observe_result),
+        Ok(CollaborationResult::Observed {
+            agent_ref: self
+                .project_child_ref_status(self.build_child_ref_from_handle(&child).await)
+                .await,
+            summary: format_observe_summary(&observe_result),
+            observe_result: Box::new(observe_result),
             delegation: child.delegation.clone(),
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
         })
     }
 }
@@ -449,8 +446,7 @@ mod tests {
             .await
             .expect("spawn should succeed");
         let child_agent_id = launched
-            .handoff
-            .as_ref()
+            .handoff()
             .and_then(|handoff| {
                 handoff
                     .artifacts
@@ -483,12 +479,14 @@ mod tests {
             .await
             .expect("observe should succeed");
 
-        let observe_result = result.observe_result.expect("observe result should exist");
+        let observe_result = result
+            .observe_result()
+            .expect("observe result should exist");
         assert_eq!(observe_result.recommended_next_action, "send_or_close");
         assert_eq!(observe_result.delivery_freshness, "ready_for_follow_up");
         assert!(
             result
-                .summary
+                .summary()
                 .unwrap_or_default()
                 .contains("建议 send_or_close")
         );
@@ -503,7 +501,8 @@ mod tests {
             StorageEventPayload::AgentCollaborationFact { fact, .. }
                 if fact.action == AgentCollaborationActionKind::Observe
                     && fact.outcome == AgentCollaborationOutcomeKind::Accepted
-                    && fact.child_agent_id.as_deref() == Some(observe_result.agent_id.as_str())
+                    && fact.child_agent_id().map(|id| id.as_str())
+                        == Some(observe_result.agent_id.as_str())
         )));
     }
 }

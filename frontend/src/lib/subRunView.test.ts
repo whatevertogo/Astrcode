@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Message } from '../types';
+import type { Message, SubRunResult } from '../types';
 import {
   buildSubRunPathView,
   buildSubRunThreadTree,
@@ -21,6 +21,16 @@ const DEFAULT_RESOLVED_OVERRIDES = {
   includeRecoveryRefs: false,
   includeParentFindings: false,
 };
+
+function makeCompletedResult(): SubRunResult {
+  return {
+    status: 'completed',
+    handoff: {
+      findings: [],
+      artifacts: [],
+    },
+  };
+}
 
 function makeSubRunStartFixture(input: {
   id: string;
@@ -136,7 +146,7 @@ describe('buildSubRunView', () => {
         turnId: 'turn-b',
         parentTurnId: 'turn-b',
         subRunId: 'subrun-c',
-        result: { status: 'completed' },
+        result: makeCompletedResult(),
         stepCount: 1,
         estimatedTokens: 10,
         timestamp: 8,
@@ -158,7 +168,7 @@ describe('buildSubRunView', () => {
         turnId: 'turn-a',
         parentTurnId: 'turn-a',
         subRunId: 'subrun-b',
-        result: { status: 'completed' },
+        result: makeCompletedResult(),
         stepCount: 2,
         estimatedTokens: 20,
         timestamp: 10,
@@ -180,7 +190,7 @@ describe('buildSubRunView', () => {
         turnId: 'turn-root',
         parentTurnId: 'turn-root',
         subRunId: 'subrun-a',
-        result: { status: 'completed' },
+        result: makeCompletedResult(),
         stepCount: 3,
         estimatedTokens: 30,
         timestamp: 12,
@@ -324,12 +334,12 @@ describe('buildSubRunView', () => {
         timestamp: 1,
       },
       {
-        id: 'subrun-legacy-a-start',
+        id: 'subrun-parent-a-start',
         kind: 'subRunStart',
         turnId: 'turn-root',
         parentTurnId: 'turn-root',
-        agentId: 'agent-legacy-a',
-        subRunId: 'subrun-legacy-a',
+        agentId: 'agent-parent-a',
+        subRunId: 'subrun-parent-a',
         agentProfile: 'planner',
         resolvedOverrides: {
           storageMode: 'independentSession',
@@ -349,22 +359,22 @@ describe('buildSubRunView', () => {
         timestamp: 2,
       },
       {
-        id: 'subrun-legacy-a-assistant',
+        id: 'subrun-parent-a-assistant',
         kind: 'assistant',
         turnId: 'turn-a',
         parentTurnId: 'turn-root',
-        subRunId: 'subrun-legacy-a',
+        subRunId: 'subrun-parent-a',
         text: 'a',
         streaming: false,
         timestamp: 3,
       },
       {
-        id: 'subrun-legacy-b-start',
+        id: 'subrun-child-b-start',
         kind: 'subRunStart',
         turnId: 'turn-a',
         parentTurnId: 'turn-a',
-        agentId: 'agent-legacy-b',
-        subRunId: 'subrun-legacy-b',
+        agentId: 'agent-child-b',
+        subRunId: 'subrun-child-b',
         agentProfile: 'coder',
         resolvedOverrides: {
           storageMode: 'independentSession',
@@ -386,10 +396,10 @@ describe('buildSubRunView', () => {
     ];
 
     const tree = buildSubRunThreadTree(messages);
-    // subrun-legacy-a 是根，subrun-legacy-b 是其子（通过栈推导）
-    expect(listRootSubRunViews(tree).map((view) => view.subRunId)).toEqual(['subrun-legacy-a']);
-    expect(buildSubRunView(tree, 'subrun-legacy-a')?.directChildSubRunIds).toEqual([
-      'subrun-legacy-b',
+    // subrun-parent-a 是根，subrun-child-b 是其子（通过栈推导）
+    expect(listRootSubRunViews(tree).map((view) => view.subRunId)).toEqual(['subrun-parent-a']);
+    expect(buildSubRunView(tree, 'subrun-parent-a')?.directChildSubRunIds).toEqual([
+      'subrun-child-b',
     ]);
   });
 
@@ -537,7 +547,7 @@ describe('buildSubRunView', () => {
         turnId: 'turn-modern',
         parentTurnId: 'turn-modern',
         subRunId: 'subrun-modern-child',
-        result: { status: 'completed' },
+        result: makeCompletedResult(),
         stepCount: 1,
         estimatedTokens: 20,
         timestamp: 5,
@@ -548,18 +558,18 @@ describe('buildSubRunView', () => {
         turnId: 'turn-root',
         parentTurnId: 'turn-root',
         subRunId: 'subrun-modern',
-        result: { status: 'completed' },
+        result: makeCompletedResult(),
         stepCount: 2,
         estimatedTokens: 50,
         timestamp: 6,
       },
       {
-        id: 'subrun-legacy-start',
+        id: 'subrun-review-start',
         kind: 'subRunStart',
         turnId: 'turn-root',
         parentTurnId: 'turn-root',
-        agentId: 'agent-legacy',
-        subRunId: 'subrun-legacy',
+        agentId: 'agent-review',
+        subRunId: 'subrun-review',
         agentProfile: 'reviewer',
         resolvedOverrides: {
           storageMode: 'independentSession',
@@ -588,11 +598,11 @@ describe('buildSubRunView', () => {
     expect(modernView?.directChildSubRunIds).toEqual(['subrun-modern-child']);
 
     // Both sub-runs should appear as roots (siblings at the same level)
-    expect(rootViews.map((view) => view.subRunId)).toEqual(['subrun-modern', 'subrun-legacy']);
+    expect(rootViews.map((view) => view.subRunId)).toEqual(['subrun-modern', 'subrun-review']);
 
-    // Legacy sub-run should have no children
-    const legacyView = buildSubRunView(tree, 'subrun-legacy');
-    expect(legacyView?.directChildSubRunIds).toEqual([]);
+    // Review sub-run should have no children
+    const reviewView = buildSubRunView(tree, 'subrun-review');
+    expect(reviewView?.directChildSubRunIds).toEqual([]);
   });
 
   it('handles deep nesting with parentTurnId-based lineage (depth > 3)', () => {
@@ -1090,7 +1100,7 @@ describe('buildSubRunView', () => {
         parentTurnId: 'turn-root',
         subRunId: 'subrun-ind',
         childSessionId: 'session-child-ind',
-        result: { status: 'completed' },
+        result: makeCompletedResult(),
         stepCount: 1,
         estimatedTokens: 30,
         timestamp: 3,
@@ -1104,7 +1114,7 @@ describe('buildSubRunView', () => {
     expect(view?.childSessionId).toBe('session-child-ind');
   });
 
-  it('recovers root sub-runs from spawn tool metadata when lifecycle events are missing', () => {
+  it('recovers root sub-runs from spawn tool child refs when lifecycle events are missing', () => {
     const messages: Message[] = [
       {
         id: 'spawn-tool-call-a',
@@ -1115,12 +1125,13 @@ describe('buildSubRunView', () => {
         status: 'ok',
         args: { prompt: 'task-a' },
         output: 'spawn 已在后台启动。',
-        metadata: {
-          agentRef: {
-            agentId: 'agent-1',
-            subRunId: 'subrun-1',
-            openSessionId: 'session-child-1',
-          },
+        childRef: {
+          agentId: 'agent-1',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-1',
+          lineageKind: 'spawn',
+          status: 'running',
+          openSessionId: 'session-child-1',
         },
         durationMs: 12,
         timestamp: 1,
@@ -1134,12 +1145,13 @@ describe('buildSubRunView', () => {
         status: 'ok',
         args: { prompt: 'task-b' },
         output: 'spawn 已在后台启动。',
-        metadata: {
-          agentRef: {
-            agentId: 'agent-2',
-            subRunId: 'subrun-2',
-            openSessionId: 'session-child-2',
-          },
+        childRef: {
+          agentId: 'agent-2',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-2',
+          lineageKind: 'spawn',
+          status: 'running',
+          openSessionId: 'session-child-2',
         },
         durationMs: 15,
         timestamp: 2,
@@ -1230,7 +1242,7 @@ describe('buildSubRunView', () => {
         turnId: 'turn-root',
         parentTurnId: 'turn-root',
         subRunId: 'subrun-1',
-        result: { status: 'completed' },
+        result: makeCompletedResult(),
         stepCount: 1,
         estimatedTokens: 42,
         timestamp: 3,
@@ -1343,7 +1355,7 @@ describe('buildSubRunView', () => {
     ).toEqual(['第一轮结论', '第二轮继续推进']);
   });
 
-  it('merges spawn fallback refs with real lifecycle records without duplication', () => {
+  it('merges spawn child refs with real lifecycle records without duplication', () => {
     const messages: Message[] = [
       {
         id: 'spawn-tool-call-a',
@@ -1354,11 +1366,13 @@ describe('buildSubRunView', () => {
         status: 'ok',
         args: { prompt: 'task-a' },
         output: 'spawn 已在后台启动。',
-        metadata: {
-          agentRef: {
-            agentId: 'agent-1',
-            subRunId: 'subrun-1',
-          },
+        childRef: {
+          agentId: 'agent-1',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-1',
+          lineageKind: 'spawn',
+          status: 'running',
+          openSessionId: 'session-child-1',
         },
         durationMs: 12,
         timestamp: 1,
@@ -1395,7 +1409,7 @@ describe('buildSubRunView', () => {
     expect(rootViews[0]?.title).toBe('planner');
   });
 
-  it('recovers nested spawned sub-runs from tool metadata when lifecycle events are missing', () => {
+  it('recovers nested spawned sub-runs from tool child refs when lifecycle events are missing', () => {
     const messages: Message[] = [
       {
         ...makeSubRunStartFixture({
@@ -1422,12 +1436,15 @@ describe('buildSubRunView', () => {
         status: 'ok',
         args: { prompt: 'task-child' },
         output: 'spawn 已在后台启动。',
-        metadata: {
-          agentRef: {
-            agentId: 'agent-child',
-            subRunId: 'subrun-child',
-            openSessionId: 'session-child',
-          },
+        childRef: {
+          agentId: 'agent-child',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-child',
+          parentAgentId: 'agent-parent',
+          parentSubRunId: 'subrun-parent',
+          lineageKind: 'spawn',
+          status: 'running',
+          openSessionId: 'session-child',
         },
         timestamp: 2,
       },
@@ -1443,7 +1460,7 @@ describe('buildSubRunView', () => {
     expect(childView?.title).toBe('agent-child');
   });
 
-  it('updates sub-run tree fingerprint when spawn metadata arrives later on the same tool call', () => {
+  it('updates sub-run tree fingerprint when spawn child refs arrive later on the same tool call', () => {
     const initialMessages: Message[] = [
       {
         id: 'spawn-tool-call-late',
@@ -1469,12 +1486,13 @@ describe('buildSubRunView', () => {
         status: 'ok',
         args: { prompt: 'task-child' },
         output: 'spawn 已在后台启动。',
-        metadata: {
-          agentRef: {
-            agentId: 'agent-child',
-            subRunId: 'subrun-child',
-            openSessionId: 'session-child',
-          },
+        childRef: {
+          agentId: 'agent-child',
+          sessionId: 'session-parent',
+          subRunId: 'subrun-child',
+          lineageKind: 'spawn',
+          status: 'running',
+          openSessionId: 'session-child',
         },
         timestamp: 1,
       },

@@ -6,11 +6,11 @@
 use serde_json::json;
 
 use super::{
-    CancelMessage, CapabilityDescriptor, CapabilityKind, DescriptorBuildError, ErrorPayload,
-    EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor, InitializeMessage,
-    InitializeResultData, InvocationContext, PROTOCOL_VERSION, PeerDescriptor, PeerRole,
-    PermissionHint, PluginMessage, ProfileDescriptor, ResultMessage, SideEffectLevel,
-    StabilityLevel, TriggerDescriptor, WorkspaceRef,
+    CancelMessage, CapabilityKind, CapabilityWireDescriptor, CapabilityWireDescriptorBuildError,
+    ErrorPayload, EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor, InitializeMessage,
+    InitializeResultData, InvocationContext, InvocationMode, PROTOCOL_VERSION, PeerDescriptor,
+    PeerRole, PermissionSpec, PluginMessage, ProfileDescriptor, ResultMessage, SideEffect,
+    Stability, TriggerDescriptor, WorkspaceRef,
 };
 
 fn sample_peer() -> PeerDescriptor {
@@ -24,25 +24,25 @@ fn sample_peer() -> PeerDescriptor {
     }
 }
 
-fn sample_capability() -> CapabilityDescriptor {
-    CapabilityDescriptor::builder("tool.echo", CapabilityKind::tool())
+fn sample_capability() -> CapabilityWireDescriptor {
+    CapabilityWireDescriptor::builder("tool.echo", CapabilityKind::tool())
         .description("Echo the input")
         .schema(json!({ "type": "object" }), json!({ "type": "object" }))
-        .streaming(true)
+        .invocation_mode(InvocationMode::Streaming)
         .profile("coding")
         .tag("test")
-        .permissions(vec![PermissionHint {
+        .permissions(vec![PermissionSpec {
             name: "filesystem.read".to_string(),
             rationale: Some("reads fixtures".to_string()),
         }])
-        .side_effect(SideEffectLevel::Local)
-        .stability(StabilityLevel::Stable)
+        .side_effect(SideEffect::Local)
+        .stability(Stability::Stable)
         .build()
         .expect("sample capability should build")
 }
 
 #[test]
-fn plugin_messages_roundtrip_as_v4_json() {
+fn plugin_messages_roundtrip_as_v5_json() {
     let init = PluginMessage::Initialize(InitializeMessage {
         id: "init-1".to_string(),
         protocol_version: PROTOCOL_VERSION.to_string(),
@@ -168,7 +168,7 @@ fn initialize_result_uses_result_kind_payload() {
     let decoded: InitializeResultData = result.parse_output().expect("parse output");
     assert_eq!(decoded.protocol_version, PROTOCOL_VERSION);
     assert_eq!(decoded.peer.role, PeerRole::Worker);
-    assert_eq!(decoded.capabilities[0].name, "tool.echo");
+    assert_eq!(decoded.capabilities[0].name.as_str(), "tool.echo");
 }
 
 #[test]
@@ -235,19 +235,22 @@ fn result_message_preserves_error_payload_details() {
 
 #[test]
 fn capability_builder_rejects_invalid_fields() {
-    let error = CapabilityDescriptor::builder("tool.echo", CapabilityKind::tool())
+    let error = CapabilityWireDescriptor::builder("tool.echo", CapabilityKind::tool())
         .description("Echo the input")
         .schema(json!({ "type": "object" }), json!("not-a-schema"))
         .profile("coding")
         .build()
         .expect_err("invalid output schema should fail");
 
-    assert_eq!(error, DescriptorBuildError::InvalidSchema("output_schema"));
+    assert_eq!(
+        error,
+        CapabilityWireDescriptorBuildError::InvalidSchema("output_schema")
+    );
 }
 
 #[test]
 fn capability_builder_accepts_custom_kind_strings() {
-    let descriptor = CapabilityDescriptor::builder("workspace.index", "lsp.indexer")
+    let descriptor = CapabilityWireDescriptor::builder("workspace.index", "lsp.indexer")
         .description("Indexes workspace symbols")
         .schema(json!({ "type": "object" }), json!({ "type": "object" }))
         .build()
@@ -262,13 +265,16 @@ fn capability_builder_accepts_custom_kind_strings() {
 
 #[test]
 fn capability_builder_rejects_blank_custom_kind() {
-    let error = CapabilityDescriptor::builder("workspace.index", CapabilityKind::new("  "))
+    let error = CapabilityWireDescriptor::builder("workspace.index", CapabilityKind::new("  "))
         .description("Indexes workspace symbols")
         .schema(json!({ "type": "object" }), json!({ "type": "object" }))
         .build()
         .expect_err("blank kind should fail");
 
-    assert_eq!(error, DescriptorBuildError::EmptyField("kind"));
+    assert_eq!(
+        error,
+        CapabilityWireDescriptorBuildError::EmptyField("kind")
+    );
 }
 
 #[test]
@@ -281,20 +287,20 @@ fn capability_kind_deserialization_trims_whitespace() {
 
 #[test]
 fn capability_validate_rejects_direct_blank_kind() {
-    let descriptor = CapabilityDescriptor {
-        name: "workspace.index".to_string(),
+    let descriptor = CapabilityWireDescriptor {
+        name: "workspace.index".into(),
         kind: CapabilityKind::new("  "),
         description: "Indexes workspace symbols".to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
-        streaming: false,
+        invocation_mode: InvocationMode::Unary,
         concurrency_safe: false,
         compact_clearable: false,
         profiles: vec![],
         tags: vec![],
         permissions: vec![],
-        side_effect: SideEffectLevel::None,
-        stability: StabilityLevel::Stable,
+        side_effect: SideEffect::None,
+        stability: Stability::Stable,
         metadata: json!({}),
         max_result_inline_size: None,
     };
@@ -303,6 +309,6 @@ fn capability_validate_rejects_direct_blank_kind() {
         descriptor
             .validate()
             .expect_err("direct descriptor validation should reject blank kind"),
-        DescriptorBuildError::EmptyField("kind")
+        CapabilityWireDescriptorBuildError::EmptyField("kind")
     );
 }

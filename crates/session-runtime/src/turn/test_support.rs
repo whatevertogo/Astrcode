@@ -15,7 +15,7 @@ use astrcode_core::{
     PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider,
     ResourceProvider, ResourceReadResult, ResourceRequestContext, Result, RuntimeMetricsRecorder,
     SessionMeta, SessionTurnAcquireResult, StorageEvent, StorageEventPayload, StoreResult,
-    StoredEvent, SubRunExecutionOutcome, Tool,
+    StoredEvent, Tool,
 };
 use astrcode_kernel::{Kernel, KernelGateway, ToolCapabilityInvoker};
 use async_trait::async_trait;
@@ -263,7 +263,7 @@ impl RuntimeMetricsRecorder for NoopMetrics {
     fn record_subrun_execution(
         &self,
         _duration_ms: u64,
-        _outcome: SubRunExecutionOutcome,
+        _outcome: astrcode_core::AgentTurnOutcome,
         _step_count: Option<u32>,
         _estimated_tokens: Option<u64>,
         _storage_mode: Option<astrcode_core::SubRunStorageMode>,

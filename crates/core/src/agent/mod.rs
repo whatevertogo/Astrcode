@@ -12,9 +12,27 @@ pub mod executor;
 pub mod lifecycle;
 pub mod mailbox;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
-use crate::error::{AstrError, Result};
+use crate::{
+    AgentId, DeliveryId, SessionId, SubRunId, TurnId,
+    error::{AstrError, Result},
+};
+
+fn require_non_empty_trimmed(field: &str, value: impl AsRef<str>) -> Result<()> {
+    if value.as_ref().trim().is_empty() {
+        return Err(AstrError::Validation(format!("{field} 不能为空")));
+    }
+    Ok(())
+}
+
+fn require_not_whitespace_only(field: &str, value: impl AsRef<str>) -> Result<()> {
+    let value = value.as_ref();
+    if !value.is_empty() && value.trim().is_empty() {
+        return Err(AstrError::Validation(format!("{field} 不能为纯空白")));
+    }
+    Ok(())
+}
 
 /// 归一化一个非空白、无重复的字符串列表，并保留首次出现顺序。
 pub fn normalize_non_empty_unique_string_list(
@@ -68,8 +86,7 @@ pub enum InvocationKind {
 
 /// Fork 上下文继承模式。
 ///
-/// TODO: 当前仅定义枚举，runtime 侧未完整消费。
-/// 未来 compact agent 将使用此字段决定子 agent 继承多少父对话上下文。
+/// runtime 会用它裁剪子 agent 继承的父对话 tail。
 /// 参考 Codex 的 SpawnAgentForkMode 设计。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -142,16 +159,10 @@ impl SpawnAgentParams {
     pub fn validate(&self) -> Result<()> {
         // prompt 是子 Agent 收到的指令主体，不能为空；
         // 否则 runtime 只能启动一个没有任务语义的空会话。
-        if self.prompt.trim().is_empty() {
-            return Err(AstrError::Validation("prompt 不能为空".to_string()));
-        }
+        require_non_empty_trimmed("prompt", &self.prompt)?;
         // description 只承担可观测性职责；
         // 允许空串兼容模型输出，但纯空白会污染标题与日志。
-        if !self.description.is_empty() && self.description.trim().is_empty() {
-            return Err(AstrError::Validation(
-                "description 不能为纯空白".to_string(),
-            ));
-        }
+        require_not_whitespace_only("description", &self.description)?;
         if let Some(grant) = &self.capability_grant {
             grant.validate()?;
         }
@@ -160,6 +171,10 @@ impl SpawnAgentParams {
 }
 
 /// 子会话事件写入的存储模式。
+///
+/// TODO: 当前只有 `IndependentSession` 一个变体。
+/// 如果未来真的要支持共享 session / 嵌套持久化域等模式，再扩展枚举；
+/// 在那之前保留 enum 形状，避免过早把潜在扩展点压成单态值对象。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum SubRunStorageMode {
@@ -303,101 +318,13 @@ pub struct ParentDelivery {
     pub payload: ParentDeliveryPayload,
 }
 
-fn legacy_trimmed(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-}
-
-fn legacy_message_id_suffix(message: &str) -> String {
-    let prefix: String = message
-        .chars()
-        .take(24)
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect();
-    format!("{}:{prefix}", message.chars().count())
-}
-
-fn legacy_handoff_delivery(
-    summary: Option<&str>,
-    findings: Vec<String>,
-    artifacts: Vec<ArtifactRef>,
-) -> Option<ParentDelivery> {
-    let message = legacy_trimmed(summary)?;
-    Some(ParentDelivery {
-        idempotency_key: format!("legacy-handoff:{}", legacy_message_id_suffix(&message)),
-        origin: ParentDeliveryOrigin::Fallback,
-        terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
-        source_turn_id: None,
-        payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
-            message,
-            findings,
-            artifacts,
-        }),
-    })
-}
-
-fn legacy_notification_delivery(
-    notification_id: &str,
-    kind: ChildSessionNotificationKind,
-    summary: Option<&str>,
-    final_reply_excerpt: Option<&str>,
-) -> Option<ParentDelivery> {
-    let message = legacy_trimmed(final_reply_excerpt).or_else(|| legacy_trimmed(summary))?;
-    let payload = match kind {
-        ChildSessionNotificationKind::Delivered => {
-            ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
-                message,
-                findings: Vec::new(),
-                artifacts: Vec::new(),
-            })
-        },
-        ChildSessionNotificationKind::Failed => {
-            ParentDeliveryPayload::Failed(FailedParentDeliveryPayload {
-                message,
-                code: SubRunFailureCode::Internal,
-                technical_message: None,
-                retryable: false,
-            })
-        },
-        ChildSessionNotificationKind::Closed => {
-            ParentDeliveryPayload::CloseRequest(CloseRequestParentDeliveryPayload {
-                message,
-                reason: Some("legacy_child_notification".to_string()),
-            })
-        },
-        ChildSessionNotificationKind::Started
-        | ChildSessionNotificationKind::ProgressSummary
-        | ChildSessionNotificationKind::Waiting
-        | ChildSessionNotificationKind::Resumed => {
-            ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload { message })
-        },
-    };
-
-    Some(ParentDelivery {
-        idempotency_key: notification_id.to_string(),
-        origin: ParentDeliveryOrigin::Fallback,
-        terminal_semantics: match kind {
-            ChildSessionNotificationKind::Started
-            | ChildSessionNotificationKind::ProgressSummary
-            | ChildSessionNotificationKind::Waiting
-            | ChildSessionNotificationKind::Resumed => ParentDeliveryTerminalSemantics::NonTerminal,
-            ChildSessionNotificationKind::Delivered
-            | ChildSessionNotificationKind::Closed
-            | ChildSessionNotificationKind::Failed => ParentDeliveryTerminalSemantics::Terminal,
-        },
-        source_turn_id: None,
-        payload,
-    })
-}
-
 /// 子执行传递给父会话的业务结果。
 ///
 /// 该结构只承载“父 Agent 后续决策真正需要消费的内容”，
 /// 明确排除 transport/provider/internal diagnostics。
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct SubRunHandoff {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<String>,
@@ -405,40 +332,6 @@ pub struct SubRunHandoff {
     pub artifacts: Vec<ArtifactRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<ParentDelivery>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SubRunHandoffWire {
-    #[serde(default)]
-    summary: Option<String>,
-    #[serde(default)]
-    findings: Vec<String>,
-    #[serde(default)]
-    artifacts: Vec<ArtifactRef>,
-    #[serde(default)]
-    delivery: Option<ParentDelivery>,
-}
-
-impl<'de> Deserialize<'de> for SubRunHandoff {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = SubRunHandoffWire::deserialize(deserializer)?;
-        let delivery = wire.delivery.or_else(|| {
-            legacy_handoff_delivery(
-                wire.summary.as_deref(),
-                wire.findings.clone(),
-                wire.artifacts.clone(),
-            )
-        });
-        Ok(Self {
-            findings: wire.findings,
-            artifacts: wire.artifacts,
-            delivery,
-        })
-    }
 }
 
 /// 子执行失败的结构化信息。
@@ -457,16 +350,143 @@ pub struct SubRunFailure {
 use lifecycle::AgentLifecycleStatus;
 
 /// 子执行结构化结果。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletedSubRunOutcome {
+    Completed,
+    TokenExceeded,
+}
+
+impl CompletedSubRunOutcome {
+    pub fn as_turn_outcome(self) -> lifecycle::AgentTurnOutcome {
+        match self {
+            Self::Completed => lifecycle::AgentTurnOutcome::Completed,
+            Self::TokenExceeded => lifecycle::AgentTurnOutcome::TokenExceeded,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailedSubRunOutcome {
+    Failed,
+    Cancelled,
+}
+
+impl FailedSubRunOutcome {
+    pub fn as_turn_outcome(self) -> lifecycle::AgentTurnOutcome {
+        match self {
+            Self::Failed => lifecycle::AgentTurnOutcome::Failed,
+            Self::Cancelled => lifecycle::AgentTurnOutcome::Cancelled,
+        }
+    }
+}
+
+/// 子执行对外可观察的正式状态。
+///
+/// 这是 `SubRunResult` 的 canonical status projection，避免外围再组合
+/// `lifecycle + last_turn_outcome` 反推业务语义。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubRunStatus {
+    Running,
+    Completed,
+    TokenExceeded,
+    Failed,
+    Cancelled,
+}
+
+impl SubRunStatus {
+    pub fn lifecycle(self) -> AgentLifecycleStatus {
+        match self {
+            Self::Running => AgentLifecycleStatus::Running,
+            Self::Completed | Self::TokenExceeded | Self::Failed | Self::Cancelled => {
+                AgentLifecycleStatus::Idle
+            },
+        }
+    }
+
+    pub fn last_turn_outcome(self) -> Option<lifecycle::AgentTurnOutcome> {
+        match self {
+            Self::Running => None,
+            Self::Completed => Some(lifecycle::AgentTurnOutcome::Completed),
+            Self::TokenExceeded => Some(lifecycle::AgentTurnOutcome::TokenExceeded),
+            Self::Failed => Some(lifecycle::AgentTurnOutcome::Failed),
+            Self::Cancelled => Some(lifecycle::AgentTurnOutcome::Cancelled),
+        }
+    }
+
+    pub fn is_failed(self) -> bool {
+        matches!(self, Self::Failed)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::TokenExceeded => "token_exceeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubRunResult {
-    pub lifecycle: AgentLifecycleStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_turn_outcome: Option<lifecycle::AgentTurnOutcome>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handoff: Option<SubRunHandoff>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<SubRunFailure>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubRunResult {
+    Running {
+        handoff: SubRunHandoff,
+    },
+    Completed {
+        outcome: CompletedSubRunOutcome,
+        handoff: SubRunHandoff,
+    },
+    Failed {
+        outcome: FailedSubRunOutcome,
+        failure: SubRunFailure,
+    },
+}
+
+impl SubRunResult {
+    pub fn status(&self) -> SubRunStatus {
+        match self {
+            Self::Running { .. } => SubRunStatus::Running,
+            Self::Completed { outcome, .. } => match outcome {
+                CompletedSubRunOutcome::Completed => SubRunStatus::Completed,
+                CompletedSubRunOutcome::TokenExceeded => SubRunStatus::TokenExceeded,
+            },
+            Self::Failed { outcome, .. } => match outcome {
+                FailedSubRunOutcome::Failed => SubRunStatus::Failed,
+                FailedSubRunOutcome::Cancelled => SubRunStatus::Cancelled,
+            },
+        }
+    }
+
+    pub fn lifecycle(&self) -> AgentLifecycleStatus {
+        self.status().lifecycle()
+    }
+
+    pub fn last_turn_outcome(&self) -> Option<lifecycle::AgentTurnOutcome> {
+        self.status().last_turn_outcome()
+    }
+
+    pub fn handoff(&self) -> Option<&SubRunHandoff> {
+        match self {
+            Self::Running { handoff } | Self::Completed { handoff, .. } => Some(handoff),
+            Self::Failed { .. } => None,
+        }
+    }
+
+    pub fn failure(&self) -> Option<&SubRunFailure> {
+        match self {
+            Self::Failed { failure, .. } => Some(failure),
+            Self::Running { .. } | Self::Completed { .. } => None,
+        }
+    }
+
+    pub fn is_failed(&self) -> bool {
+        self.status().is_failed()
+    }
 }
 
 /// 调用侧可传入的子会话上下文 override。
@@ -628,24 +648,24 @@ pub trait AgentProfileCatalog: Send + Sync {
 #[serde(rename_all = "camelCase")]
 pub struct SubRunHandle {
     /// 稳定的子执行域 ID。
-    pub sub_run_id: String,
+    pub sub_run_id: SubRunId,
     /// 运行时分配的 agent 实例 ID。
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// 子会话写入所在的 session。
-    pub session_id: String,
+    pub session_id: SessionId,
     /// 若使用独立子会话，这里记录 child session id。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_session_id: Option<String>,
+    pub child_session_id: Option<SessionId>,
     /// 当前子 Agent 在父子树中的深度。
     pub depth: usize,
     /// 触发该子会话的父 turn。必填：lineage 核心事实，不为 downgrade 保持 optional。
-    pub parent_turn_id: String,
+    pub parent_turn_id: TurnId,
     /// 触发该子会话的父 agent。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_id: Option<String>,
+    pub parent_agent_id: Option<AgentId>,
     /// 触发该子会话的父 sub-run。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_sub_run_id: Option<String>,
+    pub parent_sub_run_id: Option<SubRunId>,
     /// 当前执行实例的谱系来源。
     #[serde(default = "default_child_session_lineage_kind")]
     pub lineage_kind: ChildSessionLineageKind,
@@ -664,6 +684,43 @@ pub struct SubRunHandle {
     /// 当前 child 责任分支与复用边界的轻量元数据。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<DelegationMetadata>,
+}
+
+impl SubRunHandle {
+    pub fn child_identity(&self) -> ChildExecutionIdentity {
+        ChildExecutionIdentity {
+            agent_id: self.agent_id.clone(),
+            session_id: self.session_id.clone(),
+            sub_run_id: self.sub_run_id.clone(),
+        }
+    }
+
+    pub fn parent_ref(&self) -> ParentExecutionRef {
+        ParentExecutionRef {
+            parent_agent_id: self.parent_agent_id.clone(),
+            parent_sub_run_id: self.parent_sub_run_id.clone(),
+        }
+    }
+
+    pub fn open_session_id(&self) -> SessionId {
+        self.child_session_id
+            .clone()
+            .unwrap_or_else(|| self.session_id.clone())
+    }
+
+    pub fn child_ref(&self) -> ChildAgentRef {
+        self.child_ref_with_status(self.lifecycle)
+    }
+
+    pub fn child_ref_with_status(&self, status: AgentLifecycleStatus) -> ChildAgentRef {
+        ChildAgentRef {
+            identity: self.child_identity(),
+            parent: self.parent_ref(),
+            lineage_kind: self.lineage_kind,
+            status,
+            open_session_id: self.open_session_id(),
+        }
+    }
 }
 
 /// 子会话 lineage 来源。
@@ -687,6 +744,25 @@ pub enum ChildSessionStatusSource {
     Durable,
 }
 
+/// 共享的 child execution identity。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildExecutionIdentity {
+    pub agent_id: AgentId,
+    pub session_id: SessionId,
+    pub sub_run_id: SubRunId,
+}
+
+/// 共享的 parent lineage 指针。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParentExecutionRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<AgentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sub_run_id: Option<SubRunId>,
+}
+
 /// 父/子协作面暴露的稳定子会话引用。
 ///
 /// 只承载 child identity、lineage、status 和唯一 canonical open target。
@@ -694,17 +770,57 @@ pub enum ChildSessionStatusSource {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildAgentRef {
-    pub agent_id: String,
-    pub session_id: String,
-    pub sub_run_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_sub_run_id: Option<String>,
+    #[serde(flatten)]
+    pub identity: ChildExecutionIdentity,
+    #[serde(flatten)]
+    pub parent: ParentExecutionRef,
     pub lineage_kind: ChildSessionLineageKind,
     pub status: AgentLifecycleStatus,
     /// 唯一 canonical child open target。通知、DTO 与其他外层载荷不得重复持有同值字段。
-    pub open_session_id: String,
+    pub open_session_id: SessionId,
+}
+
+impl ChildAgentRef {
+    pub fn agent_id(&self) -> &AgentId {
+        &self.identity.agent_id
+    }
+
+    pub fn session_id(&self) -> &SessionId {
+        &self.identity.session_id
+    }
+
+    pub fn sub_run_id(&self) -> &SubRunId {
+        &self.identity.sub_run_id
+    }
+
+    pub fn parent_agent_id(&self) -> Option<&AgentId> {
+        self.parent.parent_agent_id.as_ref()
+    }
+
+    pub fn parent_sub_run_id(&self) -> Option<&SubRunId> {
+        self.parent.parent_sub_run_id.as_ref()
+    }
+
+    pub fn to_child_session_node(
+        &self,
+        parent_turn_id: TurnId,
+        status_source: ChildSessionStatusSource,
+        created_by_tool_call_id: Option<DeliveryId>,
+        lineage_snapshot: Option<LineageSnapshot>,
+    ) -> ChildSessionNode {
+        ChildSessionNode {
+            identity: self.identity.clone(),
+            child_session_id: self.open_session_id.clone(),
+            parent_session_id: self.session_id().clone(),
+            parent: self.parent.clone(),
+            parent_turn_id,
+            lineage_kind: self.lineage_kind,
+            status: self.status,
+            status_source,
+            created_by_tool_call_id,
+            lineage_snapshot,
+        }
+    }
 }
 
 /// 子会话 lineage 快照元数据。
@@ -716,49 +832,63 @@ pub struct ChildAgentRef {
 #[serde(rename_all = "camelCase")]
 pub struct LineageSnapshot {
     /// 谱系来源 agent ID（fork 时为源 agent，resume 时为原始 agent）。
-    pub source_agent_id: String,
+    pub source_agent_id: AgentId,
     /// 谱系来源 session ID。
-    pub source_session_id: String,
+    pub source_session_id: SessionId,
     /// 谱系来源 sub_run_id（如果适用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_sub_run_id: Option<String>,
+    pub source_sub_run_id: Option<SubRunId>,
 }
 
 /// durable 子会话节点。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildSessionNode {
-    pub agent_id: String,
-    pub session_id: String,
-    pub child_session_id: String,
-    pub sub_run_id: String,
-    pub parent_session_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_sub_run_id: Option<String>,
-    pub parent_turn_id: String,
+    #[serde(flatten)]
+    pub identity: ChildExecutionIdentity,
+    pub child_session_id: SessionId,
+    pub parent_session_id: SessionId,
+    #[serde(flatten)]
+    pub parent: ParentExecutionRef,
+    pub parent_turn_id: TurnId,
     pub lineage_kind: ChildSessionLineageKind,
     pub status: AgentLifecycleStatus,
     pub status_source: ChildSessionStatusSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_by_tool_call_id: Option<String>,
+    pub created_by_tool_call_id: Option<DeliveryId>,
     /// 谱系来源快照。fork/resume 时记录来源上下文，spawn 时为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lineage_snapshot: Option<LineageSnapshot>,
 }
 
 impl ChildSessionNode {
+    pub fn agent_id(&self) -> &AgentId {
+        &self.identity.agent_id
+    }
+
+    pub fn session_id(&self) -> &SessionId {
+        &self.identity.session_id
+    }
+
+    pub fn sub_run_id(&self) -> &SubRunId {
+        &self.identity.sub_run_id
+    }
+
+    pub fn parent_agent_id(&self) -> Option<&AgentId> {
+        self.parent.parent_agent_id.as_ref()
+    }
+
+    pub fn parent_sub_run_id(&self) -> Option<&SubRunId> {
+        self.parent.parent_sub_run_id.as_ref()
+    }
+
     /// 将 durable 节点转换为可返回给调用方的稳定 child ref。
     ///
     /// 只返回正式 child 事实，不注入额外 UI 派生值。
     pub fn child_ref(&self) -> ChildAgentRef {
         ChildAgentRef {
-            agent_id: self.agent_id.clone(),
-            session_id: self.session_id.clone(),
-            sub_run_id: self.sub_run_id.clone(),
-            parent_agent_id: self.parent_agent_id.clone(),
-            parent_sub_run_id: self.parent_sub_run_id.clone(),
+            identity: self.identity.clone(),
+            parent: self.parent.clone(),
             lineage_kind: self.lineage_kind,
             status: self.status,
             open_session_id: self.child_session_id.clone(),
@@ -782,59 +912,17 @@ pub enum ChildSessionNotificationKind {
 /// durable 子会话通知。
 ///
 /// open target 统一从 `child_ref.open_session_id` 读取，不再在外层重复存放。
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct ChildSessionNotification {
-    pub notification_id: String,
+    pub notification_id: DeliveryId,
     pub child_ref: ChildAgentRef,
     pub kind: ChildSessionNotificationKind,
-    pub status: AgentLifecycleStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_tool_call_id: Option<String>,
+    pub source_tool_call_id: Option<DeliveryId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<ParentDelivery>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ChildSessionNotificationWire {
-    notification_id: String,
-    child_ref: ChildAgentRef,
-    kind: ChildSessionNotificationKind,
-    #[serde(default)]
-    summary: Option<String>,
-    status: AgentLifecycleStatus,
-    #[serde(default)]
-    source_tool_call_id: Option<String>,
-    #[serde(default)]
-    final_reply_excerpt: Option<String>,
-    #[serde(default)]
-    delivery: Option<ParentDelivery>,
-}
-
-impl<'de> Deserialize<'de> for ChildSessionNotification {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = ChildSessionNotificationWire::deserialize(deserializer)?;
-        let delivery = wire.delivery.or_else(|| {
-            legacy_notification_delivery(
-                &wire.notification_id,
-                wire.kind,
-                wire.summary.as_deref(),
-                wire.final_reply_excerpt.as_deref(),
-            )
-        });
-        Ok(Self {
-            notification_id: wire.notification_id,
-            child_ref: wire.child_ref,
-            kind: wire.kind,
-            status: wire.status,
-            source_tool_call_id: wire.source_tool_call_id,
-            delivery,
-        })
-    }
 }
 
 /// `send` 的稳定调用参数。
@@ -844,7 +932,7 @@ impl<'de> Deserialize<'de> for ChildSessionNotification {
 #[serde(rename_all = "camelCase")]
 pub struct SendToChildParams {
     /// 目标子 Agent 的稳定 ID。
-    pub agent_id: String,
+    pub agent_id: AgentId,
     /// 追加给子 Agent 的消息内容。
     pub message: String,
     /// 可选补充上下文。
@@ -854,12 +942,8 @@ pub struct SendToChildParams {
 
 impl SendToChildParams {
     pub fn validate(&self) -> Result<()> {
-        if self.agent_id.trim().is_empty() {
-            return Err(AstrError::Validation("agentId 不能为空".to_string()));
-        }
-        if self.message.trim().is_empty() {
-            return Err(AstrError::Validation("message 不能为空".to_string()));
-        }
+        require_non_empty_trimmed("agentId", &self.agent_id)?;
+        require_non_empty_trimmed("message", &self.message)?;
         Ok(())
     }
 }
@@ -873,20 +957,20 @@ pub struct SendToParentParams {
 
 impl SendToParentParams {
     pub fn validate(&self) -> Result<()> {
-        if self.payload.message().trim().is_empty() {
-            return Err(AstrError::Validation("message 不能为空".to_string()));
-        }
+        require_non_empty_trimmed("message", self.payload.message())?;
         Ok(())
     }
 }
 
 /// `send` 的稳定调用参数。
 ///
-/// 通过 untagged 联合同时承载下行委派和上行交付。
+/// 通过显式方向标记承载下行委派和上行交付，避免 untagged 反序列化歧义。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
+#[serde(tag = "direction", rename_all = "snake_case")]
 pub enum SendAgentParams {
+    #[serde(rename = "child")]
     ToChild(SendToChildParams),
+    #[serde(rename = "parent")]
     ToParent(SendToParentParams),
 }
 
@@ -906,62 +990,104 @@ impl SendAgentParams {
 #[serde(rename_all = "camelCase")]
 pub struct CloseAgentParams {
     /// 目标子 Agent 的稳定 ID。
-    pub agent_id: String,
+    pub agent_id: AgentId,
 }
 
 impl CloseAgentParams {
     /// 校验参数合法性。
     pub fn validate(&self) -> Result<()> {
-        if self.agent_id.trim().is_empty() {
-            return Err(AstrError::Validation("agentId 不能为空".to_string()));
-        }
+        require_non_empty_trimmed("agentId", &self.agent_id)?;
         Ok(())
     }
 }
 
 /// 协作工具的统一执行结果。
 ///
-/// 所有协作工具共享此结果结构，通过 `kind` 区分具体语义。
+/// 结果本身携带动作语义，避免再额外维护一套并行 kind + option 矩阵。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CollaborationResult {
-    /// 操作是否被接受。
-    pub accepted: bool,
-    /// 结果类型区分。
-    pub kind: CollaborationResultKind,
-    /// 目标 agent 的稳定引用（若可用）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_ref: Option<ChildAgentRef>,
-    /// 交付 ID（仅 send 场景）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_id: Option<String>,
-    /// 状态摘要。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
-    /// observe 的结构化结果。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observe_result: Option<mailbox::ObserveAgentResult>,
-    /// responsibility continuity / restricted-child 的轻量元数据。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delegation: Option<DelegationMetadata>,
-    /// 是否级联关闭（仅 close 场景）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cascade: Option<bool>,
-    /// 已关闭的根 agent ID（仅 close 场景）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closed_root_agent_id: Option<String>,
-    /// 失败原因。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<String>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CollaborationResult {
+    Sent {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_ref: Option<ChildAgentRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery_id: Option<DeliveryId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delegation: Option<DelegationMetadata>,
+    },
+    Observed {
+        agent_ref: ChildAgentRef,
+        summary: String,
+        observe_result: Box<mailbox::ObserveAgentResult>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delegation: Option<DelegationMetadata>,
+    },
+    Closed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        cascade: bool,
+        closed_root_agent_id: AgentId,
+    },
 }
 
-/// 协作结果类型。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CollaborationResultKind {
-    Sent,
-    Observed,
-    Closed,
+impl CollaborationResult {
+    pub fn agent_ref(&self) -> Option<&ChildAgentRef> {
+        match self {
+            Self::Sent { agent_ref, .. } => agent_ref.as_ref(),
+            Self::Observed { agent_ref, .. } => Some(agent_ref),
+            Self::Closed { .. } => None,
+        }
+    }
+
+    pub fn delivery_id(&self) -> Option<&DeliveryId> {
+        match self {
+            Self::Sent { delivery_id, .. } => delivery_id.as_ref(),
+            Self::Observed { .. } | Self::Closed { .. } => None,
+        }
+    }
+
+    pub fn summary(&self) -> Option<&str> {
+        match self {
+            Self::Sent { summary, .. } => summary.as_deref(),
+            Self::Observed { summary, .. } => Some(summary.as_str()),
+            Self::Closed { summary, .. } => summary.as_deref(),
+        }
+    }
+
+    pub fn observe_result(&self) -> Option<&mailbox::ObserveAgentResult> {
+        match self {
+            Self::Observed { observe_result, .. } => Some(observe_result.as_ref()),
+            Self::Sent { .. } | Self::Closed { .. } => None,
+        }
+    }
+
+    pub fn delegation(&self) -> Option<&DelegationMetadata> {
+        match self {
+            Self::Sent { delegation, .. } | Self::Observed { delegation, .. } => {
+                delegation.as_ref()
+            },
+            Self::Closed { .. } => None,
+        }
+    }
+
+    pub fn cascade(&self) -> Option<bool> {
+        match self {
+            Self::Closed { cascade, .. } => Some(*cascade),
+            Self::Sent { .. } | Self::Observed { .. } => None,
+        }
+    }
+
+    pub fn closed_root_agent_id(&self) -> Option<&AgentId> {
+        match self {
+            Self::Closed {
+                closed_root_agent_id,
+                ..
+            } => Some(closed_root_agent_id),
+            Self::Sent { .. } | Self::Observed { .. } => None,
+        }
+    }
 }
 
 /// 协作动作类型。
@@ -1006,21 +1132,17 @@ pub struct AgentCollaborationPolicyContext {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCollaborationFact {
-    pub fact_id: String,
+    pub fact_id: DeliveryId,
     pub action: AgentCollaborationActionKind,
     pub outcome: AgentCollaborationOutcomeKind,
-    pub parent_session_id: String,
-    pub turn_id: String,
+    pub parent_session_id: SessionId,
+    pub turn_id: TurnId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_agent_id: Option<String>,
+    pub parent_agent_id: Option<AgentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_agent_id: Option<String>,
+    pub child_identity: Option<ChildExecutionIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_sub_run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_id: Option<String>,
+    pub delivery_id: Option<DeliveryId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1028,8 +1150,28 @@ pub struct AgentCollaborationFact {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_tool_call_id: Option<String>,
+    pub source_tool_call_id: Option<DeliveryId>,
     pub policy: AgentCollaborationPolicyContext,
+}
+
+impl AgentCollaborationFact {
+    pub fn child_agent_id(&self) -> Option<&AgentId> {
+        self.child_identity
+            .as_ref()
+            .map(|identity| &identity.agent_id)
+    }
+
+    pub fn child_session_id(&self) -> Option<&SessionId> {
+        self.child_identity
+            .as_ref()
+            .map(|identity| &identity.session_id)
+    }
+
+    pub fn child_sub_run_id(&self) -> Option<&SubRunId> {
+        self.child_identity
+            .as_ref()
+            .map(|identity| &identity.sub_run_id)
+    }
 }
 
 /// Agent 收件箱信封。
@@ -1082,19 +1224,19 @@ pub enum InboxEnvelopeKind {
 pub struct AgentEventContext {
     /// 事件所属的 agent 实例 ID。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
+    pub agent_id: Option<AgentId>,
     /// 父 turn ID。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_turn_id: Option<String>,
+    pub parent_turn_id: Option<TurnId>,
     /// 使用的 profile ID。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_profile: Option<String>,
     /// 受控子会话执行域 ID。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sub_run_id: Option<String>,
+    pub sub_run_id: Option<SubRunId>,
     /// 父 sub-run ID。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_sub_run_id: Option<String>,
+    pub parent_sub_run_id: Option<SubRunId>,
     /// 执行来源。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_kind: Option<InvocationKind>,
@@ -1103,19 +1245,19 @@ pub struct AgentEventContext {
     pub storage_mode: Option<SubRunStorageMode>,
     /// 独立子会话 ID（若存在）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_session_id: Option<String>,
+    pub child_session_id: Option<SessionId>,
 }
 
 impl AgentEventContext {
     /// 构造一个子会话事件上下文。
     pub fn sub_run(
-        agent_id: impl Into<String>,
-        parent_turn_id: impl Into<String>,
+        agent_id: impl Into<AgentId>,
+        parent_turn_id: impl Into<TurnId>,
         agent_profile: impl Into<String>,
-        sub_run_id: impl Into<String>,
-        parent_sub_run_id: Option<String>,
+        sub_run_id: impl Into<SubRunId>,
+        parent_sub_run_id: Option<SubRunId>,
         storage_mode: SubRunStorageMode,
-        child_session_id: Option<String>,
+        child_session_id: Option<SessionId>,
     ) -> Self {
         let child_session_id = match storage_mode {
             SubRunStorageMode::IndependentSession => {
@@ -1144,7 +1286,7 @@ impl AgentEventContext {
     }
 
     /// 为根执行构造事件上下文。
-    pub fn root_execution(agent_id: impl Into<String>, agent_profile: impl Into<String>) -> Self {
+    pub fn root_execution(agent_id: impl Into<AgentId>, agent_profile: impl Into<String>) -> Self {
         Self {
             agent_id: Some(agent_id.into()),
             parent_turn_id: None,
@@ -1268,10 +1410,11 @@ impl From<&SubRunHandle> for AgentEventContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNode, ChildSessionNotification,
-        ChildSessionStatusSource, SpawnAgentParams, SpawnCapabilityGrant, SubRunHandoff,
-        SubRunStorageMode,
+        AgentLifecycleStatus, ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNode,
+        ChildSessionNotification, ChildSessionStatusSource, ParentExecutionRef, SpawnAgentParams,
+        SpawnCapabilityGrant, SubRunHandoff, SubRunStorageMode,
     };
+    use crate::{AgentId, DeliveryId, SessionId, SubRunId, TurnId};
 
     #[test]
     fn spawn_agent_params_reject_empty_prompt() {
@@ -1306,27 +1449,34 @@ mod tests {
     #[test]
     fn child_session_node_can_build_stable_child_ref() {
         let node = ChildSessionNode {
-            agent_id: "agent-child".to_string(),
-            session_id: "session-parent".to_string(),
-            child_session_id: "session-child".to_string(),
-            sub_run_id: "subrun-1".to_string(),
-            parent_session_id: "session-parent".to_string(),
-            parent_agent_id: Some("agent-parent".to_string()),
-            parent_sub_run_id: Some("subrun-parent".to_string()),
-            parent_turn_id: "turn-parent".to_string(),
+            identity: ChildExecutionIdentity {
+                agent_id: AgentId::from("agent-child"),
+                session_id: SessionId::from("session-parent"),
+                sub_run_id: SubRunId::from("subrun-1"),
+            },
+            child_session_id: SessionId::from("session-child"),
+            parent_session_id: SessionId::from("session-parent"),
+            parent: ParentExecutionRef {
+                parent_agent_id: Some(AgentId::from("agent-parent")),
+                parent_sub_run_id: Some(SubRunId::from("subrun-parent")),
+            },
+            parent_turn_id: TurnId::from("turn-parent"),
             lineage_kind: ChildSessionLineageKind::Spawn,
             status: AgentLifecycleStatus::Running,
             status_source: ChildSessionStatusSource::Durable,
-            created_by_tool_call_id: Some("call-1".to_string()),
+            created_by_tool_call_id: Some(DeliveryId::from("call-1")),
             lineage_snapshot: None,
         };
 
         let child_ref = node.child_ref();
 
-        assert_eq!(child_ref.agent_id, "agent-child");
-        assert_eq!(child_ref.sub_run_id, "subrun-1");
-        assert_eq!(child_ref.open_session_id, "session-child");
-        assert_eq!(child_ref.parent_agent_id.as_deref(), Some("agent-parent"));
+        assert_eq!(child_ref.agent_id().as_str(), "agent-child");
+        assert_eq!(child_ref.sub_run_id().as_str(), "subrun-1");
+        assert_eq!(child_ref.open_session_id.as_str(), "session-child");
+        assert_eq!(
+            child_ref.parent_agent_id().map(AgentId::as_str),
+            Some("agent-parent")
+        );
     }
 
     #[test]
@@ -1368,32 +1518,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_subrun_handoff_deserialize_upgrades_summary_into_delivery() {
-        let handoff: SubRunHandoff = serde_json::from_value(serde_json::json!({
-            "summary": "legacy handoff",
+    fn subrun_handoff_deserialize_rejects_summary_shape() {
+        let handoff = serde_json::from_value::<SubRunHandoff>(serde_json::json!({
+            "summary": "removed handoff field",
             "findings": ["done"],
             "artifacts": [],
-        }))
-        .expect("legacy handoff should deserialize");
+        }));
 
-        let delivery = handoff.delivery.expect("legacy handoff should upgrade");
-        assert_eq!(delivery.origin, super::ParentDeliveryOrigin::Fallback);
-        assert_eq!(
-            delivery.terminal_semantics,
-            super::ParentDeliveryTerminalSemantics::Terminal
+        assert!(
+            handoff.is_err(),
+            "summary-only handoff shape should fail fast"
         );
-        match delivery.payload {
-            super::ParentDeliveryPayload::Completed(payload) => {
-                assert_eq!(payload.message, "legacy handoff");
-                assert_eq!(payload.findings, vec!["done"]);
-            },
-            payload => panic!("unexpected payload: {payload:?}"),
-        }
     }
 
     #[test]
-    fn legacy_child_notification_deserialize_upgrades_excerpt_into_delivery() {
-        let notification: ChildSessionNotification = serde_json::from_value(serde_json::json!({
+    fn child_notification_deserialize_rejects_excerpt_shape() {
+        let notification = serde_json::from_value::<ChildSessionNotification>(serde_json::json!({
             "notificationId": "delivery-1",
             "childRef": {
                 "agentId": "agent-child",
@@ -1404,28 +1544,20 @@ mod tests {
                 "openSessionId": "session-child"
             },
             "kind": "delivered",
-            "summary": "legacy summary",
-            "finalReplyExcerpt": "legacy final",
+            "summary": "removed summary field",
+            "finalReplyExcerpt": "removed final field",
             "status": "idle"
-        }))
-        .expect("legacy notification should deserialize");
+        }));
 
-        let delivery = notification
-            .delivery
-            .expect("legacy notification should upgrade");
-        assert_eq!(delivery.idempotency_key, "delivery-1");
-        assert_eq!(delivery.origin, super::ParentDeliveryOrigin::Fallback);
-        match delivery.payload {
-            super::ParentDeliveryPayload::Completed(payload) => {
-                assert_eq!(payload.message, "legacy final");
-            },
-            payload => panic!("unexpected payload: {payload:?}"),
-        }
+        assert!(
+            notification.is_err(),
+            "summary/excerpt notification shape should fail fast"
+        );
     }
 
     #[test]
-    fn legacy_child_notification_deserialize_upgrades_failed_into_delivery() {
-        let notification: ChildSessionNotification = serde_json::from_value(serde_json::json!({
+    fn child_notification_deserialize_rejects_failed_shape() {
+        let notification = serde_json::from_value::<ChildSessionNotification>(serde_json::json!({
             "notificationId": "delivery-failed",
             "childRef": {
                 "agentId": "agent-child",
@@ -1436,32 +1568,19 @@ mod tests {
                 "openSessionId": "session-child"
             },
             "kind": "failed",
-            "summary": "legacy failure",
+            "summary": "removed failure field",
             "status": "idle"
-        }))
-        .expect("legacy failed notification should deserialize");
+        }));
 
-        let delivery = notification
-            .delivery
-            .expect("legacy failed notification should upgrade");
-        assert_eq!(
-            delivery.terminal_semantics,
-            super::ParentDeliveryTerminalSemantics::Terminal
+        assert!(
+            notification.is_err(),
+            "summary-only failed notification shape should fail fast"
         );
-        match delivery.payload {
-            super::ParentDeliveryPayload::Failed(payload) => {
-                assert_eq!(payload.message, "legacy failure");
-                assert_eq!(payload.code, super::SubRunFailureCode::Internal);
-                assert!(!payload.retryable);
-                assert_eq!(payload.technical_message, None);
-            },
-            payload => panic!("unexpected payload: {payload:?}"),
-        }
     }
 
     #[test]
-    fn legacy_child_notification_deserialize_upgrades_closed_into_delivery() {
-        let notification: ChildSessionNotification = serde_json::from_value(serde_json::json!({
+    fn child_notification_deserialize_rejects_closed_shape() {
+        let notification = serde_json::from_value::<ChildSessionNotification>(serde_json::json!({
             "notificationId": "delivery-closed",
             "childRef": {
                 "agentId": "agent-child",
@@ -1472,30 +1591,19 @@ mod tests {
                 "openSessionId": "session-child"
             },
             "kind": "closed",
-            "summary": "legacy close request",
+            "summary": "removed close-request field",
             "status": "idle"
-        }))
-        .expect("legacy closed notification should deserialize");
+        }));
 
-        let delivery = notification
-            .delivery
-            .expect("legacy closed notification should upgrade");
-        assert_eq!(
-            delivery.terminal_semantics,
-            super::ParentDeliveryTerminalSemantics::Terminal
+        assert!(
+            notification.is_err(),
+            "summary-only closed notification shape should fail fast"
         );
-        match delivery.payload {
-            super::ParentDeliveryPayload::CloseRequest(payload) => {
-                assert_eq!(payload.message, "legacy close request");
-                assert_eq!(payload.reason.as_deref(), Some("legacy_child_notification"));
-            },
-            payload => panic!("unexpected payload: {payload:?}"),
-        }
     }
 
     #[test]
-    fn legacy_child_notification_deserialize_upgrades_summary_only_progress_into_delivery() {
-        let notification: ChildSessionNotification = serde_json::from_value(serde_json::json!({
+    fn child_notification_deserialize_rejects_summary_only_progress_shape() {
+        let notification = serde_json::from_value::<ChildSessionNotification>(serde_json::json!({
             "notificationId": "delivery-progress",
             "childRef": {
                 "agentId": "agent-child",
@@ -1506,23 +1614,13 @@ mod tests {
                 "openSessionId": "session-child"
             },
             "kind": "waiting",
-            "summary": "legacy progress only",
+            "summary": "removed progress field",
             "status": "running"
-        }))
-        .expect("legacy progress notification should deserialize");
+        }));
 
-        let delivery = notification
-            .delivery
-            .expect("legacy progress notification should upgrade");
-        assert_eq!(
-            delivery.terminal_semantics,
-            super::ParentDeliveryTerminalSemantics::NonTerminal
+        assert!(
+            notification.is_err(),
+            "summary-only progress notification shape should fail fast"
         );
-        match delivery.payload {
-            super::ParentDeliveryPayload::Progress(payload) => {
-                assert_eq!(payload.message, "legacy progress only");
-            },
-            payload => panic!("unexpected payload: {payload:?}"),
-        }
     }
 }

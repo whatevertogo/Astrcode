@@ -67,7 +67,7 @@ mod supervisor;
 pub mod transport;
 mod worker;
 
-pub use capability_mapping::{descriptor_to_spec, spec_to_descriptor};
+pub use capability_mapping::{spec_to_wire_descriptor, wire_descriptor_to_spec};
 pub use capability_router::{
     AllowAllPermissionChecker, CapabilityHandler, CapabilityRouter, PermissionChecker,
 };

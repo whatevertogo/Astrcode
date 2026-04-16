@@ -31,8 +31,8 @@ pub use messages::{
 pub use skill_descriptor::{SkillAssetDescriptor, SkillDescriptor};
 
 pub use crate::capability::{
-    BudgetHint, CallerRef, CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind,
-    DescriptorBuildError, FilterDescriptor, HandlerDescriptor, InvocationContext, PeerDescriptor,
-    PeerRole, PermissionHint, ProfileDescriptor, SideEffectLevel, StabilityLevel,
-    TriggerDescriptor, WorkspaceRef,
+    BudgetHint, CallerRef, CapabilityKind, CapabilityWireDescriptor,
+    CapabilityWireDescriptorBuildError, CapabilityWireDescriptorBuilder, FilterDescriptor,
+    HandlerDescriptor, InvocationContext, InvocationMode, PeerDescriptor, PeerRole, PermissionSpec,
+    ProfileDescriptor, SideEffect, Stability, TriggerDescriptor, WorkspaceRef,
 };

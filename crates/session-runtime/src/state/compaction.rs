@@ -132,10 +132,10 @@ mod tests {
     #[test]
     fn recent_turn_event_tail_excludes_malformed_subrun_events_without_child_session() {
         let malformed_child_agent = AgentEventContext {
-            agent_id: Some("agent-child".to_string()),
-            parent_turn_id: Some("turn-root".to_string()),
+            agent_id: Some("agent-child".to_string().into()),
+            parent_turn_id: Some("turn-root".to_string().into()),
             agent_profile: Some("explore".to_string()),
-            sub_run_id: Some("subrun-malformed".to_string()),
+            sub_run_id: Some("subrun-malformed".to_string().into()),
             parent_sub_run_id: None,
             invocation_kind: Some(InvocationKind::SubRun),
             storage_mode: Some(astrcode_core::SubRunStorageMode::IndependentSession),
@@ -210,7 +210,7 @@ mod tests {
             "subrun-independent",
             None,
             astrcode_core::SubRunStorageMode::IndependentSession,
-            Some("session-child".to_string()),
+            Some("session-child".to_string().into()),
         );
         let events = vec![
             stored(

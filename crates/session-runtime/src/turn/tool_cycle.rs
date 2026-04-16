@@ -601,7 +601,11 @@ mod tests {
                 .expect("observed lock should work")
                 .push(ObservedToolContext {
                     turn_id: ctx.turn_id().map(ToString::to_string),
-                    agent_id: ctx.agent_context().agent_id.clone(),
+                    agent_id: ctx
+                        .agent_context()
+                        .agent_id
+                        .clone()
+                        .map(|id| id.to_string()),
                     agent_profile: ctx.agent_context().agent_profile.clone(),
                 });
             Ok(ToolExecutionResult {
@@ -611,6 +615,7 @@ mod tests {
                 output: "ok".to_string(),
                 error: None,
                 metadata: None,
+                child_ref: None,
                 duration_ms: 0,
                 truncated: false,
             })
@@ -675,6 +680,7 @@ mod tests {
                 output: "done".to_string(),
                 error: None,
                 metadata: None,
+                child_ref: None,
                 duration_ms: 0,
                 truncated: false,
             })
@@ -743,6 +749,7 @@ mod tests {
                 output: String::new(),
                 error: Some("stderr failure".to_string()),
                 metadata: None,
+                child_ref: None,
                 duration_ms: 0,
                 truncated: false,
             })

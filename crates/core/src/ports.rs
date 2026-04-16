@@ -151,18 +151,24 @@ pub trait LlmProvider: Send + Sync {
 /// Prompt 组装请求。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct PromptSkillSummary {
+pub struct PromptEntrySummary {
     pub id: String,
     pub description: String,
 }
 
-/// Prompt 侧的轻量 agent profile 摘要。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptAgentProfileSummary {
-    pub id: String,
-    pub description: String,
+impl PromptEntrySummary {
+    pub fn new(id: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            description: description.into(),
+        }
+    }
 }
+
+pub type PromptSkillSummary = PromptEntrySummary;
+
+/// Prompt 侧的轻量 agent profile 摘要。
+pub type PromptAgentProfileSummary = PromptEntrySummary;
 
 /// Prompt 声明来源。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

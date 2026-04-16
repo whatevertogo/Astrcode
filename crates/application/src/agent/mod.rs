@@ -24,12 +24,13 @@ use std::{path::Path, sync::Arc};
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
     AgentCollaborationPolicyContext, AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope,
-    AgentTurnOutcome, ArtifactRef, CloseAgentParams, CollaborationResult, DelegationMetadata,
-    InvocationKind, ObserveParams, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
-    ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload, PromptDeclaration,
-    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource,
-    ResolvedExecutionLimitsSnapshot, Result, RuntimeMetricsRecorder, SendAgentParams,
-    SpawnAgentParams, SubRunHandle, SubRunHandoff, SubRunResult, SystemPromptLayer, ToolContext,
+    AgentTurnOutcome, ArtifactRef, ChildExecutionIdentity, CloseAgentParams, CollaborationResult,
+    DelegationMetadata, InvocationKind, ObserveParams, ParentDelivery, ParentDeliveryOrigin,
+    ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload,
+    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    PromptDeclarationSource, ResolvedExecutionLimitsSnapshot, Result, RuntimeMetricsRecorder,
+    SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff, SubRunResult,
+    SystemPromptLayer, ToolContext,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -59,7 +60,7 @@ impl From<astrcode_core::AstrError> for AgentOrchestrationError {
 }
 
 pub(crate) fn root_execution_event_context(
-    agent_id: impl Into<String>,
+    agent_id: impl Into<astrcode_core::AgentId>,
     profile_id: impl Into<String>,
 ) -> AgentEventContext {
     AgentEventContext::root_execution(agent_id, profile_id)
@@ -453,13 +454,13 @@ pub(crate) fn child_delivery_mailbox_envelope(
 ) -> AgentMailboxEnvelope {
     AgentMailboxEnvelope {
         delivery_id: notification.notification_id.clone(),
-        from_agent_id: notification.child_ref.agent_id.clone(),
+        from_agent_id: notification.child_ref.agent_id().to_string(),
         to_agent_id: target_agent_id,
         message: terminal_notification_message(notification),
         queued_at: chrono::Utc::now(),
-        sender_lifecycle_status: notification.status,
+        sender_lifecycle_status: notification.child_ref.status,
         sender_last_turn_outcome: terminal_notification_turn_outcome(notification),
-        sender_open_session_id: notification.child_ref.open_session_id.clone(),
+        sender_open_session_id: notification.child_ref.open_session_id.to_string(),
     }
 }
 
@@ -478,7 +479,7 @@ pub(crate) fn terminal_notification_message(
 pub(crate) fn terminal_notification_turn_outcome(
     notification: &astrcode_core::ChildSessionNotification,
 ) -> Option<AgentTurnOutcome> {
-    if !matches!(notification.status, AgentLifecycleStatus::Idle) {
+    if !matches!(notification.child_ref.status, AgentLifecycleStatus::Idle) {
         return None;
     }
     if let Some(delivery) = &notification.delivery {
@@ -500,10 +501,7 @@ pub(crate) fn terminal_notification_turn_outcome(
 }
 
 pub(crate) fn child_open_session_id(child: &SubRunHandle) -> String {
-    child
-        .child_session_id
-        .clone()
-        .unwrap_or_else(|| child.session_id.clone())
+    child.open_session_id().to_string()
 }
 
 pub(crate) fn artifact_ref(
@@ -787,22 +785,27 @@ impl AgentOrchestrationService {
         record: CollaborationFactRecord<'_>,
     ) -> std::result::Result<(), AgentOrchestrationError> {
         let fact = AgentCollaborationFact {
-            fact_id: format!("acf-{}", uuid::Uuid::new_v4()),
+            fact_id: format!("acf-{}", uuid::Uuid::new_v4()).into(),
             action: record.action,
             outcome: record.outcome,
-            parent_session_id: record.session_id.to_string(),
-            turn_id: record.turn_id.to_string(),
-            parent_agent_id: record.parent_agent_id,
-            child_agent_id: record.child.map(|handle| handle.agent_id.clone()),
-            child_session_id: record
-                .child
-                .and_then(|handle| handle.child_session_id.clone()),
-            child_sub_run_id: record.child.map(|handle| handle.sub_run_id.clone()),
-            delivery_id: record.delivery_id,
+            parent_session_id: record.session_id.to_string().into(),
+            turn_id: record.turn_id.to_string().into(),
+            parent_agent_id: record.parent_agent_id.map(Into::into),
+            child_identity: record.child.and_then(|handle| {
+                handle
+                    .child_session_id
+                    .clone()
+                    .map(|child_session_id| ChildExecutionIdentity {
+                        agent_id: handle.agent_id.clone(),
+                        session_id: child_session_id,
+                        sub_run_id: handle.sub_run_id.clone(),
+                    })
+            }),
+            delivery_id: record.delivery_id.map(Into::into),
             reason_code: record.reason_code,
             summary: record.summary,
             latency_ms: record.latency_ms,
-            source_tool_call_id: record.source_tool_call_id,
+            source_tool_call_id: record.source_tool_call_id.map(Into::into),
             policy: self.collaboration_policy_context(runtime),
         };
         self.append_collaboration_fact(fact).await
@@ -816,7 +819,7 @@ impl AgentOrchestrationService {
             self.resolve_runtime_config_for_working_dir(ctx.working_dir())?,
             ctx.session_id().to_string(),
             ctx.turn_id().unwrap_or("unknown-turn").to_string(),
-            ctx.agent_context().agent_id.clone(),
+            ctx.agent_context().agent_id.clone().map(Into::into),
             ctx.tool_call_id().map(ToString::to_string),
         ))
     }
@@ -922,7 +925,7 @@ impl AgentOrchestrationService {
                     .unwrap_or_else(|| IMPLICIT_ROOT_PROFILE_ID.to_string());
                 let handle = self
                     .kernel
-                    .register_root_agent(agent_id, session_id, profile_id)
+                    .register_root_agent(agent_id.to_string(), session_id, profile_id)
                     .await
                     .map_err(|error| {
                         AgentOrchestrationError::Internal(format!(
@@ -1014,8 +1017,8 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         let collaboration = self
             .tool_collaboration_context(ctx)
             .map_err(map_orchestration_error)?
-            .with_parent_agent_id(Some(parent_handle.agent_id.clone()));
-        let parent_agent_id = parent_handle.agent_id.clone();
+            .with_parent_agent_id(Some(parent_handle.agent_id.to_string()));
+        let parent_agent_id = parent_handle.agent_id.to_string();
         let parent_turn_id = collaboration.turn_id().to_string();
         let parent_session_id = collaboration.session_id().to_string();
         let profile_id = params
@@ -1125,10 +1128,8 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             &parent_agent_id,
         );
 
-        Ok(SubRunResult {
-            lifecycle: AgentLifecycleStatus::Running,
-            last_turn_outcome: None,
-            handoff: Some(SubRunHandoff {
+        Ok(SubRunResult::Running {
+            handoff: SubRunHandoff {
                 findings: Vec::new(),
                 artifacts: handoff_artifacts,
                 delivery: Some(ParentDelivery {
@@ -1144,8 +1145,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
                         },
                     }),
                 }),
-            }),
-            failure: None,
+            },
         })
     }
 }
@@ -1189,9 +1189,10 @@ impl astrcode_core::CollaborationExecutor for AgentOrchestrationService {
 mod tests {
     use astrcode_core::{
         AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
-        CancelToken, ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, ResolvedExecutionLimitsSnapshot, SessionId, SpawnAgentParams,
-        StorageEventPayload, ToolContext, agent::executor::SubAgentExecutor,
+        CancelToken, ChildAgentRef, ChildExecutionIdentity, ChildSessionLineageKind,
+        ChildSessionNotification, ChildSessionNotificationKind, ParentExecutionRef,
+        ResolvedExecutionLimitsSnapshot, SessionId, SpawnAgentParams, StorageEventPayload,
+        ToolContext, agent::executor::SubAgentExecutor,
     };
 
     use super::{
@@ -1204,7 +1205,7 @@ mod tests {
         TestLlmBehavior, build_agent_test_harness, build_agent_test_harness_with_agent_config,
     };
 
-    fn assert_no_legacy_kernel_agent_methods(source: &str, file: &str) {
+    fn assert_no_removed_kernel_agent_methods(source: &str, file: &str) {
         let production_source = source
             .split_once("#[cfg(test)]")
             .map(|(prefix, _)| prefix)
@@ -1223,7 +1224,7 @@ mod tests {
         for pattern in forbidden {
             assert!(
                 !production_source.contains(pattern),
-                "{file} should use kernel.agent() stable surface instead of legacy Kernel method \
+                "{file} should use kernel.agent() stable surface instead of removed Kernel method \
                  {pattern}"
             );
         }
@@ -1266,7 +1267,7 @@ mod tests {
         ];
 
         for (file, source) in sources {
-            assert_no_legacy_kernel_agent_methods(source, file);
+            assert_no_removed_kernel_agent_methods(source, file);
             assert_agent_control_boundary(source, file);
         }
     }
@@ -1274,19 +1275,22 @@ mod tests {
     #[test]
     fn child_delivery_mailbox_envelope_reuses_terminal_projection_fields() {
         let notification = ChildSessionNotification {
-            notification_id: "delivery-1".to_string(),
+            notification_id: "delivery-1".to_string().into(),
             child_ref: ChildAgentRef {
-                agent_id: "agent-child".to_string(),
-                session_id: "session-parent".to_string(),
-                sub_run_id: "subrun-child".to_string(),
-                parent_agent_id: Some("agent-parent".to_string()),
-                parent_sub_run_id: Some("subrun-parent".to_string()),
+                identity: ChildExecutionIdentity {
+                    agent_id: "agent-child".to_string().into(),
+                    session_id: "session-parent".to_string().into(),
+                    sub_run_id: "subrun-child".to_string().into(),
+                },
+                parent: ParentExecutionRef {
+                    parent_agent_id: Some("agent-parent".to_string().into()),
+                    parent_sub_run_id: Some("subrun-parent".to_string().into()),
+                },
                 lineage_kind: ChildSessionLineageKind::Spawn,
                 status: AgentLifecycleStatus::Idle,
-                open_session_id: "session-child".to_string(),
+                open_session_id: "session-child".to_string().into(),
             },
             kind: ChildSessionNotificationKind::Delivered,
-            status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             delivery: Some(astrcode_core::ParentDelivery {
                 idempotency_key: "delivery-1".to_string(),
@@ -1393,8 +1397,7 @@ mod tests {
             .expect("subagent should launch with implicit root parent");
 
         let parent_agent_artifact = result
-            .handoff
-            .as_ref()
+            .handoff()
             .expect("handoff should exist")
             .artifacts
             .iter()
@@ -1458,7 +1461,7 @@ mod tests {
             .await
             .expect("subagent should launch");
 
-        let handoff = result.handoff.expect("handoff should exist");
+        let handoff = result.handoff().cloned().expect("handoff should exist");
         let child_agent_id = handoff
             .artifacts
             .iter()
@@ -1479,12 +1482,16 @@ mod tests {
             .await
             .expect("child handle should exist");
         assert_eq!(
-            child_handle.session_id, parent.session_id,
+            child_handle.session_id.to_string(),
+            parent.session_id,
             "independent child should remain attached to parent session in control tree"
         );
         assert_eq!(
-            child_handle.child_session_id.as_deref(),
-            Some(child_session_id.as_str()),
+            child_handle
+                .child_session_id
+                .as_ref()
+                .map(|id| id.to_string()),
+            Some(child_session_id.clone()),
             "independent child should carry its open child session id"
         );
         assert_eq!(

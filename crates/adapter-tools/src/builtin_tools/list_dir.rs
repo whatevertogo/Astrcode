@@ -269,6 +269,7 @@ impl Tool for ListDirTool {
                     SortBy::Size => "size",
                 },
             })),
+            child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })

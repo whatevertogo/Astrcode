@@ -33,9 +33,9 @@
 ## 6. Server Route 与 Conversation v1 Surface
 
 - [x] 6.1 在 `crates/server/src/http/routes/` 下新增 conversation v1 路由，至少暴露 `GET /api/v1/conversation/sessions/{id}/snapshot` 与 `GET /api/v1/conversation/sessions/{id}/stream?cursor=...`，并接入现有 auth 机制。
-- [x] 6.2 为 conversation v1 route 增加明确的结构化错误返回，区分 `rehydrate_required`、`auth_expired`、`not_found`、`forbidden` 与参数校验失败，不把 legacy `/events` 的语义隐式复用过来。
+- [x] 6.2 为 conversation v1 route 增加明确的结构化错误返回，区分 `rehydrate_required`、`auth_expired`、`not_found`、`forbidden` 与参数校验失败，不把已删除 `/events` 的语义隐式复用过来。
 - [x] 6.3 在 `crates/server/src/http/routes/mod.rs`、相关 mapper 与 observability 接线中补齐 conversation route 注册、SSE framing、cursor 解析与 catch-up 指标记录。
-- [x] 6.4 为 `crates/server/src/tests/` 增加 conversation route 集成测试，覆盖 snapshot hydration、stream catch-up、cursor 失效、active session 切换与 route 不依赖 legacy `/events`。
+- [x] 6.4 为 `crates/server/src/tests/` 增加 conversation route 集成测试，覆盖 snapshot hydration、stream catch-up、cursor 失效、active session 切换与 route 不依赖已删除 `/events`。
 
 ## 7. Discovery 与 Execution Control 接线
 
@@ -61,5 +61,5 @@
 
 - [x] 10.1 为 `crates/cli/` 增加 ratatui test backend 渲染测试，至少覆盖 transcript、child pane、slash palette、error/banner、空状态与 degrade 模式。
 - [x] 10.2 增加 server + client + cli 的端到端验收脚本或集成测试，覆盖 attach 已运行 server、managed-local 启动、snapshot/stream、resume、/compact、/skill 与单 active stream 切换。
-- [x] 10.3 更新 `PROJECT_ARCHITECTURE.md`、必要的开发文档与 release 说明，明确 `launcher / client / terminal_projection / server route / tui app` 边界，以及 conversation v1 已替代并删除 legacy `/view`/`history`/`events` 产品读面。
+- [x] 10.3 更新 `PROJECT_ARCHITECTURE.md`、必要的开发文档与 release 说明，明确 `launcher / client / terminal_projection / server route / tui app` 边界，以及 conversation v1 已替代并删除旧 `/view`/`history`/`events` 产品读面。
 - [x] 10.4 将 `astrcode-cli` 纳入构建与发布产物，补齐验证命令：`cargo fmt --all`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --workspace`、`node scripts/check-crate-boundaries.mjs`，并在需要时补充 frontend 验证以确认现有 surface 未回归。

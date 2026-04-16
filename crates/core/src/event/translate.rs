@@ -344,6 +344,7 @@ impl EventTranslator {
                 success,
                 error,
                 metadata,
+                child_ref,
                 duration_ms,
                 ..
             } => {
@@ -364,6 +365,7 @@ impl EventTranslator {
                             output: output.clone(),
                             error: error.clone(),
                             metadata: metadata.clone(),
+                            child_ref: child_ref.clone(),
                             duration_ms: *duration_ms,
                             truncated: false,
                         },
@@ -589,6 +591,7 @@ mod tests {
                     success: true,
                     error: None,
                     metadata: None,
+                    child_ref: None,
                     duration_ms: 12,
                 },
             },

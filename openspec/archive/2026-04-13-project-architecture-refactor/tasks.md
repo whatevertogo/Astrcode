@@ -23,8 +23,8 @@
 
 ## 3. protocol 收口为 wire DTO
 
-- [x] 3.1 保留 `CapabilityDescriptor` 作为传输 DTO，不参与运行时内部语义判断
-- [x] 3.2 新建 `CapabilitySpec <-> CapabilityDescriptor` mapper，统一边界转换
+- [x] 3.1 保留 `CapabilityWireDescriptor` 作为传输 DTO，不参与运行时内部语义判断
+- [x] 3.2 新建 `CapabilitySpec <-> CapabilityWireDescriptor` mapper，统一边界转换
 - [x] 3.3 将 server DTO、插件握手、协议输出统一收口到 mapper
 - [x] 3.4 验证：`cargo check -p astrcode-protocol`
 

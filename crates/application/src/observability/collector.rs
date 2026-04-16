@@ -8,7 +8,7 @@ use std::{
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
-    RuntimeMetricsRecorder, SubRunExecutionOutcome, SubRunStorageMode,
+    AgentTurnOutcome, RuntimeMetricsRecorder, SubRunStorageMode,
 };
 
 use crate::{
@@ -99,7 +99,7 @@ struct SubRunMetrics {
     total: AtomicU64,
     failures: AtomicU64,
     completed: AtomicU64,
-    aborted: AtomicU64,
+    cancelled: AtomicU64,
     token_exceeded: AtomicU64,
     independent_session_total: AtomicU64,
     total_duration_ms: AtomicU64,
@@ -114,7 +114,7 @@ impl SubRunMetrics {
     fn record(
         &self,
         duration_ms: u64,
-        outcome: SubRunExecutionOutcome,
+        outcome: AgentTurnOutcome,
         step_count: Option<u32>,
         estimated_tokens: Option<u64>,
         storage_mode: Option<SubRunStorageMode>,
@@ -124,16 +124,16 @@ impl SubRunMetrics {
             .fetch_add(duration_ms, Ordering::Relaxed);
         self.last_duration_ms.store(duration_ms, Ordering::Relaxed);
         match outcome {
-            SubRunExecutionOutcome::Completed => {
+            AgentTurnOutcome::Completed => {
                 self.completed.fetch_add(1, Ordering::Relaxed);
             },
-            SubRunExecutionOutcome::Failed => {
+            AgentTurnOutcome::Failed => {
                 self.failures.fetch_add(1, Ordering::Relaxed);
             },
-            SubRunExecutionOutcome::Aborted => {
-                self.aborted.fetch_add(1, Ordering::Relaxed);
+            AgentTurnOutcome::Cancelled => {
+                self.cancelled.fetch_add(1, Ordering::Relaxed);
             },
-            SubRunExecutionOutcome::TokenExceeded => {
+            AgentTurnOutcome::TokenExceeded => {
                 self.token_exceeded.fetch_add(1, Ordering::Relaxed);
             },
         }
@@ -159,7 +159,7 @@ impl SubRunMetrics {
             total: self.total.load(Ordering::Relaxed),
             failures: self.failures.load(Ordering::Relaxed),
             completed: self.completed.load(Ordering::Relaxed),
-            aborted: self.aborted.load(Ordering::Relaxed),
+            cancelled: self.cancelled.load(Ordering::Relaxed),
             token_exceeded: self.token_exceeded.load(Ordering::Relaxed),
             independent_session_total: self.independent_session_total.load(Ordering::Relaxed),
             total_duration_ms: self.total_duration_ms.load(Ordering::Relaxed),
@@ -270,7 +270,7 @@ impl CollaborationMetricsState {
         match fact.outcome {
             AgentCollaborationOutcomeKind::Accepted => {
                 self.spawn_accepted = self.spawn_accepted.saturating_add(1);
-                if let Some(child_id) = fact.child_agent_id.as_deref() {
+                if let Some(child_id) = fact.child_agent_id().map(|id| id.as_str()) {
                     self.child_states.entry(child_id.to_string()).or_default();
                 }
             },
@@ -285,13 +285,13 @@ impl CollaborationMetricsState {
         match fact.outcome {
             AgentCollaborationOutcomeKind::Reused => {
                 self.send_reused = self.send_reused.saturating_add(1);
-                self.mark_child_reused(fact.child_agent_id.as_deref());
-                self.satisfy_pending_observe(fact.child_agent_id.as_deref());
+                self.mark_child_reused(fact.child_agent_id().map(|id| id.as_str()));
+                self.satisfy_pending_observe(fact.child_agent_id().map(|id| id.as_str()));
             },
             AgentCollaborationOutcomeKind::Queued => {
                 self.send_queued = self.send_queued.saturating_add(1);
-                self.mark_child_reused(fact.child_agent_id.as_deref());
-                self.satisfy_pending_observe(fact.child_agent_id.as_deref());
+                self.mark_child_reused(fact.child_agent_id().map(|id| id.as_str()));
+                self.satisfy_pending_observe(fact.child_agent_id().map(|id| id.as_str()));
             },
             AgentCollaborationOutcomeKind::Rejected | AgentCollaborationOutcomeKind::Failed => {
                 self.send_rejected = self.send_rejected.saturating_add(1);
@@ -304,7 +304,7 @@ impl CollaborationMetricsState {
         match fact.outcome {
             AgentCollaborationOutcomeKind::Accepted => {
                 self.observe_calls = self.observe_calls.saturating_add(1);
-                if let Some(child_id) = fact.child_agent_id.as_deref() {
+                if let Some(child_id) = fact.child_agent_id().map(|id| id.as_str()) {
                     self.pending_observes
                         .entry(child_id.to_string())
                         .or_default();
@@ -321,7 +321,7 @@ impl CollaborationMetricsState {
         match fact.outcome {
             AgentCollaborationOutcomeKind::Closed => {
                 self.close_calls = self.close_calls.saturating_add(1);
-                if let Some(child_id) = fact.child_agent_id.as_deref() {
+                if let Some(child_id) = fact.child_agent_id().map(|id| id.as_str()) {
                     self.child_states
                         .entry(child_id.to_string())
                         .or_default()
@@ -340,7 +340,7 @@ impl CollaborationMetricsState {
         match fact.outcome {
             AgentCollaborationOutcomeKind::Delivered => {
                 self.delivery_delivered = self.delivery_delivered.saturating_add(1);
-                if let Some(child_id) = fact.child_agent_id.as_deref() {
+                if let Some(child_id) = fact.child_agent_id().map(|id| id.as_str()) {
                     self.child_states
                         .entry(child_id.to_string())
                         .or_default()
@@ -501,7 +501,7 @@ impl RuntimeMetricsRecorder for RuntimeObservabilityCollector {
     fn record_subrun_execution(
         &self,
         duration_ms: u64,
-        outcome: SubRunExecutionOutcome,
+        outcome: AgentTurnOutcome,
         step_count: Option<u32>,
         estimated_tokens: Option<u64>,
         storage_mode: Option<SubRunStorageMode>,
@@ -593,8 +593,8 @@ impl RuntimeMetricsRecorder for RuntimeObservabilityCollector {
 mod tests {
     use astrcode_core::{
         AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
-        AgentCollaborationPolicyContext, RuntimeMetricsRecorder, SubRunExecutionOutcome,
-        SubRunStorageMode,
+        AgentCollaborationPolicyContext, AgentTurnOutcome, ChildExecutionIdentity,
+        RuntimeMetricsRecorder, SubRunStorageMode,
     };
 
     use super::RuntimeObservabilityCollector;
@@ -609,7 +609,7 @@ mod tests {
         collector.record_turn_execution(30, true);
         collector.record_subrun_execution(
             12,
-            SubRunExecutionOutcome::Completed,
+            AgentTurnOutcome::Completed,
             Some(3),
             Some(1200),
             Some(SubRunStorageMode::IndependentSession),
@@ -666,67 +666,75 @@ mod tests {
         };
 
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
-            fact_id: "fact-spawn".to_string(),
+            fact_id: "fact-spawn".to_string().into(),
             action: AgentCollaborationActionKind::Spawn,
             outcome: AgentCollaborationOutcomeKind::Accepted,
-            parent_session_id: "session-parent".to_string(),
-            turn_id: "turn-1".to_string(),
-            parent_agent_id: Some("agent-root".to_string()),
-            child_agent_id: Some("agent-child".to_string()),
-            child_session_id: Some("session-child".to_string()),
-            child_sub_run_id: Some("subrun-child".to_string()),
+            parent_session_id: "session-parent".to_string().into(),
+            turn_id: "turn-1".to_string().into(),
+            parent_agent_id: Some("agent-root".to_string().into()),
+            child_identity: Some(ChildExecutionIdentity {
+                agent_id: "agent-child".to_string().into(),
+                session_id: "session-child".to_string().into(),
+                sub_run_id: "subrun-child".to_string().into(),
+            }),
             delivery_id: None,
             reason_code: None,
             summary: Some("spawned".to_string()),
             latency_ms: None,
-            source_tool_call_id: Some("call-1".to_string()),
+            source_tool_call_id: Some("call-1".to_string().into()),
             policy: policy.clone(),
         });
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
-            fact_id: "fact-observe".to_string(),
+            fact_id: "fact-observe".to_string().into(),
             action: AgentCollaborationActionKind::Observe,
             outcome: AgentCollaborationOutcomeKind::Accepted,
-            parent_session_id: "session-parent".to_string(),
-            turn_id: "turn-1".to_string(),
-            parent_agent_id: Some("agent-root".to_string()),
-            child_agent_id: Some("agent-child".to_string()),
-            child_session_id: Some("session-child".to_string()),
-            child_sub_run_id: Some("subrun-child".to_string()),
+            parent_session_id: "session-parent".to_string().into(),
+            turn_id: "turn-1".to_string().into(),
+            parent_agent_id: Some("agent-root".to_string().into()),
+            child_identity: Some(ChildExecutionIdentity {
+                agent_id: "agent-child".to_string().into(),
+                session_id: "session-child".to_string().into(),
+                sub_run_id: "subrun-child".to_string().into(),
+            }),
             delivery_id: None,
             reason_code: None,
             summary: Some("observe".to_string()),
             latency_ms: None,
-            source_tool_call_id: Some("call-2".to_string()),
+            source_tool_call_id: Some("call-2".to_string().into()),
             policy: policy.clone(),
         });
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
-            fact_id: "fact-send".to_string(),
+            fact_id: "fact-send".to_string().into(),
             action: AgentCollaborationActionKind::Send,
             outcome: AgentCollaborationOutcomeKind::Reused,
-            parent_session_id: "session-parent".to_string(),
-            turn_id: "turn-1".to_string(),
-            parent_agent_id: Some("agent-root".to_string()),
-            child_agent_id: Some("agent-child".to_string()),
-            child_session_id: Some("session-child".to_string()),
-            child_sub_run_id: Some("subrun-child".to_string()),
+            parent_session_id: "session-parent".to_string().into(),
+            turn_id: "turn-1".to_string().into(),
+            parent_agent_id: Some("agent-root".to_string().into()),
+            child_identity: Some(ChildExecutionIdentity {
+                agent_id: "agent-child".to_string().into(),
+                session_id: "session-child".to_string().into(),
+                sub_run_id: "subrun-child".to_string().into(),
+            }),
             delivery_id: None,
             reason_code: None,
             summary: Some("reused".to_string()),
             latency_ms: None,
-            source_tool_call_id: Some("call-3".to_string()),
+            source_tool_call_id: Some("call-3".to_string().into()),
             policy: policy.clone(),
         });
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
-            fact_id: "fact-delivery".to_string(),
+            fact_id: "fact-delivery".to_string().into(),
             action: AgentCollaborationActionKind::Delivery,
             outcome: AgentCollaborationOutcomeKind::Consumed,
-            parent_session_id: "session-parent".to_string(),
-            turn_id: "turn-2".to_string(),
-            parent_agent_id: Some("agent-root".to_string()),
-            child_agent_id: Some("agent-child".to_string()),
-            child_session_id: Some("session-child".to_string()),
-            child_sub_run_id: Some("subrun-child".to_string()),
-            delivery_id: Some("delivery-1".to_string()),
+            parent_session_id: "session-parent".to_string().into(),
+            turn_id: "turn-2".to_string().into(),
+            parent_agent_id: Some("agent-root".to_string().into()),
+            child_identity: Some(ChildExecutionIdentity {
+                agent_id: "agent-child".to_string().into(),
+                session_id: "session-child".to_string().into(),
+                sub_run_id: "subrun-child".to_string().into(),
+            }),
+            delivery_id: Some("delivery-1".to_string().into()),
             reason_code: None,
             summary: Some("consumed".to_string()),
             latency_ms: Some(250),

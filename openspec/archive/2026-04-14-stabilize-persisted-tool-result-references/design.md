@@ -24,7 +24,7 @@
 - 不引入新的 UI/diagnostic summary 协议作为第一阶段主路径
 - 不改变 `tool_result_persist` 的基础 `<persisted-output>` 文本契约
 - 不新增新的外部 HTTP/SSE DTO
-- 不把业务逻辑塞进 `CapabilityDescriptor` 或 protocol DTO
+- 不把业务逻辑塞进 `CapabilityWireDescriptor` 或 protocol DTO
 - 不要求所有工具都立刻支持新的 per-tool 自定义摘要器
 
 ## Decisions

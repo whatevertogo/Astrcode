@@ -186,16 +186,3 @@ pub enum ChildSessionNotificationKindDto {
     Closed,
     Failed,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildSessionNotificationDto {
-    pub notification_id: String,
-    pub child_ref: ChildAgentRefDto,
-    pub kind: ChildSessionNotificationKindDto,
-    pub status: AgentLifecycleDto,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_tool_call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<super::event::ParentDeliveryDto>,
-}

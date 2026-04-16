@@ -55,13 +55,13 @@ async fn spawn_test_child_agent(
         )
         .await
         .expect("agent should launch")
-        .handoff
+        .handoff()
         .and_then(|handoff| {
             handoff
                 .artifacts
-                .into_iter()
+                .iter()
                 .find(|artifact| artifact.kind == "agent")
-                .map(|artifact| artifact.id)
+                .map(|artifact| artifact.id.clone())
         })
         .expect("spawned child should return agent artifact")
 }
@@ -274,7 +274,7 @@ async fn subrun_cancel_route_returns_not_found_after_removal() {
         .await
         .expect("response should be returned");
 
-    // legacy cancel route 已删除，统一走 close
+    // 旧 cancel route 已删除，统一走 close
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 

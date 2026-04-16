@@ -325,6 +325,7 @@ impl Tool for GrepTool {
                         "message": grep_empty_message(offset, result.matched_files.is_empty()),
                         "output_mode": "files_with_matches",
                     })),
+                    child_ref: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: result.has_more || is_persisted,
                 })
@@ -351,6 +352,7 @@ impl Tool for GrepTool {
                         "message": grep_empty_message(0, result.counts.is_empty()),
                         "output_mode": "count",
                     })),
+                    child_ref: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: is_persisted,
                 })
@@ -656,6 +658,7 @@ fn build_content_result(
             "offset_applied": offset,
             "message": grep_empty_message(offset, matches.is_empty()),
         })),
+        child_ref: None,
         duration_ms: started_at.elapsed().as_millis() as u64,
         truncated: has_more || is_persisted,
     })

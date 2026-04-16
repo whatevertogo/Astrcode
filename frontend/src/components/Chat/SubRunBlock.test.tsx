@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import type { ThreadItem } from '../../lib/subRunView';
 import type {
   ChildSessionNotificationMessage,
+  ParentDelivery,
+  SubRunResult,
   SubRunFinishMessage,
   SubRunStartMessage,
 } from '../../types';
@@ -18,6 +20,71 @@ function renderThreadItems(items: ThreadItem[]): ReactNode[] {
       <div key={`${item.subRunId}-${index}`}>subRun</div>
     )
   );
+}
+
+function makeCompletedResult(
+  handoff: {
+    findings: string[];
+    artifacts: {
+      kind: string;
+      id: string;
+      label: string;
+      sessionId?: string;
+      storageSeq?: number;
+      uri?: string;
+    }[];
+    delivery?: ParentDelivery;
+  } = {
+    findings: [],
+    artifacts: [],
+  }
+): SubRunResult {
+  return {
+    status: 'completed',
+    handoff,
+  };
+}
+
+function makeFailedResult(
+  failure: {
+    code: 'transport' | 'provider_http' | 'stream_parse' | 'interrupted' | 'internal';
+    displayMessage: '子 Agent 调用模型时网络连接中断，未完成任务。';
+    technicalMessage: 'HTTP request error: failed to read anthropic response stream';
+    retryable: true;
+  } = {
+    code: 'transport',
+    displayMessage: '子 Agent 调用模型时网络连接中断，未完成任务。',
+    technicalMessage: 'HTTP request error: failed to read anthropic response stream',
+    retryable: true,
+  }
+): SubRunResult {
+  return {
+    status: 'failed',
+    failure,
+  };
+}
+
+function makeTokenExceededResult(
+  handoff: {
+    findings: string[];
+    artifacts: {
+      kind: string;
+      id: string;
+      label: string;
+      sessionId?: string;
+      storageSeq?: number;
+      uri?: string;
+    }[];
+    delivery?: ParentDelivery;
+  } = {
+    findings: [],
+    artifacts: [],
+  }
+): SubRunResult {
+  return {
+    status: 'token_exceeded',
+    handoff,
+  };
 }
 
 describe('SubRunBlock result rendering', () => {
@@ -45,15 +112,7 @@ describe('SubRunBlock result rendering', () => {
       id: 'subrun-finish-1',
       kind: 'subRunFinish',
       subRunId: 'subrun-1',
-      result: {
-        status: 'failed',
-        failure: {
-          code: 'transport',
-          displayMessage: '子 Agent 调用模型时网络连接中断，未完成任务。',
-          technicalMessage: 'HTTP request error: failed to read anthropic response stream',
-          retryable: true,
-        },
-      },
+      result: makeFailedResult(),
       stepCount: 3,
       estimatedTokens: 120,
       timestamp: Date.now(),
@@ -194,24 +253,21 @@ describe('SubRunBlock result rendering', () => {
       id: 'subrun-finish-2',
       kind: 'subRunFinish',
       subRunId: 'subrun-3',
-      result: {
-        status: 'completed',
-        handoff: {
-          findings: ['问题一', '问题二'],
-          artifacts: [],
-          delivery: {
-            idempotencyKey: 'delivery-directory-summary',
-            origin: 'explicit',
-            terminalSemantics: 'terminal',
-            kind: 'completed',
-            payload: {
-              message: '完成了静态分析并整理出两个风险点。',
-              findings: ['问题一', '问题二'],
-              artifacts: [],
-            },
+      result: makeCompletedResult({
+        findings: ['问题一', '问题二'],
+        artifacts: [],
+        delivery: {
+          idempotencyKey: 'delivery-directory-summary',
+          origin: 'explicit',
+          terminalSemantics: 'terminal',
+          kind: 'completed',
+          payload: {
+            message: '完成了静态分析并整理出两个风险点。',
+            findings: ['问题一', '问题二'],
+            artifacts: [],
           },
         },
-      },
+      }),
       stepCount: 2,
       estimatedTokens: 80,
       timestamp: Date.now(),
@@ -244,24 +300,21 @@ describe('SubRunBlock result rendering', () => {
       id: 'subrun-finish-json',
       kind: 'subRunFinish',
       subRunId: 'subrun-json',
-      result: {
-        status: 'completed',
-        handoff: {
-          findings: ['问题一', '问题二'],
-          artifacts: [],
-          delivery: {
-            idempotencyKey: 'delivery-json-summary',
-            origin: 'explicit',
-            terminalSemantics: 'terminal',
-            kind: 'completed',
-            payload: {
-              message: '审查完成，发现两个问题。',
-              findings: ['问题一', '问题二'],
-              artifacts: [],
-            },
+      result: makeCompletedResult({
+        findings: ['问题一', '问题二'],
+        artifacts: [],
+        delivery: {
+          idempotencyKey: 'delivery-json-summary',
+          origin: 'explicit',
+          terminalSemantics: 'terminal',
+          kind: 'completed',
+          payload: {
+            message: '审查完成，发现两个问题。',
+            findings: ['问题一', '问题二'],
+            artifacts: [],
           },
         },
-      },
+      }),
       stepCount: 1,
       estimatedTokens: 50,
       timestamp: Date.now(),
@@ -294,24 +347,21 @@ describe('SubRunBlock result rendering', () => {
       id: 'subrun-finish-handoff',
       kind: 'subRunFinish',
       subRunId: 'subrun-handoff',
-      result: {
-        status: 'completed',
-        handoff: {
-          findings: [],
-          artifacts: [],
-          delivery: {
-            idempotencyKey: 'delivery-readable-summary',
-            origin: 'explicit',
-            terminalSemantics: 'terminal',
-            kind: 'completed',
-            payload: {
-              message: '代码审查完成：所有模块通过检查。',
-              findings: [],
-              artifacts: [],
-            },
+      result: makeCompletedResult({
+        findings: [],
+        artifacts: [],
+        delivery: {
+          idempotencyKey: 'delivery-readable-summary',
+          origin: 'explicit',
+          terminalSemantics: 'terminal',
+          kind: 'completed',
+          payload: {
+            message: '代码审查完成：所有模块通过检查。',
+            findings: [],
+            artifacts: [],
           },
         },
-      },
+      }),
       stepCount: 3,
       estimatedTokens: 120,
       timestamp: Date.now(),
@@ -345,24 +395,21 @@ describe('SubRunBlock result rendering', () => {
       kind: 'subRunFinish',
       subRunId: 'subrun-child-session',
       childSessionId: 'session-child',
-      result: {
-        status: 'completed',
-        handoff: {
-          findings: ['finding-1'],
-          artifacts: [],
-          delivery: {
-            idempotencyKey: 'delivery-child-session-summary',
-            origin: 'explicit',
-            terminalSemantics: 'terminal',
-            kind: 'completed',
-            payload: {
-              message: '这是完整子会话报告，不应该再内嵌在父会话里。',
-              findings: ['finding-1'],
-              artifacts: [],
-            },
+      result: makeCompletedResult({
+        findings: ['finding-1'],
+        artifacts: [],
+        delivery: {
+          idempotencyKey: 'delivery-child-session-summary',
+          origin: 'explicit',
+          terminalSemantics: 'terminal',
+          kind: 'completed',
+          payload: {
+            message: '这是完整子会话报告，不应该再内嵌在父会话里。',
+            findings: ['finding-1'],
+            artifacts: [],
           },
         },
-      },
+      }),
       stepCount: 2,
       estimatedTokens: 90,
       timestamp: Date.now(),
@@ -387,6 +434,50 @@ describe('SubRunBlock result rendering', () => {
     expect(html).toContain('这是完整子会话报告，不应该再内嵌在父会话里。');
     expect(html).toContain('已向父会话汇报');
     expect(html).toContain('<li>finding-1</li>');
+  });
+
+  it('renders token-exceeded delivery summary in the parent card', () => {
+    const finishMessage: SubRunFinishMessage = {
+      id: 'subrun-finish-token-exceeded',
+      kind: 'subRunFinish',
+      subRunId: 'subrun-token-exceeded',
+      result: makeTokenExceededResult({
+        findings: ['partial-finding'],
+        artifacts: [],
+        delivery: {
+          idempotencyKey: 'delivery-token-exceeded-summary',
+          origin: 'explicit',
+          terminalSemantics: 'terminal',
+          kind: 'completed',
+          payload: {
+            message: '达到 token 上限，但已返回阶段性结论。',
+            findings: ['partial-finding'],
+            artifacts: [],
+          },
+        },
+      }),
+      stepCount: 4,
+      estimatedTokens: 4096,
+      timestamp: Date.now(),
+    };
+
+    const html = renderToStaticMarkup(
+      <SubRunBlock
+        subRunId="subrun-token-exceeded"
+        sessionId="session-parent"
+        title="reviewer"
+        finishMessage={finishMessage}
+        threadItems={[]}
+        streamFingerprint=""
+        hasDescriptorLineage={true}
+        renderThreadItems={renderThreadItems}
+        onCancelSubRun={async () => {}}
+      />
+    );
+
+    expect(html).toContain('达到 token 上限，但已返回阶段性结论。');
+    expect(html).toContain('最终回复');
+    expect(html).toContain('<li>partial-finding</li>');
   });
 
   it('renders latest notification delivery when finish message is absent', () => {

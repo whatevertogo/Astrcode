@@ -172,7 +172,7 @@ impl TurnSummary {
 mod tests {
     use astrcode_core::{
         AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
-        AgentCollaborationPolicyContext,
+        AgentCollaborationPolicyContext, ChildExecutionIdentity,
     };
 
     use super::TurnCollaborationSummary;
@@ -184,15 +184,17 @@ mod tests {
         latency_ms: Option<u64>,
     ) -> AgentCollaborationFact {
         AgentCollaborationFact {
-            fact_id: id.to_string(),
+            fact_id: id.to_string().into(),
             action,
             outcome,
-            parent_session_id: "session-parent".to_string(),
-            turn_id: "turn-1".to_string(),
-            parent_agent_id: Some("agent-root".to_string()),
-            child_agent_id: Some("agent-child".to_string()),
-            child_session_id: Some("session-child".to_string()),
-            child_sub_run_id: Some("subrun-child".to_string()),
+            parent_session_id: "session-parent".to_string().into(),
+            turn_id: "turn-1".to_string().into(),
+            parent_agent_id: Some("agent-root".to_string().into()),
+            child_identity: Some(ChildExecutionIdentity {
+                agent_id: "agent-child".to_string().into(),
+                session_id: "session-child".to_string().into(),
+                sub_run_id: "subrun-child".to_string().into(),
+            }),
             delivery_id: None,
             reason_code: None,
             summary: None,

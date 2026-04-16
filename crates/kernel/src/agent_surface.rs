@@ -28,12 +28,12 @@ pub struct SubRunStatusView {
 impl SubRunStatusView {
     pub fn from_handle(handle: &SubRunHandle) -> Self {
         Self {
-            sub_run_id: handle.sub_run_id.clone(),
-            agent_id: handle.agent_id.clone(),
-            session_id: handle.session_id.clone(),
-            child_session_id: handle.child_session_id.clone(),
+            sub_run_id: handle.sub_run_id.to_string(),
+            agent_id: handle.agent_id.to_string(),
+            session_id: handle.session_id.to_string(),
+            child_session_id: handle.child_session_id.clone().map(Into::into),
             depth: handle.depth,
-            parent_agent_id: handle.parent_agent_id.clone(),
+            parent_agent_id: handle.parent_agent_id.clone().map(Into::into),
             agent_profile: handle.agent_profile.clone(),
             lifecycle: handle.lifecycle,
             last_turn_outcome: handle.last_turn_outcome,
@@ -215,8 +215,11 @@ impl<'a> KernelAgentSurface<'a> {
             .await
             .into_iter()
             .filter(|handle| {
-                handle.parent_turn_id == parent_turn_id
-                    && handle.parent_agent_id.as_deref() == Some(parent_agent_id)
+                handle.parent_turn_id.as_str() == parent_turn_id
+                    && handle
+                        .parent_agent_id
+                        .as_ref()
+                        .is_some_and(|id| id.as_str() == parent_agent_id)
                     && matches!(
                         handle.lineage_kind,
                         astrcode_core::ChildSessionLineageKind::Spawn
@@ -236,7 +239,12 @@ impl<'a> KernelAgentSurface<'a> {
             .agent_control()
             .terminate_subtree_and_collect_handles(agent_id)
             .await
-            .map(|handles| handles.into_iter().map(|handle| handle.agent_id).collect())
+            .map(|handles| {
+                handles
+                    .into_iter()
+                    .map(|handle| handle.agent_id.to_string())
+                    .collect()
+            })
             .ok_or(AgentControlError::ParentAgentNotFound {
                 agent_id: agent_id.to_string(),
             })?;
@@ -328,7 +336,7 @@ impl<'a> KernelAgentSurface<'a> {
             .cancel_for_parent_turn(parent_turn_id)
             .await
             .into_iter()
-            .map(|handle| handle.agent_id)
+            .map(|handle| handle.agent_id.to_string())
             .collect()
     }
 }

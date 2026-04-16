@@ -194,14 +194,9 @@ pub(crate) fn load_frontend_build(
         server_origin,
         token,
     )?);
-    #[cfg(feature = "debug-workbench")]
-    let debug_html =
-        load_optional_frontend_entry(&dist_dir.join("debug.html"), server_origin, token)?;
     Ok(Some(FrontendBuild {
         dist_dir,
         index_html: injected_index,
-        #[cfg(feature = "debug-workbench")]
-        debug_html,
     }))
 }
 
@@ -225,14 +220,6 @@ pub(crate) async fn serve_frontend_build(
     }
 
     let request_path = request.uri().path().trim_start_matches('/').to_string();
-    #[cfg(feature = "debug-workbench")]
-    if request_path == "debug.html" {
-        return frontend_build
-            .debug_html
-            .as_deref()
-            .map(|html| browser_index_response(html.as_str()))
-            .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response());
-    }
     let looks_like_asset = request_path
         .rsplit('/')
         .next()
@@ -321,25 +308,6 @@ fn browser_index_response(index_html: &str) -> Response {
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
     response
-}
-
-#[cfg(feature = "debug-workbench")]
-fn load_optional_frontend_entry(
-    path: &FsPath,
-    server_origin: &str,
-    token: &str,
-) -> AnyhowResult<Option<std::sync::Arc<String>>> {
-    if !path.is_file() {
-        return Ok(None);
-    }
-
-    let raw_html = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read frontend entry '{}'", path.display()))?;
-    Ok(Some(std::sync::Arc::new(inject_browser_bootstrap_html(
-        &raw_html,
-        server_origin,
-        token,
-    )?)))
 }
 
 /// 构建 CORS 层。

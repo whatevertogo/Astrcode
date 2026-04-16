@@ -34,7 +34,7 @@ impl AgentOrchestrationService {
                 "failed to persist durable parent mailbox queue before wake: parentSession='{}', \
                  childAgent='{}', deliveryId='{}', error='{}'",
                 parent_session_id,
-                notification.child_ref.agent_id,
+                notification.child_ref.agent_id(),
                 notification.notification_id,
                 error
             );
@@ -70,8 +70,8 @@ impl AgentOrchestrationService {
                 "failed to schedule parent wake turn from child delivery: parentSession='{}', \
                  childAgent='{}', subRunId='{}', error='{}'",
                 parent_session_id,
-                notification.child_ref.agent_id,
-                notification.child_ref.sub_run_id,
+                notification.child_ref.agent_id(),
+                notification.child_ref.sub_run_id(),
                 error
             );
         }
@@ -100,7 +100,7 @@ impl AgentOrchestrationService {
             .collect::<Vec<_>>();
         let target_agent_id = delivery_batch
             .first()
-            .and_then(|delivery| delivery.notification.child_ref.parent_agent_id.clone())
+            .and_then(|delivery| delivery.notification.child_ref.parent_agent_id().cloned())
             .ok_or_else(|| {
                 AgentOrchestrationError::InvalidInput(
                     "parent delivery batch missing target parent agent id".to_string(),
@@ -164,7 +164,7 @@ impl AgentOrchestrationService {
             parent_session_id,
             accepted.turn_id.to_string(),
             delivery_batch,
-            target_agent_id,
+            target_agent_id.to_string(),
         );
         Ok(true)
     }
@@ -243,7 +243,7 @@ impl AgentOrchestrationService {
                 for delivery in &batch_deliveries {
                     if let Some(child_handle) = self
                         .kernel
-                        .get_handle(&delivery.notification.child_ref.agent_id)
+                        .get_handle(delivery.notification.child_ref.agent_id())
                         .await
                     {
                         self.record_fact_best_effort(
@@ -255,7 +255,12 @@ impl AgentOrchestrationService {
                                 &turn_id,
                             )
                             .parent_agent_id(
-                                delivery.notification.child_ref.parent_agent_id.clone(),
+                                delivery
+                                    .notification
+                                    .child_ref
+                                    .parent_agent_id()
+                                    .cloned()
+                                    .map(|id| id.to_string()),
                             )
                             .child(&child_handle)
                             .delivery_id(delivery.delivery_id.clone())
@@ -264,7 +269,13 @@ impl AgentOrchestrationService {
                                 (chrono::Utc::now().timestamp_millis() - delivery.queued_at_ms)
                                     .max(0) as u64,
                             )
-                            .source_tool_call_id(delivery.notification.source_tool_call_id.clone()),
+                            .source_tool_call_id(
+                                delivery
+                                    .notification
+                                    .source_tool_call_id
+                                    .clone()
+                                    .map(|id| id.to_string()),
+                            ),
                         )
                         .await;
                     }
@@ -301,8 +312,8 @@ impl AgentOrchestrationService {
     ) -> Result<(), AgentOrchestrationError> {
         let target_agent_id = notification
             .child_ref
-            .parent_agent_id
-            .clone()
+            .parent_agent_id()
+            .cloned()
             .ok_or_else(|| {
                 AgentOrchestrationError::InvalidInput(
                     "child terminal delivery missing direct parent agent id".to_string(),
@@ -315,7 +326,10 @@ impl AgentOrchestrationService {
                 parent_turn_id,
                 AgentEventContext::default(),
                 MailboxQueuedPayload {
-                    envelope: child_delivery_mailbox_envelope(notification, target_agent_id),
+                    envelope: child_delivery_mailbox_envelope(
+                        notification,
+                        target_agent_id.to_string(),
+                    ),
                 },
             )
             .await
@@ -340,7 +354,7 @@ impl AgentOrchestrationService {
                     target_agent_id: target_agent_id.to_string(),
                     turn_id: turn_id.to_string(),
                     batch_id: parent_wake_batch_id(turn_id),
-                    delivery_ids: batch_delivery_ids.to_vec(),
+                    delivery_ids: batch_delivery_ids.iter().cloned().map(Into::into).collect(),
                 },
             )
             .await
@@ -364,7 +378,7 @@ impl AgentOrchestrationService {
                     target_agent_id: target_agent_id.to_string(),
                     turn_id: turn_id.to_string(),
                     batch_id: parent_wake_batch_id(turn_id),
-                    delivery_ids: batch_delivery_ids.to_vec(),
+                    delivery_ids: batch_delivery_ids.iter().cloned().map(Into::into).collect(),
                 },
             )
             .await
@@ -392,7 +406,7 @@ impl AgentOrchestrationService {
                 .unwrap_or_default();
             if let Some(child_handle) = self
                 .kernel
-                .get_handle(&pending.notification.child_ref.agent_id)
+                .get_handle(pending.notification.child_ref.agent_id())
                 .await
             {
                 self.record_fact_best_effort(
@@ -403,12 +417,25 @@ impl AgentOrchestrationService {
                         parent_session_id,
                         &pending.parent_turn_id,
                     )
-                    .parent_agent_id(pending.notification.child_ref.parent_agent_id.clone())
+                    .parent_agent_id(
+                        pending
+                            .notification
+                            .child_ref
+                            .parent_agent_id()
+                            .cloned()
+                            .map(|id| id.to_string()),
+                    )
                     .child(&child_handle)
                     .delivery_id(pending.delivery_id.clone())
                     .reason_code("durable_recovery")
                     .summary(terminal_notification_message(&pending.notification))
-                    .source_tool_call_id(pending.notification.source_tool_call_id.clone()),
+                    .source_tool_call_id(
+                        pending
+                            .notification
+                            .source_tool_call_id
+                            .clone()
+                            .map(|id| id.to_string()),
+                    ),
                 )
                 .await;
             }
@@ -430,7 +457,7 @@ impl AgentOrchestrationService {
     ) -> AgentEventContext {
         let Some(target_agent_id) = deliveries
             .first()
-            .and_then(|delivery| delivery.notification.child_ref.parent_agent_id.clone())
+            .and_then(|delivery| delivery.notification.child_ref.parent_agent_id().cloned())
         else {
             return AgentEventContext::default();
         };
@@ -468,8 +495,8 @@ fn build_wake_prompt_from_deliveries(
                 "[Agent Mailbox Message]\ndelivery_id: {}\nfrom_agent_id: \
                  {}\nsender_lifecycle_status: {:?}\nmessage: {}",
                 delivery.delivery_id,
-                delivery.notification.child_ref.agent_id,
-                delivery.notification.status,
+                delivery.notification.child_ref.agent_id(),
+                delivery.notification.child_ref.status,
                 terminal_notification_message(&delivery.notification),
             )
         })
@@ -499,8 +526,9 @@ mod tests {
 
     use astrcode_core::{
         AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, CancelToken, ChildAgentRef,
-        ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
-        EventStore, Phase, SessionId, StorageEvent, StoredEvent,
+        ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNotification,
+        ChildSessionNotificationKind, EventStore, ParentExecutionRef, Phase, SessionId,
+        StorageEvent, StoredEvent,
     };
     use astrcode_session_runtime::{
         append_and_broadcast, complete_session_execution, prepare_session_execution,
@@ -521,20 +549,23 @@ mod tests {
         kind: ChildSessionNotificationKind,
     ) -> ChildSessionNotification {
         ChildSessionNotification {
-            notification_id: format!("delivery-{kind:?}").to_lowercase(),
+            notification_id: format!("delivery-{kind:?}").to_lowercase().into(),
             child_ref: ChildAgentRef {
-                agent_id: "agent-child".to_string(),
-                session_id: parent_session_id.to_string(),
-                sub_run_id: "subrun-child".to_string(),
-                parent_agent_id: Some(parent_agent_id.to_string()),
-                parent_sub_run_id: Some("subrun-parent".to_string()),
+                identity: ChildExecutionIdentity {
+                    agent_id: "agent-child".to_string().into(),
+                    session_id: parent_session_id.to_string().into(),
+                    sub_run_id: "subrun-child".to_string().into(),
+                },
+                parent: ParentExecutionRef {
+                    parent_agent_id: Some(parent_agent_id.to_string().into()),
+                    parent_sub_run_id: Some("subrun-parent".to_string().into()),
+                },
                 lineage_kind: ChildSessionLineageKind::Spawn,
                 status: AgentLifecycleStatus::Idle,
-                open_session_id: "session-child".to_string(),
+                open_session_id: "session-child".to_string().into(),
             },
             kind,
-            status: AgentLifecycleStatus::Idle,
-            source_tool_call_id: Some("tool-call-1".to_string()),
+            source_tool_call_id: Some("tool-call-1".to_string().into()),
             delivery: Some(astrcode_core::ParentDelivery {
                 idempotency_key: format!("delivery-{kind:?}").to_lowercase(),
                 origin: astrcode_core::ParentDeliveryOrigin::Explicit,
@@ -762,7 +793,7 @@ mod tests {
                 root_session.session_id.clone(),
                 Some(middle_session.session_id.clone()),
                 "turn-root".to_string(),
-                Some(root.agent_id.clone()),
+                Some(root.agent_id.to_string()),
                 astrcode_core::SubRunStorageMode::IndependentSession,
             )
             .await
@@ -775,19 +806,22 @@ mod tests {
             .expect("middle lifecycle should update");
 
         let leaf_delivery = ChildSessionNotification {
-            notification_id: "leaf-terminal:turn-leaf:completed".to_string(),
+            notification_id: "leaf-terminal:turn-leaf:completed".to_string().into(),
             child_ref: ChildAgentRef {
-                agent_id: "agent-leaf".to_string(),
-                session_id: middle_session.session_id.clone(),
-                sub_run_id: "subrun-leaf".to_string(),
-                parent_agent_id: Some(middle.agent_id.clone()),
-                parent_sub_run_id: Some(middle.sub_run_id.clone()),
+                identity: ChildExecutionIdentity {
+                    agent_id: "agent-leaf".to_string().into(),
+                    session_id: middle_session.session_id.clone().into(),
+                    sub_run_id: "subrun-leaf".to_string().into(),
+                },
+                parent: ParentExecutionRef {
+                    parent_agent_id: Some(middle.agent_id.clone()),
+                    parent_sub_run_id: Some(middle.sub_run_id.clone()),
+                },
                 lineage_kind: ChildSessionLineageKind::Spawn,
                 status: AgentLifecycleStatus::Idle,
-                open_session_id: "session-leaf".to_string(),
+                open_session_id: "session-leaf".to_string().into(),
             },
             kind: ChildSessionNotificationKind::Delivered,
-            status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             delivery: Some(astrcode_core::ParentDelivery {
                 idempotency_key: "leaf-terminal:turn-leaf:completed".to_string(),
@@ -844,7 +878,7 @@ mod tests {
             !root_events.iter().any(|stored| matches!(
                 &stored.event.payload,
                 StorageEventPayload::ChildSessionNotification { notification, .. }
-                    if notification.child_ref.agent_id == middle.agent_id
+                    if notification.child_ref.agent_id() == &middle.agent_id
             )),
             "wake turn is a coordination turn and must not auto-manufacture a new upward delivery"
         );
@@ -1002,19 +1036,19 @@ mod tests {
         assert!(parent_events.iter().any(|stored| matches!(
             &stored.event.payload,
             StorageEventPayload::AgentMailboxBatchStarted { payload }
-                if payload.target_agent_id == root.agent_id
+                if payload.target_agent_id == root.agent_id.to_string()
                     && payload.delivery_ids == vec![notification.notification_id.clone()]
         )));
         assert!(parent_events.iter().any(|stored| matches!(
             &stored.event.payload,
             StorageEventPayload::AgentMailboxBatchAcked { payload }
-                if payload.target_agent_id == root.agent_id
+                if payload.target_agent_id == root.agent_id.to_string()
                     && payload.delivery_ids == vec![notification.notification_id.clone()]
         )));
     }
 
     #[test]
-    fn wake_prompt_uses_delivery_message_without_legacy_fields() {
+    fn wake_prompt_uses_delivery_message_without_removed_fields() {
         let delivered = sample_notification(
             "session-parent",
             "agent-parent",
@@ -1059,7 +1093,7 @@ mod tests {
             ChildSessionNotificationKind::Delivered,
         );
         let failed = ChildSessionNotification {
-            notification_id: "delivery-failed".to_string(),
+            notification_id: "delivery-failed".to_string().into(),
             ..sample_notification(
                 "session-parent",
                 "agent-parent",
@@ -1077,7 +1111,7 @@ mod tests {
                         payload: MailboxQueuedPayload {
                             envelope: AgentMailboxEnvelope {
                                 delivery_id: delivered.notification_id.clone(),
-                                from_agent_id: delivered.child_ref.agent_id.clone(),
+                                from_agent_id: delivered.child_ref.agent_id().to_string(),
                                 to_agent_id: "agent-parent".to_string(),
                                 message: terminal_notification_message(&delivered),
                                 queued_at: chrono::Utc::now(),
@@ -1085,7 +1119,10 @@ mod tests {
                                 sender_last_turn_outcome: terminal_notification_turn_outcome(
                                     &delivered,
                                 ),
-                                sender_open_session_id: delivered.child_ref.open_session_id.clone(),
+                                sender_open_session_id: delivered
+                                    .child_ref
+                                    .open_session_id
+                                    .to_string(),
                             },
                         },
                     },
@@ -1116,7 +1153,7 @@ mod tests {
                         payload: MailboxQueuedPayload {
                             envelope: AgentMailboxEnvelope {
                                 delivery_id: failed.notification_id.clone(),
-                                from_agent_id: failed.child_ref.agent_id.clone(),
+                                from_agent_id: failed.child_ref.agent_id().to_string(),
                                 to_agent_id: "agent-parent".to_string(),
                                 message: terminal_notification_message(&failed),
                                 queued_at: chrono::Utc::now(),
@@ -1124,7 +1161,10 @@ mod tests {
                                 sender_last_turn_outcome: terminal_notification_turn_outcome(
                                     &failed,
                                 ),
-                                sender_open_session_id: failed.child_ref.open_session_id.clone(),
+                                sender_open_session_id: failed
+                                    .child_ref
+                                    .open_session_id
+                                    .to_string(),
                             },
                         },
                     },
@@ -1135,6 +1175,6 @@ mod tests {
         let recovered = astrcode_session_runtime::recoverable_parent_deliveries(&events);
 
         assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].delivery_id, failed.notification_id);
+        assert_eq!(recovered[0].delivery_id, failed.notification_id.to_string());
     }
 }

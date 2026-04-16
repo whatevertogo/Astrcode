@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     DelegationMetadata,
     lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
+    require_non_empty_trimmed,
 };
 use crate::StoredEvent;
 
@@ -20,7 +21,7 @@ use crate::StoredEvent;
 ///
 /// 在 at-least-once 语义下用于去重：crash 恢复后相同 delivery_id 重新出现
 /// 应被视为上一轮的延续，而不是全新任务。
-pub type DeliveryId = String;
+pub type DeliveryId = crate::ids::DeliveryId;
 
 /// 固定批次标识。
 ///
@@ -119,16 +120,8 @@ pub struct SendParams {
 
 impl SendParams {
     pub fn validate(&self) -> crate::error::Result<()> {
-        if self.agent_id.trim().is_empty() {
-            return Err(crate::error::AstrError::Validation(
-                "agentId 不能为空".to_string(),
-            ));
-        }
-        if self.message.trim().is_empty() {
-            return Err(crate::error::AstrError::Validation(
-                "message 不能为空".to_string(),
-            ));
-        }
+        require_non_empty_trimmed("agentId", &self.agent_id)?;
+        require_non_empty_trimmed("message", &self.message)?;
         Ok(())
     }
 }
@@ -146,11 +139,7 @@ pub struct ObserveParams {
 
 impl ObserveParams {
     pub fn validate(&self) -> crate::error::Result<()> {
-        if self.agent_id.trim().is_empty() {
-            return Err(crate::error::AstrError::Validation(
-                "agentId 不能为空".to_string(),
-            ));
-        }
+        require_non_empty_trimmed("agentId", &self.agent_id)?;
         Ok(())
     }
 }
@@ -168,11 +157,7 @@ pub struct CloseParams {
 
 impl CloseParams {
     pub fn validate(&self) -> crate::error::Result<()> {
-        if self.agent_id.trim().is_empty() {
-            return Err(crate::error::AstrError::Validation(
-                "agentId 不能为空".to_string(),
-            ));
-        }
+        require_non_empty_trimmed("agentId", &self.agent_id)?;
         Ok(())
     }
 }
@@ -531,11 +516,7 @@ mod tests {
 
         let projection = MailboxProjection::replay_for_agent(&events, "child");
         assert!(projection.pending_delivery_ids.is_empty());
-        assert!(
-            projection
-                .discarded_delivery_ids
-                .contains(&"d1".to_string())
-        );
+        assert!(projection.discarded_delivery_ids.contains(&"d1".into()));
     }
 
     #[test]
@@ -585,7 +566,7 @@ mod tests {
 
         let projection = MailboxProjection::replay_for_agent(&events, "child");
         // Started 但未 Acked，d1 仍在 pending 中（at-least-once 语义）
-        assert!(projection.pending_delivery_ids.contains(&"d1".to_string()));
+        assert!(projection.pending_delivery_ids.contains(&"d1".into()));
         assert_eq!(projection.active_batch_id.as_deref(), Some("b1"));
         assert_eq!(projection.pending_message_count(), 1);
     }
@@ -644,11 +625,11 @@ mod tests {
         ];
 
         let projection_a = MailboxProjection::replay_for_agent(&events, "agent-a");
-        assert_eq!(projection_a.pending_delivery_ids, vec!["d-a".to_string()]);
+        assert_eq!(projection_a.pending_delivery_ids, vec!["d-a".into()]);
         assert_eq!(projection_a.pending_message_count(), 1);
 
         let projection_b = MailboxProjection::replay_for_agent(&events, "agent-b");
-        assert_eq!(projection_b.pending_delivery_ids, vec!["d-b".to_string()]);
+        assert_eq!(projection_b.pending_delivery_ids, vec!["d-b".into()]);
         assert_eq!(projection_b.pending_message_count(), 1);
 
         let projection_c = MailboxProjection::replay_for_agent(&events, "agent-c");

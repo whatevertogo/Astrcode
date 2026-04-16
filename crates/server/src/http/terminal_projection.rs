@@ -159,7 +159,9 @@ pub(crate) fn project_conversation_child_summary_deltas(
         .collect::<Vec<_>>();
     removed_ids.sort();
     for child_session_id in removed_ids {
-        deltas.push(ConversationDeltaDto::RemoveChildSummary { child_session_id });
+        deltas.push(ConversationDeltaDto::RemoveChildSummary {
+            child_session_id: child_session_id.to_string(),
+        });
     }
 
     let mut current_ids = current_by_id.keys().cloned().collect::<Vec<_>>();
@@ -328,7 +330,7 @@ fn project_child_handoff_block(
         .cloned()
         .or_else(|| {
             child_lookup
-                .get(block.child_ref.session_id.as_str())
+                .get(block.child_ref.session_id().as_str())
                 .cloned()
         })
         .unwrap_or_else(|| fallback_child_summary(&block.child_ref));
@@ -347,9 +349,9 @@ fn project_child_handoff_block(
 
 fn fallback_child_summary(child_ref: &ChildAgentRef) -> ConversationChildSummaryDto {
     ConversationChildSummaryDto {
-        child_session_id: child_ref.open_session_id.clone(),
-        child_agent_id: child_ref.agent_id.clone(),
-        title: child_ref.agent_id.clone(),
+        child_session_id: child_ref.open_session_id.to_string(),
+        child_agent_id: child_ref.agent_id().to_string(),
+        title: child_ref.agent_id().to_string(),
         lifecycle: to_lifecycle_dto(child_ref.status),
         latest_output_summary: None,
         child_ref: Some(to_child_ref_dto(child_ref.clone())),
@@ -362,7 +364,7 @@ fn child_summary_lookup(
     let mut lookup = HashMap::new();
     for summary in summaries {
         let dto = project_child_summary(summary);
-        lookup.insert(summary.node.child_session_id.clone(), dto.clone());
+        lookup.insert(summary.node.child_session_id.to_string(), dto.clone());
         if let Some(child_ref) = &dto.child_ref {
             lookup.insert(child_ref.open_session_id.clone(), dto.clone());
             lookup.insert(child_ref.session_id.clone(), dto.clone());
@@ -375,13 +377,13 @@ pub(crate) fn project_child_summary(
     summary: &TerminalChildSummaryFacts,
 ) -> ConversationChildSummaryDto {
     ConversationChildSummaryDto {
-        child_session_id: summary.node.child_session_id.clone(),
-        child_agent_id: summary.node.agent_id.clone(),
+        child_session_id: summary.node.child_session_id.to_string(),
+        child_agent_id: summary.node.agent_id().to_string(),
         title: summary
             .title
             .clone()
             .or_else(|| summary.display_name.clone())
-            .unwrap_or_else(|| summary.node.child_session_id.clone()),
+            .unwrap_or_else(|| summary.node.child_session_id.to_string()),
         lifecycle: to_lifecycle_dto(summary.node.status),
         latest_output_summary: summary.recent_output.clone(),
         child_ref: Some(to_child_ref_dto(summary.node.child_ref())),
@@ -466,18 +468,18 @@ fn to_stream_dto(stream: ToolOutputStream) -> ToolOutputStreamDto {
 
 fn to_child_ref_dto(child_ref: ChildAgentRef) -> ChildAgentRefDto {
     ChildAgentRefDto {
-        agent_id: child_ref.agent_id,
-        session_id: child_ref.session_id,
-        sub_run_id: child_ref.sub_run_id,
-        parent_agent_id: child_ref.parent_agent_id,
-        parent_sub_run_id: child_ref.parent_sub_run_id,
+        agent_id: child_ref.agent_id().to_string(),
+        session_id: child_ref.session_id().to_string(),
+        sub_run_id: child_ref.sub_run_id().to_string(),
+        parent_agent_id: child_ref.parent_agent_id().map(|id| id.to_string()),
+        parent_sub_run_id: child_ref.parent_sub_run_id().map(|id| id.to_string()),
         lineage_kind: match child_ref.lineage_kind {
             ChildSessionLineageKind::Spawn => ChildSessionLineageKindDto::Spawn,
             ChildSessionLineageKind::Fork => ChildSessionLineageKindDto::Fork,
             ChildSessionLineageKind::Resume => ChildSessionLineageKindDto::Resume,
         },
         status: to_lifecycle_dto(child_ref.status),
-        open_session_id: child_ref.open_session_id,
+        open_session_id: child_ref.open_session_id.to_string(),
     }
 }
 

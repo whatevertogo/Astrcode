@@ -86,13 +86,13 @@ terminal v1 的 snapshot 与 stream MUST 是终端 surface 的 authoritative hyd
 
 - **WHEN** 终端客户端进入某个 session
 - **THEN** 它 SHALL 使用 terminal snapshot 作为 authoritative hydration 来源
-- **AND** MUST NOT 依赖 legacy `/view` 或 `/history` 来重建 terminal 初始状态
+- **AND** MUST NOT 依赖已删除的 `/view` 或 `/history` 来重建 terminal 初始状态
 
 #### Scenario: terminal 使用专属 stream 消费增量
 
 - **WHEN** 终端客户端需要消费 live delta
 - **THEN** 它 SHALL 订阅 terminal 专属 stream
-- **AND** MUST NOT 把 legacy `/events` 解释为 terminal block 语义
+- **AND** MUST NOT 把已删除的 `/events` 解释为 terminal block 语义
 
 ### Requirement: 终端读模型 SHALL 提供会话导航与 child 摘要投影
 

@@ -1,72 +1,86 @@
-# Repository Guidelines
+# AGENTS.md
 
-本项目不维护向后兼容，优先良好架构与干净代码。
+你追求完美和优雅的最佳实践
 
-## 环境要求
+## 作用范围
 
-- Rust **nightly** 工具链（见 `rust-toolchain.toml`）
-- Node.js 20+
-- 首次安装：`npm install && cd frontend && npm install`
+- 本文件定义仓库的全局默认规则。
+- 子目录中的 `AGENTS.md`、项目文档或更具体说明，优先级高于本文件。
+- 规则冲突时，按以下顺序决策：
+  1. 安全与正确性
+  2. 项目约定
+  3. 可维护性
+  4. 局部偏好
 
-## 常用命令
+## 工作原则
 
-```bash
-# 开发
-cargo tauri dev             # Tauri 桌面端开发
-cargo run -p astrcode-server  # 只启动后端
-cd frontend && npm run dev    # 只启动前端
+- 修复根因，不修表象。
+- 修改前先理解上下文。
+- 遵循现有架构、约定与工具链。
+- 优先使用清晰命名，而不是依赖注释。
+- 注释只解释 **为什么**，不解释 **是什么**。
+- 优先选择正确、可维护的方案，不做临时性脏修复。
+- 改动应始终与当前任务强相关。
 
-# 构建与检查
-cargo tauri build            # Tauri 桌面端构建
-cargo check --workspace      # 快速编译检查
-cargo test --workspace --exclude astrcode --lib  # push 前快速测试
+## 必须遵循的流程
 
-# 完整 CI 检查
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace --exclude astrcode
-node scripts/check-crate-boundaries.mjs
-cd frontend && npm run typecheck && npm run lint && npm run format:check
+### 1. 修改前
 
-# 架构守卫
-node scripts/check-crate-boundaries.mjs          # 检查 crate 依赖边界
-node scripts/check-crate-boundaries.mjs --strict  # 严格模式
-```
+- 阅读相关代码、测试、配置和文档。
+- 理解调用链、数据流、约束条件和影响范围。
+- 不基于猜测实现功能或修复问题。
+- 能复用现有抽象时，优先复用。
 
-## 架构约束
+### 2. 修改中
 
-详见 `PROJECT_ARCHITECTURE.md`，以下为摘要：
+- 用**足够小但能完整解决问题**的改动完成任务。
+- 保持现有风格与结构，除非任务本身要求调整。
+- 避免无关重构或顺手大改。
+- 允许做小而明确的附带改进，但必须直接有益于当前任务，例如：
+  - 重命名含义不清的标识符
+  - 删除明显死代码
+  - 抽取重复且局部的简单逻辑
+  - 补充或调整必要测试
 
-- `server` 是唯一组合根，通过 `bootstrap_server_runtime()` 组装所有组件
-- `application` 不依赖任何 `adapter-*`，只依赖 `core` + `kernel` + `session-runtime`
-- 治理层使用 `AppGovernance`（`astrcode-application`）
-- 能力语义统一使用 `CapabilitySpec`（`astrcode-core`），传输层使用 `CapabilityDescriptor`（`astrcode-protocol`）
+### 3. 完成前
 
-## 代码规范
+- 运行与改动最相关的最小充分验证，例如：
+  - 测试
+  - lint
+  - typecheck
+  - build
+- 检查 diff，移除无关修改。
+- 只有在实际运行过验证后，才声明“已验证”。
 
-- 用中文注释，且注释尽量表明为什么和做了什么
-- 不需要向后兼容，优先良好架构,期望最佳实践而不是打补丁
-- Git 提交信息使用 emoji + type + scope 风格（如 `✨ feat(module): brief description`）
+## 以下操作必须先确认
 
-## 提交前验证
+- 删除文件、目录、分支或大段代码
+- 执行破坏性 Git 操作，例如 `git reset --hard`、`git push --force`
+- 修改数据库 Schema 或执行数据迁移
+- 修改公共 API、协议、持久化格式、权限逻辑或安全边界
+- 新增、移除或替换核心依赖
+- 超出当前任务范围的大型重构
 
-改了后端rust代码每次提交前按顺序执行：
+## 禁止事项
 
-1. `cargo fmt --all` — 格式化代码
-2. `cargo clippy --all-targets --all-features -- -D warnings` — 修复所有警告
-3. `cargo test --workspace` — 确保所有测试通过
-4. 确认变更内容后写出描述性提交信息
+- 不伪造结果、日志、测试结论或完成状态。
+- 不为了临时可用而绕过测试、校验或安全约束。
+- 不提交密钥、令牌或敏感配置。
+- 不手动修改 generated files。
+- 不把无关改动混入当前任务。
 
-改了前端代码每次提交前按顺序执行：
-1. `npm run format` — 格式化代码
-2. `npm run lint` — 修复所有 lint 错误
-3. `npm run typecheck` — 确保没有类型错误
-4. `npm run format:check` — 确保格式正确
+## 沟通要求
 
-## Gotchas
+- 默认使用中文沟通，必要时保留英文技术术语。
+- 优先先查代码与文档；只有在无法安全推进时，才提出最小必要问题。
+- 最终总结必须包含：
+  1. 改了什么
+  2. 为什么这样改
+  3. 做了哪些验证
+  4. 风险或注意事项
+  5. 下一步建议
 
-- 前端css不允许出现webview相关内容这会导致应用端无法下滑窗口
-- 文档必须使用中文
-- 使用 `node scripts/check-crate-boundaries.mjs` 验证 crate 依赖规则没有被违反
-- `src-tauri` 是 Tauri 薄壳，不含业务逻辑
-- `server` 组合根在 `crates/server/src/bootstrap/runtime.rs`
+## 目标
+
+目标不是做最小改动。  
+目标是以**正确、可维护、可验证**的方式完成任务。

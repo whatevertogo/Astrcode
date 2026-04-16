@@ -5,7 +5,7 @@
 - `runtime` 同时承担组合根、全局控制面、单 session 执行面、用例门面，`RuntimeService` 横跨 session / turn / agent / config / watch / mcp / observability
 - `core` 反向依赖 `protocol`，导致领域层与传输层耦合在一起
 - `server` 直接持有并调用 `RuntimeService`，没有清晰的用例边界
-- `CapabilityDescriptor` 同时扮演领域语义、执行提示、传输 DTO 三种角色，导致 prompt、plugin、router、policy、tool loop 都混在同一个类型上
+- `CapabilityWireDescriptor` 同时扮演领域语义、执行提示、传输 DTO 三种角色，导致 prompt、plugin、router、policy、tool loop 都混在同一个类型上
 - 文档里虽然已经提出了“分层”和“Server Is The Truth”，但对 `kernel`、`session-runtime`、`application` 的归属仍有交叉，尤其是会话目录和事件真相归属不够干净
 
 项目已经明确“不需要向后兼容”，所以这次重构目标不是“低风险平滑迁移”，而是一次性建立能长期看懂、能稳定扩展的架构骨架。
@@ -29,7 +29,7 @@
   - `invocation_mode`（替代今天的 `streaming: bool`）
   - `compact_clearable`
   - `max_result_inline_size`
-- `protocol` 中的 `CapabilityDescriptor` 退化为传输 DTO，只负责序列化、协议兼容和插件握手
+- `protocol` 中的 `CapabilityWireDescriptor` 退化为传输 DTO，只负责序列化、协议兼容和插件握手
 - `core`、`runtime-prompt`、`runtime-agent-loop`、`plugin`、`runtime-registry` 全部改为先消费 `core::CapabilitySpec`
 
 ### 2. 新建 `kernel` crate
@@ -117,7 +117,7 @@
 
 - 不改变前端交互目标，但允许内部 API 重新分层
 - 不保留旧 crate 的兼容入口
-- 不保留 `CapabilityDescriptor` 在运行时内部的中心地位
+- 不保留 `CapabilityWireDescriptor` 在运行时内部的中心地位
 - 不做“先别名重命名、以后再收口”的折中方案
 - 不为降低迁移成本牺牲结构清晰度
 

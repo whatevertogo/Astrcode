@@ -4,7 +4,7 @@
 
 1. `crates/runtime/src/service/mod.rs` 中的 `RuntimeService` 持有 session、loop surface、config、observability、agent loader/profile、watch、mcp manager 等几乎所有运行时状态，它已经不是“服务门面”，而是“超级内核”。
 2. `docs/architecture/crates-dependency-graph.md` 明确显示 `core -> protocol`、`server -> runtime`，说明领域层与传输层、边界层与内核层都已经反向耦合。
-3. `CapabilityDescriptor` 不是单纯协议类型，它已经被 `core`、`runtime-registry`、`runtime-prompt`、`runtime-agent-loop`、`plugin` 同时消费。要做干净架构，不能只改 crate 名字，必须先重建能力模型。
+3. `CapabilityWireDescriptor` 不是单纯协议类型，它已经被 `core`、`runtime-registry`、`runtime-prompt`、`runtime-agent-loop`、`plugin` 同时消费。要做干净架构，不能只改 crate 名字，必须先重建能力模型。
 
 本次设计不考虑向后兼容，也不以迁移成本为首要约束。目标是让 Rust 代码的阅读路径和职责边界足够清晰，能让人按层理解，而不是按历史偶然性理解。
 
@@ -45,15 +45,15 @@
 
 ## Decisions
 
-### D1: `CapabilitySpec` 归 `core`，`CapabilityDescriptor` 退为 wire DTO
+### D1: `CapabilitySpec` 归 `core`，`CapabilityWireDescriptor` 退为 wire DTO
 
 **决策**
 
-`core` 新建 `CapabilitySpec`，作为运行时内部唯一能力语义模型。`protocol::CapabilityDescriptor` 只保留传输与插件握手职责。
+`core` 新建 `CapabilitySpec`，作为运行时内部唯一能力语义模型。`protocol::CapabilityWireDescriptor` 只保留传输与插件握手职责。
 
 **理由**
 
-今天的 `CapabilityDescriptor` 混合了三类信息：
+今天的 `CapabilityWireDescriptor` 混合了三类信息：
 
 - 领域语义：`name`、`kind`、`description`、`permissions`、`side_effect`、`stability`
 - 执行提示：`profiles`、`streaming`、`compact_clearable`、`max_result_inline_size`
@@ -299,7 +299,7 @@ src-tauri                  -> adapter-tauri（宿主实现）
 
 ## Risks / Trade-offs
 
-### R1: `CapabilityDescriptor` 退位会牵动面很广
+### R1: `CapabilityWireDescriptor` 退位会牵动面很广
 
 这是必要代价，不是副作用。当前的广泛使用正说明它放错了层。
 
@@ -368,5 +368,5 @@ src-tauri                  -> adapter-tauri（宿主实现）
 
 ## Open Questions
 
-1. `plugin` 侧是否保留一层面向协议的 `CapabilityDescriptor` builder，还是完全只从 `CapabilitySpec` 投影生成 DTO。
+1. `plugin` 侧是否保留一层面向协议的 `CapabilityWireDescriptor` builder，还是完全只从 `CapabilitySpec` 投影生成 DTO。
 2. `PromptDeclaration` 最终归 `adapter-prompt` 还是沉到 `core` 作为稳定扩展块协议。当前更倾向保留在 `adapter-prompt`，避免 `core` 再次吸入渲染细节。

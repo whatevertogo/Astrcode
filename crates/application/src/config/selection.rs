@@ -7,7 +7,8 @@
 //! - profile 无 model → 返回错误
 
 use astrcode_core::{
-    ActiveSelection, Config, CurrentModelSelection, ModelConfig, ModelOption, Profile,
+    ActiveSelection, Config, CurrentModelSelection, ModelConfig, ModelOption, ModelSelection,
+    Profile,
 };
 
 use crate::ApplicationError;
@@ -79,11 +80,11 @@ pub fn resolve_current_model(config: &Config) -> Result<CurrentModelSelection, A
             ))
         })?;
 
-    Ok(CurrentModelSelection {
-        profile_name: selected.active_profile,
-        model: selected.active_model,
-        provider_kind: profile.provider_kind.clone(),
-    })
+    Ok(ModelSelection::new(
+        selected.active_profile,
+        selected.active_model,
+        profile.provider_kind.clone(),
+    ))
 }
 
 /// 解析指定 profile 中匹配的 model，找不到时回退到第一个 model。
@@ -147,10 +148,12 @@ pub fn list_model_options(config: &Config) -> Vec<ModelOption> {
         .profiles
         .iter()
         .flat_map(|profile| {
-            profile.models.iter().map(|model| ModelOption {
-                profile_name: profile.name.clone(),
-                model: model.id.clone(),
-                provider_kind: profile.provider_kind.clone(),
+            profile.models.iter().map(|model| {
+                ModelSelection::new(
+                    profile.name.clone(),
+                    model.id.clone(),
+                    profile.provider_kind.clone(),
+                )
             })
         })
         .collect()

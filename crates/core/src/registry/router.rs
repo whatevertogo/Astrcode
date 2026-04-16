@@ -10,8 +10,8 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, CapabilitySpec, ExecutionOwner, Result, SessionId,
-    ToolEventSink, ToolExecutionResult, ToolOutputDelta,
+    AgentEventContext, CancelToken, CapabilitySpec, ExecutionOwner, ExecutionResultCommon, Result,
+    SessionId, ToolEventSink, ToolExecutionResult, ToolOutputDelta,
 };
 
 /// 能力调用的上下文信息。
@@ -149,9 +149,27 @@ impl CapabilityExecutionResult {
             output,
             error: self.error,
             metadata: self.metadata,
+            child_ref: None,
             duration_ms: self.duration_ms,
             truncated: self.truncated,
         }
+    }
+
+    pub fn common(&self) -> ExecutionResultCommon {
+        ExecutionResultCommon {
+            error: self.error.clone(),
+            metadata: self.metadata.clone(),
+            duration_ms: self.duration_ms,
+            truncated: self.truncated,
+        }
+    }
+
+    pub fn with_common(mut self, common: ExecutionResultCommon) -> Self {
+        self.error = common.error;
+        self.metadata = common.metadata;
+        self.duration_ms = common.duration_ms;
+        self.truncated = common.truncated;
+        self
     }
 }
 
