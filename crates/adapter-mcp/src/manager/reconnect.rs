@@ -6,7 +6,7 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard},
 };
 
 use log::{info, warn};
@@ -51,7 +51,7 @@ impl McpReconnectManager {
 
         // 已有活跃重连任务则跳过
         {
-            let tasks = self.tasks.lock().unwrap();
+            let tasks = self.tasks_guard();
             if let Some(handle) = tasks.get(&server_name) {
                 if !handle.is_finished() {
                     warn!(
@@ -74,7 +74,7 @@ impl McpReconnectManager {
         ));
 
         {
-            let mut tasks = self.tasks.lock().unwrap();
+            let mut tasks = self.tasks_guard();
             // 清理已完成的旧任务
             tasks.retain(|_, h| !h.is_finished());
             tasks.insert(name_clone, handle);
@@ -83,7 +83,7 @@ impl McpReconnectManager {
 
     /// 取消指定服务器的重连任务。
     pub fn cancel_reconnect(&self, server_name: &str) {
-        let mut tasks = self.tasks.lock().unwrap();
+        let mut tasks = self.tasks_guard();
         if let Some(handle) = tasks.remove(server_name) {
             handle.abort();
             info!("MCP reconnect task cancelled for '{}'", server_name);
@@ -92,7 +92,7 @@ impl McpReconnectManager {
 
     /// 取消所有重连任务。
     pub fn cancel_all(&self) {
-        let mut tasks = self.tasks.lock().unwrap();
+        let mut tasks = self.tasks_guard();
         let count = tasks.len();
         for (_, handle) in tasks.drain() {
             handle.abort();
@@ -105,7 +105,7 @@ impl McpReconnectManager {
     /// 指定服务器是否有活跃的重连任务。
     #[allow(dead_code)]
     pub fn is_reconnecting(&self, server_name: &str) -> bool {
-        let tasks = self.tasks.lock().unwrap();
+        let tasks = self.tasks_guard();
         tasks
             .get(server_name)
             .map(|h| !h.is_finished())
@@ -115,8 +115,14 @@ impl McpReconnectManager {
     /// 清理已完成的重连任务。
     #[allow(dead_code)]
     pub fn cleanup_finished(&self) {
-        let mut tasks = self.tasks.lock().unwrap();
+        let mut tasks = self.tasks_guard();
         tasks.retain(|_, h| !h.is_finished());
+    }
+
+    fn tasks_guard(&self) -> StdMutexGuard<'_, HashMap<String, JoinHandle<()>>> {
+        self.tasks
+            .lock()
+            .expect("MCP reconnect task registry lock should not be poisoned")
     }
 }
 

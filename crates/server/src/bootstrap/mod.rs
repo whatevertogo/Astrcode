@@ -326,8 +326,8 @@ fn browser_index_response(index_html: &str) -> Response {
 pub(crate) fn build_cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin([
-            "http://localhost:5173".parse().unwrap(),
-            "http://127.0.0.1:5173".parse().unwrap(),
+            HeaderValue::from_static("http://localhost:5173"),
+            HeaderValue::from_static("http://127.0.0.1:5173"),
         ])
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([

@@ -5,7 +5,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use astrcode_core::AgentProfile;
@@ -75,7 +75,7 @@ impl ProfileResolutionService {
     /// 全局 profile 列表（不绑定 working-dir）。
     pub fn resolve_global(&self) -> Result<Arc<Vec<AgentProfile>>, ApplicationError> {
         {
-            let guard = self.global_cache.read().unwrap();
+            let guard = self.read_global_cache();
             if let Some(ref cached) = *guard {
                 return Ok(Arc::clone(cached));
             }
@@ -84,7 +84,7 @@ impl ProfileResolutionService {
         let profiles = self.provider.load_global().map(Arc::new)?;
 
         {
-            let mut guard = self.global_cache.write().unwrap();
+            let mut guard = self.write_global_cache();
             *guard = Some(Arc::clone(&profiles));
         }
 
@@ -139,7 +139,7 @@ impl ProfileResolutionService {
     /// 使全局缓存失效。
     pub fn invalidate_global(&self) {
         self.cache.clear();
-        let mut guard = self.global_cache.write().unwrap();
+        let mut guard = self.write_global_cache();
         *guard = None;
     }
 
@@ -147,6 +147,18 @@ impl ProfileResolutionService {
     pub fn invalidate_all(&self) {
         self.cache.clear();
         self.invalidate_global();
+    }
+
+    fn read_global_cache(&self) -> RwLockReadGuard<'_, Option<Arc<Vec<AgentProfile>>>> {
+        self.global_cache
+            .read()
+            .expect("global profile cache lock should not be poisoned")
+    }
+
+    fn write_global_cache(&self) -> RwLockWriteGuard<'_, Option<Arc<Vec<AgentProfile>>>> {
+        self.global_cache
+            .write()
+            .expect("global profile cache lock should not be poisoned")
     }
 }
 

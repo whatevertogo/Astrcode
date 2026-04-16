@@ -23,7 +23,7 @@ use astrcode_core::{
 };
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Map, json};
 
 use crate::builtin_tools::fs_common::{
     build_text_change_report, check_cancel, is_symlink, is_unc_path, read_utf8_file, resolve_path,
@@ -123,12 +123,17 @@ fn parse_patch(patch: &str) -> Result<Vec<FilePatch>> {
             continue;
         }
 
-        if line.starts_with("--- ") {
-            let old_path = strip_diff_prefix(line.strip_prefix("--- ").unwrap());
+        if let Some(old_path_line) = line.strip_prefix("--- ") {
+            let old_path = strip_diff_prefix(old_path_line);
             i += 1;
 
-            if i < lines.len() && lines[i].starts_with("+++ ") {
-                let new_path = strip_diff_prefix(lines[i].strip_prefix("+++ ").unwrap());
+            if i < lines.len() {
+                let Some(new_path_line) = lines[i].strip_prefix("+++ ") else {
+                    return Err(AstrError::Validation(
+                        "patch format error: expected '+++ new_path' after '--- old_path'".into(),
+                    ));
+                };
+                let new_path = strip_diff_prefix(new_path_line);
                 i += 1;
                 let hunks = parse_hunks(&lines, &mut i)?;
 
@@ -145,10 +150,6 @@ fn parse_patch(patch: &str) -> Result<Vec<FilePatch>> {
                     },
                     hunks,
                 });
-            } else {
-                return Err(AstrError::Validation(
-                    "patch format error: expected '+++ new_path' after '--- old_path'".into(),
-                ));
             }
         } else {
             return Err(AstrError::Validation(format!(
@@ -203,7 +204,11 @@ fn parse_hunks(lines: &[&str], i: &mut usize) -> Result<Vec<Hunk>> {
                     hunk_lines.push(HunkLine::Context(String::new()));
                     *i += 1;
                 } else {
-                    match l.chars().next().unwrap() {
+                    let Some(prefix) = l.chars().next() else {
+                        *i += 1;
+                        continue;
+                    };
+                    match prefix {
                         ' ' => {
                             hunk_lines.push(HunkLine::Context(l.chars().skip(1).collect()));
                             *i += 1;
@@ -848,18 +853,15 @@ fn build_apply_patch_metadata(
     let file_results: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
-            let mut obj = json!({
-                "path": r.path,
-                "changeType": r.change_type,
-                "applied": r.applied,
-                "summary": r.summary,
-            });
+            let mut obj = Map::new();
+            obj.insert("path".to_string(), json!(r.path));
+            obj.insert("changeType".to_string(), json!(r.change_type));
+            obj.insert("applied".to_string(), json!(r.applied));
+            obj.insert("summary".to_string(), json!(r.summary));
             if let Some(err) = &r.error {
-                obj.as_object_mut()
-                    .unwrap()
-                    .insert("error".to_string(), json!(err));
+                obj.insert("error".to_string(), json!(err));
             }
-            obj
+            serde_json::Value::Object(obj)
         })
         .collect();
 
