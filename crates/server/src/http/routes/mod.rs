@@ -158,10 +158,10 @@ async fn exchange_auth(
         return Err(ApiError::unauthorized());
     }
 
-    let issued = state.auth_sessions.issue_token();
+    let summary = state.auth_sessions.issue_exchange_summary();
     Ok(Json(AuthExchangeResponse {
-        ok: true,
-        token: issued.token,
-        expires_at_ms: issued.expires_at_ms,
+        ok: summary.ok,
+        token: summary.token,
+        expires_at_ms: summary.expires_at_ms,
     }))
 }

@@ -3,6 +3,7 @@
 //! 定义配置查看、保存、连接测试的请求/响应结构。
 //! 配置数据包括 profile（提供商配置）、活跃模型选择等。
 
+pub use astrcode_core::TestConnectionResult as TestResultDto;
 use serde::{Deserialize, Serialize};
 
 use crate::http::RuntimeStatusDto;
@@ -73,18 +74,4 @@ pub struct TestConnectionRequest {
     pub profile_name: String,
     /// 要测试的模型 ID
     pub model: String,
-}
-
-/// `POST /api/config/test-connection` 响应体——连接测试结果。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TestResultDto {
-    /// 连接测试是否成功
-    pub success: bool,
-    /// 实际测试的提供商类型
-    pub provider: String,
-    /// 实际测试的模型 ID
-    pub model: String,
-    /// 失败时的错误信息
-    pub error: Option<String>,
 }

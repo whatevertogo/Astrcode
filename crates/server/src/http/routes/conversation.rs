@@ -1,13 +1,14 @@
-use std::{collections::HashMap, convert::Infallible, pin::Pin, time::Duration};
+use std::{convert::Infallible, pin::Pin, time::Duration};
 
 use astrcode_application::{
-    ApplicationError, ConversationFocus, TerminalChildSummaryFacts, TerminalControlFacts,
-    TerminalSlashCandidateFacts, TerminalStreamFacts, TerminalStreamReplayFacts,
+    ApplicationError, ConversationAuthoritativeSummary, ConversationChildSummarySummary,
+    ConversationControlSummary, ConversationFocus, ConversationSlashCandidateSummary,
+    TerminalStreamFacts, TerminalStreamReplayFacts,
 };
 use astrcode_core::AgentEvent;
 use astrcode_protocol::http::conversation::v1::{
-    ConversationChildSummaryDto, ConversationDeltaDto, ConversationSlashCandidatesResponseDto,
-    ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto,
+    ConversationDeltaDto, ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
+    ConversationStreamEnvelopeDto,
 };
 use astrcode_session_runtime::ConversationStreamProjector as RuntimeConversationStreamProjector;
 use async_stream::stream;
@@ -28,10 +29,10 @@ use crate::{
     auth::is_authorized,
     routes::sessions::validate_session_path_id,
     terminal_projection::{
-        project_child_summary, project_conversation_child_summary_deltas,
-        project_conversation_control_delta, project_conversation_frame,
-        project_conversation_rehydrate_envelope, project_conversation_slash_candidates,
-        project_conversation_snapshot,
+        child_summary_summary_lookup, project_conversation_child_summary_summary_deltas,
+        project_conversation_control_summary_delta, project_conversation_frame,
+        project_conversation_rehydrate_envelope, project_conversation_slash_candidate_summaries,
+        project_conversation_slash_candidates, project_conversation_snapshot,
     },
 };
 
@@ -338,32 +339,27 @@ fn build_conversation_stream(
     )
 }
 
-fn project_conversation_control_deltas(
-    previous: &TerminalControlFacts,
-    current: &TerminalControlFacts,
-) -> Vec<ConversationDeltaDto> {
-    let previous = control_state_delta(previous);
-    let current = control_state_delta(current);
-    if previous == current {
-        Vec::new()
-    } else {
-        vec![current]
-    }
-}
-
 #[derive(Debug, Clone)]
 struct ConversationAuthoritativeFacts {
-    control: TerminalControlFacts,
-    child_summaries: Vec<TerminalChildSummaryFacts>,
-    slash_candidates: Vec<TerminalSlashCandidateFacts>,
+    control: ConversationControlSummary,
+    child_summaries: Vec<ConversationChildSummarySummary>,
+    slash_candidates: Vec<ConversationSlashCandidateSummary>,
 }
 
 impl ConversationAuthoritativeFacts {
     fn from_replay(facts: &TerminalStreamReplayFacts) -> Self {
+        Self::from_summary(astrcode_application::summarize_conversation_authoritative(
+            &facts.control,
+            &facts.child_summaries,
+            &facts.slash_candidates,
+        ))
+    }
+
+    fn from_summary(summary: ConversationAuthoritativeSummary) -> Self {
         Self {
-            control: facts.control.clone(),
-            child_summaries: facts.child_summaries.clone(),
-            slash_candidates: facts.slash_candidates.clone(),
+            control: summary.control,
+            child_summaries: summary.child_summaries,
+            slash_candidates: summary.slash_candidates,
         }
     }
 }
@@ -371,9 +367,7 @@ impl ConversationAuthoritativeFacts {
 struct ConversationStreamProjectorState {
     session_id: String,
     projector: RuntimeConversationStreamProjector,
-    control: TerminalControlFacts,
-    child_summaries: Vec<TerminalChildSummaryFacts>,
-    slash_candidates: Vec<TerminalSlashCandidateFacts>,
+    authoritative: ConversationAuthoritativeFacts,
 }
 
 impl ConversationStreamProjectorState {
@@ -385,9 +379,7 @@ impl ConversationStreamProjectorState {
         Self {
             session_id,
             projector: RuntimeConversationStreamProjector::new(last_sent_cursor, &facts.replay),
-            control: facts.control.clone(),
-            child_summaries: facts.child_summaries.clone(),
-            slash_candidates: facts.slash_candidates.clone(),
+            authoritative: ConversationAuthoritativeFacts::from_replay(facts),
         }
     }
 
@@ -399,7 +391,7 @@ impl ConversationStreamProjectorState {
         &mut self,
         facts: &TerminalStreamReplayFacts,
     ) -> Vec<ConversationStreamEnvelopeDto> {
-        let child_lookup = child_summary_lookup(&facts.child_summaries);
+        let child_lookup = child_summary_summary_lookup(&self.authoritative.child_summaries);
         let envelopes = self
             .projector
             .seed_initial_replay(&facts.replay)
@@ -414,7 +406,7 @@ impl ConversationStreamProjectorState {
         &mut self,
         record: &astrcode_core::SessionEventRecord,
     ) -> Vec<ConversationStreamEnvelopeDto> {
-        let child_lookup = child_summary_lookup(&self.child_summaries);
+        let child_lookup = child_summary_summary_lookup(&self.authoritative.child_summaries);
         self.projector
             .project_durable_record(record)
             .into_iter()
@@ -430,7 +422,7 @@ impl ConversationStreamProjectorState {
                 project_conversation_frame(
                     self.session_id.as_str(),
                     frame,
-                    &child_summary_lookup(&self.child_summaries),
+                    &child_summary_summary_lookup(&self.authoritative.child_summaries),
                 )
             })
             .collect()
@@ -441,21 +433,27 @@ impl ConversationStreamProjectorState {
         cursor: &str,
         refreshed: ConversationAuthoritativeFacts,
     ) -> Vec<ConversationStreamEnvelopeDto> {
-        let mut deltas = project_conversation_control_deltas(&self.control, &refreshed.control);
-        deltas.extend(project_conversation_child_summary_deltas(
-            &self.child_summaries,
+        let mut deltas = if self.authoritative.control == refreshed.control {
+            Vec::new()
+        } else {
+            vec![project_conversation_control_summary_delta(
+                &refreshed.control,
+            )]
+        };
+        deltas.extend(project_conversation_child_summary_summary_deltas(
+            &self.authoritative.child_summaries,
             &refreshed.child_summaries,
         ));
-        if self.slash_candidates != refreshed.slash_candidates {
+        if self.authoritative.slash_candidates != refreshed.slash_candidates {
             deltas.push(ConversationDeltaDto::ReplaceSlashCandidates {
-                candidates: project_conversation_slash_candidates(&refreshed.slash_candidates)
-                    .items,
+                candidates: project_conversation_slash_candidate_summaries(
+                    &refreshed.slash_candidates,
+                )
+                .items,
             });
         }
 
-        self.control = refreshed.control;
-        self.child_summaries = refreshed.child_summaries;
-        self.slash_candidates = refreshed.slash_candidates;
+        self.authoritative = refreshed;
         self.wrap_durable_deltas(cursor, deltas)
     }
 
@@ -463,7 +461,8 @@ impl ConversationStreamProjectorState {
         &mut self,
         recovered: &TerminalStreamReplayFacts,
     ) -> Vec<ConversationStreamEnvelopeDto> {
-        let child_lookup = child_summary_lookup(&recovered.child_summaries);
+        let refreshed = ConversationAuthoritativeFacts::from_replay(recovered);
+        let child_lookup = child_summary_summary_lookup(&refreshed.child_summaries);
         let mut envelopes = self
             .projector
             .recover_from(&recovered.replay)
@@ -476,10 +475,7 @@ impl ConversationStreamProjectorState {
             .last_sent_cursor()
             .unwrap_or("0.0")
             .to_string();
-        envelopes.extend(self.apply_authoritative_refresh(
-            recovery_cursor.as_str(),
-            ConversationAuthoritativeFacts::from_replay(recovered),
-        ));
+        envelopes.extend(self.apply_authoritative_refresh(recovery_cursor.as_str(), refreshed));
         envelopes
     }
 
@@ -506,30 +502,10 @@ async fn refresh_conversation_authoritative_facts(
     session_id: &str,
     focus: &ConversationFocus,
 ) -> Result<ConversationAuthoritativeFacts, ApplicationError> {
-    Ok(ConversationAuthoritativeFacts {
-        control: app.terminal_control_facts(session_id).await?,
-        child_summaries: app.conversation_child_summaries(session_id, focus).await?,
-        slash_candidates: app.terminal_slash_candidates(session_id, None).await?,
-    })
-}
-
-fn child_summary_lookup(
-    summaries: &[TerminalChildSummaryFacts],
-) -> HashMap<String, ConversationChildSummaryDto> {
-    let mut lookup = HashMap::new();
-    for summary in summaries {
-        let dto = project_child_summary(summary);
-        lookup.insert(summary.node.child_session_id.to_string(), dto.clone());
-        if let Some(child_ref) = &dto.child_ref {
-            lookup.insert(child_ref.open_session_id.clone(), dto.clone());
-            lookup.insert(child_ref.session_id.clone(), dto.clone());
-        }
-    }
-    lookup
-}
-
-fn control_state_delta(control: &TerminalControlFacts) -> ConversationDeltaDto {
-    project_conversation_control_delta(control)
+    Ok(ConversationAuthoritativeFacts::from_summary(
+        app.conversation_authoritative_summary(session_id, focus)
+            .await?,
+    ))
 }
 
 fn single_envelope_stream(envelope: ConversationStreamEnvelopeDto) -> ConversationSse {
@@ -607,6 +583,7 @@ type ConversationSse = Sse<axum::response::sse::KeepAliveStream<ConversationEven
 mod tests {
     use astrcode_application::{
         TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
+        summarize_conversation_authoritative,
     };
     use astrcode_core::{
         AgentEventContext, AgentLifecycleStatus, ChildExecutionIdentity, ChildSessionLineageKind,
@@ -739,11 +716,12 @@ mod tests {
             &facts,
         );
 
-        let refreshed = ConversationAuthoritativeFacts {
-            control: facts.control.clone(),
-            child_summaries: vec![sample_child_summary()],
-            slash_candidates: facts.slash_candidates.clone(),
-        };
+        let refreshed =
+            ConversationAuthoritativeFacts::from_summary(summarize_conversation_authoritative(
+                &facts.control,
+                &[sample_child_summary()],
+                &facts.slash_candidates,
+            ));
 
         let envelopes = state.apply_authoritative_refresh("1.4", refreshed);
         assert_eq!(envelopes.len(), 1);

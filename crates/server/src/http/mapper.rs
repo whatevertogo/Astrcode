@@ -20,52 +20,93 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_application::{
-    AgentCollaborationScorecardSnapshot, AgentMode, ApplicationError, CapabilitySpec,
-    ComposerOption, ComposerOptionKind, Config, ExecutionDiagnosticsSnapshot, GovernanceSnapshot,
-    InvocationMode, OperationMetricsSnapshot, PluginEntry, PluginHealth, PluginState,
-    ReplayMetricsSnapshot, RuntimeObservabilitySnapshot, SessionCatalogEvent, SessionMeta,
-    SubRunExecutionMetricsSnapshot, SubagentContextOverrides, format_local_rfc3339,
-    is_env_var_name, list_model_options as resolve_model_options, resolve_active_selection,
+    AgentExecuteSummary, ApplicationError, ComposerOption, Config, ResolvedConfigSummary,
+    ResolvedRuntimeStatusSummary, SessionCatalogEvent, SessionListSummary,
+    SubRunStatusSourceSummary, SubRunStatusSummary, SubagentContextOverrides,
+    list_model_options as resolve_model_options,
     resolve_current_model as resolve_runtime_current_model,
 };
 use astrcode_protocol::http::{
-    AgentCollaborationScorecardDto, AgentProfileDto, ComposerOptionActionKindDto,
-    ComposerOptionDto, ComposerOptionKindDto, ComposerOptionsResponseDto, ConfigView,
-    CurrentModelInfoDto, ExecutionDiagnosticsDto, ModelOptionDto, OperationMetricsDto,
-    PROTOCOL_VERSION, PluginHealthDto, PluginRuntimeStateDto, ProfileView, ReplayMetricsDto,
-    RuntimeCapabilityDto, RuntimeMetricsDto, RuntimePluginDto, RuntimeStatusDto,
-    SessionCatalogEventEnvelope, SessionCatalogEventPayload, SessionListItem,
-    SubRunExecutionMetricsDto, SubagentContextOverridesDto,
+    AgentExecuteResponseDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,
+    ModelOptionDto, PROTOCOL_VERSION, ProfileView, ResolvedExecutionLimitsDto,
+    RuntimeCapabilityDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
+    SessionListItem, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
+    SubagentContextOverridesDto,
 };
 use axum::{http::StatusCode, response::sse::Event};
 
 use crate::ApiError;
 
-#[derive(Debug, Clone)]
-pub(crate) struct AgentProfileSummary {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub mode: AgentMode,
-    pub allowed_tools: Vec<String>,
-    pub disallowed_tools: Vec<String>,
+fn to_runtime_capability_dto(
+    capability: astrcode_application::RuntimeCapabilitySummary,
+) -> RuntimeCapabilityDto {
+    RuntimeCapabilityDto {
+        name: capability.name,
+        kind: capability.kind,
+        description: capability.description,
+        profiles: capability.profiles,
+        streaming: capability.streaming,
+    }
 }
 
-/// 将会话元数据映射为列表项 DTO。
+/// 将会话摘要输入映射为列表项 DTO。
 ///
 /// 用于 `GET /api/sessions` 和 `POST /api/sessions` 的响应，
-/// 将时间戳转换为 RFC3339 字符串格式。
-pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
+/// server 只负责协议包装，不再自行格式化时间字段。
+pub(crate) fn to_session_list_item(summary: SessionListSummary) -> SessionListItem {
     SessionListItem {
-        session_id: meta.session_id,
-        working_dir: meta.working_dir,
-        display_name: meta.display_name,
-        title: meta.title,
-        created_at: format_local_rfc3339(meta.created_at),
-        updated_at: format_local_rfc3339(meta.updated_at),
-        parent_session_id: meta.parent_session_id,
-        parent_storage_seq: meta.parent_storage_seq,
-        phase: meta.phase,
+        session_id: summary.session_id,
+        working_dir: summary.working_dir,
+        display_name: summary.display_name,
+        title: summary.title,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
+        parent_session_id: summary.parent_session_id,
+        parent_storage_seq: summary.parent_storage_seq,
+        phase: summary.phase,
+    }
+}
+
+pub(crate) fn to_agent_execute_response_dto(
+    summary: AgentExecuteSummary,
+) -> AgentExecuteResponseDto {
+    AgentExecuteResponseDto {
+        accepted: summary.accepted,
+        message: summary.message,
+        session_id: summary.session_id,
+        turn_id: summary.turn_id,
+        agent_id: summary.agent_id,
+    }
+}
+
+pub(crate) fn to_subrun_status_dto(summary: SubRunStatusSummary) -> SubRunStatusDto {
+    SubRunStatusDto {
+        sub_run_id: summary.sub_run_id,
+        tool_call_id: summary.tool_call_id,
+        source: match summary.source {
+            SubRunStatusSourceSummary::Live => SubRunStatusSourceDto::Live,
+            SubRunStatusSourceSummary::Durable => SubRunStatusSourceDto::Durable,
+        },
+        agent_id: summary.agent_id,
+        agent_profile: summary.agent_profile,
+        session_id: summary.session_id,
+        child_session_id: summary.child_session_id,
+        depth: summary.depth,
+        parent_agent_id: summary.parent_agent_id,
+        parent_sub_run_id: summary.parent_sub_run_id,
+        storage_mode: summary.storage_mode,
+        lifecycle: summary.lifecycle,
+        last_turn_outcome: summary.last_turn_outcome,
+        result: summary.result.map(to_subrun_result_dto),
+        step_count: summary.step_count,
+        estimated_tokens: summary.estimated_tokens,
+        resolved_overrides: summary.resolved_overrides,
+        resolved_limits: summary
+            .resolved_limits
+            .map(|limits| ResolvedExecutionLimitsDto {
+                allowed_tools: limits.allowed_tools,
+                max_steps: limits.max_steps,
+            }),
     }
 }
 
@@ -73,63 +114,46 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
 ///
 /// 包含运行时名称、类型、已加载会话数、运行中的会话 ID、
 /// 插件搜索路径、运行时指标、能力描述和插件状态。
-pub(crate) fn to_runtime_status_dto(snapshot: GovernanceSnapshot) -> RuntimeStatusDto {
+pub(crate) fn to_runtime_status_dto(summary: ResolvedRuntimeStatusSummary) -> RuntimeStatusDto {
     RuntimeStatusDto {
-        runtime_name: snapshot.runtime_name,
-        runtime_kind: snapshot.runtime_kind,
-        loaded_session_count: snapshot.loaded_session_count,
-        running_session_ids: snapshot.running_session_ids,
-        plugin_search_paths: snapshot
-            .plugin_search_paths
-            .into_iter()
-            .map(|path| path.display().to_string())
-            .collect(),
-        metrics: to_runtime_metrics_dto(snapshot.metrics),
-        capabilities: snapshot
+        runtime_name: summary.runtime_name,
+        runtime_kind: summary.runtime_kind,
+        loaded_session_count: summary.loaded_session_count,
+        running_session_ids: summary.running_session_ids,
+        plugin_search_paths: summary.plugin_search_paths,
+        metrics: summary.metrics,
+        capabilities: summary
             .capabilities
             .into_iter()
             .map(to_runtime_capability_dto)
             .collect(),
-        plugins: snapshot
+        plugins: summary
             .plugins
             .into_iter()
-            .map(to_runtime_plugin_dto)
+            .map(|plugin| RuntimePluginDto {
+                name: plugin.name,
+                version: plugin.version,
+                description: plugin.description,
+                state: plugin.state,
+                health: plugin.health,
+                failure_count: plugin.failure_count,
+                failure: plugin.failure,
+                warnings: plugin.warnings,
+                last_checked_at: plugin.last_checked_at,
+                capabilities: plugin
+                    .capabilities
+                    .into_iter()
+                    .map(to_runtime_capability_dto)
+                    .collect(),
+            })
             .collect(),
-    }
-}
-
-pub(crate) fn to_agent_profile_dto(profile: AgentProfileSummary) -> AgentProfileDto {
-    AgentProfileDto {
-        id: profile.id,
-        name: profile.name,
-        description: profile.description,
-        mode: match profile.mode {
-            AgentMode::Primary => "primary".to_string(),
-            AgentMode::SubAgent => "subAgent".to_string(),
-            AgentMode::All => "all".to_string(),
-        },
-        allowed_tools: profile.allowed_tools,
-        disallowed_tools: profile.disallowed_tools,
-        // TODO: 未来可能需要添加更多 agent 级执行限制摘要
     }
 }
 
 pub(crate) fn from_subagent_context_overrides_dto(
     dto: Option<SubagentContextOverridesDto>,
 ) -> Option<SubagentContextOverrides> {
-    dto.map(|dto| SubagentContextOverrides {
-        storage_mode: dto.storage_mode,
-        inherit_system_instructions: dto.inherit_system_instructions,
-        inherit_project_instructions: dto.inherit_project_instructions,
-        inherit_working_dir: dto.inherit_working_dir,
-        inherit_policy_upper_bound: dto.inherit_policy_upper_bound,
-        inherit_cancel_token: dto.inherit_cancel_token,
-        include_compact_summary: dto.include_compact_summary,
-        include_recent_tail: dto.include_recent_tail,
-        include_recovery_refs: dto.include_recovery_refs,
-        include_parent_findings: dto.include_parent_findings,
-        fork_mode: dto.fork_mode,
-    })
+    dto
 }
 
 /// 将会话目录事件转换为 SSE 事件。
@@ -138,258 +162,41 @@ pub(crate) fn from_subagent_context_overrides_dto(
 /// 序列化失败时返回 `projectDeleted` 事件并携带错误信息，
 /// 保证 SSE 流不会中断。
 pub(crate) fn to_session_catalog_sse_event(event: SessionCatalogEvent) -> Event {
-    let payload = serde_json::to_string(&SessionCatalogEventEnvelope::new(
-        to_session_catalog_event_dto(event),
-    ))
-    .unwrap_or_else(|error| {
-        serde_json::json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "event": "projectDeleted",
-            "data": {
-                "workingDir": format!("serialization-error: {error}")
-            }
-        })
-        .to_string()
-    });
+    let payload =
+        serde_json::to_string(&SessionCatalogEventEnvelope::new(event)).unwrap_or_else(|error| {
+            serde_json::json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "event": "projectDeleted",
+                "data": {
+                    "workingDir": format!("serialization-error: {error}")
+                }
+            })
+            .to_string()
+        });
     Event::default().data(payload)
-}
-
-/// 将能力描述符映射为 DTO。
-///
-/// `kind` 字段通过 serde_json 序列化后取字符串表示，
-/// 反序列化失败时降级为 "unknown"，避免协议层崩溃。
-fn to_runtime_capability_dto(spec: CapabilitySpec) -> RuntimeCapabilityDto {
-    RuntimeCapabilityDto {
-        name: spec.name.to_string(),
-        kind: spec.kind.as_str().to_string(),
-        description: spec.description,
-        profiles: spec.profiles,
-        streaming: matches!(spec.invocation_mode, InvocationMode::Streaming),
-    }
-}
-
-/// 将插件条目映射为 DTO。
-///
-/// 包含插件清单信息（名称、版本、描述）、运行时状态、健康度、
-/// 失败计数和最后检查时间，以及插件暴露的所有能力。
-fn to_runtime_plugin_dto(entry: PluginEntry) -> RuntimePluginDto {
-    RuntimePluginDto {
-        name: entry.manifest.name,
-        version: entry.manifest.version,
-        description: entry.manifest.description,
-        state: match entry.state {
-            PluginState::Discovered => PluginRuntimeStateDto::Discovered,
-            PluginState::Initialized => PluginRuntimeStateDto::Initialized,
-            PluginState::Failed => PluginRuntimeStateDto::Failed,
-        },
-        health: match entry.health {
-            PluginHealth::Unknown => PluginHealthDto::Unknown,
-            PluginHealth::Healthy => PluginHealthDto::Healthy,
-            PluginHealth::Degraded => PluginHealthDto::Degraded,
-            PluginHealth::Unavailable => PluginHealthDto::Unavailable,
-        },
-        failure_count: entry.failure_count,
-        failure: entry.failure,
-        warnings: entry.warnings,
-        last_checked_at: entry.last_checked_at,
-        capabilities: entry
-            .capabilities
-            .into_iter()
-            .map(to_runtime_capability_dto)
-            .collect(),
-    }
-}
-
-/// 将运行时观测指标快照映射为 DTO。
-///
-/// 包含三个维度的指标：会话重连（session_rehydrate）、
-/// SSE 追赶（sse_catch_up）、轮次执行（turn_execution）和子执行域观测（subrun_execution）。
-pub(crate) fn to_runtime_metrics_dto(snapshot: RuntimeObservabilitySnapshot) -> RuntimeMetricsDto {
-    RuntimeMetricsDto {
-        session_rehydrate: to_operation_metrics_dto(snapshot.session_rehydrate),
-        sse_catch_up: to_replay_metrics_dto(snapshot.sse_catch_up),
-        turn_execution: to_operation_metrics_dto(snapshot.turn_execution),
-        subrun_execution: to_subrun_execution_metrics_dto(snapshot.subrun_execution),
-        execution_diagnostics: to_execution_diagnostics_dto(snapshot.execution_diagnostics),
-        agent_collaboration: to_agent_collaboration_scorecard_dto(snapshot.agent_collaboration),
-    }
-}
-
-/// 将操作指标快照映射为 DTO。
-///
-/// 记录总执行次数、失败次数、总耗时、最近一次耗时和最大耗时，
-/// 用于前端展示运行时性能面板。
-fn to_operation_metrics_dto(snapshot: OperationMetricsSnapshot) -> OperationMetricsDto {
-    OperationMetricsDto {
-        total: snapshot.total,
-        failures: snapshot.failures,
-        total_duration_ms: snapshot.total_duration_ms,
-        last_duration_ms: snapshot.last_duration_ms,
-        max_duration_ms: snapshot.max_duration_ms,
-    }
-}
-
-/// 将回放指标快照映射为 DTO。
-///
-/// 在操作指标基础上增加缓存命中数、磁盘回退数和已恢复事件数，
-/// 用于衡量 SSE 断线重连后的事件恢复效率。
-fn to_replay_metrics_dto(snapshot: ReplayMetricsSnapshot) -> ReplayMetricsDto {
-    ReplayMetricsDto {
-        totals: to_operation_metrics_dto(snapshot.totals),
-        cache_hits: snapshot.cache_hits,
-        disk_fallbacks: snapshot.disk_fallbacks,
-        recovered_events: snapshot.recovered_events,
-    }
-}
-
-fn to_subrun_execution_metrics_dto(
-    snapshot: SubRunExecutionMetricsSnapshot,
-) -> SubRunExecutionMetricsDto {
-    SubRunExecutionMetricsDto {
-        total: snapshot.total,
-        failures: snapshot.failures,
-        completed: snapshot.completed,
-        cancelled: snapshot.cancelled,
-        token_exceeded: snapshot.token_exceeded,
-        independent_session_total: snapshot.independent_session_total,
-        total_duration_ms: snapshot.total_duration_ms,
-        last_duration_ms: snapshot.last_duration_ms,
-        total_steps: snapshot.total_steps,
-        last_step_count: snapshot.last_step_count,
-        total_estimated_tokens: snapshot.total_estimated_tokens,
-        last_estimated_tokens: snapshot.last_estimated_tokens,
-    }
-}
-
-fn to_execution_diagnostics_dto(snapshot: ExecutionDiagnosticsSnapshot) -> ExecutionDiagnosticsDto {
-    ExecutionDiagnosticsDto {
-        child_spawned: snapshot.child_spawned,
-        child_started_persisted: snapshot.child_started_persisted,
-        child_terminal_persisted: snapshot.child_terminal_persisted,
-        parent_reactivation_requested: snapshot.parent_reactivation_requested,
-        parent_reactivation_succeeded: snapshot.parent_reactivation_succeeded,
-        parent_reactivation_failed: snapshot.parent_reactivation_failed,
-        lineage_mismatch_parent_agent: snapshot.lineage_mismatch_parent_agent,
-        lineage_mismatch_parent_session: snapshot.lineage_mismatch_parent_session,
-        lineage_mismatch_child_session: snapshot.lineage_mismatch_child_session,
-        lineage_mismatch_descriptor_missing: snapshot.lineage_mismatch_descriptor_missing,
-        cache_reuse_hits: snapshot.cache_reuse_hits,
-        cache_reuse_misses: snapshot.cache_reuse_misses,
-        delivery_buffer_queued: snapshot.delivery_buffer_queued,
-        delivery_buffer_dequeued: snapshot.delivery_buffer_dequeued,
-        delivery_buffer_wake_requested: snapshot.delivery_buffer_wake_requested,
-        delivery_buffer_wake_succeeded: snapshot.delivery_buffer_wake_succeeded,
-        delivery_buffer_wake_failed: snapshot.delivery_buffer_wake_failed,
-    }
-}
-
-fn to_agent_collaboration_scorecard_dto(
-    snapshot: AgentCollaborationScorecardSnapshot,
-) -> AgentCollaborationScorecardDto {
-    AgentCollaborationScorecardDto {
-        total_facts: snapshot.total_facts,
-        spawn_accepted: snapshot.spawn_accepted,
-        spawn_rejected: snapshot.spawn_rejected,
-        send_reused: snapshot.send_reused,
-        send_queued: snapshot.send_queued,
-        send_rejected: snapshot.send_rejected,
-        observe_calls: snapshot.observe_calls,
-        observe_rejected: snapshot.observe_rejected,
-        observe_followed_by_action: snapshot.observe_followed_by_action,
-        close_calls: snapshot.close_calls,
-        close_rejected: snapshot.close_rejected,
-        delivery_delivered: snapshot.delivery_delivered,
-        delivery_consumed: snapshot.delivery_consumed,
-        delivery_replayed: snapshot.delivery_replayed,
-        orphan_child_count: snapshot.orphan_child_count,
-        child_reuse_ratio_bps: snapshot.child_reuse_ratio_bps,
-        observe_to_action_ratio_bps: snapshot.observe_to_action_ratio_bps,
-        spawn_to_delivery_ratio_bps: snapshot.spawn_to_delivery_ratio_bps,
-        orphan_child_ratio_bps: snapshot.orphan_child_ratio_bps,
-        avg_delivery_latency_ms: snapshot.avg_delivery_latency_ms,
-        max_delivery_latency_ms: snapshot.max_delivery_latency_ms,
-    }
-}
-
-/// 将会话目录事件映射为协议层载荷。
-///
-/// 目录事件用于前端同步会话列表变更，包括会话创建/删除、
-/// 项目删除（级联删除该工作目录下所有会话）、会话分支。
-pub(crate) fn to_session_catalog_event_dto(
-    event: SessionCatalogEvent,
-) -> SessionCatalogEventPayload {
-    match event {
-        SessionCatalogEvent::SessionCreated { session_id } => {
-            SessionCatalogEventPayload::SessionCreated { session_id }
-        },
-        SessionCatalogEvent::SessionDeleted { session_id } => {
-            SessionCatalogEventPayload::SessionDeleted { session_id }
-        },
-        SessionCatalogEvent::ProjectDeleted { working_dir } => {
-            SessionCatalogEventPayload::ProjectDeleted { working_dir }
-        },
-        SessionCatalogEvent::SessionBranched {
-            session_id,
-            source_session_id,
-        } => SessionCatalogEventPayload::SessionBranched {
-            session_id,
-            source_session_id,
-        },
-    }
 }
 
 /// 构建配置视图 DTO。
 ///
-/// 将内部 `Config` 转换为前端可展示的配置视图，包括：
-/// - 配置文件路径
-/// - 当前激活的 profile 和 model
-/// - 所有 profile 列表（API key 做脱敏预览）
-/// - 配置警告（如无 profile 时提示）
-///
-/// Profile 为空时直接返回带警告的视图，不走活跃选择解析。
-pub(crate) fn build_config_view(
-    config: &Config,
-    config_path: String,
-) -> Result<ConfigView, ApiError> {
-    if config.profiles.is_empty() {
-        return Ok(ConfigView {
-            config_path,
-            active_profile: String::new(),
-            active_model: String::new(),
-            profiles: Vec::new(),
-            warning: Some("no profiles configured".to_string()),
-        });
-    }
-
-    let profiles = config
-        .profiles
-        .iter()
-        .map(|profile| ProfileView {
-            name: profile.name.clone(),
-            base_url: profile.base_url.clone(),
-            api_key_preview: api_key_preview(profile.api_key.as_deref()),
-            models: profile
-                .models
-                .iter()
-                .map(|model| model.id.clone())
-                .collect(),
-        })
-        .collect::<Vec<_>>();
-
-    let selection = resolve_active_selection(
-        &config.active_profile,
-        &config.active_model,
-        &config.profiles,
-    )
-    .map_err(config_selection_error)?;
-
-    Ok(ConfigView {
+/// server 只负责补充 `config_path` 和协议外层壳，
+/// 已解析选择、profile 摘要与 API key 预览均由 application 统一提供。
+pub(crate) fn build_config_view(summary: ResolvedConfigSummary, config_path: String) -> ConfigView {
+    ConfigView {
         config_path,
-        active_profile: selection.active_profile,
-        active_model: selection.active_model,
-        profiles,
-        warning: selection.warning,
-    })
+        active_profile: summary.active_profile,
+        active_model: summary.active_model,
+        profiles: summary
+            .profiles
+            .into_iter()
+            .map(|profile| ProfileView {
+                name: profile.name,
+                base_url: profile.base_url,
+                api_key_preview: profile.api_key_preview,
+                models: profile.models,
+            })
+            .collect(),
+        warning: summary.warning,
+    }
 }
 
 /// 解析当前激活的模型信息。
@@ -397,13 +204,7 @@ pub(crate) fn build_config_view(
 /// 从配置中提取当前使用的 profile 名称、模型名称和提供者类型，
 /// 用于 `GET /api/models/current` 响应。
 pub(crate) fn resolve_current_model(config: &Config) -> Result<CurrentModelInfoDto, ApiError> {
-    let selection = resolve_runtime_current_model(config).map_err(config_selection_error)?;
-
-    Ok(CurrentModelInfoDto {
-        profile_name: selection.profile_name,
-        model: selection.model,
-        provider_kind: selection.provider_kind,
-    })
+    resolve_runtime_current_model(config).map_err(config_selection_error)
 }
 
 /// 列出所有可用的模型选项。
@@ -412,13 +213,6 @@ pub(crate) fn resolve_current_model(config: &Config) -> Result<CurrentModelInfoD
 /// 用于 `GET /api/models` 响应，前端据此渲染模型选择器。
 pub(crate) fn list_model_options(config: &Config) -> Vec<ModelOptionDto> {
     resolve_model_options(config)
-        .into_iter()
-        .map(|option| ModelOptionDto {
-            profile_name: option.profile_name,
-            model: option.model,
-            provider_kind: option.provider_kind,
-        })
-        .collect()
 }
 
 /// 将 runtime 输入候选项映射为协议 DTO。
@@ -427,34 +221,7 @@ pub(crate) fn list_model_options(config: &Config) -> Vec<ModelOptionDto> {
 pub(crate) fn to_composer_options_response(
     items: Vec<ComposerOption>,
 ) -> ComposerOptionsResponseDto {
-    ComposerOptionsResponseDto {
-        items: items.into_iter().map(to_composer_option_dto).collect(),
-    }
-}
-
-fn to_composer_option_dto(item: ComposerOption) -> ComposerOptionDto {
-    ComposerOptionDto {
-        kind: match item.kind {
-            ComposerOptionKind::Command => ComposerOptionKindDto::Command,
-            ComposerOptionKind::Skill => ComposerOptionKindDto::Skill,
-            ComposerOptionKind::Capability => ComposerOptionKindDto::Capability,
-        },
-        id: item.id,
-        title: item.title,
-        description: item.description,
-        insert_text: item.insert_text,
-        action_kind: match item.action_kind {
-            astrcode_application::ComposerOptionActionKind::InsertText => {
-                ComposerOptionActionKindDto::InsertText
-            },
-            astrcode_application::ComposerOptionActionKind::ExecuteCommand => {
-                ComposerOptionActionKindDto::ExecuteCommand
-            },
-        },
-        action_value: item.action_value,
-        badges: item.badges,
-        keywords: item.keywords,
-    }
+    ComposerOptionsResponseDto { items }
 }
 
 fn config_selection_error(error: ApplicationError) -> ApiError {
@@ -464,64 +231,22 @@ fn config_selection_error(error: ApplicationError) -> ApiError {
     }
 }
 
-/// 生成 API key 的安全预览字符串。
-///
-/// 规则：
-/// - `None` 或空字符串 → "未配置"
-/// - `env:VAR_NAME` 前缀 → "环境变量: VAR_NAME"（不读取实际值）
-/// - `literal:KEY` 前缀 → 显示 **** + 最后 4 个字符
-/// - 纯大写+下划线且是有效环境变量名 → "环境变量: NAME"
-/// - 长度 > 4 → 显示 "****" + 最后 4 个字符
-/// - 其他 → "****"
-pub(crate) fn api_key_preview(api_key: Option<&str>) -> String {
-    match api_key.map(str::trim) {
-        None | Some("") => "未配置".to_string(),
-        Some(value) if value.starts_with("env:") => {
-            let env_name = value.trim_start_matches("env:").trim();
-            if env_name.is_empty() {
-                "未配置".to_string()
-            } else {
-                format!("环境变量: {}", env_name)
-            }
+fn to_subrun_result_dto(result: astrcode_application::SubRunResult) -> SubRunResultDto {
+    match result {
+        astrcode_application::SubRunResult::Running { handoff } => {
+            SubRunResultDto::Running { handoff }
         },
-        Some(value) if value.starts_with("literal:") => {
-            let key = value.trim_start_matches("literal:").trim();
-            masked_key_preview(key)
+        astrcode_application::SubRunResult::Completed { outcome, handoff } => match outcome {
+            astrcode_core::CompletedSubRunOutcome::Completed => {
+                SubRunResultDto::Completed { handoff }
+            },
+            astrcode_core::CompletedSubRunOutcome::TokenExceeded => {
+                SubRunResultDto::TokenExceeded { handoff }
+            },
         },
-        Some(value) if is_env_var_name(value) && std::env::var_os(value).is_some() => {
-            format!("环境变量: {}", value)
+        astrcode_application::SubRunResult::Failed { outcome, failure } => match outcome {
+            astrcode_core::FailedSubRunOutcome::Failed => SubRunResultDto::Failed { failure },
+            astrcode_core::FailedSubRunOutcome::Cancelled => SubRunResultDto::Cancelled { failure },
         },
-        Some(value) => masked_key_preview(value),
-    }
-}
-
-fn masked_key_preview(value: &str) -> String {
-    let char_starts: Vec<usize> = value.char_indices().map(|(index, _)| index).collect();
-
-    if char_starts.len() <= 4 {
-        "****".to_string()
-    } else {
-        // 预览语义是“最后 4 个字符”而不是“最后 4 个字节”，
-        // 用字符起始位置切片可以避免多字节 UTF-8 密钥在预览时 panic。
-        let suffix_start = char_starts[char_starts.len() - 4];
-        format!("****{}", &value[suffix_start..])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::api_key_preview;
-
-    #[test]
-    fn api_key_preview_masks_utf8_literal_without_panicking() {
-        assert_eq!(
-            api_key_preview(Some("literal:令牌甲乙丙丁")),
-            "****甲乙丙丁"
-        );
-    }
-
-    #[test]
-    fn api_key_preview_masks_utf8_plain_value_without_panicking() {
-        assert_eq!(api_key_preview(Some("令牌甲乙丙丁戊")), "****乙丙丁戊");
     }
 }

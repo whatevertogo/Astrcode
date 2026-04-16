@@ -40,7 +40,7 @@ use crate::{
 
 /// 工具执行周期的最终结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolCycleOutcome {
+pub(crate) enum ToolCycleOutcome {
     /// 所有工具调用均已完成。
     Completed,
     /// 工具执行被取消。
@@ -48,7 +48,7 @@ pub enum ToolCycleOutcome {
 }
 
 /// 工具执行周期的完整结果。
-pub struct ToolCycleResult {
+pub(crate) struct ToolCycleResult {
     pub outcome: ToolCycleOutcome,
     /// 工具结果消息，需要追加到对话历史。
     pub tool_messages: Vec<LlmMessage>,
@@ -59,13 +59,13 @@ pub struct ToolCycleResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolEventEmissionMode {
+pub(crate) enum ToolEventEmissionMode {
     Immediate,
     Buffered,
 }
 
 /// 工具执行周期的上下文参数，避免函数参数过多。
-pub struct ToolCycleContext<'a> {
+pub(crate) struct ToolCycleContext<'a> {
     pub gateway: &'a KernelGateway,
     pub session_state: &'a Arc<SessionState>,
     pub session_id: &'a str,
@@ -92,7 +92,7 @@ struct SingleToolInvocation<'a> {
     event_emission_mode: ToolEventEmissionMode,
 }
 
-pub struct BufferedToolExecutionRequest {
+pub(crate) struct BufferedToolExecutionRequest {
     pub gateway: KernelGateway,
     pub session_state: Arc<SessionState>,
     pub tool_call: ToolCallRequest,
@@ -104,8 +104,7 @@ pub struct BufferedToolExecutionRequest {
     pub tool_result_inline_limit: usize,
 }
 
-pub struct BufferedToolExecution {
-    pub tool_call: ToolCallRequest,
+pub(crate) struct BufferedToolExecution {
     pub result: ToolExecutionResult,
     pub events: Vec<StorageEvent>,
     pub started_at: Instant,
@@ -346,7 +345,6 @@ pub async fn execute_buffered_tool_call(
     .await;
     let finished_at = Instant::now();
     BufferedToolExecution {
-        tool_call,
         result,
         events,
         started_at,

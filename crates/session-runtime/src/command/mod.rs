@@ -9,12 +9,12 @@ use chrono::Utc;
 
 use crate::{MailboxEventAppend, SessionRuntime, append_and_broadcast, append_mailbox_event};
 
-pub struct SessionCommands<'a> {
+pub(crate) struct SessionCommands<'a> {
     runtime: &'a SessionRuntime,
 }
 
 impl<'a> SessionCommands<'a> {
-    pub fn new(runtime: &'a SessionRuntime) -> Self {
+    pub(crate) fn new(runtime: &'a SessionRuntime) -> Self {
         Self { runtime }
     }
 

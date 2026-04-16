@@ -30,7 +30,7 @@ use crate::{
 };
 
 /// reactive compact 恢复成功后的结果。
-pub struct RecoveryResult {
+pub(crate) struct RecoveryResult {
     /// 压缩后的消息历史（含文件恢复消息）。
     pub messages: Vec<LlmMessage>,
     /// 压缩期间产生的事件。
@@ -40,7 +40,7 @@ pub struct RecoveryResult {
 /// reactive compact 调用上下文。
 ///
 /// 将分散的参数聚合为结构体，避免函数签名过长。
-pub struct ReactiveCompactContext<'a> {
+pub(crate) struct ReactiveCompactContext<'a> {
     pub gateway: &'a KernelGateway,
     pub prompt_facts_provider: &'a dyn PromptFactsProvider,
     pub messages: &'a [LlmMessage],

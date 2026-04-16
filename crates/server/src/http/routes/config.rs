@@ -4,7 +4,9 @@
 //! - `GET /api/config` — 获取配置视图（含 profile 列表和当前选择）
 //! - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
 
-use astrcode_application::format_local_rfc3339;
+use astrcode_application::{
+    format_local_rfc3339, resolve_config_summary, resolve_runtime_status_summary,
+};
 use astrcode_protocol::http::{ConfigReloadResponse, ConfigView, SaveActiveSelectionRequest};
 use axum::{
     Json,
@@ -34,7 +36,8 @@ pub(crate) async fn get_config(
         .config_path()
         .to_string_lossy()
         .to_string();
-    Ok(Json(build_config_view(&config, config_path)?))
+    let summary = resolve_config_summary(&config).map_err(ApiError::from)?;
+    Ok(Json(build_config_view(summary, config_path)))
 }
 
 /// 保存活跃的 profile 和 model 选择。
@@ -68,20 +71,21 @@ pub(crate) async fn reload_config(
     require_auth(&state, &headers, None)?;
     let reloaded = state.governance.reload().await.map_err(ApiError::from)?;
     let config = state.app.config().get_config().await;
+    let summary = resolve_config_summary(&config).map_err(ApiError::from)?;
     let config_path = state
         .app
         .config()
         .config_path()
         .to_string_lossy()
         .to_string();
-    let config_view = build_config_view(&config, config_path)?;
+    let config_view = build_config_view(summary, config_path);
 
     Ok((
         StatusCode::ACCEPTED,
         Json(ConfigReloadResponse {
             reloaded_at: format_local_rfc3339(reloaded.reloaded_at),
             config: config_view,
-            status: to_runtime_status_dto(reloaded.snapshot),
+            status: to_runtime_status_dto(resolve_runtime_status_summary(reloaded.snapshot)),
         }),
     ))
 }

@@ -44,6 +44,28 @@ pub struct McpServerStatusView {
     pub server_signature: String,
 }
 
+/// MCP 服务器状态的共享摘要输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerStatusSummary {
+    pub name: String,
+    pub scope: String,
+    pub enabled: bool,
+    pub status: String,
+    pub error: Option<String>,
+    pub tool_count: usize,
+    pub prompt_count: usize,
+    pub resource_count: usize,
+    pub pending_approval: bool,
+    pub server_signature: String,
+}
+
+/// MCP 动作返回的共享摘要输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpActionSummary {
+    pub ok: bool,
+    pub message: Option<String>,
+}
+
 /// 注册 MCP 服务器的业务输入。
 ///
 /// 包含业务层面的配置信息（名称、超时等），
@@ -119,6 +141,14 @@ impl McpService {
         self.port.list_server_status().await
     }
 
+    pub async fn list_status_summary(&self) -> Vec<McpServerStatusSummary> {
+        self.list_status()
+            .await
+            .into_iter()
+            .map(McpServerStatusSummary::from)
+            .collect()
+    }
+
     /// 用例：审批 MCP 服务器。
     pub async fn approve_server(&self, server_signature: &str) -> Result<(), ApplicationError> {
         self.port.approve_server(server_signature).await
@@ -164,6 +194,32 @@ impl McpService {
         enabled: bool,
     ) -> Result<(), ApplicationError> {
         self.port.set_server_enabled(scope, name, enabled).await
+    }
+}
+
+impl McpActionSummary {
+    pub fn ok() -> Self {
+        Self {
+            ok: true,
+            message: None,
+        }
+    }
+}
+
+impl From<McpServerStatusView> for McpServerStatusSummary {
+    fn from(value: McpServerStatusView) -> Self {
+        Self {
+            name: value.name,
+            scope: value.scope,
+            enabled: value.enabled,
+            status: value.state,
+            error: value.error,
+            tool_count: value.tool_count,
+            prompt_count: value.prompt_count,
+            resource_count: value.resource_count,
+            pending_approval: value.pending_approval,
+            server_signature: value.server_signature,
+        }
     }
 }
 

@@ -10,7 +10,10 @@ use astrcode_core::{
     StorageEventPayload, StoredEvent, UserMessageOrigin,
 };
 
-use crate::heuristics::{MAX_RECENT_MAILBOX_MESSAGES, MAX_TASK_SUMMARY_CHARS};
+use crate::{
+    heuristics::{MAX_RECENT_MAILBOX_MESSAGES, MAX_TASK_SUMMARY_CHARS},
+    query::text::{summarize_inline_text, truncate_text},
+};
 
 #[derive(Debug, Clone)]
 pub struct AgentObserveSnapshot {
@@ -23,7 +26,7 @@ pub struct AgentObserveSnapshot {
     pub last_output: Option<String>,
 }
 
-pub fn build_agent_observe_snapshot(
+pub(crate) fn build_agent_observe_snapshot(
     lifecycle_status: AgentLifecycleStatus,
     projected: &AgentState,
     mailbox_projection: &MailboxProjection,
@@ -51,14 +54,7 @@ pub fn build_agent_observe_snapshot(
 
 fn extract_last_output(messages: &[LlmMessage]) -> Option<String> {
     messages.iter().rev().find_map(|msg| match msg {
-        LlmMessage::Assistant { content, .. } if !content.is_empty() => {
-            let char_count = content.chars().count();
-            if char_count > 200 {
-                Some(content.chars().take(200).collect::<String>() + "...")
-            } else {
-                Some(content.clone())
-            }
-        },
+        LlmMessage::Assistant { content, .. } if !content.is_empty() => truncate_text(content, 200),
         _ => None,
     })
 }
@@ -166,24 +162,7 @@ fn recent_mailbox_message_summaries(
 }
 
 fn summarize_task_text(text: &str) -> Option<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let trimmed = normalized.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let char_count = trimmed.chars().count();
-    if char_count <= MAX_TASK_SUMMARY_CHARS {
-        return Some(trimmed.to_string());
-    }
-
-    Some(
-        trimmed
-            .chars()
-            .take(MAX_TASK_SUMMARY_CHARS)
-            .collect::<String>()
-            + "...",
-    )
+    summarize_inline_text(text, MAX_TASK_SUMMARY_CHARS)
 }
 
 #[cfg(test)]

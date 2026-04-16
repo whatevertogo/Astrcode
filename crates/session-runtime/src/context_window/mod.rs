@@ -11,12 +11,12 @@
 //! Final request assembly must not be implemented here.
 //! That flow is implemented in `session-runtime::turn::request`.
 
-pub mod compaction;
-pub mod file_access;
-pub mod micro_compact;
-pub mod prune_pass;
-pub mod settings;
-pub mod token_usage;
+pub(crate) mod compaction;
+pub(crate) mod file_access;
+pub(crate) mod micro_compact;
+pub(crate) mod prune_pass;
+pub(crate) mod settings;
+pub(crate) mod token_usage;
 pub(crate) mod tool_results;
 
-pub use settings::ContextWindowSettings;
+pub(crate) use settings::ContextWindowSettings;

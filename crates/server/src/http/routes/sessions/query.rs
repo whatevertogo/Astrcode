@@ -14,6 +14,7 @@ pub(crate) async fn list_sessions(
         .await
         .map_err(ApiError::from)?
         .into_iter()
+        .map(astrcode_application::summarize_session_meta)
         .map(to_session_list_item)
         .collect();
     Ok(Json(sessions))

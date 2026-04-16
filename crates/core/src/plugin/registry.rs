@@ -14,7 +14,8 @@ use std::{collections::BTreeMap, sync::RwLock};
 use crate::{CapabilitySpec, PluginManifest};
 
 /// 插件生命周期状态。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PluginState {
     /// 已发现（清单已加载，但尚未初始化）
     Discovered,
@@ -28,7 +29,8 @@ pub enum PluginState {
 ///
 /// 与 `PluginState` 不同，健康状态反映运行时状况，
 /// 一个已初始化的插件可能因网络问题变为 `Degraded`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PluginHealth {
     /// 尚未检查
     Unknown,

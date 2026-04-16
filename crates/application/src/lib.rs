@@ -23,22 +23,20 @@ pub use agent::AgentOrchestrationService;
 pub use astrcode_core::{
     AgentEvent, AgentEventContext, AgentLifecycleStatus, AgentMode, AgentTurnOutcome, ArtifactRef,
     AstrError, CapabilitySpec, ChildAgentRef, ChildSessionLineageKind,
-    ChildSessionNotificationKind, CompactTrigger, Config, ExecutionAccepted, ForkMode,
-    InvocationKind, InvocationMode, LocalServerInfo, Phase, PluginHealth, PluginState,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SessionEventRecord,
-    SessionMeta, StorageEventPayload, StoredEvent, SubRunFailure, SubRunFailureCode, SubRunHandoff,
-    SubRunResult, SubRunStorageMode, SubagentContextOverrides, ToolOutputStream,
-    format_local_rfc3339, plugin::PluginEntry,
+    ChildSessionNotificationKind, CompactTrigger, ComposerOption, ComposerOptionActionKind,
+    ComposerOptionKind, Config, ExecutionAccepted, ForkMode, InvocationKind, InvocationMode,
+    LocalServerInfo, Phase, PluginHealth, PluginState, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, SessionEventRecord, SessionMeta, StorageEventPayload,
+    StoredEvent, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult, SubRunStorageMode,
+    SubagentContextOverrides, TestConnectionResult, ToolOutputStream, format_local_rfc3339,
+    plugin::PluginEntry,
 };
 pub use astrcode_kernel::SubRunStatusView;
 pub use astrcode_session_runtime::{
     SessionCatalogEvent, SessionControlStateSnapshot, SessionEventFilterSpec, SessionReplay,
     SessionTranscriptSnapshot, SubRunEventScope, TurnCollaborationSummary, TurnSummary,
 };
-pub use composer::{
-    ComposerOption, ComposerOptionActionKind, ComposerOptionKind, ComposerOptionsRequest,
-    ComposerSkillSummary,
-};
+pub use composer::{ComposerOptionsRequest, ComposerSkillSummary};
 pub use config::{
     // 常量与解析函数
     ALL_ASTRCODE_ENV_VARS,
@@ -99,9 +97,10 @@ pub use config::{
     PROVIDER_KIND_OPENAI,
     RUNTIME_ENV_VARS,
     ResolvedAgentConfig,
+    ResolvedConfigSummary,
     ResolvedRuntimeConfig,
     TAURI_ENV_TARGET_TRIPLE_ENV,
-    TestConnectionResult,
+    api_key_preview,
     is_env_var_name,
     list_model_options,
     max_tool_concurrency,
@@ -109,6 +108,7 @@ pub use config::{
     resolve_agent_config,
     resolve_anthropic_messages_api_url,
     resolve_anthropic_models_api_url,
+    resolve_config_summary,
     resolve_current_model,
     resolve_openai_chat_completions_api_url,
     resolve_runtime_config,
@@ -119,23 +119,33 @@ pub use lifecycle::governance::{
     AppGovernance, ObservabilitySnapshotProvider, RuntimeGovernancePort, RuntimeGovernanceSnapshot,
     RuntimeReloader, SessionInfoProvider,
 };
-pub use mcp::{McpConfigScope, McpPort, McpServerStatusView, McpService, RegisterMcpServerInput};
+pub use mcp::{
+    McpActionSummary, McpConfigScope, McpPort, McpServerStatusSummary, McpServerStatusView,
+    McpService, RegisterMcpServerInput,
+};
 pub use observability::{
     AgentCollaborationScorecardSnapshot, ExecutionDiagnosticsSnapshot, GovernanceSnapshot,
     OperationMetricsSnapshot, ReloadResult, ReplayMetricsSnapshot, ReplayPath,
-    RuntimeObservabilityCollector, RuntimeObservabilitySnapshot, SubRunExecutionMetricsSnapshot,
+    ResolvedRuntimeStatusSummary, RuntimeCapabilitySummary, RuntimeObservabilityCollector,
+    RuntimeObservabilitySnapshot, RuntimePluginSummary, SubRunExecutionMetricsSnapshot,
+    resolve_runtime_status_summary,
 };
 pub use ports::{
     AgentKernelPort, AgentSessionPort, AppKernelPort, AppSessionPort, ComposerSkillPort,
 };
+pub use session_use_cases::summarize_session_meta;
 pub use terminal::{
-    ConversationChildSummaryFacts, ConversationControlFacts, ConversationFacts, ConversationFocus,
-    ConversationRehydrateFacts, ConversationRehydrateReason, ConversationResumeCandidateFacts,
-    ConversationSlashAction, ConversationSlashCandidateFacts, ConversationStreamFacts,
+    ConversationAuthoritativeSummary, ConversationChildSummaryFacts,
+    ConversationChildSummarySummary, ConversationControlFacts, ConversationControlSummary,
+    ConversationFacts, ConversationFocus, ConversationRehydrateFacts, ConversationRehydrateReason,
+    ConversationResumeCandidateFacts, ConversationSlashAction, ConversationSlashActionSummary,
+    ConversationSlashCandidateFacts, ConversationSlashCandidateSummary, ConversationStreamFacts,
     ConversationStreamReplayFacts, TerminalChildSummaryFacts, TerminalControlFacts, TerminalFacts,
     TerminalRehydrateFacts, TerminalRehydrateReason, TerminalResumeCandidateFacts,
     TerminalSlashAction, TerminalSlashCandidateFacts, TerminalStreamFacts,
-    TerminalStreamReplayFacts,
+    TerminalStreamReplayFacts, summarize_conversation_authoritative,
+    summarize_conversation_child_ref, summarize_conversation_child_summary,
+    summarize_conversation_control, summarize_conversation_slash_candidate,
 };
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
 
@@ -156,6 +166,77 @@ pub struct App {
 pub struct CompactSessionAccepted {
     /// true 表示压缩被推迟（当前有 turn 正在执行），待 turn 结束后自动执行。
     pub deferred: bool,
+}
+
+/// prompt 提交成功后的共享摘要输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptAcceptedSummary {
+    pub turn_id: String,
+    pub session_id: String,
+    pub branched_from_session_id: Option<String>,
+    pub accepted_control: Option<ExecutionControl>,
+}
+
+/// 手动 compact 的共享摘要输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactSessionSummary {
+    pub accepted: bool,
+    pub deferred: bool,
+    pub message: String,
+}
+
+/// session 列表项的共享摘要输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionListSummary {
+    pub session_id: String,
+    pub working_dir: String,
+    pub display_name: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub parent_session_id: Option<String>,
+    pub parent_storage_seq: Option<u64>,
+    pub phase: Phase,
+}
+
+/// root agent 执行接受后的共享摘要输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentExecuteSummary {
+    pub accepted: bool,
+    pub message: String,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub agent_id: Option<String>,
+}
+
+/// sub-run 状态来源。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubRunStatusSourceSummary {
+    Live,
+    Durable,
+}
+
+/// sub-run 状态的共享摘要输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubRunStatusSummary {
+    pub sub_run_id: String,
+    pub tool_call_id: Option<String>,
+    pub source: SubRunStatusSourceSummary,
+    pub agent_id: String,
+    pub agent_profile: String,
+    pub session_id: String,
+    pub child_session_id: Option<String>,
+    pub depth: usize,
+    pub parent_agent_id: Option<String>,
+    pub parent_sub_run_id: Option<String>,
+    pub storage_mode: SubRunStorageMode,
+    pub lifecycle: AgentLifecycleStatus,
+    pub last_turn_outcome: Option<AgentTurnOutcome>,
+    pub result: Option<SubRunResult>,
+    pub step_count: Option<u32>,
+    pub estimated_tokens: Option<u64>,
+    pub resolved_overrides: Option<ResolvedSubagentContextOverrides>,
+    pub resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
 }
 
 impl App {

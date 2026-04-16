@@ -22,14 +22,14 @@ use tokio::sync::mpsc;
 use crate::SessionState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StreamedToolCallDelta {
+pub(crate) struct StreamedToolCallDelta {
     pub index: usize,
     pub id: Option<String>,
     pub name: Option<String>,
     pub arguments_delta: String,
 }
 
-pub type ToolCallDeltaSink = Arc<dyn Fn(StreamedToolCallDelta) + Send + Sync>;
+pub(crate) type ToolCallDeltaSink = Arc<dyn Fn(StreamedToolCallDelta) + Send + Sync>;
 
 /// 调用 LLM 并收集流式 delta 为 StorageEvent。
 ///
@@ -82,14 +82,6 @@ pub async fn call_llm_streaming(
     }
 
     output.map_err(map_kernel_error)
-}
-
-/// 检查错误是否为 prompt-too-long 类型。
-///
-/// 不同 provider 使用不同的错误消息描述上下文长度溢出，
-/// 此函数覆盖常见的几种表述方式。
-pub fn is_prompt_too_long(error: &astrcode_core::AstrError) -> bool {
-    error.is_prompt_too_long()
 }
 
 /// 将 LLM 流式增量直接发到 live-only 广播通道。

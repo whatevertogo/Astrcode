@@ -1,24 +1,23 @@
 use std::collections::HashMap;
 
 use astrcode_application::{
-    TerminalChildSummaryFacts, TerminalControlFacts, TerminalFacts, TerminalRehydrateFacts,
-    TerminalSlashAction, TerminalSlashCandidateFacts,
+    ConversationChildSummarySummary, ConversationControlSummary, ConversationSlashActionSummary,
+    ConversationSlashCandidateSummary, TerminalChildSummaryFacts, TerminalFacts,
+    TerminalRehydrateFacts, summarize_conversation_child_ref, summarize_conversation_child_summary,
+    summarize_conversation_control, summarize_conversation_slash_candidate,
 };
-use astrcode_core::{
-    AgentLifecycleStatus, ChildAgentRef, ChildSessionLineageKind, ToolOutputStream,
-};
+use astrcode_core::ChildAgentRef;
 use astrcode_protocol::http::{
-    AgentLifecycleDto, ChildAgentRefDto, ChildSessionLineageKindDto, ConversationAssistantBlockDto,
-    ConversationBannerDto, ConversationBannerErrorCodeDto, ConversationBlockDto,
-    ConversationBlockPatchDto, ConversationBlockStatusDto, ConversationChildHandoffBlockDto,
-    ConversationChildHandoffKindDto, ConversationChildSummaryDto, ConversationControlStateDto,
-    ConversationCursorDto, ConversationDeltaDto, ConversationErrorBlockDto,
-    ConversationErrorEnvelopeDto, ConversationLastCompactMetaDto, ConversationSlashActionKindDto,
-    ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto,
-    ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto,
-    ConversationSystemNoteKindDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
-    ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
-    PhaseDto, ToolOutputStreamDto,
+    ChildAgentRefDto, ConversationAssistantBlockDto, ConversationBannerDto,
+    ConversationBannerErrorCodeDto, ConversationBlockDto, ConversationBlockPatchDto,
+    ConversationBlockStatusDto, ConversationChildHandoffBlockDto, ConversationChildHandoffKindDto,
+    ConversationChildSummaryDto, ConversationControlStateDto, ConversationCursorDto,
+    ConversationDeltaDto, ConversationErrorBlockDto, ConversationErrorEnvelopeDto,
+    ConversationLastCompactMetaDto, ConversationSlashActionKindDto, ConversationSlashCandidateDto,
+    ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
+    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
+    ConversationThinkingBlockDto, ConversationToolCallBlockDto, ConversationToolStreamsDto,
+    ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
 };
 use astrcode_session_runtime::{
     ConversationBlockFacts, ConversationBlockPatchFacts, ConversationBlockStatus,
@@ -42,8 +41,8 @@ pub(crate) fn project_conversation_snapshot(
                 .clone()
                 .unwrap_or_else(|| "0.0".to_string()),
         ),
-        phase: to_phase_dto(facts.control.phase),
-        control: project_control_state(&facts.control),
+        phase: facts.control.phase,
+        control: to_conversation_control_state_dto(summarize_conversation_control(&facts.control)),
         blocks: facts
             .transcript
             .blocks
@@ -53,12 +52,14 @@ pub(crate) fn project_conversation_snapshot(
         child_summaries: facts
             .child_summaries
             .iter()
-            .map(project_child_summary)
+            .map(summarize_conversation_child_summary)
+            .map(to_conversation_child_summary_dto)
             .collect(),
         slash_candidates: facts
             .slash_candidates
             .iter()
-            .map(project_slash_candidate)
+            .map(summarize_conversation_slash_candidate)
+            .map(to_conversation_slash_candidate_dto)
             .collect(),
         banner: None,
     }
@@ -73,14 +74,6 @@ pub(crate) fn project_conversation_frame(
         session_id: session_id.to_string(),
         cursor: ConversationCursorDto(frame.cursor),
         delta: project_delta(frame.delta, child_lookup),
-    }
-}
-
-pub(crate) fn project_conversation_control_delta(
-    control: &TerminalControlFacts,
-) -> ConversationDeltaDto {
-    ConversationDeltaDto::UpdateControlState {
-        control: project_control_state(control),
     }
 }
 
@@ -122,23 +115,27 @@ pub(crate) fn project_conversation_rehydrate_envelope(
 }
 
 pub(crate) fn project_conversation_slash_candidates(
-    candidates: &[TerminalSlashCandidateFacts],
+    candidates: &[astrcode_application::TerminalSlashCandidateFacts],
 ) -> ConversationSlashCandidatesResponseDto {
     ConversationSlashCandidatesResponseDto {
-        items: candidates.iter().map(project_slash_candidate).collect(),
+        items: candidates
+            .iter()
+            .map(summarize_conversation_slash_candidate)
+            .map(to_conversation_slash_candidate_dto)
+            .collect(),
     }
 }
 
-pub(crate) fn project_conversation_child_summary_deltas(
-    previous: &[TerminalChildSummaryFacts],
-    current: &[TerminalChildSummaryFacts],
+pub(crate) fn project_conversation_child_summary_summary_deltas(
+    previous: &[ConversationChildSummarySummary],
+    current: &[ConversationChildSummarySummary],
 ) -> Vec<ConversationDeltaDto> {
     let previous_by_id = previous
         .iter()
         .map(|summary| {
             (
-                summary.node.child_session_id.clone(),
-                project_child_summary(summary),
+                summary.child_session_id.clone(),
+                to_conversation_child_summary_dto(summary.clone()),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -146,8 +143,8 @@ pub(crate) fn project_conversation_child_summary_deltas(
         .iter()
         .map(|summary| {
             (
-                summary.node.child_session_id.clone(),
-                project_child_summary(summary),
+                summary.child_session_id.clone(),
+                to_conversation_child_summary_dto(summary.clone()),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -179,6 +176,26 @@ pub(crate) fn project_conversation_child_summary_deltas(
     }
 
     deltas
+}
+
+pub(crate) fn project_conversation_control_summary_delta(
+    summary: &ConversationControlSummary,
+) -> ConversationDeltaDto {
+    ConversationDeltaDto::UpdateControlState {
+        control: to_conversation_control_state_dto(summary.clone()),
+    }
+}
+
+pub(crate) fn project_conversation_slash_candidate_summaries(
+    candidates: &[ConversationSlashCandidateSummary],
+) -> ConversationSlashCandidatesResponseDto {
+    ConversationSlashCandidatesResponseDto {
+        items: candidates
+            .iter()
+            .cloned()
+            .map(to_conversation_slash_candidate_dto)
+            .collect(),
+    }
 }
 
 fn project_delta(
@@ -213,10 +230,7 @@ fn project_patch(patch: ConversationBlockPatchFacts) -> ConversationBlockPatchDt
             ConversationBlockPatchDto::ReplaceMarkdown { markdown }
         },
         ConversationBlockPatchFacts::AppendToolStream { stream, chunk } => {
-            ConversationBlockPatchDto::AppendToolStream {
-                stream: to_stream_dto(stream),
-                chunk,
-            }
+            ConversationBlockPatchDto::AppendToolStream { stream, chunk }
         },
         ConversationBlockPatchFacts::ReplaceSummary { summary } => {
             ConversationBlockPatchDto::ReplaceSummary { summary }
@@ -342,7 +356,9 @@ fn project_child_handoff_block(
                 .get(block.child_ref.session_id().as_str())
                 .cloned()
         })
-        .unwrap_or_else(|| fallback_child_summary(&block.child_ref));
+        .unwrap_or_else(|| {
+            to_conversation_child_summary_dto(summarize_conversation_child_ref(&block.child_ref))
+        });
 
     ConversationChildHandoffBlockDto {
         id: block.id.clone(),
@@ -356,24 +372,24 @@ fn project_child_handoff_block(
     }
 }
 
-fn fallback_child_summary(child_ref: &ChildAgentRef) -> ConversationChildSummaryDto {
-    ConversationChildSummaryDto {
-        child_session_id: child_ref.open_session_id.to_string(),
-        child_agent_id: child_ref.agent_id().to_string(),
-        title: child_ref.agent_id().to_string(),
-        lifecycle: to_lifecycle_dto(child_ref.status),
-        latest_output_summary: None,
-        child_ref: Some(to_child_ref_dto(child_ref.clone())),
-    }
-}
-
 fn child_summary_lookup(
     summaries: &[TerminalChildSummaryFacts],
 ) -> HashMap<String, ConversationChildSummaryDto> {
+    child_summary_summary_lookup(
+        &summaries
+            .iter()
+            .map(summarize_conversation_child_summary)
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub(crate) fn child_summary_summary_lookup(
+    summaries: &[ConversationChildSummarySummary],
+) -> HashMap<String, ConversationChildSummaryDto> {
     let mut lookup = HashMap::new();
     for summary in summaries {
-        let dto = project_child_summary(summary);
-        lookup.insert(summary.node.child_session_id.to_string(), dto.clone());
+        let dto = to_conversation_child_summary_dto(summary.clone());
+        lookup.insert(summary.child_session_id.clone(), dto.clone());
         if let Some(child_ref) = &dto.child_ref {
             lookup.insert(child_ref.open_session_id.clone(), dto.clone());
             lookup.insert(child_ref.session_id.clone(), dto.clone());
@@ -382,110 +398,55 @@ fn child_summary_lookup(
     lookup
 }
 
-pub(crate) fn project_child_summary(
-    summary: &TerminalChildSummaryFacts,
+fn to_conversation_child_summary_dto(
+    summary: ConversationChildSummarySummary,
 ) -> ConversationChildSummaryDto {
     ConversationChildSummaryDto {
-        child_session_id: summary.node.child_session_id.to_string(),
-        child_agent_id: summary.node.agent_id().to_string(),
-        title: summary
-            .title
-            .clone()
-            .or_else(|| summary.display_name.clone())
-            .unwrap_or_else(|| summary.node.child_session_id.to_string()),
-        lifecycle: to_lifecycle_dto(summary.node.status),
-        latest_output_summary: summary.recent_output.clone(),
-        child_ref: Some(to_child_ref_dto(summary.node.child_ref())),
+        child_session_id: summary.child_session_id,
+        child_agent_id: summary.child_agent_id,
+        title: summary.title,
+        lifecycle: summary.lifecycle,
+        latest_output_summary: summary.latest_output_summary,
+        child_ref: summary.child_ref.map(to_child_ref_dto),
     }
 }
 
-fn project_control_state(control: &TerminalControlFacts) -> ConversationControlStateDto {
-    let can_submit_prompt = matches!(
-        control.phase,
-        astrcode_core::Phase::Idle | astrcode_core::Phase::Done | astrcode_core::Phase::Interrupted
-    );
+fn to_conversation_control_state_dto(
+    summary: ConversationControlSummary,
+) -> ConversationControlStateDto {
     ConversationControlStateDto {
-        phase: to_phase_dto(control.phase),
-        can_submit_prompt,
-        can_request_compact: !control.manual_compact_pending && !control.compacting,
-        compact_pending: control.manual_compact_pending,
-        compacting: control.compacting,
-        active_turn_id: control.active_turn_id.clone(),
-        last_compact_meta: control
+        phase: summary.phase,
+        can_submit_prompt: summary.can_submit_prompt,
+        can_request_compact: summary.can_request_compact,
+        compact_pending: summary.compact_pending,
+        compacting: summary.compacting,
+        active_turn_id: summary.active_turn_id,
+        last_compact_meta: summary
             .last_compact_meta
-            .as_ref()
-            .map(project_last_compact_meta),
+            .map(|meta| ConversationLastCompactMetaDto {
+                trigger: meta.trigger,
+                meta: meta.meta,
+            }),
     }
 }
 
-fn project_last_compact_meta(
-    facts: &astrcode_application::terminal::TerminalLastCompactMetaFacts,
-) -> ConversationLastCompactMetaDto {
-    ConversationLastCompactMetaDto {
-        trigger: facts.trigger,
-        meta: facts.meta.clone(),
-    }
-}
-
-fn project_slash_candidate(
-    candidate: &TerminalSlashCandidateFacts,
+fn to_conversation_slash_candidate_dto(
+    summary: ConversationSlashCandidateSummary,
 ) -> ConversationSlashCandidateDto {
-    let (action_kind, action_value) = match &candidate.action {
-        TerminalSlashAction::CreateSession => (
-            ConversationSlashActionKindDto::ExecuteCommand,
-            "/new".to_string(),
-        ),
-        TerminalSlashAction::OpenResume => (
-            ConversationSlashActionKindDto::ExecuteCommand,
-            "/resume".to_string(),
-        ),
-        TerminalSlashAction::RequestCompact => (
-            ConversationSlashActionKindDto::ExecuteCommand,
-            "/compact".to_string(),
-        ),
-        TerminalSlashAction::OpenSkillPalette => (
-            ConversationSlashActionKindDto::ExecuteCommand,
-            "/skill".to_string(),
-        ),
-        TerminalSlashAction::InsertText { text } => {
-            (ConversationSlashActionKindDto::InsertText, text.clone())
-        },
-    };
-
     ConversationSlashCandidateDto {
-        id: candidate.id.clone(),
-        title: candidate.title.clone(),
-        description: candidate.description.clone(),
-        keywords: candidate.keywords.clone(),
-        action_kind,
-        action_value,
-    }
-}
-
-fn to_phase_dto(phase: astrcode_core::Phase) -> PhaseDto {
-    match phase {
-        astrcode_core::Phase::Idle => PhaseDto::Idle,
-        astrcode_core::Phase::Thinking => PhaseDto::Thinking,
-        astrcode_core::Phase::CallingTool => PhaseDto::CallingTool,
-        astrcode_core::Phase::Streaming => PhaseDto::Streaming,
-        astrcode_core::Phase::Interrupted => PhaseDto::Interrupted,
-        astrcode_core::Phase::Done => PhaseDto::Done,
-    }
-}
-
-fn to_lifecycle_dto(status: AgentLifecycleStatus) -> AgentLifecycleDto {
-    match status {
-        AgentLifecycleStatus::Pending => AgentLifecycleDto::Pending,
-        AgentLifecycleStatus::Running => AgentLifecycleDto::Running,
-        AgentLifecycleStatus::Idle => AgentLifecycleDto::Idle,
-        AgentLifecycleStatus::Terminated => AgentLifecycleDto::Terminated,
-    }
-}
-
-fn to_stream_dto(stream: ToolOutputStream) -> ToolOutputStreamDto {
-    match stream {
-        ToolOutputStream::Stdout => ToolOutputStreamDto::Stdout,
-        ToolOutputStream::Stderr => ToolOutputStreamDto::Stderr,
+        id: summary.id,
+        title: summary.title,
+        description: summary.description,
+        keywords: summary.keywords,
+        action_kind: match summary.action_kind {
+            ConversationSlashActionSummary::InsertText => {
+                ConversationSlashActionKindDto::InsertText
+            },
+            ConversationSlashActionSummary::ExecuteCommand => {
+                ConversationSlashActionKindDto::ExecuteCommand
+            },
+        },
+        action_value: summary.action_value,
     }
 }
 
@@ -496,12 +457,8 @@ fn to_child_ref_dto(child_ref: ChildAgentRef) -> ChildAgentRefDto {
         sub_run_id: child_ref.sub_run_id().to_string(),
         parent_agent_id: child_ref.parent_agent_id().map(|id| id.to_string()),
         parent_sub_run_id: child_ref.parent_sub_run_id().map(|id| id.to_string()),
-        lineage_kind: match child_ref.lineage_kind {
-            ChildSessionLineageKind::Spawn => ChildSessionLineageKindDto::Spawn,
-            ChildSessionLineageKind::Fork => ChildSessionLineageKindDto::Fork,
-            ChildSessionLineageKind::Resume => ChildSessionLineageKindDto::Resume,
-        },
-        status: to_lifecycle_dto(child_ref.status),
+        lineage_kind: child_ref.lineage_kind,
+        status: child_ref.status,
         open_session_id: child_ref.open_session_id.to_string(),
     }
 }

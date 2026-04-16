@@ -2,7 +2,9 @@
 //!
 //! 提供 MCP 状态查询、审批，以及服务端配置管理入口。
 
-use astrcode_application::{McpConfigScope, McpServerStatusView, RegisterMcpServerInput};
+use astrcode_application::{
+    McpActionSummary, McpConfigScope, McpServerStatusSummary, RegisterMcpServerInput,
+};
 use axum::{
     Json,
     extract::State,
@@ -92,7 +94,7 @@ pub(crate) async fn get_mcp_status(
     let servers = state
         .app
         .mcp()
-        .list_status()
+        .list_status_summary()
         .await
         .into_iter()
         .map(McpServerStatus::from)
@@ -214,11 +216,12 @@ pub(crate) async fn set_mcp_server_enabled(
 }
 
 fn ok_response(status: StatusCode) -> (StatusCode, Json<McpActionResponse>) {
+    let summary = McpActionSummary::ok();
     (
         status,
         Json(McpActionResponse {
-            ok: true,
-            message: None,
+            ok: summary.ok,
+            message: summary.message,
         }),
     )
 }
@@ -235,13 +238,13 @@ fn parse_scope(scope: &str) -> Result<McpConfigScope, ApiError> {
     }
 }
 
-impl From<McpServerStatusView> for McpServerStatus {
-    fn from(value: McpServerStatusView) -> Self {
+impl From<McpServerStatusSummary> for McpServerStatus {
+    fn from(value: McpServerStatusSummary) -> Self {
         Self {
             name: value.name,
             scope: value.scope,
             enabled: value.enabled,
-            status: value.state,
+            status: value.status,
             error: value.error,
             tool_count: value.tool_count,
             prompt_count: value.prompt_count,

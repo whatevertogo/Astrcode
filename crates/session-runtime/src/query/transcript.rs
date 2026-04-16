@@ -22,7 +22,7 @@ pub struct SessionTranscriptSnapshot {
     pub phase: Phase,
 }
 
-pub fn current_turn_messages(session: &SessionState) -> Result<Vec<LlmMessage>> {
+pub(crate) fn current_turn_messages(session: &SessionState) -> Result<Vec<LlmMessage>> {
     Ok(session.snapshot_projected_state()?.messages)
 }
 

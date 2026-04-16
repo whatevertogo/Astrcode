@@ -481,8 +481,6 @@ impl SessionRuntime {
                 prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
                 capability_router,
                 prompt_declarations,
-                resolved_limits: resolved_limits.clone(),
-                source_tool_call_id: source_tool_call_id.clone(),
             },
             finalize: TurnFinalizeContext {
                 kernel: Arc::clone(&self.kernel),

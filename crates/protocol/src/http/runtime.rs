@@ -3,6 +3,14 @@
 //! 定义运行时健康检查、指标查询、插件状态等接口的响应结构。
 //! 这些数据用于前端展示系统运行状态、性能指标和插件健康度。
 
+pub use astrcode_core::{
+    AgentCollaborationScorecardSnapshot as AgentCollaborationScorecardDto,
+    ExecutionDiagnosticsSnapshot as ExecutionDiagnosticsDto,
+    OperationMetricsSnapshot as OperationMetricsDto, PluginHealth as PluginHealthDto,
+    PluginState as PluginRuntimeStateDto, ReplayMetricsSnapshot as ReplayMetricsDto,
+    RuntimeObservabilitySnapshot as RuntimeMetricsDto,
+    SubRunExecutionMetricsSnapshot as SubRunExecutionMetricsDto,
+};
 use serde::{Deserialize, Serialize};
 
 /// 运行时能力的摘要信息。
@@ -24,156 +32,7 @@ pub struct RuntimeCapabilityDto {
     pub streaming: bool,
 }
 
-/// 操作级别的指标统计。
-///
-/// 记录某类操作的总次数、失败次数、耗时等，用于性能监控。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OperationMetricsDto {
-    /// 总操作次数
-    pub total: u64,
-    /// 失败次数
-    pub failures: u64,
-    /// 累计耗时（毫秒）
-    pub total_duration_ms: u64,
-    /// 最近一次操作耗时（毫秒）
-    pub last_duration_ms: u64,
-    /// 最大单次操作耗时（毫秒）
-    pub max_duration_ms: u64,
-}
-
-/// 事件回放相关的指标。
-///
-/// 记录 SSE 断线重连时从磁盘/缓存恢复事件的统计信息。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ReplayMetricsDto {
-    /// 回放操作的总体指标
-    pub totals: OperationMetricsDto,
-    /// 缓存命中次数
-    pub cache_hits: u64,
-    /// 回退到磁盘读取的次数
-    pub disk_fallbacks: u64,
-    /// 成功恢复的事件数量
-    pub recovered_events: u64,
-}
-
-/// 运行时整体指标。
-///
-/// 包含会话重连、SSE 追赶回放、turn 执行三个维度的指标。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeMetricsDto {
-    /// 会话重连（rehydrate）指标
-    pub session_rehydrate: OperationMetricsDto,
-    /// SSE 断线重连后的回放指标
-    pub sse_catch_up: ReplayMetricsDto,
-    /// turn 执行指标
-    pub turn_execution: OperationMetricsDto,
-    /// 子执行域共享观测指标
-    pub subrun_execution: SubRunExecutionMetricsDto,
-    /// delivery / lineage / cache 诊断指标
-    pub execution_diagnostics: ExecutionDiagnosticsDto,
-    /// agent-tool 协作效果评估读模型
-    pub agent_collaboration: AgentCollaborationScorecardDto,
-}
-
-/// 子执行域共享观测指标。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubRunExecutionMetricsDto {
-    pub total: u64,
-    pub failures: u64,
-    pub completed: u64,
-    pub cancelled: u64,
-    pub token_exceeded: u64,
-    pub independent_session_total: u64,
-    pub total_duration_ms: u64,
-    pub last_duration_ms: u64,
-    pub total_steps: u64,
-    pub last_step_count: u64,
-    pub total_estimated_tokens: u64,
-    pub last_estimated_tokens: u64,
-}
-
-/// 结构化执行诊断指标。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecutionDiagnosticsDto {
-    pub child_spawned: u64,
-    pub child_started_persisted: u64,
-    pub child_terminal_persisted: u64,
-    pub parent_reactivation_requested: u64,
-    pub parent_reactivation_succeeded: u64,
-    pub parent_reactivation_failed: u64,
-    pub lineage_mismatch_parent_agent: u64,
-    pub lineage_mismatch_parent_session: u64,
-    pub lineage_mismatch_child_session: u64,
-    pub lineage_mismatch_descriptor_missing: u64,
-    pub cache_reuse_hits: u64,
-    pub cache_reuse_misses: u64,
-    pub delivery_buffer_queued: u64,
-    pub delivery_buffer_dequeued: u64,
-    pub delivery_buffer_wake_requested: u64,
-    pub delivery_buffer_wake_succeeded: u64,
-    pub delivery_buffer_wake_failed: u64,
-}
-
-/// agent-tool 协作效果评估 DTO。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentCollaborationScorecardDto {
-    pub total_facts: u64,
-    pub spawn_accepted: u64,
-    pub spawn_rejected: u64,
-    pub send_reused: u64,
-    pub send_queued: u64,
-    pub send_rejected: u64,
-    pub observe_calls: u64,
-    pub observe_rejected: u64,
-    pub observe_followed_by_action: u64,
-    pub close_calls: u64,
-    pub close_rejected: u64,
-    pub delivery_delivered: u64,
-    pub delivery_consumed: u64,
-    pub delivery_replayed: u64,
-    pub orphan_child_count: u64,
-    pub child_reuse_ratio_bps: Option<u64>,
-    pub observe_to_action_ratio_bps: Option<u64>,
-    pub spawn_to_delivery_ratio_bps: Option<u64>,
-    pub orphan_child_ratio_bps: Option<u64>,
-    pub avg_delivery_latency_ms: Option<u64>,
-    pub max_delivery_latency_ms: Option<u64>,
-}
-
 /// 插件运行时状态。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum PluginRuntimeStateDto {
-    /// 已发现但尚未初始化
-    Discovered,
-    /// 已初始化并可用
-    Initialized,
-    /// 初始化或运行期间失败
-    Failed,
-}
-
-/// 插件健康度。
-///
-/// 用于前端展示插件的可用性状态。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum PluginHealthDto {
-    /// 尚未进行健康检查
-    Unknown,
-    /// 正常运行
-    Healthy,
-    /// 部分功能降级
-    Degraded,
-    /// 不可用
-    Unavailable,
-}
-
 /// 运行时中单个插件的状态摘要。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

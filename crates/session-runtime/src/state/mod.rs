@@ -5,6 +5,7 @@
 
 mod cache;
 mod child_sessions;
+#[cfg(test)]
 mod compaction;
 mod execution;
 mod mailbox;
@@ -26,18 +27,12 @@ use astrcode_core::{
 };
 use cache::{RecentSessionEvents, RecentStoredEvents};
 use child_sessions::{child_node_from_stored_event, rebuild_child_nodes};
-pub use compaction::{recent_turn_event_tail, should_record_compaction_tail_event};
-pub use execution::{
-    SessionStateEventSink, append_and_broadcast, complete_session_execution,
-    prepare_session_execution,
-};
-pub use mailbox::{
-    MailboxEventAppend, append_batch_acked, append_batch_started, append_mailbox_discarded,
-    append_mailbox_event, append_mailbox_queued,
-};
+pub(crate) use execution::SessionStateEventSink;
+pub use execution::{append_and_broadcast, complete_session_execution, prepare_session_execution};
+pub(crate) use mailbox::{MailboxEventAppend, append_mailbox_event};
 pub use paths::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
 use tokio::sync::broadcast;
-pub use writer::SessionWriter;
+pub(crate) use writer::SessionWriter;
 
 const SESSION_BROADCAST_CAPACITY: usize = 2048;
 const SESSION_LIVE_BROADCAST_CAPACITY: usize = 2048;

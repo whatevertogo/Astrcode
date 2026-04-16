@@ -21,14 +21,14 @@ use super::tool_results::tool_call_name_map;
 
 /// Prune pass 执行统计。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PruneStats {
+pub(crate) struct PruneStats {
     pub truncated_tool_results: usize,
     pub cleared_tool_results: usize,
 }
 
 /// Prune pass 执行结果。
 #[derive(Debug, Clone)]
-pub struct PruneOutcome {
+pub(crate) struct PruneOutcome {
     pub messages: Vec<LlmMessage>,
     pub stats: PruneStats,
 }

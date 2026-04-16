@@ -377,7 +377,8 @@ pub struct ActiveSelection {
 }
 
 /// 运行时当前将使用的有效模型信息。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelSelection {
     pub profile_name: String,
     pub model: String,
@@ -402,6 +403,16 @@ pub type CurrentModelSelection = ModelSelection;
 
 /// 扁平化的模型选项。
 pub type ModelOption = ModelSelection;
+
+/// 模型连通性测试结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TestConnectionResult {
+    pub success: bool,
+    pub provider: String,
+    pub model: String,
+    pub error: Option<String>,
+}
 
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

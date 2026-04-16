@@ -18,13 +18,16 @@ pub use astrcode_core::{
     ArtifactRef as ArtifactRefDto,
     CloseRequestParentDeliveryPayload as CloseRequestParentDeliveryPayloadDto,
     CompletedParentDeliveryPayload as CompletedParentDeliveryPayloadDto,
+    ExecutionControl as ExecutionControlDto,
     FailedParentDeliveryPayload as FailedParentDeliveryPayloadDto, ForkMode as ForkModeDto,
     ParentDelivery as ParentDeliveryDto, ParentDeliveryOrigin as ParentDeliveryOriginDto,
     ParentDeliveryPayload as ParentDeliveryPayloadDto,
     ParentDeliveryTerminalSemantics as ParentDeliveryTerminalSemanticsDto, Phase as PhaseDto,
     ProgressParentDeliveryPayload as ProgressParentDeliveryPayloadDto,
-    SubRunFailureCode as SubRunFailureCodeDto, SubRunHandoff as SubRunHandoffDto,
-    ToolOutputStream as ToolOutputStreamDto,
+    ResolvedExecutionLimitsSnapshot as ResolvedExecutionLimitsDto,
+    ResolvedSubagentContextOverrides as ResolvedSubagentContextOverridesDto,
+    SubRunFailure as SubRunFailureDto, SubRunFailureCode as SubRunFailureCodeDto,
+    SubRunHandoff as SubRunHandoffDto, ToolOutputStream as ToolOutputStreamDto,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,15 +41,6 @@ pub enum SubRunOutcomeDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubRunFailureDto {
-    pub code: SubRunFailureCodeDto,
-    pub display_message: String,
-    pub technical_message: String,
-    pub retryable: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum SubRunResultDto {
     Running { handoff: SubRunHandoffDto },
@@ -54,39 +48,4 @@ pub enum SubRunResultDto {
     TokenExceeded { handoff: SubRunHandoffDto },
     Failed { failure: SubRunFailureDto },
     Cancelled { failure: SubRunFailureDto },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecutionControlDto {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manual_compact: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolvedSubagentContextOverridesDto {
-    pub storage_mode: SubRunStorageModeDto,
-    pub inherit_system_instructions: bool,
-    pub inherit_project_instructions: bool,
-    pub inherit_working_dir: bool,
-    pub inherit_policy_upper_bound: bool,
-    pub inherit_cancel_token: bool,
-    pub include_compact_summary: bool,
-    pub include_recent_tail: bool,
-    pub include_recovery_refs: bool,
-    pub include_parent_findings: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fork_mode: Option<ForkModeDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolvedExecutionLimitsDto {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
 }

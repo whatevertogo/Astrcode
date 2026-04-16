@@ -31,7 +31,7 @@ const INCREMENTAL_COMPACT_PROMPT_TEMPLATE: &str = include_str!("templates/compac
 
 /// 压缩配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactConfig {
+pub(crate) struct CompactConfig {
     /// 保留最近的用户 turn 数量。
     pub keep_recent_turns: usize,
     /// 压缩触发方式。
@@ -46,7 +46,7 @@ pub struct CompactConfig {
 
 /// 压缩执行结果。
 #[derive(Debug, Clone)]
-pub struct CompactResult {
+pub(crate) struct CompactResult {
     /// 压缩后的完整消息列表。
     pub messages: Vec<LlmMessage>,
     /// 压缩生成的摘要文本。
@@ -195,7 +195,8 @@ pub async fn auto_compact(
 }
 
 /// 合并 compact 使用的 prompt 上下文。
-pub fn merge_compact_prompt_context(
+#[cfg(test)]
+fn merge_compact_prompt_context(
     runtime_system_prompt: Option<&str>,
     additional_system_prompt: Option<&str>,
 ) -> Option<String> {
@@ -423,7 +424,8 @@ fn strip_child_agent_reference_hint(content: &str) -> String {
 }
 
 /// 检查消息是否可以被压缩。
-pub fn can_compact(messages: &[LlmMessage], keep_recent_turns: usize) -> bool {
+#[cfg(test)]
+fn can_compact(messages: &[LlmMessage], keep_recent_turns: usize) -> bool {
     split_for_compaction(messages, keep_recent_turns).is_some()
 }
 

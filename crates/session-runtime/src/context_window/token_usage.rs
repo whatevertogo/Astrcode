@@ -26,7 +26,7 @@ const REQUEST_ESTIMATE_PADDING_DENOMINATOR: usize = 3;
 
 /// Prompt token 使用快照。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PromptTokenSnapshot {
+pub(crate) struct PromptTokenSnapshot {
     /// 估算的上下文 token 数。
     pub context_tokens: usize,
     /// 已确认的预算 token 数（优先使用 Provider 报告值）。
@@ -48,7 +48,7 @@ pub struct PromptTokenSnapshot {
 /// 优先使用 Provider 报告的 usage 数据（最接近计费 Token），
 /// 若 Provider 未报告则回退到估算值。
 #[derive(Debug, Default, Clone, Copy)]
-pub struct TokenUsageTracker {
+pub(crate) struct TokenUsageTracker {
     anchored_budget_tokens: usize,
 }
 

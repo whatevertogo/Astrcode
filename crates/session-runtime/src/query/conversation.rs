@@ -1203,7 +1203,7 @@ impl ConversationStreamProjector {
     }
 }
 
-pub fn project_conversation_snapshot(
+pub(crate) fn project_conversation_snapshot(
     records: &[SessionEventRecord],
     phase: Phase,
 ) -> ConversationSnapshotFacts {
@@ -1216,7 +1216,7 @@ pub fn project_conversation_snapshot(
     }
 }
 
-pub fn build_conversation_replay_frames(
+pub(crate) fn build_conversation_replay_frames(
     seed_records: &[SessionEventRecord],
     history: &[SessionEventRecord],
 ) -> Vec<ConversationDeltaFrameFacts> {
@@ -1234,7 +1234,7 @@ pub fn build_conversation_replay_frames(
     frames
 }
 
-pub fn fallback_live_cursor(facts: &ConversationStreamReplayFacts) -> Option<String> {
+pub(crate) fn fallback_live_cursor(facts: &ConversationStreamReplayFacts) -> Option<String> {
     facts
         .seed_records
         .last()
@@ -1263,27 +1263,19 @@ fn block_id(block: &ConversationBlockFacts) -> &str {
 fn tool_result_summary(result: &ToolExecutionResult) -> String {
     const MAX_SUMMARY_CHARS: usize = 120;
 
-    let truncate = |content: &str| {
-        let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mut chars = normalized.chars();
-        let truncated = chars.by_ref().take(MAX_SUMMARY_CHARS).collect::<String>();
-        if chars.next().is_some() {
-            format!("{truncated}…")
-        } else {
-            truncated
-        }
-    };
-
     if result.ok {
         if !result.output.trim().is_empty() {
-            truncate(&result.output)
+            crate::query::text::summarize_inline_text(&result.output, MAX_SUMMARY_CHARS)
+                .unwrap_or_else(|| format!("{} completed", result.tool_name))
         } else {
             format!("{} completed", result.tool_name)
         }
     } else if let Some(error) = &result.error {
-        truncate(error)
+        crate::query::text::summarize_inline_text(error, MAX_SUMMARY_CHARS)
+            .unwrap_or_else(|| format!("{} failed", result.tool_name))
     } else if !result.output.trim().is_empty() {
-        truncate(&result.output)
+        crate::query::text::summarize_inline_text(&result.output, MAX_SUMMARY_CHARS)
+            .unwrap_or_else(|| format!("{} failed", result.tool_name))
     } else {
         format!("{} failed", result.tool_name)
     }

@@ -16,25 +16,21 @@ use dashmap::DashMap;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
-pub mod actor;
-pub mod catalog;
-pub mod command;
-pub mod context;
-pub mod context_window;
-pub mod factory;
+mod actor;
+mod catalog;
+mod command;
+mod context_window;
 mod heuristics;
-pub mod observe;
-pub mod query;
-pub mod state;
-pub mod turn;
+mod observe;
+mod query;
+mod state;
+mod turn;
 
 use actor::SessionActor;
 pub use catalog::SessionCatalogEvent;
-pub use command::SessionCommands;
-pub use context::ResolvedContextSnapshot;
-use observe::SessionObserveSnapshot;
 pub use observe::{
-    SessionEventFilterSpec, SubRunEventScope, SubRunStatusSnapshot, SubRunStatusSource,
+    SessionEventFilterSpec, SessionObserveSnapshot, SubRunEventScope, SubRunStatusSnapshot,
+    SubRunStatusSource,
 };
 pub use query::{
     AgentObserveSnapshot, ConversationAssistantBlockFacts, ConversationBlockFacts,
@@ -45,22 +41,16 @@ pub use query::{
     ConversationSystemNoteKind, ConversationThinkingBlockFacts, ConversationTranscriptErrorKind,
     ConversationUserBlockFacts, LastCompactMetaSnapshot, ProjectedTurnOutcome,
     SessionControlStateSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
-    ToolCallStreamsFacts, TurnTerminalSnapshot, build_agent_observe_snapshot,
-    build_conversation_replay_frames, current_turn_messages, fallback_live_cursor,
-    has_terminal_turn_signal, project_conversation_snapshot, project_turn_outcome,
-    recoverable_parent_deliveries,
+    ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
 };
+pub(crate) use state::{MailboxEventAppend, SessionStateEventSink, append_mailbox_event};
 pub use state::{
-    MailboxEventAppend, SessionSnapshot, SessionState, SessionStateEventSink, SessionWriter,
-    append_and_broadcast, append_batch_acked, append_batch_started, append_mailbox_discarded,
-    append_mailbox_event, append_mailbox_queued, complete_session_execution,
+    SessionSnapshot, SessionState, append_and_broadcast, complete_session_execution,
     display_name_from_working_dir, normalize_session_id, normalize_working_dir,
-    prepare_session_execution, recent_turn_event_tail, should_record_compaction_tail_event,
+    prepare_session_execution,
 };
-pub use turn::{
-    AgentPromptSubmission, TurnCollaborationSummary, TurnFinishReason, TurnOutcome, TurnRunRequest,
-    TurnRunResult, TurnSummary, run_turn,
-};
+pub use turn::{AgentPromptSubmission, TurnCollaborationSummary, TurnFinishReason, TurnSummary};
+pub(crate) use turn::{TurnOutcome, TurnRunResult, run_turn};
 
 const ROOT_AGENT_ID: &str = "root-agent";
 

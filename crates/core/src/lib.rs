@@ -19,10 +19,12 @@ pub mod agent;
 mod cancel;
 pub mod capability;
 mod compact_summary;
+mod composer;
 pub mod config;
 pub mod env;
 mod error;
 pub mod event;
+mod execution_control;
 mod execution_result;
 pub mod home;
 pub mod hook;
@@ -37,6 +39,7 @@ pub mod projection;
 pub mod registry;
 pub mod runtime;
 pub mod session;
+mod session_catalog;
 mod shell;
 pub mod store;
 mod time;
@@ -87,10 +90,12 @@ pub use compact_summary::{
     COMPACT_SUMMARY_CONTINUATION, COMPACT_SUMMARY_PREFIX, CompactSummaryEnvelope,
     format_compact_summary, parse_compact_summary_message,
 };
+pub use composer::{ComposerOption, ComposerOptionActionKind, ComposerOptionKind};
 pub use config::{
     ActiveSelection, AgentConfig, Config, ConfigOverlay, CurrentModelSelection, ModelConfig,
     ModelOption, ModelSelection, Profile, ResolvedAgentConfig, ResolvedRuntimeConfig,
-    RuntimeConfig, max_tool_concurrency, resolve_agent_config, resolve_runtime_config,
+    RuntimeConfig, TestConnectionResult, max_tool_concurrency, resolve_agent_config,
+    resolve_runtime_config,
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
@@ -98,6 +103,7 @@ pub use event::{
     PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent, generate_session_id,
     normalize_recovered_phase, phase_of_storage_event, replay_records,
 };
+pub use execution_control::ExecutionControl;
 pub use execution_result::ExecutionResultCommon;
 pub use hook::{
     CompactionHookContext, CompactionHookResultContext, HookEvent, HookHandler, HookInput,
@@ -105,7 +111,11 @@ pub use hook::{
 };
 pub use ids::{AgentId, CapabilityName, SessionId, SubRunId, TurnId};
 pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
-pub use observability::RuntimeMetricsRecorder;
+pub use observability::{
+    AgentCollaborationScorecardSnapshot, ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot,
+    ReplayMetricsSnapshot, ReplayPath, RuntimeMetricsRecorder, RuntimeObservabilitySnapshot,
+    SubRunExecutionMetricsSnapshot,
+};
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
@@ -128,6 +138,7 @@ pub use runtime::{
     SessionTruthBoundary,
 };
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
+pub use session_catalog::SessionCatalogEvent;
 pub use shell::{
     ResolvedShell, ShellFamily, default_shell_label, detect_shell_family, resolve_shell,
 };

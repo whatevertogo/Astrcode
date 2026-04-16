@@ -37,26 +37,11 @@ pub struct SessionActor {
     state: Arc<SessionState>,
     session_id: SessionId,
     working_dir: String,
-    root_agent_id: AgentId,
 }
 
 impl SessionActor {
-    /// 创建 actor，包装一个已有的 live session state。
-    pub fn new(
-        session_id: SessionId,
-        working_dir: impl Into<String>,
-        root_agent_id: AgentId,
-        state: Arc<SessionState>,
-    ) -> Self {
-        Self {
-            state,
-            session_id,
-            working_dir: working_dir.into(),
-            root_agent_id,
-        }
-    }
-
     /// 创建一个带 durable writer 的 actor。
+    #[cfg(test)]
     pub async fn new_persistent(
         session_id: SessionId,
         working_dir: impl Into<String>,
@@ -78,7 +63,7 @@ impl SessionActor {
     pub async fn new_persistent_with_lineage(
         session_id: SessionId,
         working_dir: impl Into<String>,
-        root_agent_id: AgentId,
+        _root_agent_id: AgentId,
         event_store: Arc<dyn EventStore>,
         parent_session_id: Option<String>,
         parent_storage_seq: Option<u64>,
@@ -111,7 +96,6 @@ impl SessionActor {
             state: Arc::new(state),
             session_id,
             working_dir,
-            root_agent_id,
         })
     }
 
@@ -122,7 +106,7 @@ impl SessionActor {
     pub fn from_replay(
         session_id: SessionId,
         working_dir: impl Into<String>,
-        root_agent_id: AgentId,
+        _root_agent_id: AgentId,
         event_store: Arc<dyn EventStore>,
         stored_events: Vec<StoredEvent>,
     ) -> astrcode_core::Result<Self> {
@@ -149,7 +133,6 @@ impl SessionActor {
             state: Arc::new(state),
             session_id,
             working_dir,
-            root_agent_id,
         })
     }
 
@@ -160,7 +143,7 @@ impl SessionActor {
     pub fn new_idle(
         session_id: SessionId,
         working_dir: impl Into<String>,
-        root_agent_id: AgentId,
+        _root_agent_id: AgentId,
     ) -> Self {
         let writer = Arc::new(SessionWriter::new(Box::new(NopEventLogWriter)));
         let state = SessionState::new(
@@ -174,7 +157,6 @@ impl SessionActor {
             state: Arc::new(state),
             session_id,
             working_dir: working_dir.into(),
-            root_agent_id,
         }
     }
 
@@ -200,22 +182,8 @@ impl SessionActor {
         }
     }
 
-    /// 标记 turn 完成。
-    pub fn mark_turn_completed(&self, _turn_id: TurnId) {
-        // Turn 完成由 SessionState.complete_execution_state 驱动，
-        // 此处仅作为外部标记入口保留。
-    }
-
-    pub fn root_agent_id(&self) -> &AgentId {
-        &self.root_agent_id
-    }
-
     pub fn state(&self) -> &Arc<SessionState> {
         &self.state
-    }
-
-    pub fn session_id(&self) -> &SessionId {
-        &self.session_id
     }
 
     pub fn working_dir(&self) -> &str {

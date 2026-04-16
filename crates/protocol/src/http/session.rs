@@ -3,6 +3,7 @@
 //! 定义会话创建、列表、提示词提交、消息历史等接口的请求/响应结构。
 //! 会话是 Astrcode 的核心概念，代表一次独立的 AI 辅助编程交互。
 
+pub use astrcode_core::DeleteProjectResult as DeleteProjectResultDto;
 use serde::{Deserialize, Serialize};
 
 use super::{ExecutionControlDto, PhaseDto};
@@ -91,17 +92,4 @@ pub struct CompactSessionResponse {
     pub accepted: bool,
     pub deferred: bool,
     pub message: String,
-}
-
-/// `DELETE /api/projects/:working_dir` 响应体——项目删除结果。
-///
-/// 由于项目下可能有多个会话，删除是批量操作。
-/// `failed_session_ids` 列出删除失败的会话 ID（如文件被锁定）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteProjectResultDto {
-    /// 成功删除的会话数量
-    pub success_count: usize,
-    /// 删除失败的会话 ID 列表
-    pub failed_session_ids: Vec<String>,
 }

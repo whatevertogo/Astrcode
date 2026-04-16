@@ -9,11 +9,11 @@ use astrcode_session_runtime::{
 use crate::{
     App, ApplicationError, ComposerOptionKind, ComposerOptionsRequest, SessionMeta,
     terminal::{
-        ConversationFocus, TerminalChildSummaryFacts, TerminalControlFacts, TerminalFacts,
-        TerminalLastCompactMetaFacts, TerminalRehydrateFacts, TerminalRehydrateReason,
-        TerminalResumeCandidateFacts, TerminalSlashAction, TerminalSlashCandidateFacts,
-        TerminalStreamFacts, TerminalStreamReplayFacts, latest_transcript_cursor,
-        truncate_terminal_summary,
+        ConversationAuthoritativeSummary, ConversationFocus, TerminalChildSummaryFacts,
+        TerminalControlFacts, TerminalFacts, TerminalLastCompactMetaFacts, TerminalRehydrateFacts,
+        TerminalRehydrateReason, TerminalResumeCandidateFacts, TerminalSlashAction,
+        TerminalSlashCandidateFacts, TerminalStreamFacts, TerminalStreamReplayFacts,
+        latest_transcript_cursor, summarize_conversation_authoritative, truncate_terminal_summary,
     },
 };
 
@@ -303,6 +303,18 @@ impl App {
             .session_control_state(session_id)
             .await?;
         Ok(map_control_facts(control))
+    }
+
+    pub async fn conversation_authoritative_summary(
+        &self,
+        session_id: &str,
+        focus: &ConversationFocus,
+    ) -> Result<ConversationAuthoritativeSummary, ApplicationError> {
+        Ok(summarize_conversation_authoritative(
+            &self.terminal_control_facts(session_id).await?,
+            &self.conversation_child_summaries(session_id, focus).await?,
+            &self.terminal_slash_candidates(session_id, None).await?,
+        ))
     }
 }
 

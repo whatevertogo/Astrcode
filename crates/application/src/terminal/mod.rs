@@ -1,4 +1,4 @@
-use astrcode_core::{ChildSessionNode, CompactAppliedMeta, CompactTrigger, Phase};
+use astrcode_core::{ChildAgentRef, ChildSessionNode, CompactAppliedMeta, CompactTrigger, Phase};
 use astrcode_session_runtime::{
     ConversationSnapshotFacts as RuntimeConversationSnapshotFacts,
     ConversationStreamReplayFacts as RuntimeConversationStreamReplayFacts,
@@ -20,6 +20,17 @@ pub enum ConversationFocus {
 pub struct TerminalLastCompactMetaFacts {
     pub trigger: CompactTrigger,
     pub meta: CompactAppliedMeta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationControlSummary {
+    pub phase: Phase,
+    pub can_submit_prompt: bool,
+    pub can_request_compact: bool,
+    pub compact_pending: bool,
+    pub compacting: bool,
+    pub active_turn_id: Option<String>,
+    pub last_compact_meta: Option<TerminalLastCompactMetaFacts>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +56,16 @@ pub struct TerminalChildSummaryFacts {
 pub type ConversationChildSummaryFacts = TerminalChildSummaryFacts;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationChildSummarySummary {
+    pub child_session_id: String,
+    pub child_agent_id: String,
+    pub title: String,
+    pub lifecycle: astrcode_core::AgentLifecycleStatus,
+    pub latest_output_summary: Option<String>,
+    pub child_ref: Option<ChildAgentRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalSlashAction {
     CreateSession,
     OpenResume,
@@ -54,6 +75,12 @@ pub enum TerminalSlashAction {
 }
 
 pub type ConversationSlashAction = TerminalSlashAction;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationSlashActionSummary {
+    InsertText,
+    ExecuteCommand,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSlashCandidateFacts {
@@ -67,6 +94,23 @@ pub struct TerminalSlashCandidateFacts {
 }
 
 pub type ConversationSlashCandidateFacts = TerminalSlashCandidateFacts;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationSlashCandidateSummary {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub keywords: Vec<String>,
+    pub action_kind: ConversationSlashActionSummary,
+    pub action_value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationAuthoritativeSummary {
+    pub control: ConversationControlSummary,
+    pub child_summaries: Vec<ConversationChildSummarySummary>,
+    pub slash_candidates: Vec<ConversationSlashCandidateSummary>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalResumeCandidateFacts {
@@ -145,5 +189,105 @@ pub fn truncate_terminal_summary(content: &str) -> String {
         format!("{truncated}…")
     } else {
         truncated
+    }
+}
+
+pub fn summarize_conversation_control(
+    control: &TerminalControlFacts,
+) -> ConversationControlSummary {
+    ConversationControlSummary {
+        phase: control.phase,
+        can_submit_prompt: matches!(
+            control.phase,
+            Phase::Idle | Phase::Done | Phase::Interrupted
+        ),
+        can_request_compact: !control.manual_compact_pending && !control.compacting,
+        compact_pending: control.manual_compact_pending,
+        compacting: control.compacting,
+        active_turn_id: control.active_turn_id.clone(),
+        last_compact_meta: control.last_compact_meta.clone(),
+    }
+}
+
+pub fn summarize_conversation_child_summary(
+    summary: &TerminalChildSummaryFacts,
+) -> ConversationChildSummarySummary {
+    ConversationChildSummarySummary {
+        child_session_id: summary.node.child_session_id.to_string(),
+        child_agent_id: summary.node.agent_id().to_string(),
+        title: summary
+            .title
+            .clone()
+            .or_else(|| summary.display_name.clone())
+            .unwrap_or_else(|| summary.node.child_session_id.to_string()),
+        lifecycle: summary.node.status,
+        latest_output_summary: summary.recent_output.clone(),
+        child_ref: Some(summary.node.child_ref()),
+    }
+}
+
+pub fn summarize_conversation_child_ref(
+    child_ref: &ChildAgentRef,
+) -> ConversationChildSummarySummary {
+    ConversationChildSummarySummary {
+        child_session_id: child_ref.open_session_id.to_string(),
+        child_agent_id: child_ref.agent_id().to_string(),
+        title: child_ref.agent_id().to_string(),
+        lifecycle: child_ref.status,
+        latest_output_summary: None,
+        child_ref: Some(child_ref.clone()),
+    }
+}
+
+pub fn summarize_conversation_slash_candidate(
+    candidate: &TerminalSlashCandidateFacts,
+) -> ConversationSlashCandidateSummary {
+    let (action_kind, action_value) = match &candidate.action {
+        TerminalSlashAction::CreateSession => (
+            ConversationSlashActionSummary::ExecuteCommand,
+            "/new".to_string(),
+        ),
+        TerminalSlashAction::OpenResume => (
+            ConversationSlashActionSummary::ExecuteCommand,
+            "/resume".to_string(),
+        ),
+        TerminalSlashAction::RequestCompact => (
+            ConversationSlashActionSummary::ExecuteCommand,
+            "/compact".to_string(),
+        ),
+        TerminalSlashAction::OpenSkillPalette => (
+            ConversationSlashActionSummary::ExecuteCommand,
+            "/skill".to_string(),
+        ),
+        TerminalSlashAction::InsertText { text } => {
+            (ConversationSlashActionSummary::InsertText, text.clone())
+        },
+    };
+
+    ConversationSlashCandidateSummary {
+        id: candidate.id.clone(),
+        title: candidate.title.clone(),
+        description: candidate.description.clone(),
+        keywords: candidate.keywords.clone(),
+        action_kind,
+        action_value,
+    }
+}
+
+pub fn summarize_conversation_authoritative(
+    control: &TerminalControlFacts,
+    child_summaries: &[TerminalChildSummaryFacts],
+    slash_candidates: &[TerminalSlashCandidateFacts],
+) -> ConversationAuthoritativeSummary {
+    ConversationAuthoritativeSummary {
+        control: summarize_conversation_control(control),
+        child_summaries: child_summaries
+            .iter()
+            .map(summarize_conversation_child_summary)
+            .collect(),
+        slash_candidates: slash_candidates
+            .iter()
+            .map(summarize_conversation_slash_candidate)
+            .collect(),
     }
 }

@@ -22,9 +22,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
-    SessionRuntime, SessionState, SessionWriter,
+    SessionRuntime, SessionState,
     actor::SessionActor,
-    state::append_and_broadcast,
+    state::{SessionWriter, append_and_broadcast},
     turn::events::{
         CompactAppliedStats, assistant_final_event, compact_applied_event, user_message_event,
     },
