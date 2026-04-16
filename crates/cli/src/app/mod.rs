@@ -37,10 +37,10 @@ use tokio::{
 
 use crate::{
     capability::TerminalCapabilities,
-    command::overlay_action,
+    command::palette_action,
     launcher::{LaunchOptions, Launcher, LauncherSession, SystemManagedServer},
     render,
-    state::{CliState, OverlayState, PaneFocus, StreamRenderMode},
+    state::{CliState, PaletteState, PaneFocus, StreamRenderMode},
 };
 
 #[derive(Debug, Parser)]
@@ -329,6 +329,7 @@ where
                 }
                 let (mode, pending, oldest) = self.stream_pacer.update_mode();
                 self.state.set_stream_mode(mode, pending, oldest);
+                self.state.advance_thinking_playback();
             },
             Action::Quit => self.should_quit = true,
             Action::Resize { width, height } => self.state.set_viewport_size(width, height),
@@ -337,7 +338,7 @@ where
             Action::SessionsRefreshed(result) => match result {
                 Ok(sessions) => {
                     self.state.update_sessions(sessions);
-                    self.refresh_resume_overlay();
+                    self.refresh_resume_palette();
                 },
                 Err(error) => self.apply_status_error(error),
             },
@@ -399,7 +400,7 @@ where
                 self.state.set_stream_mode(mode, pending, oldest);
             },
             Action::SlashCandidatesLoaded { query, result } => {
-                let OverlayState::SlashPalette(palette) = &self.state.interaction.overlay else {
+                let PaletteState::Slash(palette) = &self.state.interaction.palette else {
                     return Ok(());
                 };
                 if palette.query != query {
@@ -452,74 +453,102 @@ where
             return Ok(());
         }
 
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('o')) {
+            if matches!(self.state.interaction.pane_focus, PaneFocus::Transcript)
+                && self.state.selected_cell_is_thinking()
+            {
+                self.state.toggle_selected_cell_expanded();
+            }
+            return Ok(());
+        }
+
         match key.code {
-            KeyCode::F(2) => self.state.toggle_debug_overlay(),
-            KeyCode::Esc => self.state.close_overlay(),
-            KeyCode::Left => {
-                if !matches!(self.state.interaction.overlay, OverlayState::None) {
+            KeyCode::Esc => {
+                if self.state.interaction.has_palette() {
+                    self.state.close_palette();
+                } else {
+                    self.state.clear_surface_state();
+                }
+            },
+            KeyCode::BackTab => {
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
                     return Ok(());
                 }
                 self.state.cycle_focus_backward();
             },
-            KeyCode::Right => {
-                if !matches!(self.state.interaction.overlay, OverlayState::None) {
+            KeyCode::Tab => {
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
                     return Ok(());
                 }
                 self.state.cycle_focus_forward();
             },
             KeyCode::Up => {
-                if !matches!(self.state.interaction.overlay, OverlayState::None) {
-                    self.state.overlay_prev();
-                } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
-                    self.state.child_prev();
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
+                    self.state.palette_prev();
                 } else {
-                    self.state.scroll_up();
+                    match self.state.interaction.pane_focus {
+                        PaneFocus::Transcript => self.state.transcript_prev(),
+                        PaneFocus::Composer | PaneFocus::Palette => {},
+                    }
                 }
             },
             KeyCode::Down => {
-                if !matches!(self.state.interaction.overlay, OverlayState::None) {
-                    self.state.overlay_next();
-                } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
-                    self.state.child_next();
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
+                    self.state.palette_next();
                 } else {
-                    self.state.scroll_down();
+                    match self.state.interaction.pane_focus {
+                        PaneFocus::Transcript => self.state.transcript_next(),
+                        PaneFocus::Composer | PaneFocus::Palette => {},
+                    }
                 }
             },
             KeyCode::Enter => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    if matches!(self.state.interaction.overlay, OverlayState::None)
+                    if matches!(self.state.interaction.palette, PaletteState::Closed)
                         && matches!(self.state.interaction.pane_focus, PaneFocus::Composer)
                     {
                         self.state.insert_newline();
                     }
-                } else if let Some(selection) = self.state.selected_overlay() {
-                    self.execute_overlay_action(overlay_action(selection))
+                } else if let Some(selection) = self.state.selected_palette() {
+                    self.execute_palette_action(palette_action(selection))
                         .await?;
-                } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
-                    self.state.toggle_child_focus();
                 } else {
-                    self.submit_current_input().await;
+                    match self.state.interaction.pane_focus {
+                        PaneFocus::Transcript => self.handle_transcript_enter(),
+                        PaneFocus::Composer => self.submit_current_input().await,
+                        PaneFocus::Palette => {},
+                    }
                 }
             },
             KeyCode::Backspace => {
-                if matches!(self.state.interaction.overlay, OverlayState::None) {
+                if matches!(self.state.interaction.palette, PaletteState::Closed) {
                     self.state.pop_input();
                 } else {
-                    self.state.overlay_query_pop();
-                    self.refresh_overlay_query().await;
+                    self.state.interaction.composer.input.pop();
+                    self.refresh_palette_query().await;
                 }
             },
-            KeyCode::Tab => {
-                let query = self.slash_query_for_current_input();
-                self.open_slash_palette(query).await;
-            },
             KeyCode::Char(ch) => {
-                if matches!(self.state.interaction.overlay, OverlayState::None) {
-                    self.state.interaction.pane_focus = PaneFocus::Composer;
-                    self.state.push_input(ch);
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
+                    self.state.interaction.composer.input.push(ch);
+                    self.refresh_palette_query().await;
                 } else {
-                    self.state.overlay_query_push(ch);
-                    self.refresh_overlay_query().await;
+                    match self.state.interaction.pane_focus {
+                        PaneFocus::Transcript if matches!(ch, 'j' | 'k') => {
+                            if ch == 'j' {
+                                self.state.transcript_next();
+                            } else {
+                                self.state.transcript_prev();
+                            }
+                        },
+                        _ => {
+                            self.state.push_input(ch);
+                            if ch == '/' {
+                                let query = self.slash_query_for_current_input();
+                                self.open_slash_palette(query).await;
+                            }
+                        },
+                    }
                 }
             },
             _ => {},
@@ -529,14 +558,23 @@ where
     }
 
     async fn handle_paste(&mut self, text: String) -> Result<()> {
-        if matches!(self.state.interaction.overlay, OverlayState::None) {
-            self.state.interaction.pane_focus = PaneFocus::Composer;
+        if matches!(self.state.interaction.palette, PaletteState::Closed) {
             self.state.append_input(text.as_str());
         } else {
-            self.state.overlay_query_append(text.as_str());
-            self.refresh_overlay_query().await;
+            self.state
+                .interaction
+                .composer
+                .input
+                .push_str(text.as_str());
+            self.refresh_palette_query().await;
         }
         Ok(())
+    }
+
+    fn handle_transcript_enter(&mut self) {
+        if !self.state.selected_cell_is_thinking() {
+            self.state.toggle_selected_cell_expanded();
+        }
     }
 
     fn active_session_matches(&self, session_id: &str) -> bool {
@@ -656,6 +694,15 @@ fn slash_query_from_input(input: &str) -> String {
         return query.trim().to_string();
     }
     trimmed.trim_start_matches('/').trim().to_string()
+}
+
+fn resume_query_from_input(input: &str) -> String {
+    input
+        .trim()
+        .strip_prefix("/resume")
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -1165,7 +1212,7 @@ mod tests {
             })
             .await;
         handle_next_action(&mut controller).await;
-        let OverlayState::SlashPalette(palette) = &controller.state.interaction.overlay else {
+        let PaletteState::Slash(palette) = &controller.state.interaction.palette else {
             panic!("skill command should open slash palette");
         };
         assert_eq!(palette.query, "review");
@@ -1183,17 +1230,17 @@ mod tests {
                 query: Some("repo-b".to_string()),
             })
             .await;
-        let OverlayState::Resume(resume) = &controller.state.interaction.overlay else {
-            panic!("resume command should open resume overlay");
+        let PaletteState::Resume(resume) = &controller.state.interaction.palette else {
+            panic!("resume command should open resume palette");
         };
         assert_eq!(resume.query, "repo-b");
         handle_next_action(&mut controller).await;
         let selection = controller
             .state
-            .selected_overlay()
-            .expect("resume overlay should keep a selection");
+            .selected_palette()
+            .expect("resume palette should keep a selection");
         controller
-            .execute_overlay_action(overlay_action(selection))
+            .execute_palette_action(palette_action(selection))
             .await
             .expect("resume selection should switch session");
         handle_next_action(&mut controller).await;

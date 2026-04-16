@@ -1,12 +1,13 @@
+use std::collections::BTreeSet;
+
 use astrcode_client::{AstrcodeConversationSlashCandidateDto, AstrcodeSessionListItem};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PaneFocus {
     Transcript,
-    ChildPane,
     #[default]
     Composer,
-    Overlay,
+    Palette,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -24,36 +25,30 @@ impl ComposerState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ResumeOverlayState {
-    pub query: String,
-    pub items: Vec<AstrcodeSessionListItem>,
-    pub selected: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashPaletteState {
     pub query: String,
     pub items: Vec<AstrcodeConversationSlashCandidateDto>,
     pub selected: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct DebugOverlayState {
-    pub scroll: usize,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumePaletteState {
+    pub query: String,
+    pub items: Vec<AstrcodeSessionListItem>,
+    pub selected: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum OverlayState {
+pub enum PaletteState {
     #[default]
-    None,
-    Resume(ResumeOverlayState),
-    SlashPalette(SlashPaletteState),
-    DebugLogs(DebugOverlayState),
+    Closed,
+    Slash(SlashPaletteState),
+    Resume(ResumePaletteState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OverlaySelection {
+pub enum PaletteSelection {
     ResumeSession(String),
     SlashCandidate(AstrcodeConversationSlashCandidateDto),
 }
@@ -74,9 +69,9 @@ impl Default for StatusLine {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ChildPaneState {
-    pub selected: usize,
-    pub focused_child_session_id: Option<String>,
+pub struct TranscriptState {
+    pub selected_cell: usize,
+    pub expanded_cells: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,9 +80,10 @@ pub struct InteractionState {
     pub scroll_anchor: u16,
     pub follow_transcript_tail: bool,
     pub pane_focus: PaneFocus,
+    pub last_non_palette_focus: PaneFocus,
     pub composer: ComposerState,
-    pub overlay: OverlayState,
-    pub child_pane: ChildPaneState,
+    pub palette: PaletteState,
+    pub transcript: TranscriptState,
 }
 
 impl Default for InteractionState {
@@ -97,9 +93,10 @@ impl Default for InteractionState {
             scroll_anchor: 0,
             follow_transcript_tail: true,
             pane_focus: PaneFocus::default(),
+            last_non_palette_focus: PaneFocus::default(),
             composer: ComposerState::default(),
-            overlay: OverlayState::default(),
-            child_pane: ChildPaneState::default(),
+            palette: PaletteState::default(),
+            transcript: TranscriptState::default(),
         }
     }
 }
@@ -120,14 +117,17 @@ impl InteractionState {
     }
 
     pub fn push_input(&mut self, ch: char) {
+        self.set_focus(PaneFocus::Composer);
         self.composer.input.push(ch);
     }
 
     pub fn append_input(&mut self, value: &str) {
+        self.set_focus(PaneFocus::Composer);
         self.composer.input.push_str(value);
     }
 
     pub fn insert_newline(&mut self) {
+        self.set_focus(PaneFocus::Composer);
         self.composer.input.push('\n');
     }
 
@@ -136,6 +136,7 @@ impl InteractionState {
     }
 
     pub fn replace_input(&mut self, input: impl Into<String>) {
+        self.set_focus(PaneFocus::Composer);
         self.composer.input = input.into();
     }
 
@@ -158,83 +159,87 @@ impl InteractionState {
         self.follow_transcript_tail = true;
     }
 
-    pub fn cycle_focus_forward(&mut self, has_children: bool) {
-        self.pane_focus = match self.pane_focus {
-            PaneFocus::Transcript => {
-                if has_children {
-                    PaneFocus::ChildPane
-                } else {
-                    PaneFocus::Composer
-                }
-            },
-            PaneFocus::ChildPane => PaneFocus::Composer,
-            PaneFocus::Composer => PaneFocus::Transcript,
-            PaneFocus::Overlay => PaneFocus::Overlay,
-        };
-    }
-
-    pub fn cycle_focus_backward(&mut self, has_children: bool) {
-        self.pane_focus = match self.pane_focus {
+    pub fn cycle_focus_forward(&mut self) {
+        self.set_focus(match self.pane_focus {
             PaneFocus::Transcript => PaneFocus::Composer,
-            PaneFocus::ChildPane => PaneFocus::Transcript,
-            PaneFocus::Composer => {
-                if has_children {
-                    PaneFocus::ChildPane
-                } else {
-                    PaneFocus::Transcript
-                }
-            },
-            PaneFocus::Overlay => PaneFocus::Overlay,
-        };
+            PaneFocus::Composer => PaneFocus::Transcript,
+            PaneFocus::Palette => PaneFocus::Palette,
+        });
     }
 
-    pub fn child_next(&mut self, child_count: usize) {
-        if child_count == 0 {
-            return;
-        }
-        self.child_pane.selected = (self.child_pane.selected + 1) % child_count;
+    pub fn cycle_focus_backward(&mut self) {
+        self.cycle_focus_forward();
     }
 
-    pub fn child_prev(&mut self, child_count: usize) {
-        if child_count == 0 {
-            return;
+    pub fn set_focus(&mut self, focus: PaneFocus) {
+        self.pane_focus = focus;
+        if !matches!(focus, PaneFocus::Palette) {
+            self.last_non_palette_focus = focus;
         }
-        self.child_pane.selected = (self.child_pane.selected + child_count - 1) % child_count;
     }
 
-    pub fn toggle_child_focus(&mut self, selected_child_session_id: Option<&str>) {
-        let Some(selected_child_session_id) = selected_child_session_id else {
+    pub fn transcript_next(&mut self, cell_count: usize) {
+        if cell_count == 0 {
             return;
-        };
-        if self.child_pane.focused_child_session_id.as_deref() == Some(selected_child_session_id) {
-            self.child_pane.focused_child_session_id = None;
-        } else {
-            self.child_pane.focused_child_session_id = Some(selected_child_session_id.to_string());
         }
+        self.set_focus(PaneFocus::Transcript);
+        self.transcript.selected_cell = (self.transcript.selected_cell + 1) % cell_count;
+        self.follow_transcript_tail = false;
+    }
+
+    pub fn transcript_prev(&mut self, cell_count: usize) {
+        if cell_count == 0 {
+            return;
+        }
+        self.set_focus(PaneFocus::Transcript);
+        self.transcript.selected_cell =
+            (self.transcript.selected_cell + cell_count - 1) % cell_count;
+        self.follow_transcript_tail = false;
+    }
+
+    pub fn sync_transcript_cells(&mut self, cell_count: usize) {
+        if cell_count == 0 {
+            self.transcript.selected_cell = 0;
+            self.transcript.expanded_cells.clear();
+            return;
+        }
+        if self.transcript.selected_cell >= cell_count {
+            self.transcript.selected_cell = cell_count - 1;
+        }
+    }
+
+    pub fn toggle_cell_expanded(&mut self, cell_id: &str) {
+        if !self.transcript.expanded_cells.insert(cell_id.to_string()) {
+            self.transcript.expanded_cells.remove(cell_id);
+        }
+    }
+
+    pub fn is_cell_expanded(&self, cell_id: &str) -> bool {
+        self.transcript.expanded_cells.contains(cell_id)
     }
 
     pub fn reset_for_snapshot(&mut self) {
         self.reset_scroll();
-        self.overlay = OverlayState::None;
-        self.pane_focus = PaneFocus::Composer;
-        self.child_pane = ChildPaneState::default();
+        self.palette = PaletteState::Closed;
+        self.transcript = TranscriptState::default();
+        self.set_focus(PaneFocus::Composer);
     }
 
-    pub fn set_resume_query(
+    pub fn set_resume_palette(
         &mut self,
         query: impl Into<String>,
         items: Vec<AstrcodeSessionListItem>,
     ) {
-        self.pane_focus = PaneFocus::Overlay;
-        self.overlay = OverlayState::Resume(ResumeOverlayState {
+        self.palette = PaletteState::Resume(ResumePaletteState {
             query: query.into(),
             items,
             selected: 0,
         });
+        self.pane_focus = PaneFocus::Palette;
     }
 
     pub fn sync_resume_items(&mut self, items: Vec<AstrcodeSessionListItem>) {
-        if let OverlayState::Resume(resume) = &mut self.overlay {
+        if let PaletteState::Resume(resume) = &mut self.palette {
             resume.items = items;
             if resume.selected >= resume.items.len() {
                 resume.selected = 0;
@@ -242,21 +247,21 @@ impl InteractionState {
         }
     }
 
-    pub fn set_slash_query(
+    pub fn set_slash_palette(
         &mut self,
         query: impl Into<String>,
         items: Vec<AstrcodeConversationSlashCandidateDto>,
     ) {
-        self.pane_focus = PaneFocus::Overlay;
-        self.overlay = OverlayState::SlashPalette(SlashPaletteState {
+        self.palette = PaletteState::Slash(SlashPaletteState {
             query: query.into(),
             items,
             selected: 0,
         });
+        self.pane_focus = PaneFocus::Palette;
     }
 
     pub fn sync_slash_items(&mut self, items: Vec<AstrcodeConversationSlashCandidateDto>) {
-        if let OverlayState::SlashPalette(palette) = &mut self.overlay {
+        if let PaletteState::Slash(palette) = &mut self.palette {
             palette.items = items;
             if palette.selected >= palette.items.len() {
                 palette.selected = 0;
@@ -264,100 +269,100 @@ impl InteractionState {
         }
     }
 
-    pub fn overlay_query_push(&mut self, ch: char) {
-        match &mut self.overlay {
-            OverlayState::Resume(resume) => resume.query.push(ch),
-            OverlayState::SlashPalette(palette) => palette.query.push(ch),
-            OverlayState::DebugLogs(_) => {},
-            OverlayState::None => self.push_input(ch),
-        }
+    pub fn close_palette(&mut self) {
+        self.palette = PaletteState::Closed;
+        self.set_focus(self.last_non_palette_focus);
     }
 
-    pub fn overlay_query_append(&mut self, value: &str) {
-        match &mut self.overlay {
-            OverlayState::Resume(resume) => resume.query.push_str(value),
-            OverlayState::SlashPalette(palette) => palette.query.push_str(value),
-            OverlayState::DebugLogs(_) => {},
-            OverlayState::None => self.append_input(value),
-        }
+    pub fn has_palette(&self) -> bool {
+        !matches!(self.palette, PaletteState::Closed)
     }
 
-    pub fn overlay_query_pop(&mut self) {
-        match &mut self.overlay {
-            OverlayState::Resume(resume) => {
-                resume.query.pop();
-            },
-            OverlayState::SlashPalette(palette) => {
-                palette.query.pop();
-            },
-            OverlayState::DebugLogs(_) => {},
-            OverlayState::None => self.pop_input(),
-        }
-    }
-
-    pub fn close_overlay(&mut self) {
-        self.overlay = OverlayState::None;
-        self.pane_focus = PaneFocus::Composer;
-    }
-
-    pub fn has_overlay(&self) -> bool {
-        !matches!(self.overlay, OverlayState::None)
-    }
-
-    pub fn overlay_next(&mut self) {
-        match &mut self.overlay {
-            OverlayState::Resume(resume) if !resume.items.is_empty() => {
+    pub fn palette_next(&mut self) {
+        match &mut self.palette {
+            PaletteState::Resume(resume) if !resume.items.is_empty() => {
                 resume.selected = (resume.selected + 1) % resume.items.len();
             },
-            OverlayState::SlashPalette(palette) if !palette.items.is_empty() => {
+            PaletteState::Slash(palette) if !palette.items.is_empty() => {
                 palette.selected = (palette.selected + 1) % palette.items.len();
             },
-            OverlayState::DebugLogs(debug) => {
-                debug.scroll = debug.scroll.saturating_add(1);
-            },
-            _ => {},
+            PaletteState::Closed | PaletteState::Resume(_) | PaletteState::Slash(_) => {},
         }
     }
 
-    pub fn overlay_prev(&mut self) {
-        match &mut self.overlay {
-            OverlayState::Resume(resume) if !resume.items.is_empty() => {
+    pub fn palette_prev(&mut self) {
+        match &mut self.palette {
+            PaletteState::Resume(resume) if !resume.items.is_empty() => {
                 resume.selected =
                     (resume.selected + resume.items.len().saturating_sub(1)) % resume.items.len();
             },
-            OverlayState::SlashPalette(palette) if !palette.items.is_empty() => {
+            PaletteState::Slash(palette) if !palette.items.is_empty() => {
                 palette.selected = (palette.selected + palette.items.len().saturating_sub(1))
                     % palette.items.len();
             },
-            OverlayState::DebugLogs(debug) => {
-                debug.scroll = debug.scroll.saturating_sub(1);
-            },
-            _ => {},
+            PaletteState::Closed | PaletteState::Resume(_) | PaletteState::Slash(_) => {},
         }
     }
 
-    pub fn selected_overlay(&self) -> Option<OverlaySelection> {
-        match &self.overlay {
-            OverlayState::Resume(resume) => resume
+    pub fn selected_palette(&self) -> Option<PaletteSelection> {
+        match &self.palette {
+            PaletteState::Resume(resume) => resume
                 .items
                 .get(resume.selected)
-                .map(|item| OverlaySelection::ResumeSession(item.session_id.clone())),
-            OverlayState::SlashPalette(palette) => palette
+                .map(|item| PaletteSelection::ResumeSession(item.session_id.clone())),
+            PaletteState::Slash(palette) => palette
                 .items
                 .get(palette.selected)
                 .cloned()
-                .map(OverlaySelection::SlashCandidate),
-            OverlayState::DebugLogs(_) => None,
-            OverlayState::None => None,
+                .map(PaletteSelection::SlashCandidate),
+            PaletteState::Closed => None,
         }
     }
 
-    pub fn toggle_debug_overlay(&mut self) {
-        if matches!(self.overlay, OverlayState::DebugLogs(_)) {
-            self.close_overlay();
-        } else {
-            self.pane_focus = PaneFocus::Overlay;
-            self.overlay = OverlayState::DebugLogs(DebugOverlayState::default());
+    pub fn clear_surface_state(&mut self) {
+        match self.pane_focus {
+            PaneFocus::Transcript => {
+                self.reset_scroll();
+                self.transcript.expanded_cells.clear();
+            },
+            PaneFocus::Composer => {
+                self.status = StatusLine::default();
+            },
+            PaneFocus::Palette => self.close_palette(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_flow_cycles_two_surfaces() {
+        let mut state = InteractionState::default();
+        state.set_focus(PaneFocus::Transcript);
+        state.cycle_focus_forward();
+        assert_eq!(state.pane_focus, PaneFocus::Composer);
+        state.cycle_focus_forward();
+        assert_eq!(state.pane_focus, PaneFocus::Transcript);
+    }
+
+    #[test]
+    fn close_palette_restores_previous_focus() {
+        let mut state = InteractionState::default();
+        state.set_focus(PaneFocus::Transcript);
+        state.set_slash_palette("", Vec::new());
+        assert_eq!(state.pane_focus, PaneFocus::Palette);
+        state.close_palette();
+        assert_eq!(state.pane_focus, PaneFocus::Transcript);
+    }
+
+    #[test]
+    fn transcript_expansion_toggles_by_cell_id() {
+        let mut state = InteractionState::default();
+        state.toggle_cell_expanded("assistant-1");
+        assert!(state.is_cell_expanded("assistant-1"));
+        state.toggle_cell_expanded("assistant-1");
+        assert!(!state.is_cell_expanded("assistant-1"));
     }
 }

@@ -8,11 +8,12 @@ use astrcode_client::{
 };
 
 use super::{
-    Action, AppController, filter_resume_sessions, required_working_dir, slash_query_from_input,
+    Action, AppController, filter_resume_sessions, required_working_dir, resume_query_from_input,
+    slash_query_from_input,
 };
 use crate::{
-    command::{Command, InputAction, OverlayAction, classify_input, filter_slash_candidates},
-    state::{OverlayState, StreamRenderMode},
+    command::{Command, InputAction, PaletteAction, classify_input, filter_slash_candidates},
+    state::{PaletteState, StreamRenderMode},
 };
 
 impl<T> AppController<T>
@@ -50,18 +51,18 @@ where
         }
     }
 
-    pub(super) async fn execute_overlay_action(&mut self, action: OverlayAction) -> Result<()> {
+    pub(super) async fn execute_palette_action(&mut self, action: PaletteAction) -> Result<()> {
         match action {
-            OverlayAction::SwitchSession { session_id } => {
-                self.state.close_overlay();
+            PaletteAction::SwitchSession { session_id } => {
+                self.state.close_palette();
                 self.begin_session_hydration(session_id).await;
             },
-            OverlayAction::ReplaceInput { text } => {
-                self.state.close_overlay();
+            PaletteAction::ReplaceInput { text } => {
+                self.state.close_palette();
                 self.state.replace_input(text);
             },
-            OverlayAction::RunCommand(command) => {
-                self.state.close_overlay();
+            PaletteAction::RunCommand(command) => {
+                self.state.close_palette();
                 self.execute_command(command).await;
             },
         }
@@ -92,6 +93,11 @@ where
                 let query = query.unwrap_or_default();
                 let items =
                     filter_resume_sessions(&self.state.conversation.sessions, query.as_str());
+                self.state.replace_input(if query.is_empty() {
+                    "/resume".to_string()
+                } else {
+                    format!("/resume {query}")
+                });
                 self.state.set_resume_query(query, items);
                 self.refresh_sessions().await;
             },
@@ -131,7 +137,13 @@ where
                 });
             },
             Command::Skill { query } => {
-                self.open_slash_palette(query.unwrap_or_default()).await;
+                let query = query.unwrap_or_default();
+                self.state.replace_input(if query.is_empty() {
+                    "/skill".to_string()
+                } else {
+                    format!("/skill {query}")
+                });
+                self.open_slash_palette(query).await;
             },
             Command::Unknown { raw } => {
                 self.state
@@ -213,6 +225,16 @@ where
     }
 
     pub(super) async fn open_slash_palette(&mut self, query: String) {
+        if !self
+            .state
+            .interaction
+            .composer
+            .input
+            .trim_start()
+            .starts_with('/')
+        {
+            self.state.replace_input("/".to_string());
+        }
         let items = if query.trim().is_empty() {
             self.state.conversation.slash_candidates.clone()
         } else {
@@ -236,25 +258,50 @@ where
         });
     }
 
-    pub(super) async fn refresh_overlay_query(&mut self) {
-        match &self.state.interaction.overlay {
-            OverlayState::Resume(resume) => {
-                let items = filter_resume_sessions(
-                    &self.state.conversation.sessions,
-                    resume.query.as_str(),
+    pub(super) async fn refresh_palette_query(&mut self) {
+        match &self.state.interaction.palette {
+            PaletteState::Resume(_) => {
+                if !self
+                    .state
+                    .interaction
+                    .composer
+                    .input
+                    .trim_start()
+                    .starts_with("/resume")
+                {
+                    self.state.close_palette();
+                    return;
+                }
+                let query = resume_query_from_input(self.state.interaction.composer.input.as_str());
+                let items =
+                    filter_resume_sessions(&self.state.conversation.sessions, query.as_str());
+                self.state.set_resume_query(query, items);
+            },
+            PaletteState::Slash(_) => {
+                if !self
+                    .state
+                    .interaction
+                    .composer
+                    .input
+                    .trim_start()
+                    .starts_with('/')
+                {
+                    self.state.close_palette();
+                    return;
+                }
+                let query = self.slash_query_for_current_input();
+                self.state.set_slash_query(
+                    query.clone(),
+                    filter_slash_candidates(&self.state.conversation.slash_candidates, &query),
                 );
-                self.state.set_resume_query(resume.query.clone(), items);
+                self.refresh_slash_candidates(query).await;
             },
-            OverlayState::SlashPalette(palette) => {
-                self.refresh_slash_candidates(palette.query.clone()).await;
-            },
-            OverlayState::DebugLogs(_) => {},
-            OverlayState::None => {},
+            PaletteState::Closed => {},
         }
     }
 
-    pub(super) fn refresh_resume_overlay(&mut self) {
-        let OverlayState::Resume(resume) = &self.state.interaction.overlay else {
+    pub(super) fn refresh_resume_palette(&mut self) {
+        let PaletteState::Resume(resume) = &self.state.interaction.palette else {
             return;
         };
         let items =

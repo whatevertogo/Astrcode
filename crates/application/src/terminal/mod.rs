@@ -70,7 +70,6 @@ pub enum TerminalSlashAction {
     CreateSession,
     OpenResume,
     RequestCompact,
-    OpenSkillPalette,
     InsertText { text: String },
 }
 
@@ -254,10 +253,6 @@ pub fn summarize_conversation_slash_candidate(
         TerminalSlashAction::RequestCompact => (
             ConversationSlashActionSummary::ExecuteCommand,
             "/compact".to_string(),
-        ),
-        TerminalSlashAction::OpenSkillPalette => (
-            ConversationSlashActionSummary::ExecuteCommand,
-            "/skill".to_string(),
         ),
         TerminalSlashAction::InsertText { text } => {
             (ConversationSlashActionSummary::InsertText, text.clone())

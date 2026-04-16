@@ -415,15 +415,6 @@ fn terminal_builtin_candidates(control: &TerminalControlFacts) -> Vec<TerminalSl
             badges: vec!["built-in".to_string()],
             action: TerminalSlashAction::OpenResume,
         },
-        TerminalSlashCandidateFacts {
-            kind: ComposerOptionKind::Command,
-            id: "skill".to_string(),
-            title: "插入技能".to_string(),
-            description: "打开 skill 候选面板".to_string(),
-            keywords: vec!["skill".to_string(), "prompt".to_string()],
-            badges: vec!["built-in".to_string()],
-            action: TerminalSlashAction::OpenSkillPalette,
-        },
     ];
 
     if !control.manual_compact_pending && !control.compacting {
@@ -764,6 +755,12 @@ mod tests {
                 .slash_candidates
                 .iter()
                 .any(|candidate| candidate.id == "openspec-apply-change")
+        );
+        assert!(
+            facts
+                .slash_candidates
+                .iter()
+                .all(|candidate| candidate.id != "skill")
         );
     }
 

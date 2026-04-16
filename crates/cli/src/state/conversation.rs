@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use astrcode_client::{
     AstrcodeConversationBannerDto, AstrcodeConversationBlockDto, AstrcodeConversationBlockPatchDto,
     AstrcodeConversationBlockStatusDto, AstrcodeConversationChildSummaryDto,
@@ -7,7 +9,7 @@ use astrcode_client::{
     AstrcodeConversationStreamEnvelopeDto, AstrcodePhaseDto, AstrcodeSessionListItem,
 };
 
-use super::{ChildPaneState, RenderState, TranscriptCell};
+use super::{RenderState, TranscriptCell};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationState {
@@ -49,10 +51,10 @@ impl ConversationState {
         &mut self,
         envelope: AstrcodeConversationStreamEnvelopeDto,
         render: &mut RenderState,
-        child_pane: &mut ChildPaneState,
+        expanded_ids: &BTreeSet<String>,
     ) {
         self.cursor = Some(envelope.cursor);
-        self.apply_delta(envelope.delta, render, child_pane);
+        self.apply_delta(envelope.delta, render, expanded_ids);
     }
 
     pub fn set_banner_error(&mut self, error: AstrcodeConversationErrorEnvelopeDto) {
@@ -67,35 +69,16 @@ impl ConversationState {
         self.control.as_ref().map(|control| control.phase)
     }
 
-    pub fn selected_child_summary(
-        &self,
-        child_pane: &ChildPaneState,
-    ) -> Option<&AstrcodeConversationChildSummaryDto> {
-        self.child_summaries.get(child_pane.selected)
-    }
-
-    pub fn focused_child_summary(
-        &self,
-        child_pane: &ChildPaneState,
-    ) -> Option<&AstrcodeConversationChildSummaryDto> {
-        let Some(child_session_id) = child_pane.focused_child_session_id.as_deref() else {
-            return self.selected_child_summary(child_pane);
-        };
-        self.child_summaries
-            .iter()
-            .find(|summary| summary.child_session_id == child_session_id)
-    }
-
     fn apply_delta(
         &mut self,
         delta: AstrcodeConversationDeltaDto,
         render: &mut RenderState,
-        child_pane: &mut ChildPaneState,
+        expanded_ids: &BTreeSet<String>,
     ) {
         match delta {
             AstrcodeConversationDeltaDto::AppendBlock { block } => {
                 self.transcript_cells
-                    .push(TranscriptCell::from_block(&block));
+                    .push(TranscriptCell::from_block(&block, expanded_ids));
                 self.transcript.push(block);
                 render.invalidate_transcript_cache();
             },
@@ -107,7 +90,7 @@ impl ConversationState {
                     .find(|(_, block)| block_id_of(block) == block_id)
                 {
                     apply_block_patch(block, patch);
-                    self.transcript_cells[index] = TranscriptCell::from_block(block);
+                    self.transcript_cells[index] = TranscriptCell::from_block(block, expanded_ids);
                     render.invalidate_transcript_cache();
                 }
             },
@@ -119,7 +102,7 @@ impl ConversationState {
                     .find(|(_, block)| block_id_of(block) == block_id)
                 {
                     set_block_status(block, status);
-                    self.transcript_cells[index] = TranscriptCell::from_block(block);
+                    self.transcript_cells[index] = TranscriptCell::from_block(block, expanded_ids);
                     render.invalidate_transcript_cache();
                 }
             },
@@ -136,22 +119,10 @@ impl ConversationState {
                 } else {
                     self.child_summaries.push(child);
                 }
-                if child_pane.selected >= self.child_summaries.len()
-                    && !self.child_summaries.is_empty()
-                {
-                    child_pane.selected = self.child_summaries.len() - 1;
-                }
             },
             AstrcodeConversationDeltaDto::RemoveChildSummary { child_session_id } => {
                 self.child_summaries
                     .retain(|child| child.child_session_id != child_session_id);
-                if child_pane.selected >= self.child_summaries.len() {
-                    child_pane.selected = self.child_summaries.len().saturating_sub(1);
-                }
-                if child_pane.focused_child_session_id.as_deref() == Some(child_session_id.as_str())
-                {
-                    child_pane.focused_child_session_id = None;
-                }
             },
             AstrcodeConversationDeltaDto::ReplaceSlashCandidates { candidates } => {
                 self.slash_candidates = candidates;
@@ -169,10 +140,16 @@ impl ConversationState {
     }
 
     fn rebuild_transcript_cells(&mut self) {
+        let expanded_ids = self
+            .transcript_cells
+            .iter()
+            .filter(|cell| cell.expanded)
+            .map(|cell| cell.id.clone())
+            .collect::<BTreeSet<_>>();
         self.transcript_cells = self
             .transcript
             .iter()
-            .map(TranscriptCell::from_block)
+            .map(|block| TranscriptCell::from_block(block, &expanded_ids))
             .collect();
     }
 }

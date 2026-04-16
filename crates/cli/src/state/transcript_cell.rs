@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use astrcode_client::{
     AstrcodeConversationAgentLifecycleDto, AstrcodeConversationBlockDto,
     AstrcodeConversationBlockStatusDto,
@@ -6,6 +8,7 @@ use astrcode_client::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptCell {
     pub id: String,
+    pub expanded: bool,
     pub kind: TranscriptCellKind,
 }
 
@@ -60,30 +63,52 @@ pub enum TranscriptCellKind {
 }
 
 impl TranscriptCell {
-    pub fn from_block(block: &AstrcodeConversationBlockDto) -> Self {
+    pub fn from_block(
+        block: &AstrcodeConversationBlockDto,
+        expanded_ids: &BTreeSet<String>,
+    ) -> Self {
+        let id = match block {
+            AstrcodeConversationBlockDto::User(block) => block.id.clone(),
+            AstrcodeConversationBlockDto::Assistant(block) => block.id.clone(),
+            AstrcodeConversationBlockDto::Thinking(block) => block.id.clone(),
+            AstrcodeConversationBlockDto::ToolCall(block) => block.id.clone(),
+            AstrcodeConversationBlockDto::Error(block) => block.id.clone(),
+            AstrcodeConversationBlockDto::SystemNote(block) => block.id.clone(),
+            AstrcodeConversationBlockDto::ChildHandoff(block) => block.id.clone(),
+        };
+        let expanded = expanded_ids.contains(&id)
+            || matches!(
+                block,
+                AstrcodeConversationBlockDto::Thinking(thinking)
+                    if matches!(thinking.status, AstrcodeConversationBlockStatusDto::Streaming)
+            );
         match block {
             AstrcodeConversationBlockDto::User(block) => Self {
-                id: block.id.clone(),
+                id,
+                expanded,
                 kind: TranscriptCellKind::User {
                     body: block.markdown.clone(),
                 },
             },
             AstrcodeConversationBlockDto::Assistant(block) => Self {
-                id: block.id.clone(),
+                id,
+                expanded,
                 kind: TranscriptCellKind::Assistant {
                     body: block.markdown.clone(),
                     status: block.status.into(),
                 },
             },
             AstrcodeConversationBlockDto::Thinking(block) => Self {
-                id: block.id.clone(),
+                id,
+                expanded,
                 kind: TranscriptCellKind::Thinking {
                     body: block.markdown.clone(),
                     status: block.status.into(),
                 },
             },
             AstrcodeConversationBlockDto::ToolCall(block) => Self {
-                id: block.id.clone(),
+                id,
+                expanded,
                 kind: TranscriptCellKind::ToolCall {
                     tool_name: block.tool_name.clone(),
                     summary: block
@@ -112,21 +137,24 @@ impl TranscriptCell {
                 },
             },
             AstrcodeConversationBlockDto::Error(block) => Self {
-                id: block.id.clone(),
+                id,
+                expanded,
                 kind: TranscriptCellKind::Error {
                     code: format!("{:?}", block.code),
                     message: block.message.clone(),
                 },
             },
             AstrcodeConversationBlockDto::SystemNote(block) => Self {
-                id: block.id.clone(),
+                id,
+                expanded,
                 kind: TranscriptCellKind::SystemNote {
                     note_kind: format!("{:?}", block.note_kind),
                     markdown: block.markdown.clone(),
                 },
             },
             AstrcodeConversationBlockDto::ChildHandoff(block) => Self {
-                id: block.id.clone(),
+                id,
+                expanded,
                 kind: TranscriptCellKind::ChildHandoff {
                     handoff_kind: format!("{:?}", block.handoff_kind),
                     title: block.child.title.clone(),

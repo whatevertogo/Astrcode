@@ -9,7 +9,6 @@ pub trait ThemePalette {
     fn line_style(&self, style: WrappedLineStyle) -> Style;
     fn glyph(&self, unicode: &'static str, ascii: &'static str) -> &'static str;
     fn divider(&self) -> &'static str;
-    fn vertical_divider(&self) -> &'static str;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -22,61 +21,84 @@ impl CodexTheme {
         Self { capabilities }
     }
 
-    pub fn muted_block_style(self) -> Style {
+    pub fn app_background(self) -> Style {
+        Style::default().bg(self.bg())
+    }
+
+    pub fn menu_block_style(self) -> Style {
+        Style::default().bg(self.surface()).fg(self.text_primary())
+    }
+
+    fn bg(self) -> Color {
         match self.capabilities.color {
-            ColorLevel::TrueColor => Style::default().bg(Color::Rgb(26, 28, 33)),
-            ColorLevel::Ansi16 => Style::default().bg(Color::Black),
-            ColorLevel::None => Style::default(),
+            ColorLevel::TrueColor => Color::Rgb(26, 24, 22),
+            ColorLevel::Ansi16 => Color::Black,
+            ColorLevel::None => Color::Reset,
         }
     }
 
-    pub fn overlay_border_style(self) -> Style {
+    fn surface(self) -> Color {
         match self.capabilities.color {
-            ColorLevel::TrueColor => Style::default().fg(Color::Rgb(90, 96, 110)),
-            ColorLevel::Ansi16 => Style::default().fg(Color::DarkGray),
-            ColorLevel::None => Style::default(),
+            ColorLevel::TrueColor => Color::Rgb(35, 32, 29),
+            ColorLevel::Ansi16 => Color::DarkGray,
+            ColorLevel::None => Color::Reset,
+        }
+    }
+
+    fn surface_alt(self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(48, 43, 37),
+            ColorLevel::Ansi16 => Color::DarkGray,
+            ColorLevel::None => Color::Reset,
         }
     }
 
     fn accent(self) -> Color {
         match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(72, 196, 255),
-            _ => Color::Cyan,
-        }
-    }
-
-    fn magenta(self) -> Color {
-        match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(221, 183, 255),
-            _ => Color::Magenta,
-        }
-    }
-
-    fn dim(self) -> Color {
-        match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(123, 129, 142),
-            _ => Color::DarkGray,
-        }
-    }
-
-    fn warning(self) -> Color {
-        match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(245, 201, 104),
+            ColorLevel::TrueColor => Color::Rgb(224, 128, 82),
             _ => Color::Yellow,
+        }
+    }
+
+    fn accent_soft(self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(196, 124, 88),
+            _ => Color::Yellow,
+        }
+    }
+
+    fn thinking(self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(241, 151, 104),
+            _ => Color::Yellow,
+        }
+    }
+
+    fn text_primary(self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(237, 229, 219),
+            _ => Color::White,
+        }
+    }
+
+    fn text_secondary(self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(186, 176, 163),
+            _ => Color::Gray,
+        }
+    }
+
+    fn text_muted(self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(136, 126, 114),
+            _ => Color::DarkGray,
         }
     }
 
     fn error(self) -> Color {
         match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(255, 122, 122),
+            ColorLevel::TrueColor => Color::Rgb(227, 111, 111),
             _ => Color::Red,
-        }
-    }
-
-    fn success(self) -> Color {
-        match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(121, 214, 121),
-            _ => Color::Green,
         }
     }
 }
@@ -86,42 +108,53 @@ impl ThemePalette for CodexTheme {
         let base = Style::default();
         if matches!(self.capabilities.color, ColorLevel::None) {
             return match style {
-                WrappedLineStyle::Accent
-                | WrappedLineStyle::Success
-                | WrappedLineStyle::Warning
-                | WrappedLineStyle::Error
-                | WrappedLineStyle::Selection
-                | WrappedLineStyle::Header => base.add_modifier(Modifier::BOLD),
-                WrappedLineStyle::Dim | WrappedLineStyle::Footer | WrappedLineStyle::Border => {
-                    base.add_modifier(Modifier::DIM)
+                WrappedLineStyle::Selection
+                | WrappedLineStyle::UserLabel
+                | WrappedLineStyle::AssistantLabel
+                | WrappedLineStyle::ToolLabel
+                | WrappedLineStyle::FooterInput
+                | WrappedLineStyle::PaletteTitle => base.add_modifier(Modifier::BOLD),
+                WrappedLineStyle::ThinkingLabel => {
+                    base.add_modifier(Modifier::BOLD | Modifier::ITALIC)
                 },
-                WrappedLineStyle::User => base.add_modifier(Modifier::REVERSED),
-                WrappedLineStyle::Plain => base,
+                WrappedLineStyle::Muted
+                | WrappedLineStyle::Divider
+                | WrappedLineStyle::FooterStatus
+                | WrappedLineStyle::PaletteMeta => base.add_modifier(Modifier::DIM),
+                _ => base,
             };
         }
 
         match style {
-            WrappedLineStyle::Plain => base.fg(Color::White),
-            WrappedLineStyle::Dim | WrappedLineStyle::Border => {
-                base.fg(self.dim()).add_modifier(Modifier::DIM)
+            WrappedLineStyle::Plain => base.fg(self.text_primary()),
+            WrappedLineStyle::Muted
+            | WrappedLineStyle::Divider
+            | WrappedLineStyle::FooterStatus
+            | WrappedLineStyle::PaletteMeta => base.fg(self.text_muted()),
+            WrappedLineStyle::Accent | WrappedLineStyle::PaletteTitle => {
+                base.fg(self.accent()).add_modifier(Modifier::BOLD)
             },
-            WrappedLineStyle::Footer => base.fg(self.dim()),
-            WrappedLineStyle::Accent => base.fg(self.accent()).add_modifier(Modifier::BOLD),
-            WrappedLineStyle::Success => base.fg(self.success()).add_modifier(Modifier::BOLD),
-            WrappedLineStyle::Warning => base.fg(self.warning()),
-            WrappedLineStyle::Error => base.fg(self.error()).add_modifier(Modifier::BOLD),
-            WrappedLineStyle::User => base.fg(Color::White).bg(match self.capabilities.color {
-                ColorLevel::TrueColor => Color::Rgb(35, 40, 52),
-                _ => Color::Black,
-            }),
             WrappedLineStyle::Selection => base
-                .fg(Color::White)
-                .bg(match self.capabilities.color {
-                    ColorLevel::TrueColor => Color::Rgb(34, 74, 99),
-                    _ => Color::DarkGray,
-                })
+                .fg(self.text_primary())
+                .bg(self.surface_alt())
                 .add_modifier(Modifier::BOLD),
-            WrappedLineStyle::Header => base.fg(self.magenta()).add_modifier(Modifier::BOLD),
+            WrappedLineStyle::UserLabel => base.fg(self.accent_soft()).add_modifier(Modifier::BOLD),
+            WrappedLineStyle::UserBody => base.fg(self.text_primary()),
+            WrappedLineStyle::AssistantLabel => {
+                base.fg(self.text_secondary()).add_modifier(Modifier::BOLD)
+            },
+            WrappedLineStyle::AssistantBody => base.fg(self.text_primary()),
+            WrappedLineStyle::ThinkingLabel => base
+                .fg(self.thinking())
+                .add_modifier(Modifier::ITALIC | Modifier::BOLD),
+            WrappedLineStyle::ThinkingBody => base.fg(self.text_secondary()),
+            WrappedLineStyle::ToolLabel => base.fg(self.accent_soft()).add_modifier(Modifier::BOLD),
+            WrappedLineStyle::ToolBody => base.fg(self.text_secondary()),
+            WrappedLineStyle::ErrorText => base.fg(self.error()).add_modifier(Modifier::BOLD),
+            WrappedLineStyle::FooterInput => {
+                base.fg(self.text_primary()).add_modifier(Modifier::BOLD)
+            },
+            WrappedLineStyle::PaletteItem => base.fg(self.text_primary()),
         }
     }
 
@@ -135,9 +168,5 @@ impl ThemePalette for CodexTheme {
 
     fn divider(&self) -> &'static str {
         self.glyph("─", "-")
-    }
-
-    fn vertical_divider(&self) -> &'static str {
-        self.glyph("│", "|")
     }
 }

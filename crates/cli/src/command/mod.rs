@@ -2,7 +2,7 @@ use astrcode_client::{
     AstrcodeConversationSlashActionKindDto, AstrcodeConversationSlashCandidateDto,
 };
 
-use crate::state::OverlaySelection;
+use crate::state::PaletteSelection;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputAction {
@@ -21,7 +21,7 @@ pub enum Command {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OverlayAction {
+pub enum PaletteAction {
     SwitchSession { session_id: String },
     ReplaceInput { text: String },
     RunCommand(Command),
@@ -42,15 +42,15 @@ pub fn classify_input(input: &str) -> InputAction {
     InputAction::RunCommand(parse_command(trimmed))
 }
 
-pub fn overlay_action(selection: OverlaySelection) -> OverlayAction {
+pub fn palette_action(selection: PaletteSelection) -> PaletteAction {
     match selection {
-        OverlaySelection::ResumeSession(session_id) => OverlayAction::SwitchSession { session_id },
-        OverlaySelection::SlashCandidate(candidate) => match candidate.action_kind {
-            AstrcodeConversationSlashActionKindDto::InsertText => OverlayAction::ReplaceInput {
+        PaletteSelection::ResumeSession(session_id) => PaletteAction::SwitchSession { session_id },
+        PaletteSelection::SlashCandidate(candidate) => match candidate.action_kind {
+            AstrcodeConversationSlashActionKindDto::InsertText => PaletteAction::ReplaceInput {
                 text: candidate.action_value,
             },
             AstrcodeConversationSlashActionKindDto::ExecuteCommand => {
-                OverlayAction::RunCommand(parse_command(candidate.action_value.as_str()))
+                PaletteAction::RunCommand(parse_command(candidate.action_value.as_str()))
             },
         },
     }

@@ -3,23 +3,25 @@ mod debug;
 mod interaction;
 mod render;
 mod shell;
+mod thinking;
 mod transcript_cell;
 
 use std::{path::PathBuf, time::Duration};
 
 use astrcode_client::{
-    AstrcodeConversationChildSummaryDto, AstrcodeConversationErrorEnvelopeDto,
-    AstrcodeConversationSlashCandidateDto, AstrcodeConversationSnapshotResponseDto,
-    AstrcodeConversationStreamEnvelopeDto, AstrcodePhaseDto, AstrcodeSessionListItem,
+    AstrcodeConversationErrorEnvelopeDto, AstrcodeConversationSlashCandidateDto,
+    AstrcodeConversationSnapshotResponseDto, AstrcodeConversationStreamEnvelopeDto,
+    AstrcodePhaseDto, AstrcodeSessionListItem,
 };
 pub use conversation::ConversationState;
 pub use debug::DebugChannelState;
 pub use interaction::{
-    ChildPaneState, ComposerState, DebugOverlayState, InteractionState, OverlaySelection,
-    OverlayState, PaneFocus, ResumeOverlayState, SlashPaletteState, StatusLine,
+    ComposerState, InteractionState, PaletteSelection, PaletteState, PaneFocus, ResumePaletteState,
+    SlashPaletteState, StatusLine,
 };
 pub use render::{RenderState, StreamViewState, TranscriptRenderCache};
 pub use shell::ShellState;
+pub use thinking::{ThinkingPlaybackDriver, ThinkingPresentationState, ThinkingSnippetPool};
 pub use transcript_cell::{TranscriptCell, TranscriptCellKind, TranscriptCellStatus};
 
 use crate::capability::TerminalCapabilities;
@@ -40,16 +42,24 @@ pub struct WrappedLine {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WrappedLineStyle {
     Plain,
-    Dim,
+    Muted,
     Accent,
-    Success,
-    Warning,
-    Error,
-    User,
-    Header,
-    Footer,
+    Divider,
     Selection,
-    Border,
+    UserLabel,
+    UserBody,
+    AssistantLabel,
+    AssistantBody,
+    ThinkingLabel,
+    ThinkingBody,
+    ToolLabel,
+    ToolBody,
+    ErrorText,
+    FooterInput,
+    FooterStatus,
+    PaletteTitle,
+    PaletteItem,
+    PaletteMeta,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -60,6 +70,8 @@ pub struct CliState {
     pub render: RenderState,
     pub stream_view: StreamViewState,
     pub debug: DebugChannelState,
+    pub thinking_pool: ThinkingSnippetPool,
+    pub thinking_playback: ThinkingPlaybackDriver,
 }
 
 impl CliState {
@@ -70,6 +82,8 @@ impl CliState {
     ) -> Self {
         Self {
             shell: ShellState::new(connection_origin, working_dir, capabilities),
+            thinking_pool: ThinkingSnippetPool::default(),
+            thinking_playback: ThinkingPlaybackDriver::default(),
             ..Default::default()
         }
     }
@@ -127,41 +141,46 @@ impl CliState {
     }
 
     pub fn cycle_focus_forward(&mut self) {
-        self.interaction
-            .cycle_focus_forward(!self.conversation.child_summaries.is_empty());
+        self.interaction.cycle_focus_forward();
     }
 
     pub fn cycle_focus_backward(&mut self) {
-        self.interaction
-            .cycle_focus_backward(!self.conversation.child_summaries.is_empty());
+        self.interaction.cycle_focus_backward();
     }
 
-    pub fn child_next(&mut self) {
+    pub fn transcript_next(&mut self) {
         self.interaction
-            .child_next(self.conversation.child_summaries.len());
+            .transcript_next(self.conversation.transcript_cells.len());
     }
 
-    pub fn child_prev(&mut self) {
+    pub fn transcript_prev(&mut self) {
         self.interaction
-            .child_prev(self.conversation.child_summaries.len());
+            .transcript_prev(self.conversation.transcript_cells.len());
     }
 
-    pub fn toggle_child_focus(&mut self) {
-        let selected_child_session_id = self
-            .selected_child_summary()
-            .map(|summary| summary.child_session_id.clone());
-        self.interaction
-            .toggle_child_focus(selected_child_session_id.as_deref());
-    }
-
-    pub fn selected_child_summary(&self) -> Option<&AstrcodeConversationChildSummaryDto> {
+    pub fn selected_transcript_cell(&self) -> Option<&TranscriptCell> {
         self.conversation
-            .selected_child_summary(&self.interaction.child_pane)
+            .transcript_cells
+            .get(self.interaction.transcript.selected_cell)
     }
 
-    pub fn focused_child_summary(&self) -> Option<&AstrcodeConversationChildSummaryDto> {
-        self.conversation
-            .focused_child_summary(&self.interaction.child_pane)
+    pub fn is_cell_expanded(&self, cell_id: &str) -> bool {
+        self.interaction.is_cell_expanded(cell_id)
+    }
+
+    pub fn selected_cell_is_thinking(&self) -> bool {
+        self.selected_transcript_cell()
+            .is_some_and(|cell| matches!(cell.kind, TranscriptCellKind::Thinking { .. }))
+    }
+
+    pub fn toggle_selected_cell_expanded(&mut self) {
+        if let Some(cell_id) = self.selected_transcript_cell().map(|cell| cell.id.clone()) {
+            self.interaction.toggle_cell_expanded(cell_id.as_str());
+        }
+    }
+
+    pub fn clear_surface_state(&mut self) {
+        self.interaction.clear_surface_state();
     }
 
     pub fn update_sessions(&mut self, sessions: Vec<AstrcodeSessionListItem>) {
@@ -175,7 +194,7 @@ impl CliState {
         query: impl Into<String>,
         items: Vec<AstrcodeSessionListItem>,
     ) {
-        self.interaction.set_resume_query(query, items);
+        self.interaction.set_resume_palette(query, items);
     }
 
     pub fn set_slash_query(
@@ -183,56 +202,48 @@ impl CliState {
         query: impl Into<String>,
         items: Vec<AstrcodeConversationSlashCandidateDto>,
     ) {
-        self.interaction.set_slash_query(query, items);
+        self.interaction.set_slash_palette(query, items);
     }
 
-    pub fn overlay_query_push(&mut self, ch: char) {
-        self.interaction.overlay_query_push(ch);
+    pub fn close_palette(&mut self) {
+        self.interaction.close_palette();
     }
 
-    pub fn overlay_query_append(&mut self, value: &str) {
-        self.interaction.overlay_query_append(value);
+    pub fn palette_next(&mut self) {
+        self.interaction.palette_next();
     }
 
-    pub fn overlay_query_pop(&mut self) {
-        self.interaction.overlay_query_pop();
+    pub fn palette_prev(&mut self) {
+        self.interaction.palette_prev();
     }
 
-    pub fn close_overlay(&mut self) {
-        self.interaction.close_overlay();
-    }
-
-    pub fn overlay_next(&mut self) {
-        self.interaction.overlay_next();
-    }
-
-    pub fn overlay_prev(&mut self) {
-        self.interaction.overlay_prev();
-    }
-
-    pub fn selected_overlay(&self) -> Option<OverlaySelection> {
-        self.interaction.selected_overlay()
+    pub fn selected_palette(&self) -> Option<PaletteSelection> {
+        self.interaction.selected_palette()
     }
 
     pub fn activate_snapshot(&mut self, snapshot: AstrcodeConversationSnapshotResponseDto) {
         self.conversation
             .activate_snapshot(snapshot, &mut self.render);
         self.interaction.reset_for_snapshot();
+        self.interaction
+            .sync_transcript_cells(self.conversation.transcript_cells.len());
+        self.thinking_playback
+            .sync_session(self.conversation.active_session_id.as_deref());
     }
 
     pub fn apply_stream_envelope(&mut self, envelope: AstrcodeConversationStreamEnvelopeDto) {
-        self.conversation.apply_stream_envelope(
-            envelope,
-            &mut self.render,
-            &mut self.interaction.child_pane,
-        );
+        let expanded_ids = self.interaction.transcript.expanded_cells.clone();
+        self.conversation
+            .apply_stream_envelope(envelope, &mut self.render, &expanded_ids);
+        self.interaction
+            .sync_transcript_cells(self.conversation.transcript_cells.len());
         self.interaction
             .sync_slash_items(self.conversation.slash_candidates.clone());
     }
 
     pub fn set_banner_error(&mut self, error: AstrcodeConversationErrorEnvelopeDto) {
         self.conversation.set_banner_error(error);
-        self.interaction.pane_focus = PaneFocus::Composer;
+        self.interaction.set_focus(PaneFocus::Composer);
     }
 
     pub fn clear_banner(&mut self) {
@@ -247,8 +258,19 @@ impl CliState {
         self.debug.push(line);
     }
 
-    pub fn toggle_debug_overlay(&mut self) {
-        self.interaction.toggle_debug_overlay();
+    pub fn advance_thinking_playback(&mut self) {
+        if self.conversation.transcript_cells.iter().any(|cell| {
+            matches!(
+                cell.kind,
+                TranscriptCellKind::Thinking {
+                    status: TranscriptCellStatus::Streaming,
+                    ..
+                }
+            )
+        }) {
+            self.thinking_playback.advance();
+            self.render.invalidate_transcript_cache();
+        }
     }
 }
 
@@ -363,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_selection_tracks_resume_and_slash_items() {
+    fn palette_selection_tracks_resume_and_slash_items() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.set_slash_query(
             "review",
@@ -378,11 +400,11 @@ mod tests {
         );
 
         assert!(matches!(
-            state.selected_overlay(),
-            Some(OverlaySelection::SlashCandidate(_))
+            state.selected_palette(),
+            Some(PaletteSelection::SlashCandidate(_))
         ));
-        state.close_overlay();
-        assert!(matches!(state.interaction.overlay, OverlayState::None));
+        state.set_resume_query("repo", Vec::new());
+        assert!(matches!(state.interaction.palette, PaletteState::Resume(_)));
     }
 
     #[test]
@@ -417,13 +439,18 @@ mod tests {
     }
 
     #[test]
-    fn activating_snapshot_resets_transcript_follow_state() {
+    fn ticking_advances_streaming_thinking() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
-        state.scroll_up();
-
-        state.activate_snapshot(sample_snapshot());
-
-        assert_eq!(state.interaction.scroll_anchor, 0);
-        assert!(state.interaction.follow_transcript_tail);
+        state.conversation.transcript_cells.push(TranscriptCell {
+            id: "thinking-1".to_string(),
+            expanded: false,
+            kind: TranscriptCellKind::Thinking {
+                body: "".to_string(),
+                status: TranscriptCellStatus::Streaming,
+            },
+        });
+        let frame = state.thinking_playback.frame;
+        state.advance_thinking_playback();
+        assert!(state.thinking_playback.frame > frame);
     }
 }
