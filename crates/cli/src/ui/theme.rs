@@ -144,9 +144,7 @@ impl ThemePalette for CodexTheme {
             | WrappedLineStyle::FooterHint
             | WrappedLineStyle::HeroMuted
             | WrappedLineStyle::ThinkingPreview => base.fg(self.text_muted()),
-            WrappedLineStyle::HeroTitle => {
-                base.fg(self.accent()).add_modifier(Modifier::BOLD)
-            },
+            WrappedLineStyle::HeroTitle => base.fg(self.accent()).add_modifier(Modifier::BOLD),
             WrappedLineStyle::HeroBorder => base.fg(self.accent_soft()),
             WrappedLineStyle::HeroBody => base.fg(self.text_primary()),
             WrappedLineStyle::HeroFeedTitle => {
