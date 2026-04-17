@@ -9,9 +9,11 @@ pub fn test_tool_context_for(path: impl Into<PathBuf>) -> ToolContext {
     let session_storage_root = cwd.join(".astrcode-test-state");
     ToolContext::new("session-test".to_string().into(), cwd, CancelToken::new())
         .with_session_storage_root(session_storage_root)
-        // 测试上下文使用 100KB 内联阈值，与 readFile 的 max_result_inline_size(100_000) 对齐。
-        // 避免工具测试中 readFile 二次持久化已持久化的 grep 结果。
-        .with_resolved_inline_limit(100_000)
+        // 测试上下文把 readFile 的最终内联阈值抬高到 1MB。
+        // grep 等工具仍使用各自固定的持久化阈值，所以大结果会按预期先落盘；
+        // 但后续 readFile 读取这些持久化文件时，不应因为临时目录路径更长等环境差异
+        // 再次被持久化，导致测试对输出形态出现非确定性。
+        .with_resolved_inline_limit(1_000_000)
 }
 
 pub fn canonical_tool_path(path: impl AsRef<Path>) -> PathBuf {
