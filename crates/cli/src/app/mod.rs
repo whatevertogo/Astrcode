@@ -499,15 +499,15 @@ where
                     self.state.clear_surface_state();
                 }
             },
-            KeyCode::Left => {
-                if !matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) {
-                    self.state.move_cursor_left();
-                }
+            KeyCode::Left
+                if !matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) =>
+            {
+                self.state.move_cursor_left();
             },
-            KeyCode::Right => {
-                if !matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) {
-                    self.state.move_cursor_right();
-                }
+            KeyCode::Right
+                if !matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) =>
+            {
+                self.state.move_cursor_right();
             },
             KeyCode::Home => {
                 if matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) {

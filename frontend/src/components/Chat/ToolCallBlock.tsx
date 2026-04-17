@@ -1,4 +1,4 @@
-import { memo, useRef } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 
 import type { ToolCallMessage } from '../../types';
 import {
@@ -106,11 +106,22 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
     message.error?.trim() || message.output?.trim() || metadataSummary?.message?.trim() || '';
   const structuredFallbackResult = extractStructuredJsonOutput(fallbackResult);
   const defaultOpen = message.status === 'fail';
+  const explicitError = message.error?.trim() || '';
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    if (message.status === 'fail') {
+      setIsOpen(true);
+    }
+  }, [message.status]);
 
   return (
     <details
       className="group mb-2 ml-[var(--chat-assistant-content-offset)] block min-w-0 max-w-full animate-block-enter motion-reduce:animate-none"
-      open={defaultOpen}
+      open={isOpen}
+      onToggle={(event) => {
+        setIsOpen(event.currentTarget.open);
+      }}
     >
       <summary className="flex min-w-0 cursor-pointer items-center gap-2 py-1.5 font-mono text-[13px] leading-relaxed text-text-secondary list-none [&::-webkit-details-marker]:hidden hover:opacity-85">
         <span className={cn('shrink-0', statusPill(message.status))}>{message.toolName}</span>
@@ -157,29 +168,45 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
         >
           <div className="flex min-w-0 flex-col gap-3">
             {streamSections.length > 0 ? (
-              streamSections.map((streamMessage) => (
-                <section key={streamMessage.id} className="flex min-w-0 flex-col gap-2">
-                  <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className={streamBadge(streamMessage.stream)}>
-                        {streamTitle(
-                          message.toolName,
-                          streamMessage.stream,
-                          Boolean(shellDisplay?.command)
-                        )}
-                      </span>
-                      <span className="truncate font-mono text-text-muted">
-                        {streamMessage.stream === 'stderr' ? '错误输出' : '工具结果'}
-                      </span>
+              <>
+                {streamSections.map((streamMessage) => (
+                  <section key={streamMessage.id} className="flex min-w-0 flex-col gap-2">
+                    <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className={streamBadge(streamMessage.stream)}>
+                          {streamTitle(
+                            message.toolName,
+                            streamMessage.stream,
+                            Boolean(shellDisplay?.command)
+                          )}
+                        </span>
+                        <span className="truncate font-mono text-text-muted">
+                          {streamMessage.stream === 'stderr' ? '错误输出' : '工具结果'}
+                        </span>
+                      </div>
+                      <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
                     </div>
-                    <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
-                  </div>
-                  {resultTextSurface(
-                    streamMessage.content,
-                    streamMessage.stream === 'stderr' ? 'error' : 'normal'
-                  )}
-                </section>
-              ))
+                    {resultTextSurface(
+                      streamMessage.content,
+                      streamMessage.stream === 'stderr' ? 'error' : 'normal'
+                    )}
+                  </section>
+                ))}
+                {explicitError && (
+                  <section className="flex min-w-0 flex-col gap-2">
+                    <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className={cn('shrink-0', pillDanger)}>错误</span>
+                        <span className="truncate font-mono text-text-muted">
+                          {shellDisplay?.command ? `$ ${shellDisplay.command}` : message.toolName}
+                        </span>
+                      </div>
+                      <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
+                    </div>
+                    {resultTextSurface(explicitError, 'error')}
+                  </section>
+                )}
+              </>
             ) : fallbackResult ? (
               structuredFallbackResult ? (
                 <section className="flex min-w-0 flex-col gap-2">

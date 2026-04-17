@@ -170,4 +170,33 @@ describe('ToolCallBlock', () => {
     expect(html).toContain('truncated');
     expect(html).toContain('失败');
   });
+
+  it('renders explicit tool error even when stdout is present', () => {
+    const html = renderToStaticMarkup(
+      <ChatScreenProvider value={chatContextValue}>
+        <ToolCallBlock
+          message={{
+            id: 'tool-call-5',
+            kind: 'toolCall',
+            toolCallId: 'call-5',
+            toolName: 'shell',
+            status: 'fail',
+            args: {
+              command: 'cargo test',
+            },
+            error: 'command exited with code 101',
+            streams: {
+              stdout: 'Compiling crate...\n',
+              stderr: '',
+            },
+            timestamp: Date.now(),
+          }}
+        />
+      </ChatScreenProvider>
+    );
+
+    expect(html).toContain('Compiling crate...');
+    expect(html).toContain('command exited with code 101');
+    expect(html).toContain('错误');
+  });
 });

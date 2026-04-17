@@ -4,6 +4,7 @@ import type { UnknownRecord } from '../../lib/shared';
 import { useNestedScrollContainment } from './useNestedScrollContainment';
 
 const MAX_CHILDREN_PER_NODE = 200;
+const MAX_STRING_PREVIEW_CHARS = 320;
 
 interface ToolJsonViewProps {
   value: UnknownRecord | unknown[];
@@ -30,12 +31,39 @@ function summarizeContainer(value: UnknownRecord | unknown[]): string {
   return `Object (${Object.keys(value).length})`;
 }
 
+export function summarizeLongString(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return '(empty string)';
+  }
+
+  if (normalized.length <= MAX_STRING_PREVIEW_CHARS) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, MAX_STRING_PREVIEW_CHARS)}...`;
+}
+
 function renderPrimitiveValue(value: unknown): ReactNode {
   if (value === null) {
     return <span className="text-text-secondary">null</span>;
   }
 
   if (typeof value === 'string') {
+    if (value.length > MAX_STRING_PREVIEW_CHARS) {
+      return (
+        <details className="group min-w-0 max-w-full">
+          <summary className="cursor-pointer list-none text-json-string [&::-webkit-details-marker]:hidden">
+            &quot;{summarizeLongString(value)}&quot;
+            <span className="ml-2 text-[11px] text-text-muted">展开完整内容 ({value.length})</span>
+          </summary>
+          <div className="mt-2 rounded-md border border-code-border bg-code-surface px-3 py-2 text-json-string">
+            <span className="whitespace-pre-wrap overflow-wrap-anywhere">&quot;{value}&quot;</span>
+          </div>
+        </details>
+      );
+    }
+
     return (
       <span className="whitespace-pre-wrap overflow-wrap-anywhere text-json-string">
         &quot;{value}&quot;

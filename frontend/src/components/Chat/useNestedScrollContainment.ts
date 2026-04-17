@@ -1,6 +1,24 @@
 import { useEffect } from 'react';
 import type { RefObject } from 'react';
 
+export type NestedScrollContainmentMode = 'contain' | 'bubble';
+
+export function resolveNestedScrollContainmentMode(
+  scrollTop: number,
+  clientHeight: number,
+  scrollHeight: number,
+  deltaY: number
+): NestedScrollContainmentMode {
+  const canScroll = scrollHeight > clientHeight + 1;
+  if (!canScroll || deltaY === 0) {
+    return 'bubble';
+  }
+
+  const atTop = scrollTop <= 0 && deltaY < 0;
+  const atBottom = scrollTop + clientHeight >= scrollHeight - 1 && deltaY > 0;
+  return atTop || atBottom ? 'bubble' : 'contain';
+}
+
 export function useNestedScrollContainment<T extends HTMLElement>(ref: RefObject<T | null>) {
   useEffect(() => {
     const container = ref.current;
@@ -9,22 +27,18 @@ export function useNestedScrollContainment<T extends HTMLElement>(ref: RefObject
     }
 
     const onWheel = (event: WheelEvent) => {
-      const canScroll = container.scrollHeight > container.clientHeight + 1;
-      if (!canScroll) {
+      if (
+        resolveNestedScrollContainmentMode(
+          container.scrollTop,
+          container.clientHeight,
+          container.scrollHeight,
+          event.deltaY
+        ) !== 'contain'
+      ) {
         return;
       }
 
-      const atTop = container.scrollTop <= 0 && event.deltaY < 0;
-      const atBottom =
-        container.scrollTop + container.clientHeight >= container.scrollHeight - 1 &&
-        event.deltaY > 0;
-
-      if (!atTop && !atBottom) {
-        event.stopPropagation();
-        return;
-      }
-
-      event.preventDefault();
+      event.stopPropagation();
     };
 
     container.addEventListener('wheel', onWheel, { passive: false });
