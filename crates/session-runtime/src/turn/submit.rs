@@ -381,8 +381,7 @@ impl SessionRuntime {
         }
 
         let requested_session_id = SessionId::from(crate::state::normalize_session_id(session_id));
-        let turn_id = turn_id
-            .unwrap_or_else(|| TurnId::from(format!("turn-{}", Utc::now().timestamp_millis())));
+        let turn_id = turn_id.unwrap_or_else(|| TurnId::from(astrcode_core::generate_turn_id()));
         let cancel = CancelToken::new();
         let submit_target = match busy_policy {
             SubmitBusyPolicy::BranchOnBusy => Some(

@@ -83,62 +83,89 @@ fn horizontal_card(context: &HeroContext<'_>) -> Vec<WrappedLine> {
     let left_width = (inner_width / 2).clamp(24, 38);
     let right_width = inner_width.saturating_sub(left_width + 1);
 
-    let mut rows = vec![
-        two_col_row(
-            "Welcome back!",
-            "使用提示",
-            left_width,
-            right_width,
-            WrappedLineStyle::HeroTitle,
-        ),
-        two_col_row(
-            context.session_title,
-            "输入 / 打开 commands",
-            left_width,
-            right_width,
-            WrappedLineStyle::HeroBody,
-        ),
-        two_col_row(
-            "      /\\_/\\\\",
+    let mut rows = Vec::new();
+    push_two_col_block(
+        &mut rows,
+        &[String::from("Welcome back!")],
+        &[String::from("使用提示")],
+        left_width,
+        right_width,
+        context.theme,
+        WrappedLineStyle::HeroTitle,
+    );
+    push_two_col_block(
+        &mut rows,
+        &wrap_text(context.session_title, left_width, context.capabilities),
+        &wrap_text("输入 / 打开 commands", right_width, context.capabilities),
+        left_width,
+        right_width,
+        context.theme,
+        WrappedLineStyle::HeroBody,
+    );
+    push_two_col_block(
+        &mut rows,
+        &[String::from("      /\\_/\\\\")],
+        &wrap_text(
             "Tab 在 transcript / composer 间切换",
-            left_width,
             right_width,
-            WrappedLineStyle::HeroBody,
+            context.capabilities,
         ),
-        two_col_row(
-            "   .-\"     \"-.",
+        left_width,
+        right_width,
+        context.theme,
+        WrappedLineStyle::HeroBody,
+    );
+    push_two_col_block(
+        &mut rows,
+        &[String::from("   .-\"     \"-.")],
+        &wrap_text(
             "Ctrl+O 展开或收起 thinking",
-            left_width,
             right_width,
-            WrappedLineStyle::HeroBody,
+            context.capabilities,
         ),
-        two_col_row(
-            format!("phase · {}", context.phase).as_str(),
-            "最近活动",
-            left_width,
-            right_width,
-            WrappedLineStyle::HeroFeedTitle,
-        ),
-    ];
+        left_width,
+        right_width,
+        context.theme,
+        WrappedLineStyle::HeroBody,
+    );
+    push_two_col_block(
+        &mut rows,
+        &[format!("phase · {}", context.phase)],
+        &[String::from("最近活动")],
+        left_width,
+        right_width,
+        context.theme,
+        WrappedLineStyle::HeroFeedTitle,
+    );
 
     let cwd_lines = wrap_text(context.working_dir, left_width, context.capabilities);
     let activity_lines = if context.recent_sessions.is_empty() {
-        vec!["暂无最近会话".to_string(), "/resume 查看更多".to_string()]
+        wrap_text("暂无最近会话", right_width, context.capabilities)
     } else {
-        let mut items = context.recent_sessions.to_vec();
-        items.push("/resume 查看更多".to_string());
-        items
+        context
+            .recent_sessions
+            .iter()
+            .flat_map(|item| wrap_text(item, right_width, context.capabilities))
+            .collect::<Vec<_>>()
     };
-    let line_count = cwd_lines.len().max(activity_lines.len());
-    for index in 0..line_count {
-        rows.push(two_col_row(
-            cwd_lines.get(index).map(String::as_str).unwrap_or(""),
-            activity_lines.get(index).map(String::as_str).unwrap_or(""),
-            left_width,
-            right_width,
-            WrappedLineStyle::HeroMuted,
-        ));
-    }
+    push_two_col_block(
+        &mut rows,
+        &cwd_lines,
+        &activity_lines,
+        left_width,
+        right_width,
+        context.theme,
+        WrappedLineStyle::HeroMuted,
+    );
+    push_two_col_block(
+        &mut rows,
+        &[String::new()],
+        &wrap_text("/resume 查看更多", right_width, context.capabilities),
+        left_width,
+        right_width,
+        context.theme,
+        WrappedLineStyle::HeroMuted,
+    );
 
     framed_rows(rows, context.width, context.title, context.theme)
 }
@@ -235,15 +262,40 @@ fn two_col_row(
     right: &str,
     left_width: usize,
     right_width: usize,
+    theme: &dyn ThemePalette,
     style: WrappedLineStyle,
 ) -> WrappedLine {
+    let divider = theme.glyph("│", "|");
     WrappedLine {
         style,
         content: format!(
-            "{}│{}",
+            "{}{}{}",
             pad_to_width(left, left_width),
+            divider,
             pad_to_width(right, right_width)
         ),
+    }
+}
+
+fn push_two_col_block(
+    rows: &mut Vec<WrappedLine>,
+    left_lines: &[String],
+    right_lines: &[String],
+    left_width: usize,
+    right_width: usize,
+    theme: &dyn ThemePalette,
+    style: WrappedLineStyle,
+) {
+    let line_count = left_lines.len().max(right_lines.len()).max(1);
+    for index in 0..line_count {
+        rows.push(two_col_row(
+            left_lines.get(index).map(String::as_str).unwrap_or(""),
+            right_lines.get(index).map(String::as_str).unwrap_or(""),
+            left_width,
+            right_width,
+            theme,
+            style,
+        ));
     }
 }
 

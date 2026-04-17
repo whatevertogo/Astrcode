@@ -52,9 +52,9 @@ impl ConversationState {
         envelope: AstrcodeConversationStreamEnvelopeDto,
         render: &mut RenderState,
         expanded_ids: &BTreeSet<String>,
-    ) {
+    ) -> bool {
         self.cursor = Some(envelope.cursor);
-        self.apply_delta(envelope.delta, render, expanded_ids);
+        self.apply_delta(envelope.delta, render, expanded_ids)
     }
 
     pub fn set_banner_error(&mut self, error: AstrcodeConversationErrorEnvelopeDto) {
@@ -74,7 +74,7 @@ impl ConversationState {
         delta: AstrcodeConversationDeltaDto,
         render: &mut RenderState,
         _expanded_ids: &BTreeSet<String>,
-    ) {
+    ) -> bool {
         match delta {
             AstrcodeConversationDeltaDto::AppendBlock { block } => {
                 self.transcript.push(block);
@@ -83,6 +83,7 @@ impl ConversationState {
                         .insert(block_id_of(block).to_string(), self.transcript.len() - 1);
                 }
                 render.invalidate_transcript_cache();
+                false
             },
             AstrcodeConversationDeltaDto::PatchBlock { block_id, patch } => {
                 if let Some((index, block)) = self.find_block_mut(block_id.as_str()) {
@@ -92,6 +93,7 @@ impl ConversationState {
                 } else {
                     debug_missing_block("patch", block_id.as_str());
                 }
+                false
             },
             AstrcodeConversationDeltaDto::CompleteBlock { block_id, status } => {
                 if let Some((index, block)) = self.find_block_mut(block_id.as_str()) {
@@ -101,10 +103,12 @@ impl ConversationState {
                 } else {
                     debug_missing_block("complete", block_id.as_str());
                 }
+                false
             },
             AstrcodeConversationDeltaDto::UpdateControlState { control } => {
                 self.control = Some(control);
                 render.invalidate_transcript_cache();
+                false
             },
             AstrcodeConversationDeltaDto::UpsertChildSummary { child } => {
                 if let Some(existing) = self
@@ -116,24 +120,30 @@ impl ConversationState {
                 } else {
                     self.child_summaries.push(child);
                 }
+                false
             },
             AstrcodeConversationDeltaDto::RemoveChildSummary { child_session_id } => {
                 self.child_summaries
                     .retain(|child| child.child_session_id != child_session_id);
+                false
             },
             AstrcodeConversationDeltaDto::ReplaceSlashCandidates { candidates } => {
                 self.slash_candidates = candidates;
+                true
             },
             AstrcodeConversationDeltaDto::SetBanner { banner } => {
                 self.banner = Some(banner);
                 render.invalidate_transcript_cache();
+                false
             },
             AstrcodeConversationDeltaDto::ClearBanner => {
                 self.banner = None;
                 render.invalidate_transcript_cache();
+                false
             },
             AstrcodeConversationDeltaDto::RehydrateRequired { error } => {
                 self.set_banner_error(error);
+                false
             },
         }
     }
@@ -160,6 +170,16 @@ impl ConversationState {
             .iter()
             .map(|block| TranscriptCell::from_block(block, expanded_ids))
             .collect()
+    }
+
+    pub fn project_transcript_cell(
+        &self,
+        index: usize,
+        expanded_ids: &BTreeSet<String>,
+    ) -> Option<TranscriptCell> {
+        self.transcript
+            .get(index)
+            .map(|block| TranscriptCell::from_block(block, expanded_ids))
     }
 }
 

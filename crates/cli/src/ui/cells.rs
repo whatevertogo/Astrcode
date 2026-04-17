@@ -125,23 +125,38 @@ fn render_message(
     view: &TranscriptCellView,
     is_user: bool,
 ) -> Vec<WrappedLine> {
-    let wrapped = wrap_text(body, width.saturating_sub(4), capabilities);
+    let first_prefix = format!(
+        "{} ",
+        if is_user {
+            prompt_marker(theme)
+        } else {
+            assistant_marker(theme)
+        }
+    );
+    let subsequent_prefix = " ".repeat(display_width(first_prefix.as_str()));
+    let wrapped = wrap_text(
+        body,
+        width.saturating_sub(display_width(first_prefix.as_str())),
+        capabilities,
+    );
+    let style = view.resolve_style(if is_user {
+        WrappedLineStyle::PromptEcho
+    } else {
+        WrappedLineStyle::Plain
+    });
     let mut lines = Vec::new();
     for (index, line) in wrapped.into_iter().enumerate() {
-        let prefix = if is_user {
-            prompt_marker(theme)
-        } else if index == 0 {
-            assistant_marker(theme)
-        } else {
-            "  "
-        };
         lines.push(WrappedLine {
-            style: view.resolve_style(if is_user {
-                WrappedLineStyle::PromptEcho
-            } else {
-                WrappedLineStyle::Plain
-            }),
-            content: format!("{prefix} {line}"),
+            style,
+            content: format!(
+                "{}{}",
+                if index == 0 {
+                    first_prefix.as_str()
+                } else {
+                    subsequent_prefix.as_str()
+                },
+                line
+            ),
         });
     }
     lines.push(blank_line());
@@ -342,7 +357,7 @@ fn assistant_marker(theme: &dyn ThemePalette) -> &'static str {
 }
 
 fn thinking_marker(theme: &dyn ThemePalette) -> &'static str {
-    theme.glyph("∴", "*")
+    theme.glyph("∴", "~")
 }
 
 fn thinking_preview_prefix(theme: &dyn ThemePalette) -> &'static str {
@@ -350,7 +365,7 @@ fn thinking_preview_prefix(theme: &dyn ThemePalette) -> &'static str {
 }
 
 fn tool_marker(theme: &dyn ThemePalette) -> &'static str {
-    theme.glyph("↳", "-")
+    theme.glyph("↳", "=")
 }
 
 fn secondary_marker(theme: &dyn ThemePalette) -> &'static str {
@@ -829,13 +844,30 @@ fn display_width(text: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_text;
-    use crate::capability::{ColorLevel, GlyphMode, TerminalCapabilities};
+    use super::{
+        RenderableCell, TranscriptCellView, assistant_marker, secondary_marker, thinking_marker,
+        tool_marker, wrap_text,
+    };
+    use crate::{
+        capability::{ColorLevel, GlyphMode, TerminalCapabilities},
+        state::{TranscriptCell, TranscriptCellKind, TranscriptCellStatus},
+        ui::CodexTheme,
+    };
 
     fn unicode_capabilities() -> TerminalCapabilities {
         TerminalCapabilities {
             color: ColorLevel::TrueColor,
             glyphs: GlyphMode::Unicode,
+            alt_screen: false,
+            mouse: false,
+            bracketed_paste: false,
+        }
+    }
+
+    fn ascii_capabilities() -> TerminalCapabilities {
+        TerminalCapabilities {
+            color: ColorLevel::None,
+            glyphs: GlyphMode::Ascii,
             alt_screen: false,
             mouse: false,
             bracketed_paste: false,
@@ -873,5 +905,64 @@ mod tests {
         );
         assert!(lines.iter().any(|line| line.contains("| 工具")));
         assert!(lines.iter().any(|line| line.contains("---")));
+    }
+
+    #[test]
+    fn ascii_markers_remain_distinct_by_cell_type() {
+        let theme = CodexTheme::new(ascii_capabilities());
+        assert_ne!(assistant_marker(&theme), thinking_marker(&theme));
+        assert_ne!(tool_marker(&theme), secondary_marker(&theme));
+    }
+
+    #[test]
+    fn assistant_wrapped_lines_use_hanging_indent() {
+        let theme = CodexTheme::new(unicode_capabilities());
+        let cell = TranscriptCell {
+            id: "assistant-1".to_string(),
+            expanded: false,
+            kind: TranscriptCellKind::Assistant {
+                body: "你好！我是 AstrCode，你的本地 AI \
+                       编码助手。我可以帮你处理代码编写、文件编辑、终端命令、\
+                       代码审查等各种开发任务。"
+                    .to_string(),
+                status: TranscriptCellStatus::Complete,
+            },
+        };
+
+        let lines = cell.render_lines(
+            36,
+            unicode_capabilities(),
+            &theme,
+            &TranscriptCellView::default(),
+        );
+
+        assert!(lines.len() >= 3);
+        assert!(lines[0].content.starts_with("• "));
+        assert!(lines[1].content.starts_with("  "));
+        assert!(!lines[1].content.starts_with("   "));
+    }
+
+    #[test]
+    fn assistant_rendering_preserves_markdown_line_breaks() {
+        let theme = CodexTheme::new(unicode_capabilities());
+        let cell = TranscriptCell {
+            id: "assistant-2".to_string(),
+            expanded: false,
+            kind: TranscriptCellKind::Assistant {
+                body: "你好！\n\n- 第一项\n- 第二项".to_string(),
+                status: TranscriptCellStatus::Complete,
+            },
+        };
+
+        let lines = cell.render_lines(
+            36,
+            unicode_capabilities(),
+            &theme,
+            &TranscriptCellView::default(),
+        );
+
+        assert!(lines.iter().any(|line| line.content == "  "));
+        assert!(lines.iter().any(|line| line.content.contains("- 第一项")));
+        assert!(lines.iter().any(|line| line.content.contains("- 第二项")));
     }
 }

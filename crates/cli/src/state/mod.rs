@@ -207,9 +207,10 @@ impl CliState {
     }
 
     pub fn selected_transcript_cell(&self) -> Option<TranscriptCell> {
-        self.transcript_cells()
-            .into_iter()
-            .nth(self.interaction.transcript.selected_cell)
+        self.conversation.project_transcript_cell(
+            self.interaction.transcript.selected_cell,
+            &self.interaction.transcript.expanded_cells,
+        )
     }
 
     pub fn is_cell_expanded(&self, cell_id: &str) -> bool {
@@ -301,15 +302,20 @@ impl CliState {
 
     pub fn apply_stream_envelope(&mut self, envelope: AstrcodeConversationStreamEnvelopeDto) {
         let expanded_ids = &self.interaction.transcript.expanded_cells;
-        self.conversation
-            .apply_stream_envelope(envelope, &mut self.render, expanded_ids);
+        let slash_candidates_changed =
+            self.conversation
+                .apply_stream_envelope(envelope, &mut self.render, expanded_ids);
         self.interaction
             .sync_transcript_cells(self.conversation.transcript.len());
-        self.interaction
-            .sync_slash_items(self.conversation.slash_candidates.clone());
+        if slash_candidates_changed {
+            self.interaction
+                .sync_slash_items(self.conversation.slash_candidates.clone());
+        }
         self.render.invalidate_transcript_cache();
         self.render.mark_footer_dirty();
-        self.render.mark_palette_dirty();
+        if slash_candidates_changed {
+            self.render.mark_palette_dirty();
+        }
     }
 
     pub fn set_banner_error(&mut self, error: AstrcodeConversationErrorEnvelopeDto) {

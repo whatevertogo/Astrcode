@@ -48,6 +48,16 @@ pub fn generate_session_id() -> String {
     format!("{dt}-{short}")
 }
 
+/// 生成全局唯一的 turn ID。
+///
+/// turn 会在极短时间内连续创建，单纯依赖毫秒时间戳会撞 ID，
+/// 从而让后续提交错误复用前一个 turn 的终态快照。
+pub fn generate_turn_id() -> String {
+    let uuid = Uuid::new_v4().simple().to_string();
+    let short = &uuid[..8];
+    format!("turn-{}-{short}", Utc::now().timestamp_millis())
+}
+
 /// 会话元数据
 ///
 /// 包含会话的基本信息和当前状态，用于会话列表展示。

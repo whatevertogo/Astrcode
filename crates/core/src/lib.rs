@@ -101,7 +101,7 @@ pub use error::{AstrError, Result, ResultExt};
 pub use event::{
     AgentEvent, CompactAppliedMeta, CompactMode, CompactTrigger, EventTranslator, Phase,
     PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent, generate_session_id,
-    normalize_recovered_phase, phase_of_storage_event, replay_records,
+    generate_turn_id, normalize_recovered_phase, phase_of_storage_event, replay_records,
 };
 pub use execution_control::ExecutionControl;
 pub use execution_result::ExecutionResultCommon;
