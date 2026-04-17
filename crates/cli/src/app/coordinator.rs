@@ -41,6 +41,9 @@ where
                     self.state.set_error_status("no active session");
                     return;
                 };
+                // 新一轮对话开始时恢复 transcript 跟随尾部，避免旧的手动滚动状态
+                // 把新回复固定在历史位置，看起来像“后半段没渲染”。
+                self.state.resume_transcript_tail();
                 self.state.set_status("submitting prompt");
                 let client = self.client.clone();
                 self.dispatch_async(async move {

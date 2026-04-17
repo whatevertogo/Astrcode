@@ -1186,6 +1186,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submitting_prompt_restores_transcript_tail_follow_mode() {
+        let transport = MockTransport::default();
+        transport.push(MockCall::Request {
+            expected: AstrcodeTransportRequest {
+                method: AstrcodeTransportMethod::Post,
+                url: "http://localhost:5529/api/sessions/session-1/prompts".to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: Some(json!({
+                    "text": "hello"
+                })),
+            },
+            result: Ok(AstrcodeTransportResponse {
+                status: 202,
+                body: json!({
+                    "sessionId": "session-1",
+                    "accepted": true,
+                    "turnId": "turn-1"
+                })
+                .to_string(),
+            }),
+        });
+
+        let (actions_tx, actions_rx) = mpsc::unbounded_channel();
+        let mut controller = AppController::new(
+            client_with_transport(transport.clone()),
+            CliState::new(
+                "http://localhost:5529".to_string(),
+                Some(PathBuf::from("D:/repo-a")),
+                ascii_capabilities(),
+            ),
+            None,
+            AppControllerChannels::new(actions_tx, actions_rx),
+        );
+        controller.state.conversation.active_session_id = Some("session-1".to_string());
+        controller.state.scroll_up_by(6);
+        controller.state.replace_input("hello");
+
+        controller.submit_current_input().await;
+
+        assert_eq!(controller.state.interaction.scroll_anchor, 0);
+        assert!(controller.state.interaction.follow_transcript_tail);
+
+        handle_next_action(&mut controller).await;
+        assert_eq!(
+            controller.state.interaction.status.message,
+            "prompt accepted: turn turn-1"
+        );
+        transport.assert_consumed();
+    }
+
+    #[tokio::test]
     async fn end_to_end_acceptance_covers_resume_compact_skill_and_single_active_stream_switch() {
         let transport = MockTransport::default();
         let session_one = session("session-1", "D:/repo-a", "repo-a", "2026-04-15T10:00:00Z");

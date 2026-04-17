@@ -175,6 +175,11 @@ impl CliState {
         self.render.mark_transcript_dirty();
     }
 
+    pub fn resume_transcript_tail(&mut self) {
+        self.interaction.reset_scroll();
+        self.render.invalidate_transcript_cache();
+    }
+
     pub fn cycle_focus_forward(&mut self) {
         self.interaction.cycle_focus_forward();
         self.render.invalidate_transcript_cache();
@@ -556,6 +561,22 @@ mod tests {
         state.scroll_down();
         assert_eq!(state.interaction.scroll_anchor, 0);
         assert!(state.interaction.follow_transcript_tail);
+    }
+
+    #[test]
+    fn resume_transcript_tail_restores_follow_mode_after_manual_scroll() {
+        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
+
+        state.scroll_up_by(4);
+        assert_eq!(state.interaction.scroll_anchor, 4);
+        assert!(!state.interaction.follow_transcript_tail);
+
+        state.resume_transcript_tail();
+
+        assert_eq!(state.interaction.scroll_anchor, 0);
+        assert!(state.interaction.follow_transcript_tail);
+        assert!(state.interaction.selection_drives_scroll);
+        assert!(state.render.dirty.transcript);
     }
 
     #[test]

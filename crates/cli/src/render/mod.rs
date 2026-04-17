@@ -41,7 +41,7 @@ pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
 
 fn render_transcript(frame: &mut Frame<'_>, state: &mut CliState, area: Rect, theme: &CodexTheme) {
     let transcript = &state.render.transcript_cache;
-    let viewport_height = area.height.saturating_sub(1);
+    let viewport_height = area.height;
     let scroll = transcript_scroll_offset(
         transcript.lines.len(),
         viewport_height,
@@ -59,7 +59,6 @@ fn render_transcript(frame: &mut Frame<'_>, state: &mut CliState, area: Rect, th
                 .map(|line| ui::line_to_ratatui(line, theme))
                 .collect::<Vec<_>>(),
         )
-        .wrap(Wrap { trim: false })
         .scroll((scroll, 0)),
         area,
     );
@@ -373,5 +372,82 @@ mod tests {
             super::transcript_scroll_offset(64, 10, 0, false, Some((3, 5)), true),
             3
         );
+    }
+
+    #[test]
+    fn transcript_render_uses_prewrapped_cache_without_extra_paragraph_wrapping() {
+        use crate::state::{WrappedLine, WrappedLineStyle};
+
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = CliState::new(
+            "http://127.0.0.1:5529".to_string(),
+            None,
+            capabilities(GlyphMode::Unicode),
+        );
+        state.set_viewport_size(40, 10);
+        state.update_transcript_cache(
+            38,
+            vec![
+                WrappedLine {
+                    style: WrappedLineStyle::Plain,
+                    content: "这一行故意非常非常非常长，只有在 Paragraph 再次 wrap \
+                              时才会额外占用多行。"
+                        .to_string(),
+                },
+                WrappedLine {
+                    style: WrappedLineStyle::Plain,
+                    content: "第二行".to_string(),
+                },
+                WrappedLine {
+                    style: WrappedLineStyle::Plain,
+                    content: "第三行".to_string(),
+                },
+                WrappedLine {
+                    style: WrappedLineStyle::Plain,
+                    content: "第四行".to_string(),
+                },
+                WrappedLine {
+                    style: WrappedLineStyle::Plain,
+                    content: "目标尾行".to_string(),
+                },
+            ],
+            None,
+        );
+
+        terminal
+            .draw(|frame| render(frame, &mut state))
+            .expect("draw");
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let buffer = terminal.backend().buffer();
+        let rendered_rows = (0..buffer.area.height)
+            .map(|row| {
+                let start = usize::from(row) * usize::from(buffer.area.width);
+                let end = start + usize::from(buffer.area.width);
+                buffer.content[start..end]
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .replace(' ', "")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered_rows
+                .first()
+                .is_some_and(|row| row.starts_with("这一行故意非常非常非常长")),
+            "the first cached line should remain visible when the transcript exactly fits"
+        );
+        assert!(
+            rendered_rows.iter().any(|row| row.contains("目标尾行")),
+            "tail-follow transcript should keep the final cached line visible"
+        );
+        assert!(text.contains("第"));
     }
 }
