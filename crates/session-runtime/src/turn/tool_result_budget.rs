@@ -274,13 +274,11 @@ mod tests {
         let mut translator = EventTranslator::new(session_state.current_phase().expect("phase"));
         let replacement = "<persisted-output>\nLarge tool output was saved to a file instead of \
                            being inlined.\nPath: ~/.astrcode/tool-results/call-1.txt\nBytes: \
-                           999\nRead the \
-                           file with `readFile`.\nIf you only need a section, read a smaller \
-                           chunk instead of the whole file.\nStart from the first chunk when you \
-                           do not yet know the right section.\nSuggested first read: { path: \
-                           \"~/.astrcode/tool-results/call-1.txt\", charOffset: 0, maxChars: \
-                           20000 \
-                           }\n</persisted-output>";
+                           999\nRead the file with `readFile`.\nIf you only need a section, read \
+                           a smaller chunk instead of the whole file.\nStart from the first chunk \
+                           when you do not yet know the right section.\nSuggested first read: { \
+                           path: \"~/.astrcode/tool-results/call-1.txt\", charOffset: 0, \
+                           maxChars: 20000 }\n</persisted-output>";
         append_and_broadcast(
             &session_state,
             &StorageEvent {

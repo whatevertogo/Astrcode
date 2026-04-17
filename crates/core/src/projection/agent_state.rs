@@ -906,12 +906,10 @@ mod tests {
                 "tc1",
                 "<persisted-output>\nLarge tool output was saved to a file instead of being \
                  inlined.\nPath: ~/.astrcode/tool-results/sample.txt\nBytes: 120\nRead the file \
-                 with \
-                 `readFile`.\nIf you only need a section, read a smaller chunk instead of the \
-                 whole file.\nStart from the first chunk when you do not yet know the right \
-                 section.\nSuggested first read: { path: \
-                 \"~/.astrcode/tool-results/sample.txt\", charOffset: 0, maxChars: 20000 }\n\
-                 </persisted-output>",
+                 with `readFile`.\nIf you only need a section, read a smaller chunk instead of \
+                 the whole file.\nStart from the first chunk when you do not yet know the right \
+                 section.\nSuggested first read: { path: \"~/.astrcode/tool-results/sample.txt\", \
+                 charOffset: 0, maxChars: 20000 }\n</persisted-output>",
             ),
             turn_done(None, root_agent(), "completed"),
         ];

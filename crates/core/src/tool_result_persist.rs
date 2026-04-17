@@ -369,8 +369,8 @@ mod tests {
     #[test]
     fn persisted_output_absolute_path_extracts_new_wrapper_path() {
         let wrapper = "<persisted-output>\nLarge tool output was saved to a file instead of being \
-                       inlined.\nPath: ~/.astrcode/tool-results/call-1.txt\nBytes: 42\n\
-                       </persisted-output>";
+                       inlined.\nPath: ~/.astrcode/tool-results/call-1.txt\nBytes: \
+                       42\n</persisted-output>";
         assert_eq!(
             persisted_output_absolute_path(wrapper),
             Some("~/.astrcode/tool-results/call-1.txt".to_string())
