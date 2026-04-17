@@ -19,7 +19,9 @@ pub use interaction::{
     ComposerState, InteractionState, PaletteSelection, PaletteState, PaneFocus, ResumePaletteState,
     SlashPaletteState, StatusLine,
 };
-pub use render::{RenderState, StreamViewState, TranscriptRenderCache};
+pub use render::{
+    RenderState, StreamViewState, TranscriptRenderCache, WrappedLine, WrappedLineStyle,
+};
 pub use shell::ShellState;
 pub use thinking::{ThinkingPlaybackDriver, ThinkingPresentationState, ThinkingSnippetPool};
 pub use transcript_cell::{TranscriptCell, TranscriptCellKind, TranscriptCellStatus};
@@ -31,35 +33,6 @@ pub enum StreamRenderMode {
     #[default]
     Smooth,
     CatchUp,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WrappedLine {
-    pub style: WrappedLineStyle,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WrappedLineStyle {
-    Plain,
-    Muted,
-    Accent,
-    Divider,
-    Selection,
-    UserLabel,
-    UserBody,
-    AssistantLabel,
-    AssistantBody,
-    ThinkingLabel,
-    ThinkingBody,
-    ToolLabel,
-    ToolBody,
-    ErrorText,
-    FooterInput,
-    FooterStatus,
-    PaletteTitle,
-    PaletteItem,
-    PaletteMeta,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -90,78 +63,153 @@ impl CliState {
 
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.interaction.set_status(message);
+        self.render.mark_footer_dirty();
     }
 
     pub fn set_error_status(&mut self, message: impl Into<String>) {
         self.interaction.set_error_status(message);
+        self.render.mark_footer_dirty();
     }
 
-    pub fn set_stream_mode(&mut self, mode: StreamRenderMode, pending: usize, oldest: Duration) {
+    pub fn set_stream_mode(
+        &mut self,
+        mode: StreamRenderMode,
+        pending: usize,
+        oldest: Duration,
+    ) -> bool {
+        let changed = self.stream_view.mode != mode || self.stream_view.pending_chunks != pending;
         self.stream_view.update(mode, pending, oldest);
+        if changed {
+            self.render.mark_footer_dirty();
+        }
+        changed
     }
 
     pub fn set_viewport_size(&mut self, width: u16, height: u16) {
         self.render.set_viewport_size(width, height);
     }
 
-    pub fn update_transcript_cache(&mut self, width: u16, lines: Vec<WrappedLine>) {
-        self.render.update_transcript_cache(width, lines);
+    pub fn update_transcript_cache(
+        &mut self,
+        width: u16,
+        lines: Vec<WrappedLine>,
+        selected_line_range: Option<(usize, usize)>,
+    ) {
+        self.render
+            .update_transcript_cache(width, lines, selected_line_range);
     }
 
     pub fn push_input(&mut self, ch: char) {
         self.interaction.push_input(ch);
+        self.render.mark_footer_dirty();
     }
 
     pub fn append_input(&mut self, value: &str) {
         self.interaction.append_input(value);
+        self.render.mark_footer_dirty();
     }
 
     pub fn insert_newline(&mut self) {
         self.interaction.insert_newline();
+        self.render.mark_footer_dirty();
     }
 
     pub fn pop_input(&mut self) {
         self.interaction.pop_input();
+        self.render.mark_footer_dirty();
+    }
+
+    pub fn delete_input(&mut self) {
+        self.interaction.delete_input();
+        self.render.mark_footer_dirty();
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        self.interaction.move_cursor_left();
+        self.render.mark_footer_dirty();
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        self.interaction.move_cursor_right();
+        self.render.mark_footer_dirty();
+    }
+
+    pub fn move_cursor_home(&mut self) {
+        self.interaction.move_cursor_home();
+        self.render.mark_footer_dirty();
+    }
+
+    pub fn move_cursor_end(&mut self) {
+        self.interaction.move_cursor_end();
+        self.render.mark_footer_dirty();
     }
 
     pub fn replace_input(&mut self, input: impl Into<String>) {
         self.interaction.replace_input(input);
+        self.render.mark_footer_dirty();
     }
 
     pub fn take_input(&mut self) -> String {
-        self.interaction.take_input()
+        let input = self.interaction.take_input();
+        self.render.mark_footer_dirty();
+        input
     }
 
     pub fn scroll_up(&mut self) {
         self.interaction.scroll_up();
+        self.render.mark_transcript_dirty();
     }
 
     pub fn scroll_down(&mut self) {
         self.interaction.scroll_down();
+        self.render.mark_transcript_dirty();
+    }
+
+    pub fn scroll_up_by(&mut self, lines: u16) {
+        self.interaction.scroll_up_by(lines);
+        self.render.mark_transcript_dirty();
+    }
+
+    pub fn scroll_down_by(&mut self, lines: u16) {
+        self.interaction.scroll_down_by(lines);
+        self.render.mark_transcript_dirty();
     }
 
     pub fn cycle_focus_forward(&mut self) {
         self.interaction.cycle_focus_forward();
+        self.render.invalidate_transcript_cache();
+        self.render.mark_footer_dirty();
+        self.render.mark_palette_dirty();
     }
 
     pub fn cycle_focus_backward(&mut self) {
         self.interaction.cycle_focus_backward();
+        self.render.invalidate_transcript_cache();
+        self.render.mark_footer_dirty();
+        self.render.mark_palette_dirty();
     }
 
     pub fn transcript_next(&mut self) {
         self.interaction
-            .transcript_next(self.conversation.transcript_cells.len());
+            .transcript_next(self.conversation.transcript.len());
+        self.render.invalidate_transcript_cache();
     }
 
     pub fn transcript_prev(&mut self) {
         self.interaction
-            .transcript_prev(self.conversation.transcript_cells.len());
+            .transcript_prev(self.conversation.transcript.len());
+        self.render.invalidate_transcript_cache();
     }
 
-    pub fn selected_transcript_cell(&self) -> Option<&TranscriptCell> {
+    pub fn transcript_cells(&self) -> Vec<TranscriptCell> {
         self.conversation
-            .transcript_cells
-            .get(self.interaction.transcript.selected_cell)
+            .project_transcript_cells(&self.interaction.transcript.expanded_cells)
+    }
+
+    pub fn selected_transcript_cell(&self) -> Option<TranscriptCell> {
+        self.transcript_cells()
+            .into_iter()
+            .nth(self.interaction.transcript.selected_cell)
     }
 
     pub fn is_cell_expanded(&self, cell_id: &str) -> bool {
@@ -176,17 +224,24 @@ impl CliState {
     pub fn toggle_selected_cell_expanded(&mut self) {
         if let Some(cell_id) = self.selected_transcript_cell().map(|cell| cell.id.clone()) {
             self.interaction.toggle_cell_expanded(cell_id.as_str());
+            self.render.invalidate_transcript_cache();
         }
     }
 
     pub fn clear_surface_state(&mut self) {
+        let invalidate = matches!(self.interaction.pane_focus, PaneFocus::Transcript);
         self.interaction.clear_surface_state();
+        if invalidate {
+            self.render.invalidate_transcript_cache();
+        }
     }
 
     pub fn update_sessions(&mut self, sessions: Vec<AstrcodeSessionListItem>) {
         self.conversation.update_sessions(sessions);
         self.interaction
             .sync_resume_items(self.conversation.sessions.clone());
+        self.render.invalidate_transcript_cache();
+        self.render.mark_palette_dirty();
     }
 
     pub fn set_resume_query(
@@ -195,6 +250,8 @@ impl CliState {
         items: Vec<AstrcodeSessionListItem>,
     ) {
         self.interaction.set_resume_palette(query, items);
+        self.render.invalidate_footer_cache();
+        self.render.invalidate_palette_cache();
     }
 
     pub fn set_slash_query(
@@ -203,18 +260,26 @@ impl CliState {
         items: Vec<AstrcodeConversationSlashCandidateDto>,
     ) {
         self.interaction.set_slash_palette(query, items);
+        self.render.invalidate_footer_cache();
+        self.render.invalidate_palette_cache();
     }
 
     pub fn close_palette(&mut self) {
         self.interaction.close_palette();
+        self.render.invalidate_footer_cache();
+        self.render.invalidate_palette_cache();
     }
 
     pub fn palette_next(&mut self) {
         self.interaction.palette_next();
+        self.render.mark_footer_dirty();
+        self.render.mark_palette_dirty();
     }
 
     pub fn palette_prev(&mut self) {
         self.interaction.palette_prev();
+        self.render.mark_footer_dirty();
+        self.render.mark_palette_dirty();
     }
 
     pub fn selected_palette(&self) -> Option<PaletteSelection> {
@@ -226,28 +291,37 @@ impl CliState {
             .activate_snapshot(snapshot, &mut self.render);
         self.interaction.reset_for_snapshot();
         self.interaction
-            .sync_transcript_cells(self.conversation.transcript_cells.len());
+            .sync_transcript_cells(self.conversation.transcript.len());
         self.thinking_playback
             .sync_session(self.conversation.active_session_id.as_deref());
+        self.render.invalidate_transcript_cache();
+        self.render.invalidate_footer_cache();
+        self.render.invalidate_palette_cache();
     }
 
     pub fn apply_stream_envelope(&mut self, envelope: AstrcodeConversationStreamEnvelopeDto) {
-        let expanded_ids = self.interaction.transcript.expanded_cells.clone();
+        let expanded_ids = &self.interaction.transcript.expanded_cells;
         self.conversation
-            .apply_stream_envelope(envelope, &mut self.render, &expanded_ids);
+            .apply_stream_envelope(envelope, &mut self.render, expanded_ids);
         self.interaction
-            .sync_transcript_cells(self.conversation.transcript_cells.len());
+            .sync_transcript_cells(self.conversation.transcript.len());
         self.interaction
             .sync_slash_items(self.conversation.slash_candidates.clone());
+        self.render.invalidate_transcript_cache();
+        self.render.mark_footer_dirty();
+        self.render.mark_palette_dirty();
     }
 
     pub fn set_banner_error(&mut self, error: AstrcodeConversationErrorEnvelopeDto) {
         self.conversation.set_banner_error(error);
         self.interaction.set_focus(PaneFocus::Composer);
+        self.render.invalidate_transcript_cache();
+        self.render.mark_footer_dirty();
     }
 
     pub fn clear_banner(&mut self) {
         self.conversation.clear_banner();
+        self.render.invalidate_transcript_cache();
     }
 
     pub fn active_phase(&self) -> Option<AstrcodePhaseDto> {
@@ -258,8 +332,17 @@ impl CliState {
         self.debug.push(line);
     }
 
-    pub fn advance_thinking_playback(&mut self) {
-        if self.conversation.transcript_cells.iter().any(|cell| {
+    pub fn advance_thinking_playback(&mut self) -> bool {
+        if self.should_animate_thinking_playback() {
+            self.thinking_playback.advance();
+            self.render.invalidate_transcript_cache();
+            return true;
+        }
+        false
+    }
+
+    fn should_animate_thinking_playback(&self) -> bool {
+        if self.transcript_cells().iter().any(|cell| {
             matches!(
                 cell.kind,
                 TranscriptCellKind::Thinking {
@@ -268,9 +351,39 @@ impl CliState {
                 }
             )
         }) {
-            self.thinking_playback.advance();
-            self.render.invalidate_transcript_cache();
+            return true;
         }
+
+        let Some(control) = &self.conversation.control else {
+            return false;
+        };
+        if control.active_turn_id.is_none() {
+            return false;
+        }
+        if !matches!(
+            control.phase,
+            AstrcodePhaseDto::Thinking
+                | AstrcodePhaseDto::CallingTool
+                | AstrcodePhaseDto::Streaming
+        ) {
+            return false;
+        }
+
+        !self.transcript_cells().iter().any(|cell| match &cell.kind {
+            TranscriptCellKind::Thinking { status, .. } => {
+                matches!(
+                    status,
+                    TranscriptCellStatus::Streaming | TranscriptCellStatus::Complete
+                )
+            },
+            TranscriptCellKind::Assistant { status, body } => {
+                matches!(status, TranscriptCellStatus::Streaming) && !body.trim().is_empty()
+            },
+            TranscriptCellKind::ToolCall { status, .. } => {
+                matches!(status, TranscriptCellStatus::Streaming)
+            },
+            _ => false,
+        })
     }
 }
 
@@ -416,6 +529,7 @@ mod tests {
                 style: WrappedLineStyle::Plain,
                 content: "cached".to_string(),
             }],
+            None,
         );
         state.scroll_up();
         state.set_viewport_size(100, 40);
@@ -441,13 +555,14 @@ mod tests {
     #[test]
     fn ticking_advances_streaming_thinking() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
-        state.conversation.transcript_cells.push(TranscriptCell {
-            id: "thinking-1".to_string(),
-            expanded: false,
-            kind: TranscriptCellKind::Thinking {
-                body: "".to_string(),
-                status: TranscriptCellStatus::Streaming,
-            },
+        state.conversation.control = Some(AstrcodeConversationControlStateDto {
+            phase: AstrcodePhaseDto::Thinking,
+            can_submit_prompt: true,
+            can_request_compact: true,
+            compact_pending: false,
+            compacting: false,
+            active_turn_id: Some("turn-1".to_string()),
+            last_compact_meta: None,
         });
         let frame = state.thinking_playback.frame;
         state.advance_thinking_playback();

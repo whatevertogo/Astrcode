@@ -9,6 +9,8 @@ use crate::{
     ui::{self, CodexTheme, ThemePalette},
 };
 
+const FOOTER_HEIGHT: u16 = 5;
+
 pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
     state.set_viewport_size(frame.area().width, frame.area().height);
     let theme = CodexTheme::new(state.shell.capabilities);
@@ -16,9 +18,9 @@ pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
 
     let footer_area = Rect {
         x: frame.area().x,
-        y: frame.area().bottom().saturating_sub(4),
+        y: frame.area().bottom().saturating_sub(FOOTER_HEIGHT),
         width: frame.area().width,
-        height: 4,
+        height: FOOTER_HEIGHT,
     };
     let transcript_height = frame.area().height.saturating_sub(footer_area.height);
     let transcript_area = Rect {
@@ -28,16 +30,17 @@ pub fn render(frame: &mut Frame<'_>, state: &mut CliState) {
         height: transcript_height,
     };
 
-    render_transcript(frame, state, transcript_area);
-    render_footer(frame, state, footer_area);
+    refresh_caches(state, transcript_area, footer_area, &theme);
+    render_transcript(frame, state, transcript_area, &theme);
+    render_footer(frame, state, footer_area, &theme);
 
     if ui::palette_visible(&state.interaction.palette) {
         render_palette(frame, state, transcript_area, footer_area, &theme);
     }
 }
 
-fn render_transcript(frame: &mut Frame<'_>, state: &CliState, area: Rect) {
-    let transcript = ui::transcript_lines(state, area.width.saturating_sub(2));
+fn render_transcript(frame: &mut Frame<'_>, state: &mut CliState, area: Rect, theme: &CodexTheme) {
+    let transcript = &state.render.transcript_cache;
     let viewport_height = area.height.saturating_sub(1);
     let scroll = transcript_scroll_offset(
         transcript.lines.len(),
@@ -45,14 +48,15 @@ fn render_transcript(frame: &mut Frame<'_>, state: &CliState, area: Rect) {
         state.interaction.scroll_anchor,
         state.interaction.follow_transcript_tail,
         transcript.selected_line_range,
-        matches!(state.interaction.pane_focus, PaneFocus::Transcript),
+        matches!(state.interaction.pane_focus, PaneFocus::Transcript)
+            && state.interaction.selection_drives_scroll,
     );
     frame.render_widget(
         Paragraph::new(
             transcript
                 .lines
                 .iter()
-                .map(|line| ui::line_to_ratatui(line, state.shell.capabilities))
+                .map(|line| ui::line_to_ratatui(line, theme))
                 .collect::<Vec<_>>(),
         )
         .wrap(Wrap { trim: false })
@@ -61,12 +65,12 @@ fn render_transcript(frame: &mut Frame<'_>, state: &CliState, area: Rect) {
     );
 }
 
-fn render_footer(frame: &mut Frame<'_>, state: &CliState, area: Rect) {
-    let theme = CodexTheme::new(state.shell.capabilities);
-    let lines = ui::footer_lines(state, area.width.saturating_sub(2));
+fn render_footer(frame: &mut Frame<'_>, state: &CliState, area: Rect, theme: &CodexTheme) {
+    let footer = &state.render.footer_cache;
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -75,29 +79,34 @@ fn render_footer(frame: &mut Frame<'_>, state: &CliState, area: Rect) {
         .split(area);
 
     frame.render_widget(
-        Paragraph::new(theme.divider().repeat(usize::from(area.width)))
-            .style(theme.line_style(crate::state::WrappedLineStyle::Divider)),
+        Paragraph::new(vec![ui::line_to_ratatui(&footer.lines[0], theme)]),
         layout[0],
     );
     frame.render_widget(
-        Paragraph::new(vec![ui::line_to_ratatui(
-            &lines[0],
-            state.shell.capabilities,
-        )]),
+        Paragraph::new(theme.divider().repeat(usize::from(area.width)))
+            .style(theme.line_style(crate::state::WrappedLineStyle::Divider)),
         layout[1],
+    );
+    frame.render_widget(
+        Paragraph::new(vec![ui::line_to_ratatui(&footer.lines[1], theme)]),
+        layout[2],
     );
     frame.render_widget(
         Paragraph::new(theme.divider().repeat(usize::from(area.width)))
             .style(theme.line_style(crate::state::WrappedLineStyle::Divider)),
-        layout[2],
-    );
-    frame.render_widget(
-        Paragraph::new(vec![ui::line_to_ratatui(
-            &lines[1],
-            state.shell.capabilities,
-        )]),
         layout[3],
     );
+    frame.render_widget(
+        Paragraph::new(vec![ui::line_to_ratatui(&footer.lines[2], theme)]),
+        layout[4],
+    );
+
+    if matches!(
+        state.interaction.pane_focus,
+        PaneFocus::Composer | PaneFocus::Palette
+    ) {
+        frame.set_cursor_position((area.x.saturating_add(footer.cursor_col), layout[2].y));
+    }
 }
 
 fn render_palette(
@@ -107,13 +116,9 @@ fn render_palette(
     footer_area: Rect,
     theme: &CodexTheme,
 ) {
-    let menu_lines = ui::palette_lines(
-        &state.interaction.palette,
-        usize::from(footer_area.width.saturating_sub(4)),
-        theme,
-    );
-    let menu_height = menu_lines.len().clamp(2, 10) as u16;
-    let menu_width = footer_area.width.saturating_sub(2).min(112).max(52);
+    let menu_lines = &state.render.palette_cache.lines;
+    let menu_height = menu_lines.len().clamp(1, 5) as u16;
+    let menu_width = footer_area.width.saturating_sub(2);
     let menu_area = Rect {
         x: transcript_area.x.saturating_add(1),
         y: footer_area
@@ -128,7 +133,7 @@ fn render_palette(
         Paragraph::new(
             menu_lines
                 .iter()
-                .map(|line| ui::line_to_ratatui(line, state.shell.capabilities))
+                .map(|line| ui::line_to_ratatui(line, theme))
                 .collect::<Vec<_>>(),
         )
         .style(theme.menu_block_style())
@@ -167,9 +172,60 @@ fn transcript_scroll_offset(
     top_offset.try_into().unwrap_or(u16::MAX)
 }
 
+pub fn refresh_caches(
+    state: &mut CliState,
+    transcript_area: Rect,
+    footer_area: Rect,
+    theme: &CodexTheme,
+) {
+    let transcript_width = transcript_area.width.saturating_sub(2);
+    let transcript_cache_valid = state.render.transcript_cache.width == transcript_width
+        && state.render.transcript_cache.revision == state.render.transcript_revision
+        && !state.render.transcript_cache.lines.is_empty();
+    if state.render.dirty.transcript || !transcript_cache_valid {
+        let transcript = ui::transcript_lines(state, transcript_width, theme);
+        state.update_transcript_cache(
+            transcript_width,
+            transcript.lines,
+            transcript.selected_line_range,
+        );
+    }
+
+    let footer_width = footer_area.width.saturating_sub(2);
+    let footer_cache_valid = state.render.footer_cache.width == footer_width
+        && state.render.footer_cache.lines.len() == 3;
+    if state.render.dirty.footer || !footer_cache_valid {
+        let footer = ui::footer_lines(state, footer_width, theme);
+        state
+            .render
+            .update_footer_cache(footer_width, footer.lines, footer.cursor_col);
+    }
+
+    let palette_width = footer_area.width.saturating_sub(2);
+    let palette_should_show = ui::palette_visible(&state.interaction.palette);
+    if !palette_should_show {
+        if !state.render.palette_cache.lines.is_empty() {
+            state.render.update_palette_cache(palette_width, Vec::new());
+        }
+        state.render.dirty.palette = false;
+        return;
+    }
+
+    let palette_cache_valid = state.render.palette_cache.width == palette_width;
+    if state.render.dirty.palette || !palette_cache_valid {
+        let menu_lines = ui::palette_lines(
+            &state.interaction.palette,
+            usize::from(footer_area.width.saturating_sub(4)),
+            theme,
+        );
+        state.render.update_palette_cache(palette_width, menu_lines);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use astrcode_client::{
+        AstrcodeConversationControlStateDto, AstrcodeConversationCursorDto,
         AstrcodeConversationSlashActionKindDto, AstrcodeConversationSlashCandidateDto,
     };
     use ratatui::{Terminal, backend::TestBackend};
@@ -177,7 +233,7 @@ mod tests {
     use super::render;
     use crate::{
         capability::{ColorLevel, GlyphMode, TerminalCapabilities},
-        state::{CliState, PaneFocus, TranscriptCell, TranscriptCellKind, TranscriptCellStatus},
+        state::{CliState, PaneFocus},
     };
 
     fn capabilities(glyphs: GlyphMode) -> TerminalCapabilities {
@@ -282,14 +338,16 @@ mod tests {
             None,
             capabilities(GlyphMode::Unicode),
         );
-        state.conversation.transcript_cells.push(TranscriptCell {
-            id: "thinking-1".to_string(),
-            expanded: false,
-            kind: TranscriptCellKind::Thinking {
-                body: "".to_string(),
-                status: TranscriptCellStatus::Streaming,
-            },
+        state.conversation.control = Some(AstrcodeConversationControlStateDto {
+            phase: astrcode_client::AstrcodePhaseDto::Thinking,
+            can_submit_prompt: true,
+            can_request_compact: true,
+            compact_pending: false,
+            compacting: false,
+            active_turn_id: Some("turn-1".to_string()),
+            last_compact_meta: None,
         });
+        state.conversation.cursor = Some(AstrcodeConversationCursorDto("1.0".to_string()));
         state.interaction.set_focus(PaneFocus::Transcript);
 
         terminal
@@ -302,7 +360,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("Thinking"));
+        assert!(text.contains("Ctrl+O"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -548,29 +548,34 @@ fn named_binary_exists_in_dir(directory: &Path, binary: &Path) -> bool {
 }
 
 fn windows_binary_extensions() -> Vec<String> {
-    env::var_os("PATHEXT")
-        .map(|raw| {
-            raw.to_string_lossy()
-                .split(';')
-                .filter_map(|item| {
-                    let trimmed = item.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed.to_ascii_lowercase())
-                    }
+    static WINDOWS_BINARY_EXTENSIONS: OnceLock<Vec<String>> = OnceLock::new();
+    WINDOWS_BINARY_EXTENSIONS
+        .get_or_init(|| {
+            env::var_os("PATHEXT")
+                .map(|raw| {
+                    raw.to_string_lossy()
+                        .split(';')
+                        .filter_map(|item| {
+                            let trimmed = item.trim();
+                            if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(trimmed.to_ascii_lowercase())
+                            }
+                        })
+                        .collect::<Vec<_>>()
                 })
-                .collect::<Vec<_>>()
+                .filter(|extensions| !extensions.is_empty())
+                .unwrap_or_else(|| {
+                    vec![
+                        ".com".to_string(),
+                        ".exe".to_string(),
+                        ".bat".to_string(),
+                        ".cmd".to_string(),
+                    ]
+                })
         })
-        .filter(|extensions| !extensions.is_empty())
-        .unwrap_or_else(|| {
-            vec![
-                ".com".to_string(),
-                ".exe".to_string(),
-                ".bat".to_string(),
-                ".cmd".to_string(),
-            ]
-        })
+        .clone()
 }
 
 fn current_directory() -> Option<PathBuf> {

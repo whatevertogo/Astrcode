@@ -23,7 +23,8 @@ use clap::Parser;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+        MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -37,7 +38,7 @@ use tokio::{
 
 use crate::{
     capability::TerminalCapabilities,
-    command::palette_action,
+    command::{fuzzy_contains, palette_action},
     launcher::{LaunchOptions, Launcher, LauncherSession, SystemManagedServer},
     render,
     state::{CliState, PaletteState, PaneFocus, StreamRenderMode},
@@ -68,6 +69,7 @@ enum Action {
         width: u16,
         height: u16,
     },
+    Mouse(MouseEvent),
     Quit,
     SessionsRefreshed(Result<Vec<AstrcodeSessionListItem>, AstrcodeClientError>),
     SessionCreated(Result<AstrcodeSessionListItem, AstrcodeClientError>),
@@ -131,8 +133,7 @@ async fn run_app(launcher_session: LauncherSession<SystemManagedServer>) -> Resu
             capabilities,
         ),
         debug_tap,
-        actions_tx.clone(),
-        actions_rx,
+        AppControllerChannels::new(actions_tx.clone(), actions_rx),
     );
 
     controller.bootstrap().await?;
@@ -151,17 +152,8 @@ async fn run_terminal_loop(
     controller: &mut AppController,
     actions_tx: mpsc::UnboundedSender<Action>,
 ) -> Result<()> {
-    enable_raw_mode().context("enable raw mode failed")?;
-    let mut stdout = io::stdout();
-    if controller.state.shell.capabilities.alt_screen {
-        execute!(stdout, EnterAlternateScreen).context("enter alternate screen failed")?;
-    }
-    if controller.state.shell.capabilities.mouse {
-        execute!(stdout, EnableMouseCapture).context("enable mouse capture failed")?;
-    }
-    if controller.state.shell.capabilities.bracketed_paste {
-        execute!(stdout, EnableBracketedPaste).context("enable bracketed paste failed")?;
-    }
+    let terminal_guard = TerminalRestoreGuard::enter(controller.state.shell.capabilities)?;
+    let stdout = io::stdout();
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create terminal backend failed")?;
@@ -172,22 +164,9 @@ async fn run_terminal_loop(
     let loop_result = run_event_loop(controller, &mut terminal).await;
 
     input_handle.stop();
-    tick_handle.abort();
-
-    disable_raw_mode().context("disable raw mode failed")?;
-    if controller.state.shell.capabilities.bracketed_paste {
-        execute!(terminal.backend_mut(), DisableBracketedPaste)
-            .context("disable bracketed paste failed")?;
-    }
-    if controller.state.shell.capabilities.mouse {
-        execute!(terminal.backend_mut(), DisableMouseCapture)
-            .context("disable mouse capture failed")?;
-    }
-    if controller.state.shell.capabilities.alt_screen {
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)
-            .context("leave alternate screen failed")?;
-    }
+    tick_handle.stop().await;
     terminal.show_cursor().context("show cursor failed")?;
+    drop(terminal_guard);
 
     loop_result
 }
@@ -199,12 +178,15 @@ async fn run_event_loop(
     terminal
         .draw(|frame| render::render(frame, &mut controller.state))
         .context("initial draw failed")?;
+    controller.state.render.take_frame_dirty();
 
     while let Some(action) = controller.actions_rx.recv().await {
         controller.handle_action(action).await?;
-        terminal
-            .draw(|frame| render::render(frame, &mut controller.state))
-            .context("redraw failed")?;
+        if controller.state.render.take_frame_dirty() {
+            terminal
+                .draw(|frame| render::render(frame, &mut controller.state))
+                .context("redraw failed")?;
+        }
         if controller.should_quit {
             break;
         }
@@ -282,6 +264,54 @@ struct AppController<T = AstrcodeReqwestTransport> {
     should_quit: bool,
 }
 
+struct AppControllerChannels {
+    tx: mpsc::UnboundedSender<Action>,
+    rx: mpsc::UnboundedReceiver<Action>,
+}
+
+impl AppControllerChannels {
+    fn new(tx: mpsc::UnboundedSender<Action>, rx: mpsc::UnboundedReceiver<Action>) -> Self {
+        Self { tx, rx }
+    }
+}
+
+struct TerminalRestoreGuard {
+    capabilities: TerminalCapabilities,
+}
+
+impl TerminalRestoreGuard {
+    fn enter(capabilities: TerminalCapabilities) -> Result<Self> {
+        enable_raw_mode().context("enable raw mode failed")?;
+        let mut stdout = io::stdout();
+        if capabilities.alt_screen {
+            execute!(stdout, EnterAlternateScreen).context("enter alternate screen failed")?;
+        }
+        if capabilities.mouse {
+            execute!(stdout, EnableMouseCapture).context("enable mouse capture failed")?;
+        }
+        if capabilities.bracketed_paste {
+            execute!(stdout, EnableBracketedPaste).context("enable bracketed paste failed")?;
+        }
+        Ok(Self { capabilities })
+    }
+}
+
+impl Drop for TerminalRestoreGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let mut stdout = io::stdout();
+        if self.capabilities.bracketed_paste {
+            let _ = execute!(stdout, DisableBracketedPaste);
+        }
+        if self.capabilities.mouse {
+            let _ = execute!(stdout, DisableMouseCapture);
+        }
+        if self.capabilities.alt_screen {
+            let _ = execute!(stdout, LeaveAlternateScreen);
+        }
+    }
+}
+
 impl<T> AppController<T>
 where
     T: AstrcodeClientTransport + 'static,
@@ -290,15 +320,14 @@ where
         client: AstrcodeClient<T>,
         state: CliState,
         debug_tap: Option<crate::launcher::DebugLogTap>,
-        actions_tx: mpsc::UnboundedSender<Action>,
-        actions_rx: mpsc::UnboundedReceiver<Action>,
+        channels: AppControllerChannels,
     ) -> Self {
         Self {
             client,
             state,
             debug_tap,
-            actions_tx,
-            actions_rx,
+            actions_tx: channels.tx,
+            actions_rx: channels.rx,
             pending_session_id: None,
             pending_bootstrap_session_refresh: false,
             stream_task: None,
@@ -308,6 +337,7 @@ where
     }
 
     async fn bootstrap(&mut self) -> Result<()> {
+        // bootstrap 故意复用异步命令链路，避免在初始化阶段维护一套单独的 /new 创建路径。
         self.pending_bootstrap_session_refresh = true;
         self.execute_command(crate::command::Command::New).await;
         Ok(())
@@ -316,6 +346,13 @@ where
     fn stop_background_tasks(&mut self) {
         if let Some(stream_task) = self.stream_task.take() {
             stream_task.abort();
+        }
+    }
+
+    async fn consume_bootstrap_refresh(&mut self) {
+        if self.pending_bootstrap_session_refresh {
+            self.pending_bootstrap_session_refresh = false;
+            self.refresh_sessions().await;
         }
     }
 
@@ -333,6 +370,7 @@ where
             },
             Action::Quit => self.should_quit = true,
             Action::Resize { width, height } => self.state.set_viewport_size(width, height),
+            Action::Mouse(mouse) => self.handle_mouse(mouse),
             Action::Key(key) => self.handle_key(key).await?,
             Action::Paste(text) => self.handle_paste(text).await?,
             Action::SessionsRefreshed(result) => match result {
@@ -354,10 +392,7 @@ where
                 },
                 Err(error) => {
                     self.apply_status_error(error);
-                    if self.pending_bootstrap_session_refresh {
-                        self.pending_bootstrap_session_refresh = false;
-                        self.refresh_sessions().await;
-                    }
+                    self.consume_bootstrap_refresh().await;
                 },
             },
             Action::SnapshotLoaded { session_id, result } => {
@@ -371,18 +406,12 @@ where
                         self.state
                             .set_status(format!("attached to session {}", session_id));
                         self.open_stream_for_active_session().await;
-                        if self.pending_bootstrap_session_refresh {
-                            self.pending_bootstrap_session_refresh = false;
-                            self.refresh_sessions().await;
-                        }
+                        self.consume_bootstrap_refresh().await;
                     },
                     Err(error) => {
                         self.pending_session_id = None;
                         self.apply_hydration_error(error);
-                        if self.pending_bootstrap_session_refresh {
-                            self.pending_bootstrap_session_refresh = false;
-                            self.refresh_sessions().await;
-                        }
+                        self.consume_bootstrap_refresh().await;
                     },
                 }
             },
@@ -470,6 +499,31 @@ where
                     self.state.clear_surface_state();
                 }
             },
+            KeyCode::Left => {
+                if !matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) {
+                    self.state.move_cursor_left();
+                }
+            },
+            KeyCode::Right => {
+                if !matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) {
+                    self.state.move_cursor_right();
+                }
+            },
+            KeyCode::Home => {
+                if matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) {
+                    self.state.scroll_up_by(u16::MAX);
+                } else {
+                    self.state.move_cursor_home();
+                }
+            },
+            KeyCode::End => {
+                if matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) {
+                    self.state.interaction.reset_scroll();
+                    self.state.render.mark_transcript_dirty();
+                } else {
+                    self.state.move_cursor_end();
+                }
+            },
             KeyCode::BackTab => {
                 if !matches!(self.state.interaction.palette, PaletteState::Closed) {
                     return Ok(());
@@ -502,6 +556,12 @@ where
                     }
                 }
             },
+            KeyCode::PageUp => {
+                self.state.scroll_up_by(self.scroll_page_step().max(1));
+            },
+            KeyCode::PageDown => {
+                self.state.scroll_down_by(self.scroll_page_step().max(1));
+            },
             KeyCode::Enter => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     if matches!(self.state.interaction.palette, PaletteState::Closed)
@@ -521,16 +581,28 @@ where
                 }
             },
             KeyCode::Backspace => {
+                if matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) {
+                    return Ok(());
+                }
                 if matches!(self.state.interaction.palette, PaletteState::Closed) {
                     self.state.pop_input();
                 } else {
-                    self.state.interaction.composer.input.pop();
+                    self.state.pop_input();
+                    self.refresh_palette_query().await;
+                }
+            },
+            KeyCode::Delete => {
+                if matches!(self.state.interaction.pane_focus, PaneFocus::Transcript) {
+                    return Ok(());
+                }
+                self.state.delete_input();
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
                     self.refresh_palette_query().await;
                 }
             },
             KeyCode::Char(ch) => {
                 if !matches!(self.state.interaction.palette, PaletteState::Closed) {
-                    self.state.interaction.composer.input.push(ch);
+                    self.state.push_input(ch);
                     self.refresh_palette_query().await;
                 } else {
                     match self.state.interaction.pane_focus {
@@ -558,17 +630,35 @@ where
     }
 
     async fn handle_paste(&mut self, text: String) -> Result<()> {
-        if matches!(self.state.interaction.palette, PaletteState::Closed) {
-            self.state.append_input(text.as_str());
-        } else {
-            self.state
-                .interaction
-                .composer
-                .input
-                .push_str(text.as_str());
+        self.state.append_input(text.as_str());
+        if !matches!(self.state.interaction.palette, PaletteState::Closed) {
             self.refresh_palette_query().await;
         }
         Ok(())
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.state.scroll_up_by(3),
+            MouseEventKind::ScrollDown => self.state.scroll_down_by(3),
+            MouseEventKind::Down(_) => {
+                let footer_top = self.state.render.viewport_height.saturating_sub(5);
+                if mouse.row >= footer_top {
+                    self.state.interaction.set_focus(PaneFocus::Composer);
+                    self.state.render.invalidate_transcript_cache();
+                    self.state.render.mark_footer_dirty();
+                    return;
+                }
+                self.state.interaction.set_focus(PaneFocus::Transcript);
+                self.state.render.invalidate_transcript_cache();
+                self.state.render.mark_footer_dirty();
+            },
+            _ => {},
+        }
+    }
+
+    fn scroll_page_step(&self) -> u16 {
+        self.state.render.viewport_height.saturating_sub(7).max(1)
     }
 
     fn handle_transcript_enter(&mut self) {
@@ -609,6 +699,11 @@ impl InputHandle {
                                 break;
                             }
                         },
+                        Ok(CrosstermEvent::Mouse(mouse)) => {
+                            if actions_tx.send(Action::Mouse(mouse)).is_err() {
+                                break;
+                            }
+                        },
                         Ok(CrosstermEvent::Resize(width, height)) => {
                             if actions_tx.send(Action::Resize { width, height }).is_err() {
                                 break;
@@ -638,17 +733,44 @@ impl InputHandle {
     }
 }
 
-fn spawn_tick_loop(actions_tx: mpsc::UnboundedSender<Action>) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_millis(250));
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            if actions_tx.send(Action::Tick).is_err() {
-                break;
+fn spawn_tick_loop(actions_tx: mpsc::UnboundedSender<Action>) -> TickHandle {
+    TickHandle::spawn(actions_tx)
+}
+
+struct TickHandle {
+    stop: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl TickHandle {
+    fn spawn(actions_tx: mpsc::UnboundedSender<Action>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop);
+        let join = tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_millis(250));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if stop_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                if actions_tx.send(Action::Tick).is_err() {
+                    break;
+                }
             }
+        });
+        Self {
+            stop,
+            join: Some(join),
         }
-    })
+    }
+
+    async fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(join) = self.join.take() {
+            let _ = join.await;
+        }
+    }
 }
 
 fn resolve_working_dir(cli_value: Option<PathBuf>) -> Result<PathBuf> {
@@ -670,17 +792,18 @@ fn filter_resume_sessions(
     sessions: &[AstrcodeSessionListItem],
     query: &str,
 ) -> Vec<AstrcodeSessionListItem> {
-    let query = query.trim().to_lowercase();
     let mut items = sessions
         .iter()
         .filter(|session| {
-            if query.is_empty() {
-                return true;
-            }
-            session.session_id.to_lowercase().contains(&query)
-                || session.title.to_lowercase().contains(&query)
-                || session.display_name.to_lowercase().contains(&query)
-                || session.working_dir.to_lowercase().contains(&query)
+            fuzzy_contains(
+                query,
+                [
+                    session.session_id.clone(),
+                    session.title.clone(),
+                    session.display_name.clone(),
+                    session.working_dir.clone(),
+                ],
+            )
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -964,8 +1087,7 @@ mod tests {
                 ascii_capabilities(),
             ),
             None,
-            actions_tx,
-            actions_rx,
+            AppControllerChannels::new(actions_tx, actions_rx),
         );
         controller.state.update_sessions(vec![session(
             "session-old",
@@ -1046,8 +1168,7 @@ mod tests {
                 ascii_capabilities(),
             ),
             None,
-            actions_tx,
-            actions_rx,
+            AppControllerChannels::new(actions_tx, actions_rx),
         );
         controller.state.update_sessions(vec![existing]);
 
@@ -1185,8 +1306,7 @@ mod tests {
                 ascii_capabilities(),
             ),
             None,
-            actions_tx,
-            actions_rx,
+            AppControllerChannels::new(actions_tx, actions_rx),
         );
         controller
             .state

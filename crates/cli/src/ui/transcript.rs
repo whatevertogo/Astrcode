@@ -1,8 +1,10 @@
+use astrcode_client::AstrcodePhaseDto;
+
 use super::{
     ThemePalette,
-    cells::{RenderableCell, TranscriptCellView},
+    cells::{RenderableCell, TranscriptCellView, synthetic_thinking_lines},
 };
-use crate::state::{CliState, WrappedLine, WrappedLineStyle};
+use crate::state::{CliState, TranscriptCellStatus, WrappedLine, WrappedLineStyle};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptRenderOutput {
@@ -10,11 +12,15 @@ pub struct TranscriptRenderOutput {
     pub selected_line_range: Option<(usize, usize)>,
 }
 
-pub fn transcript_lines(state: &CliState, width: u16) -> TranscriptRenderOutput {
-    let theme = super::CodexTheme::new(state.shell.capabilities);
+pub fn transcript_lines(
+    state: &CliState,
+    width: u16,
+    theme: &dyn ThemePalette,
+) -> TranscriptRenderOutput {
     let width = usize::from(width.max(28));
     let mut lines = Vec::new();
     let mut selected_line_range = None;
+    let transcript_cells = state.transcript_cells();
     if let Some(banner) = &state.conversation.banner {
         lines.push(WrappedLine {
             style: WrappedLineStyle::ErrorText,
@@ -29,26 +35,10 @@ pub fn transcript_lines(state: &CliState, width: u16) -> TranscriptRenderOutput 
             content: String::new(),
         });
     }
-    if state.conversation.transcript_cells.is_empty() {
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: format!("{} Astrcode workspace", theme.glyph("•", "*")),
-        });
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: "  输入消息开始，或输入 / commands。".to_string(),
-        });
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: "  Tab 切换 transcript / composer，Ctrl+O 展开 thinking。".to_string(),
-        });
-        return TranscriptRenderOutput {
-            lines,
-            selected_line_range: None,
-        };
-    }
 
-    for (index, cell) in state.conversation.transcript_cells.iter().enumerate() {
+    lines.extend(super::hero_lines(state, width as u16, theme));
+
+    for (index, cell) in transcript_cells.iter().enumerate() {
         let line_start = lines.len();
         let view = TranscriptCellView {
             selected: matches!(
@@ -69,7 +59,7 @@ pub fn transcript_lines(state: &CliState, width: u16) -> TranscriptRenderOutput 
                 _ => None,
             },
         };
-        let rendered = cell.render_lines(width, state.shell.capabilities, &theme, &view);
+        let rendered = cell.render_lines(width, state.shell.capabilities, theme, &view);
         lines.extend(rendered);
         if view.selected {
             let line_end = lines.len().saturating_sub(1);
@@ -77,8 +67,58 @@ pub fn transcript_lines(state: &CliState, width: u16) -> TranscriptRenderOutput 
         }
     }
 
+    if should_render_synthetic_thinking(state) {
+        let presentation = state.thinking_playback.present(
+            &state.thinking_pool,
+            state
+                .conversation
+                .control
+                .as_ref()
+                .and_then(|control| control.active_turn_id.as_deref())
+                .unwrap_or("active-thinking"),
+            "",
+            TranscriptCellStatus::Streaming,
+            false,
+        );
+        lines.extend(synthetic_thinking_lines(theme, &presentation));
+    }
+
     TranscriptRenderOutput {
         lines,
         selected_line_range,
     }
+}
+
+fn should_render_synthetic_thinking(state: &CliState) -> bool {
+    let Some(control) = &state.conversation.control else {
+        return false;
+    };
+    if control.active_turn_id.is_none() {
+        return false;
+    }
+    if !matches!(
+        control.phase,
+        AstrcodePhaseDto::Thinking | AstrcodePhaseDto::CallingTool | AstrcodePhaseDto::Streaming
+    ) {
+        return false;
+    }
+
+    !state
+        .transcript_cells()
+        .iter()
+        .any(|cell| match &cell.kind {
+            crate::state::TranscriptCellKind::Thinking { status, .. } => {
+                matches!(
+                    status,
+                    TranscriptCellStatus::Streaming | TranscriptCellStatus::Complete
+                )
+            },
+            crate::state::TranscriptCellKind::Assistant { status, body } => {
+                matches!(status, TranscriptCellStatus::Streaming) && !body.trim().is_empty()
+            },
+            crate::state::TranscriptCellKind::ToolCall { status, .. } => {
+                matches!(status, TranscriptCellStatus::Streaming)
+            },
+            _ => false,
+        })
 }

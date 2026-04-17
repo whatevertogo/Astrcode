@@ -20,9 +20,21 @@ impl<T> AppController<T>
 where
     T: AstrcodeClientTransport + 'static,
 {
+    fn dispatch_async<F>(&self, operation: F)
+    where
+        F: std::future::Future<Output = Option<Action>> + Send + 'static,
+    {
+        let sender = self.actions_tx.clone();
+        tokio::spawn(async move {
+            if let Some(action) = operation.await {
+                let _ = sender.send(action);
+            }
+        });
+    }
+
     pub(super) async fn submit_current_input(&mut self) {
         let input = self.state.take_input();
-        match classify_input(input.as_str()) {
+        match classify_input(input) {
             InputAction::Empty => {},
             InputAction::SubmitPrompt { text } => {
                 let Some(session_id) = self.state.conversation.active_session_id.clone() else {
@@ -31,8 +43,7 @@ where
                 };
                 self.state.set_status("submitting prompt");
                 let client = self.client.clone();
-                let sender = self.actions_tx.clone();
-                tokio::spawn(async move {
+                self.dispatch_async(async move {
                     let result = client
                         .submit_prompt(
                             &session_id,
@@ -42,7 +53,7 @@ where
                             },
                         )
                         .await;
-                    let _ = sender.send(Action::PromptSubmitted { session_id, result });
+                    Some(Action::PromptSubmitted { session_id, result })
                 });
             },
             InputAction::RunCommand(command) => {
@@ -80,13 +91,12 @@ where
                     },
                 };
                 let client = self.client.clone();
-                let sender = self.actions_tx.clone();
                 self.state.set_status("creating session");
-                tokio::spawn(async move {
+                self.dispatch_async(async move {
                     let result = client
                         .create_session(AstrcodeCreateSessionRequest { working_dir })
                         .await;
-                    let _ = sender.send(Action::SessionCreated(result));
+                    Some(Action::SessionCreated(result))
                 });
             },
             Command::Resume { query } => {
@@ -118,9 +128,8 @@ where
                     return;
                 }
                 let client = self.client.clone();
-                let sender = self.actions_tx.clone();
                 self.state.set_status("requesting compact");
-                tokio::spawn(async move {
+                self.dispatch_async(async move {
                     let result = client
                         .request_compact(
                             &session_id,
@@ -133,7 +142,7 @@ where
                             },
                         )
                         .await;
-                    let _ = sender.send(Action::CompactRequested { session_id, result });
+                    Some(Action::CompactRequested { session_id, result })
                 });
             },
             Command::Skill { query } => {
@@ -161,10 +170,9 @@ where
         self.state
             .set_status(format!("hydrating session {}", session_id));
         let client = self.client.clone();
-        let sender = self.actions_tx.clone();
-        tokio::spawn(async move {
+        self.dispatch_async(async move {
             let result = client.fetch_conversation_snapshot(&session_id, None).await;
-            let _ = sender.send(Action::SnapshotLoaded { session_id, result });
+            Some(Action::SnapshotLoaded { session_id, result })
         });
     }
 
@@ -217,10 +225,9 @@ where
 
     pub(super) async fn refresh_sessions(&self) {
         let client = self.client.clone();
-        let sender = self.actions_tx.clone();
-        tokio::spawn(async move {
+        self.dispatch_async(async move {
             let result = client.list_sessions().await;
-            let _ = sender.send(Action::SessionsRefreshed(result));
+            Some(Action::SessionsRefreshed(result))
         });
     }
 
@@ -229,7 +236,7 @@ where
             .state
             .interaction
             .composer
-            .input
+            .as_str()
             .trim_start()
             .starts_with('/')
         {
@@ -249,12 +256,11 @@ where
             return;
         };
         let client = self.client.clone();
-        let sender = self.actions_tx.clone();
-        tokio::spawn(async move {
+        self.dispatch_async(async move {
             let result = client
                 .list_conversation_slash_candidates(&session_id, Some(query.as_str()))
                 .await;
-            let _ = sender.send(Action::SlashCandidatesLoaded { query, result });
+            Some(Action::SlashCandidatesLoaded { query, result })
         });
     }
 
@@ -265,14 +271,14 @@ where
                     .state
                     .interaction
                     .composer
-                    .input
+                    .as_str()
                     .trim_start()
                     .starts_with("/resume")
                 {
                     self.state.close_palette();
                     return;
                 }
-                let query = resume_query_from_input(self.state.interaction.composer.input.as_str());
+                let query = resume_query_from_input(self.state.interaction.composer.as_str());
                 let items =
                     filter_resume_sessions(&self.state.conversation.sessions, query.as_str());
                 self.state.set_resume_query(query, items);
@@ -282,7 +288,7 @@ where
                     .state
                     .interaction
                     .composer
-                    .input
+                    .as_str()
                     .trim_start()
                     .starts_with('/')
                 {
@@ -346,6 +352,6 @@ where
     }
 
     pub(super) fn slash_query_for_current_input(&self) -> String {
-        slash_query_from_input(self.state.interaction.composer.input.as_str())
+        slash_query_from_input(self.state.interaction.composer.as_str())
     }
 }

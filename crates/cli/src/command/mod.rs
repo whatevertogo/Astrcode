@@ -27,7 +27,7 @@ pub enum PaletteAction {
     RunCommand(Command),
 }
 
-pub fn classify_input(input: &str) -> InputAction {
+pub fn classify_input(input: String) -> InputAction {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return InputAction::Empty;
@@ -40,6 +40,16 @@ pub fn classify_input(input: &str) -> InputAction {
     }
 
     InputAction::RunCommand(parse_command(trimmed))
+}
+
+pub fn fuzzy_contains(query: &str, fields: impl IntoIterator<Item = String>) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    fields
+        .into_iter()
+        .any(|field| field.to_lowercase().contains(&query))
 }
 
 pub fn palette_action(selection: PaletteSelection) -> PaletteAction {
@@ -81,21 +91,16 @@ pub fn filter_slash_candidates(
     candidates: &[AstrcodeConversationSlashCandidateDto],
     query: &str,
 ) -> Vec<AstrcodeConversationSlashCandidateDto> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return candidates.to_vec();
-    }
-
     candidates
         .iter()
         .filter(|candidate| {
-            candidate.id.to_lowercase().contains(&query)
-                || candidate.title.to_lowercase().contains(&query)
-                || candidate.description.to_lowercase().contains(&query)
-                || candidate
-                    .keywords
-                    .iter()
-                    .any(|keyword| keyword.to_lowercase().contains(&query))
+            fuzzy_contains(
+                query,
+                std::iter::once(candidate.id.clone())
+                    .chain(std::iter::once(candidate.title.clone()))
+                    .chain(std::iter::once(candidate.description.clone()))
+                    .chain(candidate.keywords.iter().cloned()),
+            )
         })
         .cloned()
         .collect()
@@ -125,7 +130,7 @@ mod tests {
     #[test]
     fn classifies_plain_prompt_without_command_semantics() {
         assert_eq!(
-            classify_input("实现 terminal v1"),
+            classify_input("实现 terminal v1".to_string()),
             InputAction::SubmitPrompt {
                 text: "实现 terminal v1".to_string()
             }

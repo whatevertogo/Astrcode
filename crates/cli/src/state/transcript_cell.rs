@@ -122,7 +122,6 @@ impl TranscriptCell {
                                 Some("工具输出已更新".to_string())
                             }
                         })
-                        .clone()
                         .unwrap_or_else(|| "正在执行工具调用".to_string()),
                     status: block.status.into(),
                     stdout: block.streams.stdout.clone(),
@@ -140,7 +139,8 @@ impl TranscriptCell {
                 id,
                 expanded,
                 kind: TranscriptCellKind::Error {
-                    code: format!("{:?}", block.code),
+                    code: enum_wire_name(&block.code)
+                        .unwrap_or_else(|| "unknown_error".to_string()),
                     message: block.message.clone(),
                 },
             },
@@ -148,7 +148,8 @@ impl TranscriptCell {
                 id,
                 expanded,
                 kind: TranscriptCellKind::SystemNote {
-                    note_kind: format!("{:?}", block.note_kind),
+                    note_kind: enum_wire_name(&block.note_kind)
+                        .unwrap_or_else(|| "system_note".to_string()),
                     markdown: block.markdown.clone(),
                 },
             },
@@ -156,7 +157,8 @@ impl TranscriptCell {
                 id,
                 expanded,
                 kind: TranscriptCellKind::ChildHandoff {
-                    handoff_kind: format!("{:?}", block.handoff_kind),
+                    handoff_kind: enum_wire_name(&block.handoff_kind)
+                        .unwrap_or_else(|| "delegated".to_string()),
                     title: block.child.title.clone(),
                     lifecycle: block.child.lifecycle,
                     message: block
@@ -180,4 +182,14 @@ impl From<AstrcodeConversationBlockStatusDto> for TranscriptCellStatus {
             AstrcodeConversationBlockStatusDto::Cancelled => Self::Cancelled,
         }
     }
+}
+
+fn enum_wire_name<T>(value: &T) -> Option<String>
+where
+    T: serde::Serialize,
+{
+    serde_json::to_value(value)
+        .ok()?
+        .as_str()
+        .map(|value| value.trim().to_string())
 }

@@ -1,17 +1,28 @@
 use super::TranscriptCellStatus;
 
 const DEFAULT_THINKING_SNIPPETS: &[&str] = &[
-    "整理上下文与约束边界",
-    "对比可行路径并压缩实现范围",
-    "检查已有抽象能否复用",
-    "收敛风险最高的变更点",
-    "把交互细节拆成可验证步骤",
-    "准备把输出整理成最小可行修改",
+    "先确认当前会话状态，再开始改动。",
+    "把变更收敛到最小但完整的一步。",
+    "优先复用已有抽象，而不是新增一层。",
+    "先压测实现里风险最高的分支。",
+    "让这次交互更容易验证和回归。",
+    "最终输出保持紧凑且可执行。",
+];
+
+const DEFAULT_THINKING_VERBS: &[&str] = &[
+    "思考中",
+    "整理中",
+    "推敲中",
+    "拆解中",
+    "校准中",
+    "交叉检查中",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThinkingPresentationState {
-    pub label: String,
+    pub verb: String,
+    pub summary: String,
+    pub hint: String,
     pub preview: String,
     pub expanded_body: String,
     pub is_playing: bool,
@@ -20,12 +31,14 @@ pub struct ThinkingPresentationState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThinkingSnippetPool {
     snippets: &'static [&'static str],
+    verbs: &'static [&'static str],
 }
 
 impl Default for ThinkingSnippetPool {
     fn default() -> Self {
         Self {
             snippets: DEFAULT_THINKING_SNIPPETS,
+            verbs: DEFAULT_THINKING_VERBS,
         }
     }
 }
@@ -50,6 +63,14 @@ impl ThinkingSnippetPool {
         }
         let index = ((seed as usize).wrapping_add(frame as usize)) % self.snippets.len();
         self.snippets[index]
+    }
+
+    pub fn verb(&self, seed: u64, frame: u64) -> &'static str {
+        if self.verbs.is_empty() {
+            return "思考中";
+        }
+        let index = ((seed as usize).wrapping_add(frame as usize * 2)) % self.verbs.len();
+        self.verbs[index]
     }
 }
 
@@ -83,20 +104,26 @@ impl ThinkingPlaybackDriver {
         let summary = first_non_empty_line(raw_body)
             .map(str::to_string)
             .unwrap_or_else(|| playlist[0].to_string());
+        let verb = pool.verb(seed, self.frame).to_string();
 
         let is_streaming = matches!(status, TranscriptCellStatus::Streaming);
-        let label = if expanded {
-            "Thinking · Ctrl+O 收起".to_string()
+        let summary_line = if expanded {
+            format!("{verb} · Ctrl+O 收起")
         } else if is_streaming {
-            "Thinking... · Ctrl+O 展开".to_string()
+            format!("{verb}… · Ctrl+O 展开")
         } else {
-            "Thinking · Ctrl+O 展开".to_string()
+            format!("{verb} · Ctrl+O 展开")
         };
 
         let preview = if is_streaming {
             pool.sample(seed, self.frame).to_string()
         } else {
             summary
+        };
+        let hint = if is_streaming {
+            "提示：让当前任务自然完成，不要中断流式过程。".to_string()
+        } else {
+            "Ctrl+O 可展开完整思考内容。".to_string()
         };
 
         let expanded_body = if raw_body.trim().is_empty() {
@@ -106,7 +133,9 @@ impl ThinkingPlaybackDriver {
         };
 
         ThinkingPresentationState {
-            label,
+            verb,
+            summary: summary_line,
+            hint,
             preview,
             expanded_body,
             is_playing: is_streaming,

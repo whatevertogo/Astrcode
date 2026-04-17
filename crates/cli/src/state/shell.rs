@@ -14,7 +14,13 @@ impl Default for ShellState {
         Self {
             connection_origin: String::new(),
             working_dir: None,
-            capabilities: TerminalCapabilities::detect(),
+            capabilities: TerminalCapabilities {
+                color: crate::capability::ColorLevel::None,
+                glyphs: crate::capability::GlyphMode::Ascii,
+                alt_screen: false,
+                mouse: false,
+                bracketed_paste: false,
+            },
         }
     }
 }

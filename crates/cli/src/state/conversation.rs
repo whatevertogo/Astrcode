@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use astrcode_client::{
     AstrcodeConversationBannerDto, AstrcodeConversationBlockDto, AstrcodeConversationBlockPatchDto,
@@ -19,7 +19,7 @@ pub struct ConversationState {
     pub cursor: Option<AstrcodeConversationCursorDto>,
     pub control: Option<AstrcodeConversationControlStateDto>,
     pub transcript: Vec<AstrcodeConversationBlockDto>,
-    pub transcript_cells: Vec<TranscriptCell>,
+    pub transcript_index: HashMap<String, usize>,
     pub child_summaries: Vec<AstrcodeConversationChildSummaryDto>,
     pub slash_candidates: Vec<AstrcodeConversationSlashCandidateDto>,
     pub banner: Option<AstrcodeConversationBannerDto>,
@@ -40,7 +40,7 @@ impl ConversationState {
         self.cursor = Some(snapshot.cursor);
         self.control = Some(snapshot.control);
         self.transcript = snapshot.blocks;
-        self.rebuild_transcript_cells();
+        self.rebuild_transcript_index();
         self.child_summaries = snapshot.child_summaries;
         self.slash_candidates = snapshot.slash_candidates;
         self.banner = snapshot.banner;
@@ -73,41 +73,38 @@ impl ConversationState {
         &mut self,
         delta: AstrcodeConversationDeltaDto,
         render: &mut RenderState,
-        expanded_ids: &BTreeSet<String>,
+        _expanded_ids: &BTreeSet<String>,
     ) {
         match delta {
             AstrcodeConversationDeltaDto::AppendBlock { block } => {
-                self.transcript_cells
-                    .push(TranscriptCell::from_block(&block, expanded_ids));
                 self.transcript.push(block);
+                if let Some(block) = self.transcript.last() {
+                    self.transcript_index
+                        .insert(block_id_of(block).to_string(), self.transcript.len() - 1);
+                }
                 render.invalidate_transcript_cache();
             },
             AstrcodeConversationDeltaDto::PatchBlock { block_id, patch } => {
-                if let Some((index, block)) = self
-                    .transcript
-                    .iter_mut()
-                    .enumerate()
-                    .find(|(_, block)| block_id_of(block) == block_id)
-                {
+                if let Some((index, block)) = self.find_block_mut(block_id.as_str()) {
                     apply_block_patch(block, patch);
-                    self.transcript_cells[index] = TranscriptCell::from_block(block, expanded_ids);
+                    let _ = index;
                     render.invalidate_transcript_cache();
+                } else {
+                    debug_missing_block("patch", block_id.as_str());
                 }
             },
             AstrcodeConversationDeltaDto::CompleteBlock { block_id, status } => {
-                if let Some((index, block)) = self
-                    .transcript
-                    .iter_mut()
-                    .enumerate()
-                    .find(|(_, block)| block_id_of(block) == block_id)
-                {
+                if let Some((index, block)) = self.find_block_mut(block_id.as_str()) {
                     set_block_status(block, status);
-                    self.transcript_cells[index] = TranscriptCell::from_block(block, expanded_ids);
+                    let _ = index;
                     render.invalidate_transcript_cache();
+                } else {
+                    debug_missing_block("complete", block_id.as_str());
                 }
             },
             AstrcodeConversationDeltaDto::UpdateControlState { control } => {
                 self.control = Some(control);
+                render.invalidate_transcript_cache();
             },
             AstrcodeConversationDeltaDto::UpsertChildSummary { child } => {
                 if let Some(existing) = self
@@ -129,9 +126,11 @@ impl ConversationState {
             },
             AstrcodeConversationDeltaDto::SetBanner { banner } => {
                 self.banner = Some(banner);
+                render.invalidate_transcript_cache();
             },
             AstrcodeConversationDeltaDto::ClearBanner => {
                 self.banner = None;
+                render.invalidate_transcript_cache();
             },
             AstrcodeConversationDeltaDto::RehydrateRequired { error } => {
                 self.set_banner_error(error);
@@ -139,18 +138,28 @@ impl ConversationState {
         }
     }
 
-    fn rebuild_transcript_cells(&mut self) {
-        let expanded_ids = self
-            .transcript_cells
-            .iter()
-            .filter(|cell| cell.expanded)
-            .map(|cell| cell.id.clone())
-            .collect::<BTreeSet<_>>();
-        self.transcript_cells = self
+    fn rebuild_transcript_index(&mut self) {
+        self.transcript_index = self
             .transcript
             .iter()
-            .map(|block| TranscriptCell::from_block(block, &expanded_ids))
+            .enumerate()
+            .map(|(index, block)| (block_id_of(block).to_string(), index))
             .collect();
+    }
+
+    fn find_block_mut(
+        &mut self,
+        block_id: &str,
+    ) -> Option<(usize, &mut AstrcodeConversationBlockDto)> {
+        let index = *self.transcript_index.get(block_id)?;
+        self.transcript.get_mut(index).map(|block| (index, block))
+    }
+
+    pub fn project_transcript_cells(&self, expanded_ids: &BTreeSet<String>) -> Vec<TranscriptCell> {
+        self.transcript
+            .iter()
+            .map(|block| TranscriptCell::from_block(block, expanded_ids))
+            .collect()
     }
 }
 
@@ -191,7 +200,7 @@ fn apply_block_patch(
         },
         AstrcodeConversationBlockPatchDto::AppendToolStream { stream, chunk } => {
             if let AstrcodeConversationBlockDto::ToolCall(block) = block {
-                if format!("{stream:?}").eq_ignore_ascii_case("stderr") {
+                if enum_wire_name(&stream).as_deref() == Some("stderr") {
                     block.streams.stderr.push_str(&chunk);
                 } else {
                     block.streams.stdout.push_str(&chunk);
@@ -230,6 +239,21 @@ fn apply_block_patch(
         },
         AstrcodeConversationBlockPatchDto::SetStatus { status } => set_block_status(block, status),
     }
+}
+
+fn enum_wire_name<T>(value: &T) -> Option<String>
+where
+    T: serde::Serialize,
+{
+    serde_json::to_value(value)
+        .ok()?
+        .as_str()
+        .map(|value| value.trim().to_string())
+}
+
+fn debug_missing_block(operation: &str, block_id: &str) {
+    #[cfg(debug_assertions)]
+    eprintln!("astrcode-cli: ignored {operation} delta for unknown block '{block_id}'");
 }
 
 fn set_block_status(
