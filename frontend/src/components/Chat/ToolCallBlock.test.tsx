@@ -98,6 +98,52 @@ describe('ToolCallBlock', () => {
     expect(html).toContain('结果');
   });
 
+  it('renders a persisted result card instead of the raw wrapper text', () => {
+    const html = renderToStaticMarkup(
+      <ChatScreenProvider value={chatContextValue}>
+        <ToolCallBlock
+          message={{
+            id: 'tool-call-persisted',
+            kind: 'toolCall',
+            toolCallId: 'call-persisted',
+            toolName: 'grep',
+            status: 'ok',
+            args: {
+              pattern: 'target_',
+              path: 'src',
+            },
+            output:
+              '<persisted-output>\nLarge tool output was saved to a file instead of being inlined.\nPath: ~/.astrcode/tool-results/call-1.txt\n</persisted-output>',
+            metadata: {
+              persistedOutput: {
+                storageKind: 'toolResult',
+                absolutePath: '~/.astrcode/tool-results/call-1.txt',
+                relativePath: 'tool-results/call-1.txt',
+                totalBytes: 4096,
+                previewText: '[{"file":"src/lib.rs"}]',
+                previewBytes: 23,
+              },
+              truncated: true,
+            },
+            streams: {
+              stdout: '',
+              stderr: '',
+            },
+            timestamp: Date.now(),
+          }}
+        />
+      </ChatScreenProvider>
+    );
+
+    expect(html).toContain('已持久化结果');
+    expect(html).toContain('~/.astrcode/tool-results/call-1.txt');
+    expect(html).toContain('tool-results/call-1.txt');
+    expect(html).toContain(
+      'readFile { path: &quot;~/.astrcode/tool-results/call-1.txt&quot;, charOffset: 0, maxChars: 20000 }'
+    );
+    expect(html).not.toContain('Large tool output was saved to a file instead of being inlined.');
+  });
+
   it('renders child session navigation action from explicit child ref', () => {
     const html = renderToStaticMarkup(
       <ChatScreenProvider value={chatContextValue}>

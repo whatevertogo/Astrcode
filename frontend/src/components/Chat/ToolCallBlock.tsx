@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 
 import type { ToolCallMessage } from '../../types';
 import {
+  extractPersistedToolOutput,
   extractStructuredArgs,
   extractStructuredJsonOutput,
   extractToolMetadataSummary,
@@ -82,11 +83,47 @@ function resultTextSurface(text: string, tone: 'normal' | 'error') {
   );
 }
 
+function persistedToolResultSurface(
+  absolutePath: string,
+  relativePath: string,
+  totalBytes: number,
+  previewText: string
+) {
+  const suggestedRead = `readFile { path: "${absolutePath}", charOffset: 0, maxChars: 20000 }`;
+
+  return (
+    <div className="rounded-2xl border border-border bg-white/75 px-3.5 py-3 shadow-[0_12px_28px_rgba(15,23,42,0.05)]">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+        <span className={pillNeutral}>已持久化结果</span>
+        <span className={pillNeutral}>{totalBytes} bytes</span>
+      </div>
+      <div className="mt-3 space-y-2 text-[13px] leading-relaxed text-text-primary">
+        <div>
+          <div className="text-xs text-text-secondary">绝对路径</div>
+          <div className="break-all font-mono text-[12px] text-text-primary">{absolutePath}</div>
+        </div>
+        <div>
+          <div className="text-xs text-text-secondary">会话相对路径</div>
+          <div className="break-all font-mono text-[12px] text-text-muted">{relativePath}</div>
+        </div>
+        {previewText ? (
+          <ToolCodePanel title="Preview" tone="normal" content={previewText} scrollMode="inherit" />
+        ) : null}
+        <div>
+          <div className="text-xs text-text-secondary">建议读取第一页</div>
+          <div className="break-all font-mono text-[12px] text-text-primary">{suggestedRead}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ToolCallBlock({ message }: ToolCallBlockProps) {
   const { onOpenChildSession, onOpenSubRun } = useChatScreenContext();
   const viewportRef = useRef<HTMLDivElement>(null);
   useNestedScrollContainment(viewportRef);
   const shellDisplay = extractToolShellDisplay(message.metadata);
+  const persistedOutput = extractPersistedToolOutput(message.metadata);
   const summary = formatToolCallSummary(
     message.toolName,
     message.args,
@@ -103,7 +140,10 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
   const structuredArgs = extractStructuredArgs(message.args);
   const metadataSummary = extractToolMetadataSummary(message.metadata);
   const fallbackResult =
-    message.error?.trim() || message.output?.trim() || metadataSummary?.message?.trim() || '';
+    message.error?.trim() ||
+    (persistedOutput ? '' : message.output?.trim()) ||
+    metadataSummary?.message?.trim() ||
+    '';
   const structuredFallbackResult = extractStructuredJsonOutput(fallbackResult);
   const defaultOpen = message.status === 'fail';
   const explicitError = message.error?.trim() || '';
@@ -206,7 +246,40 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
                     {resultTextSurface(explicitError, 'error')}
                   </section>
                 )}
+                {persistedOutput && (
+                  <section className="flex min-w-0 flex-col gap-2">
+                    <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className={cn('shrink-0', pillNeutral)}>结果</span>
+                        <span className="truncate font-mono text-text-muted">persisted output</span>
+                      </div>
+                      <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
+                    </div>
+                    {persistedToolResultSurface(
+                      persistedOutput.absolutePath,
+                      persistedOutput.relativePath,
+                      persistedOutput.totalBytes,
+                      persistedOutput.previewText
+                    )}
+                  </section>
+                )}
               </>
+            ) : persistedOutput ? (
+              <section className="flex min-w-0 flex-col gap-2">
+                <div className="flex items-center justify-between gap-3 text-xs text-text-secondary">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className={cn('shrink-0', statusPill(message.status))}>结果</span>
+                    <span className="truncate font-mono text-text-muted">persisted output</span>
+                  </div>
+                  <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
+                </div>
+                {persistedToolResultSurface(
+                  persistedOutput.absolutePath,
+                  persistedOutput.relativePath,
+                  persistedOutput.totalBytes,
+                  persistedOutput.previewText
+                )}
+              </section>
             ) : fallbackResult ? (
               structuredFallbackResult ? (
                 <section className="flex min-w-0 flex-col gap-2">

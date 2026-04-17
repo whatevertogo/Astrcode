@@ -28,7 +28,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    check_cancel, remember_file_observation, resolve_read_path, session_dir_for_tool_results,
+    check_cancel, merge_persisted_tool_output_metadata, remember_file_observation,
+    resolve_read_target, session_dir_for_tool_results,
 };
 
 /// 二进制检测采样大小（前 N 字节）。
@@ -86,6 +87,9 @@ struct ReadFileArgs {
     /// 最大返回字符数，默认 20,000。
     #[serde(default)]
     max_chars: Option<usize>,
+    /// 已持久化工具结果的字符窗口起点（0-based）。
+    #[serde(default)]
+    char_offset: Option<usize>,
     /// 起始行号（0-based），用于跳过文件头部。
     #[serde(default)]
     offset: Option<usize>,
@@ -228,6 +232,11 @@ impl Tool for ReadFileTool {
                         "minimum": 0,
                         "description": "Starting line number (0-based). Skips lines before this offset."
                     },
+                    "charOffset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Starting character offset for persisted tool-result reads."
+                    },
                     "limit": {
                         "type": "integer",
                         "minimum": 1,
@@ -253,18 +262,24 @@ impl Tool for ReadFileTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Read file contents — supports text, images (base64), targeted line-range \
-                     reads.",
-                    "Use after `grep`/`findFiles` gives you a path. Set `offset` (**0-based** \
-                     line) + `limit` to read a specific range. Set `lineNumbers: false` to skip \
-                     line-number prefixes. `maxChars` (default 20000) includes line-number \
-                     prefixes in its budget.",
+                    "Read file contents — supports text, images (base64), persisted tool-result \
+                     chunks, and targeted line-range reads.",
+                    "Use after `grep`/`findFiles` gives you a path. For normal source files, use \
+                     `offset` (**0-based** line) + `limit` to read a specific range; set \
+                     `lineNumbers: false` to skip line-number prefixes. For persisted large tool \
+                     results, prefer chunked reads with `charOffset` + `maxChars` instead of \
+                     trying to inline the whole file again.",
                 )
                 .caveat(
-                    "If output is truncated, use `offset` + `limit` to read the next chunk — do \
-                     not retry with a larger `maxChars`.",
+                    "If output is truncated, continue from the next chunk. For normal files, use \
+                     `offset` + `limit`; for persisted tool results, use `charOffset` + \
+                     `maxChars`. Do not retry by requesting the whole large result again.",
                 )
                 .example("Read lines 50–100: { path: \"src/main.rs\", offset: 50, limit: 50 }")
+                .example(
+                    "Read the first chunk of a persisted tool result: { path: \
+                     \"C:/.../tool-results/call-1.txt\", charOffset: 0, maxChars: 20000 }",
+                )
                 .prompt_tag("filesystem")
                 .always_include(true),
             )
@@ -308,7 +323,9 @@ impl Tool for ReadFileTool {
             });
         }
 
-        let path = resolve_read_path(ctx, &args.path)?;
+        let target = resolve_read_target(ctx, &args.path)?;
+        let path = target.path;
+        let is_persisted_tool_result = target.persisted_relative_path.is_some();
 
         // 图片文件处理：返回 base64 编码
         if is_image_file(&path) {
@@ -350,6 +367,58 @@ impl Tool for ReadFileTool {
         }
 
         let max_chars = args.max_chars.unwrap_or(20_000);
+
+        if is_persisted_tool_result {
+            if args.offset.is_some() || args.limit.is_some() {
+                return Err(AstrError::Validation(
+                    "persisted tool-result reads do not support line-based `offset`/`limit`; use \
+                     `charOffset` + `maxChars` instead"
+                        .to_string(),
+                ));
+            }
+
+            let text = read_persisted_tool_result(&path)?;
+            let char_offset = args.char_offset.unwrap_or(0);
+            let persisted_chunk = read_persisted_tool_result_chunk(&text, char_offset, max_chars);
+            let recommended_next_args = persisted_chunk.next_char_offset.map(|next_char_offset| {
+                json!({
+                    "path": path.to_string_lossy(),
+                    "charOffset": next_char_offset,
+                    "maxChars": max_chars,
+                })
+            });
+
+            return Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "readFile".to_string(),
+                ok: true,
+                output: persisted_chunk.text,
+                error: None,
+                metadata: Some(json!({
+                    "path": path.to_string_lossy(),
+                    "absolutePath": path.to_string_lossy(),
+                    "bytes": total_utf8_bytes(&text),
+                    "persistedRead": true,
+                    "charOffset": char_offset,
+                    "returnedChars": persisted_chunk.returned_chars,
+                    "nextCharOffset": persisted_chunk.next_char_offset,
+                    "hasMore": persisted_chunk.has_more,
+                    "recommendedNextArgs": recommended_next_args,
+                    "relativePath": target.persisted_relative_path,
+                    "truncated": persisted_chunk.has_more,
+                })),
+                child_ref: None,
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                truncated: persisted_chunk.has_more,
+            });
+        }
+
+        if args.char_offset.is_some() {
+            return Err(AstrError::Validation(
+                "`charOffset` is only supported when reading persisted tool-result files"
+                    .to_string(),
+            ));
+        }
 
         // 二进制文件检测：避免将二进制文件内容作为乱码返回，浪费 context window
         if is_binary_file(&path)? {
@@ -445,18 +514,57 @@ impl Tool for ReadFileTool {
             &text,
             ctx.resolved_inline_limit(),
         );
+        merge_persisted_tool_output_metadata(&mut meta_object, final_output.persisted.as_ref());
 
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "readFile".to_string(),
             ok: true,
-            output: final_output,
+            output: final_output.output,
             error: None,
             metadata: Some(serde_json::Value::Object(meta_object)),
             child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PersistedToolResultChunk {
+    text: String,
+    returned_chars: usize,
+    next_char_offset: Option<usize>,
+    has_more: bool,
+}
+
+fn read_persisted_tool_result(path: &Path) -> Result<String> {
+    fs::read_to_string(path)
+        .map_err(|e| AstrError::io(format!("failed reading file '{}'", path.display()), e))
+}
+
+fn total_utf8_bytes(text: &str) -> usize {
+    text.len()
+}
+
+fn read_persisted_tool_result_chunk(
+    text: &str,
+    char_offset: usize,
+    max_chars: usize,
+) -> PersistedToolResultChunk {
+    let total_chars = text.chars().count();
+    let start = char_offset.min(total_chars);
+    let end = start.saturating_add(max_chars).min(total_chars);
+    let start_byte = char_count_to_byte_offset(text, start);
+    let end_byte = char_count_to_byte_offset(text, end);
+    let returned_chars = end.saturating_sub(start);
+    let has_more = end < total_chars;
+
+    PersistedToolResultChunk {
+        text: text[start_byte..end_byte].to_string(),
+        returned_chars,
+        next_char_offset: has_more.then_some(end),
+        has_more,
     }
 }
 
@@ -616,7 +724,10 @@ fn read_lines_range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::{
+        builtin_tools::fs_common::session_dir_for_tool_results,
+        test_support::{canonical_tool_path, test_tool_context_for},
+    };
 
     #[tokio::test]
     async fn read_file_tool_marks_truncated_output() {
@@ -928,5 +1039,160 @@ mod tests {
         let metadata = result.metadata.expect("metadata should exist");
         assert_eq!(metadata["bytes"], json!(19));
         assert!(metadata.get("fileType").is_none());
+    }
+
+    #[tokio::test]
+    async fn read_file_reads_first_persisted_chunk_by_absolute_path() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let ctx = test_tool_context_for(temp.path());
+        let session_dir =
+            session_dir_for_tool_results(&ctx).expect("session tool-results dir should resolve");
+        let persisted = session_dir.join("tool-results").join("chunked.json");
+        tokio::fs::create_dir_all(
+            persisted
+                .parent()
+                .expect("persisted file should have parent"),
+        )
+        .await
+        .expect("tool-results dir should be created");
+        tokio::fs::write(&persisted, "ABCDEFGHIJ")
+            .await
+            .expect("persisted output should be written");
+        let tool = ReadFileTool;
+
+        let result = tool
+            .execute(
+                "tc-read-persisted-first".to_string(),
+                json!({
+                    "path": canonical_tool_path(&persisted).to_string_lossy(),
+                    "charOffset": 0,
+                    "maxChars": 4
+                }),
+                &ctx,
+            )
+            .await
+            .expect("readFile should open persisted tool result");
+
+        assert!(result.ok);
+        assert_eq!(result.output, "ABCD");
+        assert!(result.truncated);
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(metadata["persistedRead"], json!(true));
+        assert_eq!(metadata["charOffset"], json!(0));
+        assert_eq!(metadata["returnedChars"], json!(4));
+        assert_eq!(metadata["nextCharOffset"], json!(4));
+        assert_eq!(metadata["hasMore"], json!(true));
+        assert_eq!(metadata["relativePath"], json!("tool-results/chunked.json"));
+        assert_eq!(
+            metadata["absolutePath"],
+            json!(canonical_tool_path(&persisted))
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_reads_follow_up_persisted_chunk_without_re_persisting() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let ctx = test_tool_context_for(temp.path());
+        let session_dir =
+            session_dir_for_tool_results(&ctx).expect("session tool-results dir should resolve");
+        let persisted = session_dir.join("tool-results").join("chunked-large.json");
+        tokio::fs::create_dir_all(
+            persisted
+                .parent()
+                .expect("persisted file should have parent"),
+        )
+        .await
+        .expect("tool-results dir should be created");
+        let content = "[{\"id\":0}, {\"id\":1}, {\"id\":2}, {\"id\":3}]";
+        tokio::fs::write(&persisted, content)
+            .await
+            .expect("persisted output should be written");
+        let tool = ReadFileTool;
+
+        let result = tool
+            .execute(
+                "tc-read-persisted-second".to_string(),
+                json!({
+                    "path": canonical_tool_path(&persisted).to_string_lossy(),
+                    "charOffset": 5,
+                    "maxChars": 8
+                }),
+                &ctx,
+            )
+            .await
+            .expect("readFile should page persisted tool result");
+
+        assert!(result.ok);
+        assert_eq!(result.output, "\":0}, {\"");
+        assert!(!result.output.contains("<persisted-output>"));
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(metadata["persistedRead"], json!(true));
+        assert_eq!(metadata["charOffset"], json!(5));
+        assert_eq!(metadata["returnedChars"], json!(8));
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_line_pagination_for_persisted_tool_results() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let ctx = test_tool_context_for(temp.path());
+        let session_dir =
+            session_dir_for_tool_results(&ctx).expect("session tool-results dir should resolve");
+        let persisted = session_dir.join("tool-results").join("chunked.txt");
+        tokio::fs::create_dir_all(
+            persisted
+                .parent()
+                .expect("persisted file should have parent"),
+        )
+        .await
+        .expect("tool-results dir should be created");
+        tokio::fs::write(&persisted, "line0\nline1\nline2\n")
+            .await
+            .expect("persisted output should be written");
+        let tool = ReadFileTool;
+
+        let err = tool
+            .execute(
+                "tc-read-persisted-invalid".to_string(),
+                json!({
+                    "path": canonical_tool_path(&persisted).to_string_lossy(),
+                    "offset": 1,
+                    "limit": 1
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("persisted tool results should reject line pagination");
+
+        assert!(
+            err.to_string()
+                .contains("persisted tool-result reads do not support")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_char_offset_for_regular_files() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("sample.txt");
+        tokio::fs::write(&file, "line0\nline1\n")
+            .await
+            .expect("write should work");
+        let tool = ReadFileTool;
+
+        let err = tool
+            .execute(
+                "tc-read-regular-invalid".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "charOffset": 2
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect_err("regular files should reject charOffset");
+
+        assert!(
+            err.to_string()
+                .contains("only supported when reading persisted")
+        );
     }
 }

@@ -480,7 +480,14 @@ mod tests {
             agent,
             StorageEventPayload::ToolResultReferenceApplied {
                 tool_call_id: tool_call_id.into(),
-                persisted_relative_path: "tool-results/sample.txt".to_string(),
+                persisted_output: crate::PersistedToolOutput {
+                    storage_kind: "toolResult".to_string(),
+                    absolute_path: "~/.astrcode/tool-results/sample.txt".to_string(),
+                    relative_path: "tool-results/sample.txt".to_string(),
+                    total_bytes: 120,
+                    preview_text: "preview".to_string(),
+                    preview_bytes: 7,
+                },
                 replacement: replacement.to_string(),
                 original_bytes: 120,
             },
@@ -897,8 +904,14 @@ mod tests {
                 None,
                 root_agent(),
                 "tc1",
-                "<persisted-output>\nOutput too large (120 bytes). Full output saved to: \
-                 tool-results/sample.txt\n</persisted-output>",
+                "<persisted-output>\nLarge tool output was saved to a file instead of being \
+                 inlined.\nPath: ~/.astrcode/tool-results/sample.txt\nBytes: 120\nRead the file \
+                 with \
+                 `readFile`.\nIf you only need a section, read a smaller chunk instead of the \
+                 whole file.\nStart from the first chunk when you do not yet know the right \
+                 section.\nSuggested first read: { path: \
+                 \"~/.astrcode/tool-results/sample.txt\", charOffset: 0, maxChars: 20000 }\n\
+                 </persisted-output>",
             ),
             turn_done(None, root_agent(), "completed"),
         ];
@@ -907,7 +920,7 @@ mod tests {
 
         assert!(matches!(
             &state.messages[2],
-            LlmMessage::Tool { content, .. } if content.contains("tool-results/sample.txt")
+            LlmMessage::Tool { content, .. } if content.contains("~/.astrcode/tool-results/sample.txt")
         ));
     }
 

@@ -154,6 +154,7 @@ pub use tool::{
     ToolEventSink, ToolPromptMetadata,
 };
 pub use tool_result_persist::{
-    DEFAULT_TOOL_RESULT_INLINE_LIMIT, TOOL_RESULT_PREVIEW_LIMIT, TOOL_RESULTS_DIR,
-    is_persisted_output, maybe_persist_tool_result, persist_tool_result,
+    DEFAULT_TOOL_RESULT_INLINE_LIMIT, PersistedToolOutput, PersistedToolResult,
+    TOOL_RESULT_PREVIEW_LIMIT, TOOL_RESULTS_DIR, is_persisted_output, maybe_persist_tool_result,
+    persist_tool_result, persisted_output_absolute_path,
 };

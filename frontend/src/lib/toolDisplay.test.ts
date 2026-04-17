@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendToolDeltaMetadata,
+  extractPersistedToolOutput,
   extractStructuredArgs,
   extractStructuredJsonOutput,
   extractToolMetadataSummary,
@@ -172,6 +173,33 @@ describe('toolDisplay shell metadata helpers', () => {
     expect(summary).toEqual({
       message: 'No matches found for the given pattern.',
       pills: ['0 returned', 'mode content', 'has more', 'truncated'],
+    });
+  });
+
+  it('extracts persisted tool output metadata and surfaces persisted pills', () => {
+    const metadata = {
+      persistedOutput: {
+        storageKind: 'toolResult',
+        absolutePath: '~/.astrcode/tool-results/call-1.txt',
+        relativePath: 'tool-results/call-1.txt',
+        totalBytes: 4096,
+        previewText: '[{"id":1}]',
+        previewBytes: 10,
+      },
+      truncated: true,
+    };
+
+    expect(extractPersistedToolOutput(metadata)).toEqual({
+      storageKind: 'toolResult',
+      absolutePath: '~/.astrcode/tool-results/call-1.txt',
+      relativePath: 'tool-results/call-1.txt',
+      totalBytes: 4096,
+      previewText: '[{"id":1}]',
+      previewBytes: 10,
+    });
+    expect(extractToolMetadataSummary(metadata)).toEqual({
+      message: undefined,
+      pills: ['persisted', '4096 bytes', 'truncated'],
     });
   });
 

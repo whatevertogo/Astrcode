@@ -161,7 +161,9 @@ fn build_tool_summary_block(
 ) -> BlockSpec {
     let mut content = String::from(
         "Use the narrowest tool that can answer the request. Prefer read-only inspection before \
-         mutation. All paths must stay inside the working directory.",
+         mutation. All paths must stay inside the working directory. When a tool returns a \
+         persisted-result reference for large output, keep the reference in context and inspect \
+         it with `readFile` chunks instead of asking the tool to inline the whole result again.",
     );
 
     if !tool_guides.is_empty() {
@@ -445,6 +447,7 @@ mod tests {
         assert!(read_index < write_index);
         assert!(write_index < external_tool_index);
         assert!(content.contains("When To Use `tool_search`"));
+        assert!(content.contains("persisted-result reference"));
         assert!(
             contribution
                 .blocks

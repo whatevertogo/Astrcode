@@ -18,7 +18,7 @@ use std::sync::OnceLock;
 use astrcode_core::{
     AstrError, CancelToken, CompactAppliedMeta, CompactMode, LlmMessage, LlmRequest, ModelLimits,
     Result, UserMessageOrigin, format_compact_summary, parse_compact_summary_message,
-    tool_result_persist::is_persisted_output,
+    tool_result_persist::{is_persisted_output, persisted_output_absolute_path},
 };
 use astrcode_kernel::KernelGateway;
 use chrono::{DateTime, Utc};
@@ -382,13 +382,8 @@ fn normalize_compaction_tool_content(content: &str) -> String {
 }
 
 fn summarize_persisted_tool_output(content: &str) -> String {
-    let persisted_path = content
-        .lines()
-        .find_map(|line| {
-            line.split_once("Full output saved to: ")
-                .map(|(_, path)| path.trim())
-        })
-        .unwrap_or("unknown persisted path");
+    let persisted_path = persisted_output_absolute_path(content)
+        .unwrap_or_else(|| "unknown persisted path".to_string());
     format!(
         "Large tool output was persisted instead of inlined.\nPersisted path: \
          {persisted_path}\nPreserve only the conclusion, referenced path, and any error."

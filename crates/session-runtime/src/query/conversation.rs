@@ -1045,6 +1045,9 @@ impl ConversationDeltaProjector {
 
     fn replace_tool_duration(&mut self, index: usize, duration_ms: u64) -> bool {
         if let ConversationBlockFacts::ToolCall(block) = &mut self.blocks[index] {
+            if duration_ms == 0 && block.duration_ms.is_some() {
+                return false;
+            }
             if block.duration_ms == Some(duration_ms) {
                 return false;
             }

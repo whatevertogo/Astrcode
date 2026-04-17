@@ -15,8 +15,8 @@ use serde_json::Value;
 use crate::{
     AgentCollaborationFact, AgentEventContext, AstrError, ChildAgentRef, ChildSessionNotification,
     MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
-    MailboxQueuedPayload, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    Result, SubRunResult, ToolOutputStream, UserMessageOrigin,
+    MailboxQueuedPayload, PersistedToolOutput, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, Result, SubRunResult, ToolOutputStream, UserMessageOrigin,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -172,7 +172,7 @@ pub enum StorageEventPayload {
     /// 将大型工具结果替换为 `<persisted-output>` 引用后的 durable 决策。
     ToolResultReferenceApplied {
         tool_call_id: String,
-        persisted_relative_path: String,
+        persisted_output: PersistedToolOutput,
         replacement: String,
         original_bytes: u64,
     },

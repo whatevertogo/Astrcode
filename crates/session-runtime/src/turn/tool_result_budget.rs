@@ -10,14 +10,15 @@ use std::{
 };
 
 use astrcode_core::{
-    LlmMessage, Result, StorageEventPayload, is_persisted_output, persist_tool_result,
+    LlmMessage, PersistedToolOutput, Result, StorageEventPayload, is_persisted_output,
+    persist_tool_result,
 };
 
 use crate::{SessionState, turn::events::tool_result_reference_applied_event};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolResultReplacementRecord {
-    pub persisted_relative_path: String,
+    pub persisted_output: PersistedToolOutput,
     pub replacement: String,
     pub original_bytes: u64,
 }
@@ -60,7 +61,7 @@ impl ToolResultReplacementState {
         for stored in session_state.snapshot_recent_stored_events()? {
             if let StorageEventPayload::ToolResultReferenceApplied {
                 tool_call_id,
-                persisted_relative_path,
+                persisted_output,
                 replacement,
                 original_bytes,
             } = stored.event.payload
@@ -68,7 +69,7 @@ impl ToolResultReplacementState {
                 state.replacements.insert(
                     tool_call_id.clone(),
                     ToolResultReplacementRecord {
-                        persisted_relative_path,
+                        persisted_output,
                         replacement,
                         original_bytes,
                     },
@@ -176,13 +177,13 @@ pub fn apply_tool_result_budget(
             continue;
         };
         let replacement = persist_tool_result(&session_dir, &tool_call_id, content);
-        let Some(persisted_relative_path) = extract_persisted_relative_path(&replacement) else {
+        let Some(persisted_output) = replacement.persisted.clone() else {
             continue;
         };
-        let saved_bytes = original_len.saturating_sub(replacement.len());
+        let saved_bytes = original_len.saturating_sub(replacement.output.len());
         let record = ToolResultReplacementRecord {
-            persisted_relative_path: persisted_relative_path.clone(),
-            replacement: replacement.clone(),
+            persisted_output: persisted_output.clone(),
+            replacement: replacement.output.clone(),
             original_bytes: original_len as u64,
         };
         request
@@ -190,19 +191,19 @@ pub fn apply_tool_result_budget(
             .record_replacement(tool_call_id.clone(), record.clone());
         messages[index] = LlmMessage::Tool {
             tool_call_id: tool_call_id.clone(),
-            content: replacement.clone(),
+            content: replacement.output.clone(),
         };
         events.push(tool_result_reference_applied_event(
             request.turn_id,
             request.agent,
             &tool_call_id,
-            &record.persisted_relative_path,
+            &record.persisted_output,
             &record.replacement,
             record.original_bytes,
         ));
         total_bytes = total_bytes
             .saturating_sub(original_len)
-            .saturating_add(replacement.len());
+            .saturating_add(replacement.output.len());
         stats.replacement_count = stats.replacement_count.saturating_add(1);
         stats.bytes_saved = stats.bytes_saved.saturating_add(saved_bytes);
         replaced.insert(tool_call_id);
@@ -253,13 +254,6 @@ fn resolve_session_dir(working_dir: &Path, session_id: &str) -> Result<PathBuf> 
         .join(session_id))
 }
 
-fn extract_persisted_relative_path(replacement: &str) -> Option<String> {
-    replacement.lines().find_map(|line| {
-        line.split_once("Full output saved to: ")
-            .map(|(_, path)| path.trim().to_string())
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use astrcode_core::{AgentEventContext, EventTranslator, StorageEvent, UserMessageOrigin};
@@ -278,8 +272,15 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("tempdir should exist");
         let agent = AgentEventContext::default();
         let mut translator = EventTranslator::new(session_state.current_phase().expect("phase"));
-        let replacement = "<persisted-output>\nOutput too large (999 bytes). Full output saved \
-                           to: tool-results/call-1.txt\n</persisted-output>";
+        let replacement = "<persisted-output>\nLarge tool output was saved to a file instead of \
+                           being inlined.\nPath: ~/.astrcode/tool-results/call-1.txt\nBytes: \
+                           999\nRead the \
+                           file with `readFile`.\nIf you only need a section, read a smaller \
+                           chunk instead of the whole file.\nStart from the first chunk when you \
+                           do not yet know the right section.\nSuggested first read: { path: \
+                           \"~/.astrcode/tool-results/call-1.txt\", charOffset: 0, maxChars: \
+                           20000 \
+                           }\n</persisted-output>";
         append_and_broadcast(
             &session_state,
             &StorageEvent {
@@ -287,7 +288,14 @@ mod tests {
                 agent: agent.clone(),
                 payload: StorageEventPayload::ToolResultReferenceApplied {
                     tool_call_id: "call-1".to_string(),
-                    persisted_relative_path: "tool-results/call-1.txt".to_string(),
+                    persisted_output: PersistedToolOutput {
+                        storage_kind: "toolResult".to_string(),
+                        absolute_path: "~/.astrcode/tool-results/call-1.txt".to_string(),
+                        relative_path: "tool-results/call-1.txt".to_string(),
+                        total_bytes: 999,
+                        preview_text: "preview".to_string(),
+                        preview_bytes: 7,
+                    },
                     replacement: replacement.to_string(),
                     original_bytes: 999,
                 },

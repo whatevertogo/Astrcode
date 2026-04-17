@@ -41,7 +41,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::builtin_tools::fs_common::{check_cancel, resolve_path, session_dir_for_tool_results};
+use crate::builtin_tools::fs_common::{
+    check_cancel, merge_persisted_tool_output_metadata, resolve_path, session_dir_for_tool_results,
+};
 
 /// Shell 工具实现。
 ///
@@ -507,28 +509,32 @@ impl Tool for ShellTool {
                     &output,
                     ctx.resolved_inline_limit(),
                 );
+                let mut metadata = serde_json::Map::new();
+                metadata.insert("command".to_string(), json!(command_text));
+                metadata.insert("cwd".to_string(), json!(cwd_text.clone()));
+                metadata.insert("shell".to_string(), json!(shell_display.clone()));
+                metadata.insert("exitCode".to_string(), json!(-1));
+                metadata.insert("streamed".to_string(), json!(true));
+                metadata.insert("timedOut".to_string(), json!(true));
+                metadata.insert(
+                    "display".to_string(),
+                    json!({
+                        "kind": "terminal",
+                        "command": args.command,
+                        "cwd": cwd_text,
+                        "shell": spec.display_shell,
+                        "exitCode": -1,
+                    }),
+                );
+                merge_persisted_tool_output_metadata(&mut metadata, output.persisted.as_ref());
 
                 return Ok(ToolExecutionResult {
                     tool_call_id,
                     tool_name: "shell".to_string(),
                     ok: false,
-                    output,
+                    output: output.output,
                     error: Some(format!("shell command timed out after {timeout_secs}s")),
-                    metadata: Some(json!({
-                        "command": command_text,
-                        "cwd": cwd_text.clone(),
-                        "shell": shell_display.clone(),
-                        "exitCode": -1,
-                        "streamed": true,
-                        "timedOut": true,
-                        "display": {
-                            "kind": "terminal",
-                            "command": args.command,
-                            "cwd": cwd_text,
-                            "shell": spec.display_shell,
-                            "exitCode": -1,
-                        },
-                    })),
+                    metadata: Some(serde_json::Value::Object(metadata)),
                     child_ref: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
@@ -582,36 +588,46 @@ impl Tool for ShellTool {
             &output,
             ctx.resolved_inline_limit(),
         );
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("command".to_string(), json!(command_text));
+        metadata.insert("cwd".to_string(), json!(cwd_text.clone()));
+        metadata.insert("shell".to_string(), json!(shell_display));
+        metadata.insert("exitCode".to_string(), json!(exit_code));
+        metadata.insert("streamed".to_string(), json!(true));
+        metadata.insert("stdoutBytes".to_string(), json!(stdout_capture.bytes_read));
+        metadata.insert("stderrBytes".to_string(), json!(stderr_capture.bytes_read));
+        metadata.insert(
+            "stdoutTruncated".to_string(),
+            json!(stdout_capture.truncated),
+        );
+        metadata.insert(
+            "stderrTruncated".to_string(),
+            json!(stderr_capture.truncated),
+        );
+        metadata.insert(
+            "display".to_string(),
+            json!({
+                "kind": "terminal",
+                "command": args.command,
+                "cwd": cwd_text,
+                "shell": spec.display_shell,
+                "exitCode": exit_code,
+            }),
+        );
+        metadata.insert("truncated".to_string(), json!(truncated));
+        merge_persisted_tool_output_metadata(&mut metadata, output.persisted.as_ref());
 
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "shell".to_string(),
             ok,
-            output,
+            output: output.output,
             error: if ok {
                 None
             } else {
                 Some(format!("shell command exited with code {}", exit_code))
             },
-            metadata: Some(json!({
-                "command": command_text,
-                "cwd": cwd_text.clone(),
-                "shell": shell_display,
-                "exitCode": exit_code,
-                "streamed": true,
-                "stdoutBytes": stdout_capture.bytes_read,
-                "stderrBytes": stderr_capture.bytes_read,
-                "stdoutTruncated": stdout_capture.truncated,
-                "stderrTruncated": stderr_capture.truncated,
-                "display": {
-                    "kind": "terminal",
-                    "command": args.command,
-                    "cwd": cwd_text,
-                    "shell": spec.display_shell,
-                    "exitCode": exit_code,
-                },
-                "truncated": truncated,
-            })),
+            metadata: Some(serde_json::Value::Object(metadata)),
             child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,

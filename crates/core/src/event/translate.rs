@@ -17,6 +17,8 @@
 
 use std::collections::HashMap;
 
+use serde_json::json;
+
 use super::phase::PhaseTracker;
 use crate::{
     AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload, StoredEvent,
@@ -376,7 +378,39 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "toolCallResult");
                 }
             },
-            StorageEventPayload::ToolResultReferenceApplied { .. } => {},
+            StorageEventPayload::ToolResultReferenceApplied {
+                tool_call_id,
+                persisted_output,
+                replacement,
+                ..
+            } => {
+                if let Some(turn_id) = turn_id_ref {
+                    push(AgentEvent::ToolCallResult {
+                        turn_id: turn_id.clone(),
+                        agent: agent.clone(),
+                        result: ToolExecutionResult {
+                            tool_call_id: tool_call_id.clone(),
+                            tool_name: self
+                                .tool_call_names
+                                .get(tool_call_id)
+                                .cloned()
+                                .unwrap_or_default(),
+                            ok: true,
+                            output: replacement.clone(),
+                            error: None,
+                            metadata: Some(json!({
+                                "persistedOutput": persisted_output,
+                                "truncated": true,
+                            })),
+                            child_ref: None,
+                            duration_ms: 0,
+                            truncated: true,
+                        },
+                    });
+                } else {
+                    warn_missing_turn_id(stored.storage_seq, "toolResultReferenceApplied");
+                }
+            },
             StorageEventPayload::TurnDone { .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::TurnDone {

@@ -255,7 +255,7 @@ pub(crate) fn tool_result_reference_applied_event(
     turn_id: &str,
     agent: &AgentEventContext,
     tool_call_id: &str,
-    persisted_relative_path: &str,
+    persisted_output: &astrcode_core::PersistedToolOutput,
     replacement: &str,
     original_bytes: u64,
 ) -> StorageEvent {
@@ -264,7 +264,7 @@ pub(crate) fn tool_result_reference_applied_event(
         agent: agent.clone(),
         payload: StorageEventPayload::ToolResultReferenceApplied {
             tool_call_id: tool_call_id.to_string(),
-            persisted_relative_path: persisted_relative_path.to_string(),
+            persisted_output: persisted_output.clone(),
             replacement: replacement.to_string(),
             original_bytes,
         },

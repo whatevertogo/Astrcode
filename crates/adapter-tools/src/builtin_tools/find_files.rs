@@ -25,7 +25,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    check_cancel, json_output, resolve_path, session_dir_for_tool_results,
+    check_cancel, json_output, merge_persisted_tool_output_metadata, resolve_path,
+    session_dir_for_tool_results,
 };
 
 /// FindFiles 工具实现。
@@ -185,20 +186,24 @@ impl Tool for FindFilesTool {
             &output,
             ctx.resolved_inline_limit(),
         );
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("pattern".to_string(), json!(args.pattern));
+        metadata.insert("root".to_string(), json!(root.to_string_lossy()));
+        metadata.insert("count".to_string(), json!(paths.len()));
+        metadata.insert("truncated".to_string(), json!(truncated));
+        metadata.insert(
+            "respectGitignore".to_string(),
+            json!(args.respect_gitignore),
+        );
+        merge_persisted_tool_output_metadata(&mut metadata, final_output.persisted.as_ref());
 
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "findFiles".to_string(),
             ok: true,
-            output: final_output,
+            output: final_output.output,
             error: None,
-            metadata: Some(json!({
-                "pattern": args.pattern,
-                "root": root.to_string_lossy(),
-                "count": paths.len(),
-                "truncated": truncated,
-                "respectGitignore": args.respect_gitignore,
-            })),
+            metadata: Some(serde_json::Value::Object(metadata)),
             child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,

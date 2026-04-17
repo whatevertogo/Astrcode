@@ -19,6 +19,15 @@ export interface ToolMetadataSummary {
   pills: string[];
 }
 
+export interface PersistedToolOutputMetadata {
+  storageKind: 'toolResult';
+  absolutePath: string;
+  relativePath: string;
+  totalBytes: number;
+  previewText: string;
+  previewBytes: number;
+}
+
 export interface StructuredJsonOutput {
   value: UnknownRecord | unknown[];
   summary: string;
@@ -89,6 +98,42 @@ export function extractToolShellDisplay(metadata: unknown): ToolShellDisplayMeta
     shell: pickString(display, 'shell'),
     exitCode: pickNumber(display, 'exitCode'),
     segments: extractShellSegments(display.segments),
+  };
+}
+
+export function extractPersistedToolOutput(
+  metadata: unknown
+): PersistedToolOutputMetadata | null {
+  const container = asRecord(metadata);
+  const persisted = asRecord(container?.persistedOutput);
+  if (!persisted) {
+    return null;
+  }
+
+  const absolutePath = pickString(persisted, 'absolutePath');
+  const relativePath = pickString(persisted, 'relativePath');
+  const totalBytes = pickNumber(persisted, 'totalBytes');
+  const previewText = pickString(persisted, 'previewText');
+  const previewBytes = pickNumber(persisted, 'previewBytes');
+
+  if (
+    persisted.storageKind !== 'toolResult' ||
+    !absolutePath ||
+    !relativePath ||
+    totalBytes === undefined ||
+    previewText === undefined ||
+    previewBytes === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    storageKind: 'toolResult',
+    absolutePath,
+    relativePath,
+    totalBytes,
+    previewText,
+    previewBytes,
   };
 }
 
@@ -193,6 +238,13 @@ export function extractToolMetadataSummary(metadata: unknown): ToolMetadataSumma
 
   const pills: string[] = [];
   const message = pickString(container, 'message');
+  const persisted = extractPersistedToolOutput(container);
+  if (persisted) {
+    pills.push('persisted');
+    if (pickNumber(container, 'bytes') === undefined) {
+      pills.push(`${persisted.totalBytes} bytes`);
+    }
+  }
 
   pushNumberPill(pills, container, ['count'], (value) => `${value} items`);
   pushNumberPill(pills, container, ['returned'], (value) => `${value} returned`);
