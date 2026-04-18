@@ -5,7 +5,93 @@ use super::StreamRenderMode;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrappedLine {
     pub style: WrappedLineStyle,
+    pub rewrap_policy: WrappedLineRewrapPolicy,
+    pub spans: Vec<WrappedSpan>,
+}
+
+impl WrappedLine {
+    pub fn plain(style: WrappedLineStyle, content: impl Into<String>) -> Self {
+        let content = content.into();
+        let spans = if content.is_empty() {
+            Vec::new()
+        } else {
+            vec![WrappedSpan::plain(content)]
+        };
+        Self {
+            style,
+            rewrap_policy: WrappedLineRewrapPolicy::Reflow,
+            spans,
+        }
+    }
+
+    pub fn from_spans(style: WrappedLineStyle, spans: Vec<WrappedSpan>) -> Self {
+        Self {
+            style,
+            rewrap_policy: WrappedLineRewrapPolicy::Reflow,
+            spans,
+        }
+    }
+
+    pub fn with_rewrap_policy(mut self, rewrap_policy: WrappedLineRewrapPolicy) -> Self {
+        self.rewrap_policy = rewrap_policy;
+        self
+    }
+
+    pub fn text(&self) -> String {
+        self.spans
+            .iter()
+            .map(|span| span.content.as_str())
+            .collect::<String>()
+    }
+
+    pub fn is_blank(&self) -> bool {
+        self.spans.is_empty() || self.text().is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrappedLineRewrapPolicy {
+    Reflow,
+    PreserveAndCrop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrappedSpan {
+    pub style: Option<WrappedSpanStyle>,
     pub content: String,
+}
+
+impl WrappedSpan {
+    pub fn plain(content: impl Into<String>) -> Self {
+        Self {
+            style: None,
+            content: content.into(),
+        }
+    }
+
+    pub fn styled(style: WrappedSpanStyle, content: impl Into<String>) -> Self {
+        Self {
+            style: Some(style),
+            content: content.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrappedSpanStyle {
+    Strong,
+    Emphasis,
+    Heading,
+    HeadingRule,
+    TableBorder,
+    TableHeader,
+    InlineCode,
+    Link,
+    ListMarker,
+    QuoteMarker,
+    CodeFence,
+    CodeText,
+    TextArt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2,11 +2,12 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::{
     capability::{ColorLevel, TerminalCapabilities},
-    state::WrappedLineStyle,
+    state::{WrappedLineStyle, WrappedSpanStyle},
 };
 
 pub trait ThemePalette {
     fn line_style(&self, style: WrappedLineStyle) -> Style;
+    fn span_style(&self, style: WrappedSpanStyle) -> Style;
     fn glyph(&self, unicode: &'static str, ascii: &'static str) -> &'static str;
     fn divider(&self) -> &'static str;
 }
@@ -157,5 +158,45 @@ impl ThemePalette for CodexTheme {
 
     fn divider(&self) -> &'static str {
         self.glyph("─", "-")
+    }
+
+    fn span_style(&self, style: WrappedSpanStyle) -> Style {
+        let base = Style::default();
+        if matches!(self.capabilities.color, ColorLevel::None) {
+            return match style {
+                WrappedSpanStyle::Strong
+                | WrappedSpanStyle::Heading
+                | WrappedSpanStyle::TableHeader => base.add_modifier(Modifier::BOLD),
+                WrappedSpanStyle::Emphasis => base.add_modifier(Modifier::ITALIC),
+                WrappedSpanStyle::Link => base.add_modifier(Modifier::UNDERLINED),
+                WrappedSpanStyle::InlineCode
+                | WrappedSpanStyle::CodeFence
+                | WrappedSpanStyle::CodeText
+                | WrappedSpanStyle::TextArt
+                | WrappedSpanStyle::TableBorder
+                | WrappedSpanStyle::ListMarker
+                | WrappedSpanStyle::QuoteMarker
+                | WrappedSpanStyle::HeadingRule => base.add_modifier(Modifier::DIM),
+            };
+        }
+
+        match style {
+            WrappedSpanStyle::Strong => base.add_modifier(Modifier::BOLD),
+            WrappedSpanStyle::Emphasis => base.add_modifier(Modifier::ITALIC),
+            WrappedSpanStyle::Heading => base.fg(self.accent()).add_modifier(Modifier::BOLD),
+            WrappedSpanStyle::HeadingRule => base.fg(self.text_muted()),
+            WrappedSpanStyle::TableBorder => base.fg(self.text_muted()),
+            WrappedSpanStyle::TableHeader => {
+                base.fg(self.accent_soft()).add_modifier(Modifier::BOLD)
+            },
+            WrappedSpanStyle::InlineCode => base.fg(self.accent_soft()),
+            WrappedSpanStyle::Link => base.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+            WrappedSpanStyle::ListMarker | WrappedSpanStyle::QuoteMarker => {
+                base.fg(self.accent_soft()).add_modifier(Modifier::BOLD)
+            },
+            WrappedSpanStyle::CodeFence => base.fg(self.text_muted()).add_modifier(Modifier::DIM),
+            WrappedSpanStyle::CodeText => base.fg(self.text_primary()),
+            WrappedSpanStyle::TextArt => base.fg(self.text_primary()),
+        }
     }
 }

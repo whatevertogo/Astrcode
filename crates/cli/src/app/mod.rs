@@ -218,7 +218,11 @@ fn redraw(
     let mut chat = controller
         .chat_surface
         .build_frame(&controller.state, &theme, size.width);
-    runtime.stage_history_lines(std::mem::take(&mut chat.history_lines));
+    runtime.stage_history_lines(
+        std::mem::take(&mut chat.history_lines)
+            .into_iter()
+            .map(|line| crate::ui::history_line_to_ratatui(line, &theme)),
+    );
     let pane = BottomPaneState::from_cli(&controller.state, &chat, &theme, size.width);
     let layout = SurfaceLayout::new(size, controller.state.render.active_overlay, &pane);
     runtime

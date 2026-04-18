@@ -3,10 +3,10 @@ use std::{io, io::Write};
 use ratatui::{
     backend::Backend,
     layout::{Offset, Rect, Size},
-    text::Line,
 };
 
 use crate::ui::{
+    HistoryLine,
     custom_terminal::{Frame, Terminal},
     insert_history::insert_history_lines,
 };
@@ -17,8 +17,8 @@ where
     B: Backend<Error = io::Error> + Write,
 {
     terminal: Terminal<B>,
-    pending_history_lines: Vec<Line<'static>>,
-    deferred_history_lines: Vec<Line<'static>>,
+    pending_history_lines: Vec<HistoryLine>,
+    deferred_history_lines: Vec<HistoryLine>,
     overlay_open: bool,
 }
 
@@ -50,7 +50,7 @@ where
 
     pub fn stage_history_lines<I>(&mut self, lines: I)
     where
-        I: IntoIterator<Item = Line<'static>>,
+        I: IntoIterator<Item = HistoryLine>,
     {
         self.pending_history_lines.extend(lines);
     }

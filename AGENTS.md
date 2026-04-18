@@ -65,10 +65,7 @@ node scripts/check-crate-boundaries.mjs --strict  # 严格模式
 
 ## Gotchas
 
-- 前端css不允许出现webview相关内容这会导致应用端无法下滑窗口
 - 文档必须使用中文
 - 使用 `node scripts/check-crate-boundaries.mjs` 验证 crate 依赖规则没有被违反
 - `src-tauri` 是 Tauri 薄壳，不含业务逻辑
 - `server` 组合根在 `crates/server/src/bootstrap/runtime.rs`
-- `astrcode-cli` 当前使用 `ratatui 0.30.0`；如果要引入第三方 textarea / TUI widget，先确认它不会再拉入另一套 ratatui 类型，否则会在 `Widget`、`Style`、`Frame` 上直接类型冲突
-- `Viewport::Inline + insert_before(...)` 只有在已提交历史把 inline viewport 之上的主屏空间挤满之后，`TestBackend::scrollback()` 才会真正出现对应行；少量 commit 可能仍停留在当前主屏 buffer，而不是 scrollback 断言里

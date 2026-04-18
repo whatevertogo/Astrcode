@@ -125,23 +125,23 @@ where
     F: Fn(&T) -> (String, String),
 {
     if items.is_empty() {
-        return vec![WrappedLine {
-            style: WrappedLineStyle::Muted,
-            content: empty_message.to_string(),
-        }];
+        return vec![WrappedLine::plain(
+            WrappedLineStyle::Muted,
+            empty_message.to_string(),
+        )];
     }
 
     visible_window(items, selected, MAX_VISIBLE_ITEMS)
         .into_iter()
         .map(|(absolute_index, item)| {
             let (title, details) = meta(item);
-            WrappedLine {
-                style: if absolute_index == selected {
+            WrappedLine::plain(
+                if absolute_index == selected {
                     WrappedLineStyle::PaletteSelected
                 } else {
                     WrappedLineStyle::PaletteItem
                 },
-                content: candidate_line(
+                candidate_line(
                     if absolute_index == selected {
                         theme.glyph("›", ">")
                     } else {
@@ -151,7 +151,7 @@ where
                     details.as_str(),
                     width,
                 ),
-            }
+            )
         })
         .collect()
 }

@@ -19,7 +19,10 @@ pub use interaction::{
     ComposerState, InteractionState, PaletteSelection, PaletteState, PaneFocus, ResumePaletteState,
     SlashPaletteState, StatusLine,
 };
-pub use render::{ActiveOverlay, RenderState, StreamViewState, WrappedLine, WrappedLineStyle};
+pub use render::{
+    ActiveOverlay, RenderState, StreamViewState, WrappedLine, WrappedLineRewrapPolicy,
+    WrappedLineStyle, WrappedSpan, WrappedSpanStyle,
+};
 pub use shell::ShellState;
 pub use thinking::{ThinkingPlaybackDriver, ThinkingPresentationState, ThinkingSnippetPool};
 pub use transcript_cell::{TranscriptCell, TranscriptCellKind, TranscriptCellStatus};

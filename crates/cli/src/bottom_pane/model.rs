@@ -2,8 +2,8 @@ use ratatui::text::Line;
 
 use crate::{
     chat::ChatSurfaceFrame,
-    state::{CliState, PaletteState},
-    ui::{CodexTheme, line_to_ratatui, palette_lines},
+    state::{CliState, PaletteState, WrappedLine, WrappedLineStyle},
+    ui::{CodexTheme, line_to_ratatui, materialize_wrapped_lines, palette_lines},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,9 +64,18 @@ impl BottomPaneState {
                 }
             } else {
                 BottomPaneMode::ActiveSession {
-                    status_line: active_status_line(state, chat),
-                    detail_lines: chat.detail_lines.clone(),
-                    preview_lines: chat.preview_lines.clone(),
+                    status_line: active_status_line(state, chat)
+                        .map(|line| line_to_ratatui(&line, theme)),
+                    detail_lines: materialize_wrapped_lines(
+                        &chat.detail_lines,
+                        usize::from(width.max(1)),
+                        theme,
+                    ),
+                    preview_lines: materialize_wrapped_lines(
+                        &chat.preview_lines,
+                        usize::from(width.max(1)),
+                        theme,
+                    ),
                 }
             },
             composer_line_count: state.interaction.composer.line_count(),
@@ -145,16 +154,19 @@ fn build_welcome_lines(state: &CliState) -> Vec<Line<'static>> {
     ]
 }
 
-fn active_status_line(state: &CliState, chat: &ChatSurfaceFrame) -> Option<Line<'static>> {
+fn active_status_line(state: &CliState, chat: &ChatSurfaceFrame) -> Option<WrappedLine> {
     if state.interaction.status.is_error {
-        return Some(Line::from(format!(
-            "• {}",
-            state.interaction.status.message
-        )));
+        return Some(WrappedLine::plain(
+            WrappedLineStyle::Plain,
+            format!("• {}", state.interaction.status.message),
+        ));
     }
     let trimmed = state.interaction.status.message.trim();
     if !trimmed.is_empty() && trimmed != "ready" {
-        return Some(Line::from(format!("• {trimmed}")));
+        return Some(WrappedLine::plain(
+            WrappedLineStyle::Plain,
+            format!("• {trimmed}"),
+        ));
     }
     chat.status_line.clone()
 }

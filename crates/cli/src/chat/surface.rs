@@ -1,34 +1,32 @@
-use std::collections::HashMap;
-
-use ratatui::text::Line;
+use std::collections::HashSet;
 
 use crate::{
-    state::{CliState, TranscriptCell, TranscriptCellKind, TranscriptCellStatus},
+    state::{
+        CliState, TranscriptCell, TranscriptCellKind, TranscriptCellStatus, WrappedLine,
+        WrappedLineStyle,
+    },
     ui::{
         CodexTheme,
         cells::{RenderableCell, TranscriptCellView},
-        line_to_ratatui,
     },
 };
 
-const STREAMING_ASSISTANT_TAIL_BUDGET: usize = 8;
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ChatSurfaceFrame {
-    pub history_lines: Vec<Line<'static>>,
-    pub status_line: Option<Line<'static>>,
-    pub detail_lines: Vec<Line<'static>>,
-    pub preview_lines: Vec<Line<'static>>,
+    pub history_lines: Vec<WrappedLine>,
+    pub status_line: Option<WrappedLine>,
+    pub detail_lines: Vec<WrappedLine>,
+    pub preview_lines: Vec<WrappedLine>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ChatSurfaceState {
-    committed_line_counts: HashMap<String, usize>,
+    committed_cells: HashSet<String>,
 }
 
 impl ChatSurfaceState {
     pub fn reset(&mut self) {
-        self.committed_line_counts.clear();
+        self.committed_cells.clear();
     }
 
     pub fn build_frame(
@@ -49,10 +47,10 @@ impl ChatSurfaceState {
         }
 
         if let Some(banner) = &state.conversation.banner {
-            frame.status_line = Some(Line::from(format!("• {}", banner.error.message)));
+            frame.status_line = Some(status_line(format!("• {}", banner.error.message)));
             frame.detail_lines.insert(
                 0,
-                Line::from("  当前流需要重新同步，建议等待自动恢复或重新加载快照。"),
+                plain_line("  当前流需要重新同步，建议等待自动恢复或重新加载快照。"),
             );
         }
 
@@ -71,26 +69,15 @@ impl ChatSurfaceState {
 
         match &cell.kind {
             TranscriptCellKind::Assistant { .. } => {
-                let committed_count = *self
-                    .committed_line_counts
-                    .get(cell.id.as_str())
-                    .unwrap_or(&0);
-                let (new_history, preview, stable_count) =
-                    split_streaming_assistant_lines(rendered, committed_count);
-                if !new_history.is_empty() {
-                    frame.history_lines.extend(new_history);
-                }
-                self.committed_line_counts
-                    .insert(cell.id.clone(), stable_count);
-                frame.status_line = Some(Line::from("• 正在生成回复"));
-                frame.preview_lines = preview;
+                frame.status_line = Some(status_line("• 正在生成回复"));
+                frame.preview_lines = rendered;
             },
             TranscriptCellKind::Thinking { .. } => {
-                frame.status_line = Some(Line::from("• 正在思考"));
+                frame.status_line = Some(status_line("• 正在思考"));
                 frame.detail_lines = rendered;
             },
             TranscriptCellKind::ToolCall { tool_name, .. } => {
-                frame.status_line = Some(Line::from(format!("• 正在运行 {tool_name}")));
+                frame.status_line = Some(status_line(format!("• 正在运行 {tool_name}")));
                 frame.detail_lines = rendered;
             },
             _ => {},
@@ -105,19 +92,20 @@ impl ChatSurfaceState {
         width: usize,
         frame: &mut ChatSurfaceFrame,
     ) {
-        let rendered = render_cell_lines(cell, state, theme, width);
-        let committed_count = *self
-            .committed_line_counts
-            .get(cell.id.as_str())
-            .unwrap_or(&0);
-        if committed_count < rendered.len() {
-            frame
-                .history_lines
-                .extend(rendered.iter().skip(committed_count).cloned());
-            self.committed_line_counts
-                .insert(cell.id.clone(), rendered.len());
+        if !self.committed_cells.insert(cell.id.clone()) {
+            return;
         }
+        let rendered = render_cell_lines(cell, state, theme, width);
+        frame.history_lines.extend(rendered);
     }
+}
+
+fn plain_line(content: impl Into<String>) -> WrappedLine {
+    WrappedLine::plain(WrappedLineStyle::Plain, content)
+}
+
+fn status_line(content: impl Into<String>) -> WrappedLine {
+    WrappedLine::plain(WrappedLineStyle::Plain, content)
 }
 
 fn cell_is_streaming(cell: &TranscriptCell) -> bool {
@@ -136,40 +124,20 @@ fn render_cell_lines(
     state: &CliState,
     theme: &CodexTheme,
     width: usize,
-) -> Vec<Line<'static>> {
+) -> Vec<WrappedLine> {
     let view = TranscriptCellView {
         selected: false,
         expanded: state.is_cell_expanded(cell.id.as_str()) || cell.expanded,
         thinking: thinking_state_for_cell(cell, state),
     };
     cell.render_lines(width, state.shell.capabilities, theme, &view)
-        .into_iter()
-        .map(|line| line_to_ratatui(&line, theme))
-        .collect()
 }
 
-fn trim_trailing_blank_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    while lines
-        .last()
-        .is_some_and(|line| line.spans.is_empty() || line.to_string().is_empty())
-    {
+fn trim_trailing_blank_lines(mut lines: Vec<WrappedLine>) -> Vec<WrappedLine> {
+    while lines.last().is_some_and(WrappedLine::is_blank) {
         lines.pop();
     }
     lines
-}
-
-fn split_streaming_assistant_lines(
-    lines: Vec<Line<'static>>,
-    committed_count: usize,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>, usize) {
-    let stable_count = lines.len().saturating_sub(STREAMING_ASSISTANT_TAIL_BUDGET);
-    let new_history = if stable_count > committed_count {
-        lines[committed_count..stable_count].to_vec()
-    } else {
-        Vec::new()
-    };
-    let preview = lines[stable_count.min(lines.len())..].to_vec();
-    (new_history, preview, stable_count)
 }
 
 fn thinking_state_for_cell(
@@ -194,12 +162,11 @@ mod tests {
         AstrcodeConversationAssistantBlockDto, AstrcodeConversationBlockDto,
         AstrcodeConversationBlockStatusDto,
     };
-    use ratatui::text::Line;
 
     use super::ChatSurfaceState;
     use crate::{
         capability::{ColorLevel, GlyphMode, TerminalCapabilities},
-        state::CliState,
+        state::{CliState, WrappedLine},
         ui::CodexTheme,
     };
 
@@ -226,8 +193,8 @@ mod tests {
         })
     }
 
-    fn line_texts(lines: &[Line<'static>]) -> Vec<String> {
-        lines.iter().map(|line| line.to_string()).collect()
+    fn line_texts(lines: &[WrappedLine]) -> Vec<String> {
+        lines.iter().map(WrappedLine::text).collect()
     }
 
     #[test]
@@ -250,9 +217,8 @@ mod tests {
         let history = line_texts(&frame.history_lines);
         let preview = line_texts(&frame.preview_lines);
 
-        assert!(history.iter().any(|line| line.contains("第1项")));
-        assert!(history.iter().any(|line| line.contains("第2项")));
-        assert!(!preview.iter().any(|line| line.contains("第1项")));
+        assert!(history.is_empty());
+        assert!(preview.iter().any(|line| line.contains("第1项")));
         assert!(preview.iter().any(|line| line.contains("第6项")));
 
         let second = surface.build_frame(&state, &theme, 28);
@@ -282,6 +248,7 @@ mod tests {
         let completed = surface.build_frame(&state, &theme, 80);
         let history = line_texts(&completed.history_lines);
 
+        assert!(history.iter().any(|line| line.contains("前言")));
         assert!(history.iter().any(|line| line.contains("- 第一项")));
         assert!(history.iter().any(|line| line.contains("- 第二项")));
         assert!(history.iter().any(|line| line.contains("第10行")));

@@ -4,11 +4,12 @@ use ratatui::{
 };
 
 use crate::{
-    state::{CliState, WrappedLine},
+    state::CliState,
     ui::{
         CodexTheme,
         cells::{RenderableCell, TranscriptCellView},
         custom_terminal::Frame,
+        materialize_wrapped_lines,
     },
 };
 
@@ -40,14 +41,7 @@ pub fn render_browser_overlay(frame: &mut Frame<'_>, state: &CliState, theme: &C
     );
 
     frame.render_widget(
-        Paragraph::new(
-            rendered
-                .lines
-                .iter()
-                .map(|line| super::line_to_ratatui(line, theme))
-                .collect::<Vec<_>>(),
-        )
-        .scroll((scroll as u16, 0)),
+        Paragraph::new(rendered.lines.clone()).scroll((scroll as u16, 0)),
         chunks[0],
     );
 
@@ -59,7 +53,7 @@ pub fn render_browser_overlay(frame: &mut Frame<'_>, state: &CliState, theme: &C
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BrowserRenderOutput {
-    lines: Vec<WrappedLine>,
+    lines: Vec<ratatui::text::Line<'static>>,
     selected_line_range: Option<(usize, usize)>,
     total_cells: usize,
 }
@@ -71,18 +65,24 @@ fn browser_lines(state: &CliState, width: u16, theme: &CodexTheme) -> BrowserRen
     let transcript_cells = state.browser_transcript_cells();
 
     if let Some(banner) = &state.conversation.banner {
-        lines.push(WrappedLine {
-            style: crate::state::WrappedLineStyle::ErrorText,
-            content: format!("! {}", banner.error.message),
-        });
-        lines.push(WrappedLine {
-            style: crate::state::WrappedLineStyle::Muted,
-            content: "  stream 需要重新同步，继续操作前建议等待恢复。".to_string(),
-        });
-        lines.push(WrappedLine {
-            style: crate::state::WrappedLineStyle::Plain,
-            content: String::new(),
-        });
+        lines.extend(materialize_wrapped_lines(
+            &[
+                crate::state::WrappedLine::plain(
+                    crate::state::WrappedLineStyle::ErrorText,
+                    format!("! {}", banner.error.message),
+                ),
+                crate::state::WrappedLine::plain(
+                    crate::state::WrappedLineStyle::Muted,
+                    "  stream 需要重新同步，继续操作前建议等待恢复。".to_string(),
+                ),
+                crate::state::WrappedLine::plain(
+                    crate::state::WrappedLineStyle::Plain,
+                    String::new(),
+                ),
+            ],
+            width,
+            theme,
+        ));
     }
 
     for (index, cell) in transcript_cells.iter().enumerate() {
@@ -104,7 +104,7 @@ fn browser_lines(state: &CliState, width: u16, theme: &CodexTheme) -> BrowserRen
             },
         };
         let rendered = cell.render_lines(width, state.shell.capabilities, theme, &view);
-        lines.extend(rendered);
+        lines.extend(materialize_wrapped_lines(&rendered, width, theme));
         if view.selected {
             selected_line_range = Some((line_start, lines.len().saturating_sub(1)));
         }

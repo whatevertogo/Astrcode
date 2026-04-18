@@ -18,11 +18,11 @@ use ratatui::{
 };
 
 use super::custom_terminal::Terminal;
-use crate::render::wrap::wrap_plain_text;
+use crate::ui::{HistoryLine, materialize_history_line};
 
 pub fn insert_history_lines<B>(
     terminal: &mut Terminal<B>,
-    lines: Vec<Line<'static>>,
+    lines: Vec<HistoryLine>,
 ) -> io::Result<()>
 where
     B: Backend<Error = io::Error> + Write,
@@ -83,13 +83,8 @@ where
     Ok(())
 }
 
-fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
-    let content = line.to_string();
-    let wrapped = wrap_plain_text(content.as_str(), width.max(1));
-    wrapped
-        .into_iter()
-        .map(|item| Line::from(item).style(line.style))
-        .collect()
+fn wrap_line(line: &HistoryLine, width: usize) -> Vec<Line<'static>> {
+    materialize_history_line(line, width)
 }
 
 fn write_history_line<W: Write>(
@@ -303,5 +298,80 @@ fn to_crossterm_color(color: Color) -> CColor {
         Color::White => CColor::White,
         Color::Rgb(r, g, b) => CColor::Rgb { r, g, b },
         Color::Indexed(index) => CColor::AnsiValue(index),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{
+        style::{Color, Modifier, Style},
+        text::{Line, Span},
+    };
+
+    use super::wrap_line;
+    use crate::{state::WrappedLineRewrapPolicy, ui::HistoryLine};
+
+    #[test]
+    fn wrap_line_preserves_span_styles_after_rewrap() {
+        let link_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::UNDERLINED);
+        let line = Line::from(vec![
+            Span::raw("> "),
+            Span::styled("alpha beta", link_style),
+        ]);
+
+        let wrapped = wrap_line(
+            &HistoryLine {
+                line,
+                rewrap_policy: WrappedLineRewrapPolicy::Reflow,
+            },
+            8,
+        );
+
+        assert_eq!(wrapped.len(), 2);
+        assert_eq!(wrapped[0].to_string(), "> alpha");
+        assert_eq!(wrapped[1].to_string(), "beta");
+        assert!(wrapped[0].spans.iter().any(|span| span.style == link_style));
+        assert!(wrapped[1].spans.iter().any(|span| span.style == link_style));
+    }
+
+    #[test]
+    fn wrap_line_preserves_style_across_multiple_wrapped_rows() {
+        let code_style = Style::default().bg(Color::DarkGray);
+        let line = Line::from(vec![Span::styled("alpha beta gamma", code_style)]);
+
+        let wrapped = wrap_line(
+            &HistoryLine {
+                line,
+                rewrap_policy: WrappedLineRewrapPolicy::Reflow,
+            },
+            5,
+        );
+
+        assert_eq!(wrapped.len(), 3);
+        assert_eq!(wrapped[0].to_string(), "alpha");
+        assert_eq!(wrapped[1].to_string(), "beta");
+        assert_eq!(wrapped[2].to_string(), "gamma");
+        assert!(
+            wrapped
+                .iter()
+                .all(|line| line.spans.iter().all(|span| span.style == code_style))
+        );
+    }
+
+    #[test]
+    fn preserve_and_crop_keeps_single_row() {
+        let line = Line::from("abcdefghijklmnopqrstuvwxyz");
+        let wrapped = wrap_line(
+            &HistoryLine {
+                line,
+                rewrap_policy: WrappedLineRewrapPolicy::PreserveAndCrop,
+            },
+            8,
+        );
+
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(wrapped[0].to_string(), "abcdefg…");
     }
 }
