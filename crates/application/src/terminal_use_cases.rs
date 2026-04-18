@@ -280,7 +280,7 @@ impl App {
                 keywords: option.keywords,
                 badges: option.badges,
                 action: TerminalSlashAction::InsertText {
-                    text: format!("/skill {}", option.id),
+                    text: format!("/{}", option.id),
                 },
             }),
         );
@@ -509,8 +509,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AppKernelPort, AppSessionPort, ComposerSkillPort, ConfigService, McpConfigScope, McpPort,
-        McpServerStatusView, McpService, ProfileResolutionService,
+        AppKernelPort, AppSessionPort, ComposerResolvedSkill, ComposerSkillPort, ConfigService,
+        McpConfigScope, McpPort, McpServerStatusView, McpService, ProfileResolutionService,
         agent::{
             AgentOrchestrationService,
             test_support::{TestLlmBehavior, build_agent_test_harness},
@@ -526,6 +526,21 @@ mod tests {
     impl ComposerSkillPort for StaticComposerSkillPort {
         fn list_skill_summaries(&self, _working_dir: &Path) -> Vec<ComposerSkillSummary> {
             self.summaries.clone()
+        }
+
+        fn resolve_skill(
+            &self,
+            _working_dir: &Path,
+            skill_id: &str,
+        ) -> Option<ComposerResolvedSkill> {
+            self.summaries
+                .iter()
+                .find(|summary| summary.id == skill_id)
+                .map(|summary| ComposerResolvedSkill {
+                    id: summary.id.clone(),
+                    description: summary.description.clone(),
+                    guide: format!("guide for {}", summary.id),
+                })
         }
     }
 

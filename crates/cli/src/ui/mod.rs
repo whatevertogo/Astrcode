@@ -1,18 +1,18 @@
 pub mod cells;
-mod footer;
-mod hero;
+pub mod composer;
+pub mod custom_terminal;
+pub mod host;
+pub mod hud;
+pub mod insert_history;
+pub mod overlay;
 mod palette;
 mod text;
 mod theme;
-mod transcript;
 
-pub use footer::{FooterRenderOutput, footer_lines};
-pub use hero::hero_lines;
 pub use palette::{palette_lines, palette_visible};
 use ratatui::text::{Line, Span};
 pub use text::truncate_to_width;
 pub use theme::{CodexTheme, ThemePalette};
-pub use transcript::transcript_lines;
 
 use crate::state::WrappedLine;
 

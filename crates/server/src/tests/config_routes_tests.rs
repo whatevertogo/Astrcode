@@ -189,6 +189,89 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
 }
 
 #[tokio::test]
+async fn prompt_route_accepts_structured_skill_invocation() {
+    let (state, _guard) = test_state(None).await;
+    let session = state
+        .app
+        .create_session(
+            tempfile::tempdir()
+                .expect("tempdir")
+                .path()
+                .display()
+                .to_string(),
+        )
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/prompts", session.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "text": "提交当前修改",
+                        "skillInvocation": {
+                            "skillId": "git-commit",
+                            "userPrompt": "提交当前修改"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let payload: PromptAcceptedResponse = json_body(response).await;
+    assert!(!payload.turn_id.is_empty());
+}
+
+#[tokio::test]
+async fn prompt_route_rejects_unknown_skill_invocation() {
+    let (state, _guard) = test_state(None).await;
+    let session = state
+        .app
+        .create_session(
+            tempfile::tempdir()
+                .expect("tempdir")
+                .path()
+                .display()
+                .to_string(),
+        )
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/prompts", session.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "text": "",
+                        "skillInvocation": {
+                            "skillId": "missing-skill"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn prompt_submission_registers_session_root_agent_context() {
     let (state, _guard) = test_state(None).await;
     let session = state

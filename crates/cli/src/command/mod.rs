@@ -14,20 +14,34 @@ pub enum InputAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     New,
-    Resume { query: Option<String> },
+    Resume {
+        query: Option<String>,
+    },
+    Model {
+        query: Option<String>,
+    },
     Compact,
-    Skill { query: Option<String> },
-    Unknown { raw: String },
+    SkillInvoke {
+        skill_id: String,
+        prompt: Option<String>,
+    },
+    Unknown {
+        raw: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteAction {
     SwitchSession { session_id: String },
     ReplaceInput { text: String },
+    SelectModel { profile_name: String, model: String },
     RunCommand(Command),
 }
 
-pub fn classify_input(input: String) -> InputAction {
+pub fn classify_input(
+    input: String,
+    slash_candidates: &[AstrcodeConversationSlashCandidateDto],
+) -> InputAction {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return InputAction::Empty;
@@ -39,7 +53,7 @@ pub fn classify_input(input: String) -> InputAction {
         };
     }
 
-    InputAction::RunCommand(parse_command(trimmed))
+    InputAction::RunCommand(parse_command(trimmed, slash_candidates))
 }
 
 pub fn fuzzy_contains(query: &str, fields: impl IntoIterator<Item = String>) -> bool {
@@ -55,18 +69,25 @@ pub fn fuzzy_contains(query: &str, fields: impl IntoIterator<Item = String>) -> 
 pub fn palette_action(selection: PaletteSelection) -> PaletteAction {
     match selection {
         PaletteSelection::ResumeSession(session_id) => PaletteAction::SwitchSession { session_id },
+        PaletteSelection::ModelOption(option) => PaletteAction::SelectModel {
+            profile_name: option.profile_name,
+            model: option.model,
+        },
         PaletteSelection::SlashCandidate(candidate) => match candidate.action_kind {
             AstrcodeConversationSlashActionKindDto::InsertText => PaletteAction::ReplaceInput {
                 text: candidate.action_value,
             },
             AstrcodeConversationSlashActionKindDto::ExecuteCommand => {
-                PaletteAction::RunCommand(parse_command(candidate.action_value.as_str()))
+                PaletteAction::RunCommand(parse_command(candidate.action_value.as_str(), &[]))
             },
         },
     }
 }
 
-pub fn parse_command(command: &str) -> Command {
+pub fn parse_command(
+    command: &str,
+    slash_candidates: &[AstrcodeConversationSlashCandidateDto],
+) -> Command {
     let trimmed = command.trim();
     let mut parts = trimmed.splitn(2, char::is_whitespace);
     let head = parts.next().unwrap_or_default();
@@ -79,8 +100,24 @@ pub fn parse_command(command: &str) -> Command {
     match head {
         "/new" => Command::New,
         "/resume" => Command::Resume { query: tail },
+        "/model" => Command::Model { query: tail },
         "/compact" => Command::Compact,
-        "/skill" => Command::Skill { query: tail },
+        _ if head.starts_with('/') => {
+            let skill_id = head.trim_start_matches('/');
+            if slash_candidates.iter().any(|candidate| {
+                candidate.action_kind == AstrcodeConversationSlashActionKindDto::InsertText
+                    && candidate.action_value == format!("/{skill_id}")
+            }) {
+                Command::SkillInvoke {
+                    skill_id: skill_id.to_string(),
+                    prompt: tail,
+                }
+            } else {
+                Command::Unknown {
+                    raw: trimmed.to_string(),
+                }
+            }
+        },
         _ => Command::Unknown {
             raw: trimmed.to_string(),
         },
@@ -112,17 +149,34 @@ mod tests {
 
     #[test]
     fn parses_built_in_commands() {
-        assert_eq!(parse_command("/new"), Command::New);
+        assert_eq!(parse_command("/new", &[]), Command::New);
         assert_eq!(
-            parse_command("/resume terminal"),
+            parse_command("/resume terminal", &[]),
             Command::Resume {
                 query: Some("terminal".to_string())
             }
         );
         assert_eq!(
-            parse_command("/skill review"),
-            Command::Skill {
-                query: Some("review".to_string())
+            parse_command("/model claude", &[]),
+            Command::Model {
+                query: Some("claude".to_string())
+            }
+        );
+        assert_eq!(
+            parse_command(
+                "/review 修复失败测试",
+                &[AstrcodeConversationSlashCandidateDto {
+                    id: "review".to_string(),
+                    title: "Review".to_string(),
+                    description: "Review current changes".to_string(),
+                    keywords: vec!["review".to_string()],
+                    action_kind: AstrcodeConversationSlashActionKindDto::InsertText,
+                    action_value: "/review".to_string(),
+                }]
+            ),
+            Command::SkillInvoke {
+                skill_id: "review".to_string(),
+                prompt: Some("修复失败测试".to_string())
             }
         );
     }
@@ -130,9 +184,19 @@ mod tests {
     #[test]
     fn classifies_plain_prompt_without_command_semantics() {
         assert_eq!(
-            classify_input("实现 terminal v1".to_string()),
+            classify_input("实现 terminal v1".to_string(), &[]),
             InputAction::SubmitPrompt {
                 text: "实现 terminal v1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_slash_command_stays_unknown_when_skill_is_not_visible() {
+        assert_eq!(
+            parse_command("/review 修复失败测试", &[]),
+            Command::Unknown {
+                raw: "/review 修复失败测试".to_string()
             }
         );
     }

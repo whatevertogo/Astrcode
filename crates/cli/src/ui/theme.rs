@@ -22,19 +22,11 @@ impl CodexTheme {
     }
 
     pub fn app_background(&self) -> Style {
-        Style::default().bg(self.bg())
+        Style::default()
     }
 
     pub fn menu_block_style(&self) -> Style {
-        Style::default().bg(self.bg()).fg(self.text_primary())
-    }
-
-    fn bg(&self) -> Color {
-        match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(26, 24, 22),
-            ColorLevel::Ansi16 => Color::Black,
-            ColorLevel::None => Color::Reset,
-        }
+        Style::default().fg(self.text_primary())
     }
 
     fn surface_alt(&self) -> Color {
@@ -109,46 +101,28 @@ impl ThemePalette for CodexTheme {
         if matches!(self.capabilities.color, ColorLevel::None) {
             return match style {
                 WrappedLineStyle::Plain
-                | WrappedLineStyle::HeroBorder
-                | WrappedLineStyle::HeroBody
-                | WrappedLineStyle::HeroFeedTitle
                 | WrappedLineStyle::ThinkingBody
                 | WrappedLineStyle::ToolBody
                 | WrappedLineStyle::Notice
                 | WrappedLineStyle::PaletteItem => base,
                 WrappedLineStyle::Selection
-                | WrappedLineStyle::HeroTitle
                 | WrappedLineStyle::PromptEcho
                 | WrappedLineStyle::ToolLabel
                 | WrappedLineStyle::ErrorText
-                | WrappedLineStyle::FooterInput
-                | WrappedLineStyle::FooterKey
                 | WrappedLineStyle::PaletteSelected => base.add_modifier(Modifier::BOLD),
                 WrappedLineStyle::ThinkingLabel => {
                     base.add_modifier(Modifier::BOLD | Modifier::ITALIC)
                 },
-                WrappedLineStyle::Muted
-                | WrappedLineStyle::Divider
-                | WrappedLineStyle::FooterStatus
-                | WrappedLineStyle::FooterHint
-                | WrappedLineStyle::HeroMuted
-                | WrappedLineStyle::ThinkingPreview => base.add_modifier(Modifier::DIM),
+                WrappedLineStyle::Muted | WrappedLineStyle::ThinkingPreview => {
+                    base.add_modifier(Modifier::DIM)
+                },
             };
         }
 
         match style {
             WrappedLineStyle::Plain => base.fg(self.text_primary()),
-            WrappedLineStyle::Muted
-            | WrappedLineStyle::Divider
-            | WrappedLineStyle::FooterStatus
-            | WrappedLineStyle::FooterHint
-            | WrappedLineStyle::HeroMuted
-            | WrappedLineStyle::ThinkingPreview => base.fg(self.text_muted()),
-            WrappedLineStyle::HeroTitle => base.fg(self.accent()).add_modifier(Modifier::BOLD),
-            WrappedLineStyle::HeroBorder => base.fg(self.accent_soft()),
-            WrappedLineStyle::HeroBody => base.fg(self.text_primary()),
-            WrappedLineStyle::HeroFeedTitle => {
-                base.fg(self.accent_soft()).add_modifier(Modifier::BOLD)
+            WrappedLineStyle::Muted | WrappedLineStyle::ThinkingPreview => {
+                base.fg(self.text_muted())
             },
             WrappedLineStyle::Selection => base
                 .fg(self.text_primary())
@@ -166,10 +140,6 @@ impl ThemePalette for CodexTheme {
             WrappedLineStyle::ToolBody => base.fg(self.text_secondary()),
             WrappedLineStyle::Notice => base.fg(self.text_secondary()),
             WrappedLineStyle::ErrorText => base.fg(self.error()).add_modifier(Modifier::BOLD),
-            WrappedLineStyle::FooterInput => {
-                base.fg(self.text_primary()).add_modifier(Modifier::BOLD)
-            },
-            WrappedLineStyle::FooterKey => base.fg(self.accent_soft()).add_modifier(Modifier::BOLD),
             WrappedLineStyle::PaletteItem => base.fg(self.text_secondary()),
             WrappedLineStyle::PaletteSelected => {
                 base.fg(self.accent()).add_modifier(Modifier::BOLD)

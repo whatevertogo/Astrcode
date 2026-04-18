@@ -131,7 +131,8 @@ pub use observability::{
     resolve_runtime_status_summary,
 };
 pub use ports::{
-    AgentKernelPort, AgentSessionPort, AppKernelPort, AppSessionPort, ComposerSkillPort,
+    AgentKernelPort, AgentSessionPort, AppKernelPort, AppSessionPort, ComposerResolvedSkill,
+    ComposerSkillPort,
 };
 pub use session_use_cases::summarize_session_meta;
 pub use terminal::{
@@ -175,6 +176,12 @@ pub struct PromptAcceptedSummary {
     pub session_id: String,
     pub branched_from_session_id: Option<String>,
     pub accepted_control: Option<ExecutionControl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSkillInvocation {
+    pub skill_id: String,
+    pub user_prompt: Option<String>,
 }
 
 /// 手动 compact 的共享摘要输入。

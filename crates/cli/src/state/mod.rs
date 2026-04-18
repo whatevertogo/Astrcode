@@ -11,7 +11,7 @@ use std::{path::PathBuf, time::Duration};
 use astrcode_client::{
     AstrcodeConversationErrorEnvelopeDto, AstrcodeConversationSlashCandidateDto,
     AstrcodeConversationSnapshotResponseDto, AstrcodeConversationStreamEnvelopeDto,
-    AstrcodePhaseDto, AstrcodeSessionListItem,
+    AstrcodeCurrentModelInfoDto, AstrcodeModelOptionDto, AstrcodePhaseDto, AstrcodeSessionListItem,
 };
 pub use conversation::ConversationState;
 pub use debug::DebugChannelState;
@@ -19,9 +19,7 @@ pub use interaction::{
     ComposerState, InteractionState, PaletteSelection, PaletteState, PaneFocus, ResumePaletteState,
     SlashPaletteState, StatusLine,
 };
-pub use render::{
-    RenderState, StreamViewState, TranscriptRenderCache, WrappedLine, WrappedLineStyle,
-};
+pub use render::{ActiveOverlay, RenderState, StreamViewState, WrappedLine, WrappedLineStyle};
 pub use shell::ShellState;
 pub use thinking::{ThinkingPlaybackDriver, ThinkingPresentationState, ThinkingSnippetPool};
 pub use transcript_cell::{TranscriptCell, TranscriptCellKind, TranscriptCellStatus};
@@ -63,12 +61,12 @@ impl CliState {
 
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.interaction.set_status(message);
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn set_error_status(&mut self, message: impl Into<String>) {
         self.interaction.set_error_status(message);
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn set_stream_mode(
@@ -79,131 +77,89 @@ impl CliState {
     ) -> bool {
         let changed = self.stream_view.mode != mode || self.stream_view.pending_chunks != pending;
         self.stream_view.update(mode, pending, oldest);
-        if changed {
-            self.render.mark_footer_dirty();
-        }
         changed
     }
 
-    pub fn set_viewport_size(&mut self, width: u16, height: u16) {
-        self.render.set_viewport_size(width, height);
-    }
-
-    pub fn update_transcript_cache(
-        &mut self,
-        width: u16,
-        lines: Vec<WrappedLine>,
-        selected_line_range: Option<(usize, usize)>,
-    ) {
-        self.render
-            .update_transcript_cache(width, lines, selected_line_range);
+    pub fn note_terminal_resize(&mut self, width: u16, height: u16) {
+        self.render.note_terminal_resize(width, height);
     }
 
     pub fn push_input(&mut self, ch: char) {
         self.interaction.push_input(ch);
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn append_input(&mut self, value: &str) {
         self.interaction.append_input(value);
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn insert_newline(&mut self) {
         self.interaction.insert_newline();
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn pop_input(&mut self) {
         self.interaction.pop_input();
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn delete_input(&mut self) {
         self.interaction.delete_input();
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn move_cursor_left(&mut self) {
         self.interaction.move_cursor_left();
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn move_cursor_right(&mut self) {
         self.interaction.move_cursor_right();
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn move_cursor_home(&mut self) {
         self.interaction.move_cursor_home();
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn move_cursor_end(&mut self) {
         self.interaction.move_cursor_end();
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn replace_input(&mut self, input: impl Into<String>) {
         self.interaction.replace_input(input);
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn take_input(&mut self) -> String {
         let input = self.interaction.take_input();
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
         input
-    }
-
-    pub fn scroll_up(&mut self) {
-        self.interaction.scroll_up();
-        self.render.mark_transcript_dirty();
-    }
-
-    pub fn scroll_down(&mut self) {
-        self.interaction.scroll_down();
-        self.render.mark_transcript_dirty();
-    }
-
-    pub fn scroll_up_by(&mut self, lines: u16) {
-        self.interaction.scroll_up_by(lines);
-        self.render.mark_transcript_dirty();
-    }
-
-    pub fn scroll_down_by(&mut self, lines: u16) {
-        self.interaction.scroll_down_by(lines);
-        self.render.mark_transcript_dirty();
-    }
-
-    pub fn resume_transcript_tail(&mut self) {
-        self.interaction.reset_scroll();
-        self.render.invalidate_transcript_cache();
     }
 
     pub fn cycle_focus_forward(&mut self) {
         self.interaction.cycle_focus_forward();
-        self.render.invalidate_transcript_cache();
-        self.render.mark_footer_dirty();
-        self.render.mark_palette_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn cycle_focus_backward(&mut self) {
         self.interaction.cycle_focus_backward();
-        self.render.invalidate_transcript_cache();
-        self.render.mark_footer_dirty();
-        self.render.mark_palette_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn transcript_next(&mut self) {
         self.interaction
             .transcript_next(self.conversation.transcript.len());
-        self.render.invalidate_transcript_cache();
+        self.render.mark_dirty();
     }
 
     pub fn transcript_prev(&mut self) {
         self.interaction
             .transcript_prev(self.conversation.transcript.len());
-        self.render.invalidate_transcript_cache();
+        self.render.mark_dirty();
     }
 
     pub fn transcript_cells(&self) -> Vec<TranscriptCell> {
@@ -211,11 +167,24 @@ impl CliState {
             .project_transcript_cells(&self.interaction.transcript.expanded_cells)
     }
 
+    pub fn browser_transcript_cells(&self) -> Vec<TranscriptCell> {
+        self.transcript_cells()
+            .into_iter()
+            .filter(transcript_cell_visible_in_browser)
+            .collect()
+    }
+
     pub fn selected_transcript_cell(&self) -> Option<TranscriptCell> {
         self.conversation.project_transcript_cell(
             self.interaction.transcript.selected_cell,
             &self.interaction.transcript.expanded_cells,
         )
+    }
+
+    pub fn selected_browser_cell(&self) -> Option<TranscriptCell> {
+        self.browser_transcript_cells()
+            .into_iter()
+            .nth(self.interaction.browser.selected_cell)
     }
 
     pub fn is_cell_expanded(&self, cell_id: &str) -> bool {
@@ -228,26 +197,43 @@ impl CliState {
     }
 
     pub fn toggle_selected_cell_expanded(&mut self) {
-        if let Some(cell_id) = self.selected_transcript_cell().map(|cell| cell.id.clone()) {
+        let selected = if self.interaction.browser.open {
+            self.selected_browser_cell()
+        } else {
+            self.selected_transcript_cell()
+        };
+        if let Some(cell_id) = selected.map(|cell| cell.id.clone()) {
             self.interaction.toggle_cell_expanded(cell_id.as_str());
-            self.render.invalidate_transcript_cache();
+            self.render.mark_dirty();
         }
     }
 
     pub fn clear_surface_state(&mut self) {
-        let invalidate = matches!(self.interaction.pane_focus, PaneFocus::Transcript);
         self.interaction.clear_surface_state();
-        if invalidate {
-            self.render.invalidate_transcript_cache();
-        }
+        self.sync_overlay_state();
+        self.render.mark_dirty();
     }
 
     pub fn update_sessions(&mut self, sessions: Vec<AstrcodeSessionListItem>) {
         self.conversation.update_sessions(sessions);
         self.interaction
             .sync_resume_items(self.conversation.sessions.clone());
-        self.render.invalidate_transcript_cache();
-        self.render.mark_palette_dirty();
+        self.render.mark_dirty();
+    }
+
+    pub fn update_current_model(&mut self, current_model: AstrcodeCurrentModelInfoDto) {
+        if self.shell.current_model.as_ref() != Some(&current_model) {
+            self.shell.current_model = Some(current_model);
+            self.render.mark_dirty();
+        }
+    }
+
+    pub fn update_model_options(&mut self, model_options: Vec<AstrcodeModelOptionDto>) {
+        if self.shell.model_options != model_options {
+            self.shell.model_options = model_options.clone();
+            self.interaction.sync_model_items(model_options);
+            self.render.mark_dirty();
+        }
     }
 
     pub fn set_resume_query(
@@ -256,8 +242,7 @@ impl CliState {
         items: Vec<AstrcodeSessionListItem>,
     ) {
         self.interaction.set_resume_palette(query, items);
-        self.render.invalidate_footer_cache();
-        self.render.invalidate_palette_cache();
+        self.render.mark_dirty();
     }
 
     pub fn set_slash_query(
@@ -266,26 +251,66 @@ impl CliState {
         items: Vec<AstrcodeConversationSlashCandidateDto>,
     ) {
         self.interaction.set_slash_palette(query, items);
-        self.render.invalidate_footer_cache();
-        self.render.invalidate_palette_cache();
+        self.render.mark_dirty();
+    }
+
+    pub fn set_model_query(
+        &mut self,
+        query: impl Into<String>,
+        items: Vec<AstrcodeModelOptionDto>,
+    ) {
+        self.interaction.set_model_palette(query, items);
+        self.render.mark_dirty();
     }
 
     pub fn close_palette(&mut self) {
         self.interaction.close_palette();
-        self.render.invalidate_footer_cache();
-        self.render.invalidate_palette_cache();
+        self.render.mark_dirty();
+    }
+
+    pub fn toggle_browser(&mut self) {
+        if self.interaction.browser.open {
+            self.interaction.close_browser();
+        } else {
+            self.interaction
+                .open_browser(self.browser_transcript_cells().len());
+        }
+        self.sync_overlay_state();
+        self.render.mark_dirty();
+    }
+
+    pub fn browser_next(&mut self, page_size: usize) {
+        self.interaction
+            .browser_next(self.browser_transcript_cells().len(), page_size);
+        self.render.mark_dirty();
+    }
+
+    pub fn browser_prev(&mut self, page_size: usize) {
+        self.interaction
+            .browser_prev(self.browser_transcript_cells().len(), page_size);
+        self.render.mark_dirty();
+    }
+
+    pub fn browser_first(&mut self) {
+        self.interaction
+            .browser_first(self.browser_transcript_cells().len());
+        self.render.mark_dirty();
+    }
+
+    pub fn browser_last(&mut self) {
+        self.interaction
+            .browser_last(self.browser_transcript_cells().len());
+        self.render.mark_dirty();
     }
 
     pub fn palette_next(&mut self) {
         self.interaction.palette_next();
-        self.render.mark_footer_dirty();
-        self.render.mark_palette_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn palette_prev(&mut self) {
         self.interaction.palette_prev();
-        self.render.mark_footer_dirty();
-        self.render.mark_palette_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn selected_palette(&self) -> Option<PaletteSelection> {
@@ -300,9 +325,8 @@ impl CliState {
             .sync_transcript_cells(self.conversation.transcript.len());
         self.thinking_playback
             .sync_session(self.conversation.active_session_id.as_deref());
-        self.render.invalidate_transcript_cache();
-        self.render.invalidate_footer_cache();
-        self.render.invalidate_palette_cache();
+        self.sync_overlay_state();
+        self.render.mark_dirty();
     }
 
     pub fn apply_stream_envelope(&mut self, envelope: AstrcodeConversationStreamEnvelopeDto) {
@@ -316,23 +340,18 @@ impl CliState {
             self.interaction
                 .sync_slash_items(self.conversation.slash_candidates.clone());
         }
-        self.render.invalidate_transcript_cache();
-        self.render.mark_footer_dirty();
-        if slash_candidates_changed {
-            self.render.mark_palette_dirty();
-        }
+        self.render.mark_dirty();
     }
 
     pub fn set_banner_error(&mut self, error: AstrcodeConversationErrorEnvelopeDto) {
         self.conversation.set_banner_error(error);
         self.interaction.set_focus(PaneFocus::Composer);
-        self.render.invalidate_transcript_cache();
-        self.render.mark_footer_dirty();
+        self.render.mark_dirty();
     }
 
     pub fn clear_banner(&mut self) {
         self.conversation.clear_banner();
-        self.render.invalidate_transcript_cache();
+        self.render.mark_dirty();
     }
 
     pub fn active_phase(&self) -> Option<AstrcodePhaseDto> {
@@ -346,10 +365,19 @@ impl CliState {
     pub fn advance_thinking_playback(&mut self) -> bool {
         if self.should_animate_thinking_playback() {
             self.thinking_playback.advance();
-            self.render.invalidate_transcript_cache();
+            self.render.mark_dirty();
             return true;
         }
         false
+    }
+
+    fn sync_overlay_state(&mut self) {
+        let overlay = if self.interaction.browser.open {
+            ActiveOverlay::Browser
+        } else {
+            ActiveOverlay::None
+        };
+        self.render.set_active_overlay(overlay);
     }
 
     fn should_animate_thinking_playback(&self) -> bool {
@@ -398,6 +426,20 @@ impl CliState {
     }
 }
 
+fn transcript_cell_visible_in_browser(cell: &TranscriptCell) -> bool {
+    match &cell.kind {
+        TranscriptCellKind::Assistant { status, .. }
+        | TranscriptCellKind::Thinking { status, .. }
+        | TranscriptCellKind::ToolCall { status, .. } => {
+            !matches!(status, TranscriptCellStatus::Streaming)
+        },
+        TranscriptCellKind::User { .. }
+        | TranscriptCellKind::Error { .. }
+        | TranscriptCellKind::SystemNote { .. }
+        | TranscriptCellKind::ChildHandoff { .. } => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use astrcode_client::{
@@ -435,12 +477,12 @@ mod tests {
             )],
             child_summaries: Vec::new(),
             slash_candidates: vec![AstrcodeConversationSlashCandidateDto {
-                id: "skill-review".to_string(),
+                id: "review".to_string(),
                 title: "Review".to_string(),
                 description: "review skill".to_string(),
                 keywords: vec!["review".to_string()],
                 action_kind: AstrcodeConversationSlashActionKindDto::InsertText,
-                action_value: "/skill review".to_string(),
+                action_value: "/review".to_string(),
             }],
             banner: None,
         }
@@ -514,12 +556,12 @@ mod tests {
         state.set_slash_query(
             "review",
             vec![AstrcodeConversationSlashCandidateDto {
-                id: "skill-review".to_string(),
+                id: "review".to_string(),
                 title: "Review".to_string(),
                 description: "review skill".to_string(),
                 keywords: vec!["review".to_string()],
                 action_kind: AstrcodeConversationSlashActionKindDto::InsertText,
-                action_value: "/skill review".to_string(),
+                action_value: "/review".to_string(),
             }],
         );
 
@@ -534,49 +576,29 @@ mod tests {
     #[test]
     fn resize_invalidates_wrap_cache() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
-        state.update_transcript_cache(
-            80,
-            vec![WrappedLine {
-                style: WrappedLineStyle::Plain,
-                content: "cached".to_string(),
-            }],
-            None,
-        );
-        state.scroll_up();
-        state.set_viewport_size(100, 40);
+        state.note_terminal_resize(100, 40);
 
-        assert_eq!(state.render.transcript_cache.lines.len(), 0);
-        assert_eq!(state.interaction.scroll_anchor, 1);
-        assert!(!state.interaction.follow_transcript_tail);
+        assert!(state.render.frame_dirty);
     }
 
     #[test]
-    fn manual_scroll_disables_follow_until_returning_to_tail() {
+    fn viewport_resize_marks_surface_dirty() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
-
-        state.scroll_up();
-        assert_eq!(state.interaction.scroll_anchor, 1);
-        assert!(!state.interaction.follow_transcript_tail);
-
-        state.scroll_down();
-        assert_eq!(state.interaction.scroll_anchor, 0);
-        assert!(state.interaction.follow_transcript_tail);
+        state.render.take_frame_dirty();
+        state.note_terminal_resize(80, 6);
+        assert!(state.render.take_frame_dirty());
     }
 
     #[test]
-    fn resume_transcript_tail_restores_follow_mode_after_manual_scroll() {
+    fn browser_toggle_marks_surface_dirty() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
+        state.activate_snapshot(sample_snapshot());
+        state.render.take_frame_dirty();
 
-        state.scroll_up_by(4);
-        assert_eq!(state.interaction.scroll_anchor, 4);
-        assert!(!state.interaction.follow_transcript_tail);
+        state.toggle_browser();
 
-        state.resume_transcript_tail();
-
-        assert_eq!(state.interaction.scroll_anchor, 0);
-        assert!(state.interaction.follow_transcript_tail);
-        assert!(state.interaction.selection_drives_scroll);
-        assert!(state.render.dirty.transcript);
+        assert!(state.interaction.browser.open);
+        assert!(state.render.take_frame_dirty());
     }
 
     #[test]
@@ -593,6 +615,29 @@ mod tests {
         });
         let frame = state.thinking_playback.frame;
         state.advance_thinking_playback();
-        assert!(state.thinking_playback.frame > frame);
+        assert_eq!(state.thinking_playback.frame, frame.wrapping_add(1));
+    }
+
+    #[test]
+    fn browser_filters_out_streaming_cells() {
+        let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
+        state.conversation.transcript = vec![
+            AstrcodeConversationBlockDto::Assistant(AstrcodeConversationAssistantBlockDto {
+                id: "assistant-streaming".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                status: AstrcodeConversationBlockStatusDto::Streaming,
+                markdown: "draft".to_string(),
+            }),
+            AstrcodeConversationBlockDto::Assistant(AstrcodeConversationAssistantBlockDto {
+                id: "assistant-complete".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                status: AstrcodeConversationBlockStatusDto::Complete,
+                markdown: "done".to_string(),
+            }),
+        ];
+
+        let browser_cells = state.browser_transcript_cells();
+        assert_eq!(browser_cells.len(), 1);
+        assert_eq!(browser_cells[0].id, "assistant-complete");
     }
 }

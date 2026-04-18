@@ -46,7 +46,17 @@ pub(crate) async fn submit_prompt(
     let session_id = validate_session_path_id(&session_id)?;
     let summary = state
         .app
-        .submit_prompt_summary(&session_id, request.text, request.control)
+        .submit_prompt_summary(
+            &session_id,
+            request.text,
+            request.control,
+            request.skill_invocation.map(|invocation| {
+                astrcode_application::PromptSkillInvocation {
+                    skill_id: invocation.skill_id,
+                    user_prompt: invocation.user_prompt,
+                }
+            }),
+        )
         .await
         .map_err(ApiError::from)?;
     Ok((

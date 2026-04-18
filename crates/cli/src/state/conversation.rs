@@ -44,7 +44,7 @@ impl ConversationState {
         self.child_summaries = snapshot.child_summaries;
         self.slash_candidates = snapshot.slash_candidates;
         self.banner = snapshot.banner;
-        render.invalidate_transcript_cache();
+        render.mark_dirty();
     }
 
     pub fn apply_stream_envelope(
@@ -82,14 +82,16 @@ impl ConversationState {
                     self.transcript_index
                         .insert(block_id_of(block).to_string(), self.transcript.len() - 1);
                 }
-                render.invalidate_transcript_cache();
+                render.mark_dirty();
                 false
             },
             AstrcodeConversationDeltaDto::PatchBlock { block_id, patch } => {
                 if let Some((index, block)) = self.find_block_mut(block_id.as_str()) {
-                    apply_block_patch(block, patch);
+                    let changed = apply_block_patch(block, patch);
                     let _ = index;
-                    render.invalidate_transcript_cache();
+                    if changed {
+                        render.mark_dirty();
+                    }
                 } else {
                     debug_missing_block("patch", block_id.as_str());
                 }
@@ -97,17 +99,21 @@ impl ConversationState {
             },
             AstrcodeConversationDeltaDto::CompleteBlock { block_id, status } => {
                 if let Some((index, block)) = self.find_block_mut(block_id.as_str()) {
-                    set_block_status(block, status);
+                    let changed = set_block_status(block, status);
                     let _ = index;
-                    render.invalidate_transcript_cache();
+                    if changed {
+                        render.mark_dirty();
+                    }
                 } else {
                     debug_missing_block("complete", block_id.as_str());
                 }
                 false
             },
             AstrcodeConversationDeltaDto::UpdateControlState { control } => {
-                self.control = Some(control);
-                render.invalidate_transcript_cache();
+                if self.control.as_ref() != Some(&control) {
+                    self.control = Some(control);
+                    render.mark_dirty();
+                }
                 false
             },
             AstrcodeConversationDeltaDto::UpsertChildSummary { child } => {
@@ -132,13 +138,16 @@ impl ConversationState {
                 true
             },
             AstrcodeConversationDeltaDto::SetBanner { banner } => {
-                self.banner = Some(banner);
-                render.invalidate_transcript_cache();
+                if self.banner.as_ref() != Some(&banner) {
+                    self.banner = Some(banner);
+                    render.mark_dirty();
+                }
                 false
             },
             AstrcodeConversationDeltaDto::ClearBanner => {
-                self.banner = None;
-                render.invalidate_transcript_cache();
+                if self.banner.take().is_some() {
+                    render.mark_dirty();
+                }
                 false
             },
             AstrcodeConversationDeltaDto::RehydrateRequired { error } => {
@@ -198,67 +207,151 @@ fn block_id_of(block: &AstrcodeConversationBlockDto) -> &str {
 fn apply_block_patch(
     block: &mut AstrcodeConversationBlockDto,
     patch: AstrcodeConversationBlockPatchDto,
-) {
+) -> bool {
     match patch {
         AstrcodeConversationBlockPatchDto::AppendMarkdown { markdown } => match block {
-            AstrcodeConversationBlockDto::Assistant(block) => block.markdown.push_str(&markdown),
-            AstrcodeConversationBlockDto::Thinking(block) => block.markdown.push_str(&markdown),
-            AstrcodeConversationBlockDto::SystemNote(block) => block.markdown.push_str(&markdown),
-            AstrcodeConversationBlockDto::User(block) => block.markdown.push_str(&markdown),
+            AstrcodeConversationBlockDto::Assistant(block) => {
+                normalize_markdown_append(&mut block.markdown, &markdown)
+            },
+            AstrcodeConversationBlockDto::Thinking(block) => {
+                normalize_markdown_append(&mut block.markdown, &markdown)
+            },
+            AstrcodeConversationBlockDto::SystemNote(block) => {
+                normalize_markdown_append(&mut block.markdown, &markdown)
+            },
+            AstrcodeConversationBlockDto::User(block) => {
+                normalize_markdown_append(&mut block.markdown, &markdown)
+            },
             AstrcodeConversationBlockDto::ToolCall(_)
             | AstrcodeConversationBlockDto::Error(_)
-            | AstrcodeConversationBlockDto::ChildHandoff(_) => {},
+            | AstrcodeConversationBlockDto::ChildHandoff(_) => false,
         },
         AstrcodeConversationBlockPatchDto::ReplaceMarkdown { markdown } => match block {
-            AstrcodeConversationBlockDto::Assistant(block) => block.markdown = markdown,
-            AstrcodeConversationBlockDto::Thinking(block) => block.markdown = markdown,
-            AstrcodeConversationBlockDto::SystemNote(block) => block.markdown = markdown,
-            AstrcodeConversationBlockDto::User(block) => block.markdown = markdown,
+            AstrcodeConversationBlockDto::Assistant(block) => {
+                replace_if_changed(&mut block.markdown, markdown)
+            },
+            AstrcodeConversationBlockDto::Thinking(block) => {
+                replace_if_changed(&mut block.markdown, markdown)
+            },
+            AstrcodeConversationBlockDto::SystemNote(block) => {
+                replace_if_changed(&mut block.markdown, markdown)
+            },
+            AstrcodeConversationBlockDto::User(block) => {
+                replace_if_changed(&mut block.markdown, markdown)
+            },
             AstrcodeConversationBlockDto::ToolCall(_)
             | AstrcodeConversationBlockDto::Error(_)
-            | AstrcodeConversationBlockDto::ChildHandoff(_) => {},
+            | AstrcodeConversationBlockDto::ChildHandoff(_) => false,
         },
         AstrcodeConversationBlockPatchDto::AppendToolStream { stream, chunk } => {
             if let AstrcodeConversationBlockDto::ToolCall(block) = block {
                 if enum_wire_name(&stream).as_deref() == Some("stderr") {
+                    if chunk.is_empty() {
+                        return false;
+                    }
                     block.streams.stderr.push_str(&chunk);
                 } else {
+                    if chunk.is_empty() {
+                        return false;
+                    }
                     block.streams.stdout.push_str(&chunk);
                 }
+                true
+            } else {
+                false
             }
         },
         AstrcodeConversationBlockPatchDto::ReplaceSummary { summary } => {
             if let AstrcodeConversationBlockDto::ToolCall(block) = block {
-                block.summary = Some(summary);
+                replace_option_if_changed(&mut block.summary, summary)
+            } else {
+                false
             }
         },
         AstrcodeConversationBlockPatchDto::ReplaceMetadata { metadata } => {
             if let AstrcodeConversationBlockDto::ToolCall(block) = block {
-                block.metadata = Some(metadata);
+                replace_option_if_changed(&mut block.metadata, metadata)
+            } else {
+                false
             }
         },
         AstrcodeConversationBlockPatchDto::ReplaceError { error } => {
             if let AstrcodeConversationBlockDto::ToolCall(block) = block {
-                block.error = error;
+                replace_if_changed(&mut block.error, error)
+            } else {
+                false
             }
         },
         AstrcodeConversationBlockPatchDto::ReplaceDuration { duration_ms } => {
             if let AstrcodeConversationBlockDto::ToolCall(block) = block {
-                block.duration_ms = Some(duration_ms);
+                replace_option_if_changed(&mut block.duration_ms, duration_ms)
+            } else {
+                false
             }
         },
         AstrcodeConversationBlockPatchDto::ReplaceChildRef { child_ref } => {
             if let AstrcodeConversationBlockDto::ToolCall(block) = block {
-                block.child_ref = Some(child_ref);
+                replace_option_if_changed(&mut block.child_ref, child_ref)
+            } else {
+                false
             }
         },
         AstrcodeConversationBlockPatchDto::SetTruncated { truncated } => {
             if let AstrcodeConversationBlockDto::ToolCall(block) = block {
-                block.truncated = truncated;
+                if block.truncated != truncated {
+                    block.truncated = truncated;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
             }
         },
         AstrcodeConversationBlockPatchDto::SetStatus { status } => set_block_status(block, status),
     }
+}
+
+fn normalize_markdown_append(current: &mut String, incoming: &str) -> bool {
+    if incoming.is_empty() {
+        return false;
+    }
+
+    if current.is_empty() {
+        current.push_str(incoming);
+        return true;
+    }
+
+    if incoming.starts_with(current.as_str()) {
+        if current != incoming {
+            *current = incoming.to_string();
+            return true;
+        }
+        return false;
+    }
+
+    if current.ends_with(incoming) {
+        return false;
+    }
+
+    if let Some(overlap) = longest_suffix_prefix_overlap(current.as_str(), incoming) {
+        current.push_str(&incoming[overlap..]);
+        return overlap < incoming.len();
+    }
+
+    current.push_str(incoming);
+    true
+}
+
+fn longest_suffix_prefix_overlap(current: &str, incoming: &str) -> Option<usize> {
+    let max_overlap = current.len().min(incoming.len());
+    incoming
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(incoming.len()))
+        .filter(|index| *index > 0 && *index <= max_overlap)
+        .rev()
+        .find(|index| current.ends_with(&incoming[..*index]))
 }
 
 fn enum_wire_name<T>(value: &T) -> Option<String>
@@ -279,14 +372,114 @@ fn debug_missing_block(operation: &str, block_id: &str) {
 fn set_block_status(
     block: &mut AstrcodeConversationBlockDto,
     status: AstrcodeConversationBlockStatusDto,
-) {
+) -> bool {
     match block {
-        AstrcodeConversationBlockDto::Assistant(block) => block.status = status,
-        AstrcodeConversationBlockDto::Thinking(block) => block.status = status,
-        AstrcodeConversationBlockDto::ToolCall(block) => block.status = status,
+        AstrcodeConversationBlockDto::Assistant(block) => {
+            replace_if_changed(&mut block.status, status)
+        },
+        AstrcodeConversationBlockDto::Thinking(block) => {
+            replace_if_changed(&mut block.status, status)
+        },
+        AstrcodeConversationBlockDto::ToolCall(block) => {
+            replace_if_changed(&mut block.status, status)
+        },
         AstrcodeConversationBlockDto::User(_)
         | AstrcodeConversationBlockDto::Error(_)
         | AstrcodeConversationBlockDto::SystemNote(_)
-        | AstrcodeConversationBlockDto::ChildHandoff(_) => {},
+        | AstrcodeConversationBlockDto::ChildHandoff(_) => false,
+    }
+}
+
+fn replace_if_changed<T: PartialEq>(slot: &mut T, next: T) -> bool {
+    if *slot == next {
+        false
+    } else {
+        *slot = next;
+        true
+    }
+}
+
+fn replace_option_if_changed<T: PartialEq>(slot: &mut Option<T>, next: T) -> bool {
+    if slot.as_ref() == Some(&next) {
+        false
+    } else {
+        *slot = Some(next);
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_client::{
+        AstrcodeConversationAssistantBlockDto, AstrcodeConversationBlockDto,
+        AstrcodeConversationBlockPatchDto, AstrcodeConversationBlockStatusDto,
+        AstrcodeConversationCursorDto, AstrcodeConversationDeltaDto,
+        AstrcodeConversationStreamEnvelopeDto,
+    };
+
+    use super::{ConversationState, normalize_markdown_append};
+    use crate::state::RenderState;
+
+    #[test]
+    fn append_markdown_replaces_with_cumulative_body() {
+        let mut current = "你好".to_string();
+        normalize_markdown_append(&mut current, "你好，世界");
+        assert_eq!(current, "你好，世界");
+    }
+
+    #[test]
+    fn append_markdown_ignores_replayed_suffix() {
+        let mut current = "你好，世界".to_string();
+        normalize_markdown_append(&mut current, "世界");
+        assert_eq!(current, "你好，世界");
+    }
+
+    #[test]
+    fn append_markdown_appends_only_non_overlapping_suffix() {
+        let mut current = "你好，世".to_string();
+        normalize_markdown_append(&mut current, "世界");
+        assert_eq!(current, "你好，世界");
+    }
+
+    #[test]
+    fn append_markdown_keeps_true_incremental_append() {
+        let mut current = "你好".to_string();
+        normalize_markdown_append(&mut current, "，世界");
+        assert_eq!(current, "你好，世界");
+    }
+
+    #[test]
+    fn duplicate_markdown_replay_does_not_mark_surface_dirty() {
+        let mut conversation = ConversationState {
+            transcript: vec![AstrcodeConversationBlockDto::Assistant(
+                AstrcodeConversationAssistantBlockDto {
+                    id: "assistant-1".to_string(),
+                    turn_id: Some("turn-1".to_string()),
+                    status: AstrcodeConversationBlockStatusDto::Streaming,
+                    markdown: "你好，世界".to_string(),
+                },
+            )],
+            transcript_index: [("assistant-1".to_string(), 0)].into_iter().collect(),
+            ..Default::default()
+        };
+        let mut render = RenderState::default();
+        render.take_frame_dirty();
+
+        conversation.apply_stream_envelope(
+            AstrcodeConversationStreamEnvelopeDto {
+                session_id: "session-1".to_string(),
+                cursor: AstrcodeConversationCursorDto("1.1".to_string()),
+                delta: AstrcodeConversationDeltaDto::PatchBlock {
+                    block_id: "assistant-1".to_string(),
+                    patch: AstrcodeConversationBlockPatchDto::AppendMarkdown {
+                        markdown: "世界".to_string(),
+                    },
+                },
+            },
+            &mut render,
+            &Default::default(),
+        );
+
+        assert!(!render.take_frame_dirty());
     }
 }

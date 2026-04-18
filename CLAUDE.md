@@ -84,3 +84,8 @@
 
 目标不是做最小改动。  
 目标是以**正确、可维护、可验证**的方式完成任务。
+
+## 项目提醒
+
+- `astrcode-cli` 当前使用 `ratatui 0.30.0`；接第三方 textarea 或其他 TUI widget 之前，先确认它不会额外拉入另一套 ratatui 类型，否则会在 `Widget`、`Style`、`Frame` 上直接类型冲突
+- `Viewport::Inline + insert_before(...)` 在测试里并不等于“立刻进入 scrollback”；只有当提交内容把 inline viewport 上方空间顶满后，`TestBackend::scrollback()` 才会出现对应历史行，少量 commit 仍可能留在当前主屏 buffer

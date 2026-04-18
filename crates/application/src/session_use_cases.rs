@@ -2,14 +2,15 @@
 use std::path::Path;
 
 use astrcode_core::{
-    AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, SessionMeta,
-    StoredEvent,
+    AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, PromptDeclaration,
+    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource, SessionMeta,
+    StoredEvent, SystemPromptLayer,
 };
 
 use crate::{
     App, ApplicationError, CompactSessionAccepted, CompactSessionSummary, ExecutionControl,
-    PromptAcceptedSummary, SessionControlStateSnapshot, SessionListSummary, SessionReplay,
-    SessionTranscriptSnapshot,
+    PromptAcceptedSummary, PromptSkillInvocation, SessionControlStateSnapshot, SessionListSummary,
+    SessionReplay, SessionTranscriptSnapshot,
     agent::{
         IMPLICIT_ROOT_PROFILE_ID, implicit_session_root_agent_id, root_execution_event_context,
     },
@@ -58,7 +59,7 @@ impl App {
         session_id: &str,
         text: String,
     ) -> Result<ExecutionAccepted, ApplicationError> {
-        self.submit_prompt_with_control(session_id, text, None)
+        self.submit_prompt_with_options(session_id, text, None, None)
             .await
     }
 
@@ -68,7 +69,18 @@ impl App {
         text: String,
         control: Option<ExecutionControl>,
     ) -> Result<ExecutionAccepted, ApplicationError> {
-        self.validate_non_empty("prompt", &text)?;
+        self.submit_prompt_with_options(session_id, text, control, None)
+            .await
+    }
+
+    pub async fn submit_prompt_with_options(
+        &self,
+        session_id: &str,
+        text: String,
+        control: Option<ExecutionControl>,
+        skill_invocation: Option<PromptSkillInvocation>,
+    ) -> Result<ExecutionAccepted, ApplicationError> {
+        let text = normalize_submission_text(text, skill_invocation.as_ref())?;
         if let Some(control) = &control {
             control.validate()?;
         }
@@ -90,6 +102,14 @@ impl App {
             }
         }
         let root_agent = self.ensure_session_root_agent_context(session_id).await?;
+        let prompt_declarations =
+            match skill_invocation {
+                Some(skill_invocation) => vec![self.build_submission_skill_declaration(
+                    Path::new(&working_dir),
+                    &skill_invocation,
+                )?],
+                None => Vec::new(),
+            };
         self.session_runtime
             .submit_prompt_for_agent(
                 session_id,
@@ -97,6 +117,7 @@ impl App {
                 runtime,
                 astrcode_session_runtime::AgentPromptSubmission {
                     agent: root_agent,
+                    prompt_declarations,
                     ..Default::default()
                 },
             )
@@ -109,10 +130,16 @@ impl App {
         session_id: &str,
         text: String,
         control: Option<ExecutionControl>,
+        skill_invocation: Option<PromptSkillInvocation>,
     ) -> Result<PromptAcceptedSummary, ApplicationError> {
         let accepted_control = normalize_prompt_control(control)?;
         let accepted = self
-            .submit_prompt_with_control(session_id, text, accepted_control.clone())
+            .submit_prompt_with_options(
+                session_id,
+                text,
+                accepted_control.clone(),
+                skill_invocation,
+            )
             .await?;
         Ok(PromptAcceptedSummary {
             turn_id: accepted.turn_id.to_string(),
@@ -301,6 +328,57 @@ impl App {
             handle.agent_profile,
         ))
     }
+
+    fn build_submission_skill_declaration(
+        &self,
+        working_dir: &Path,
+        skill_invocation: &PromptSkillInvocation,
+    ) -> Result<PromptDeclaration, ApplicationError> {
+        let skill = self
+            .composer_skills
+            .resolve_skill(working_dir, &skill_invocation.skill_id)
+            .ok_or_else(|| {
+                ApplicationError::InvalidArgument(format!(
+                    "unknown skill slash command: /{}",
+                    skill_invocation.skill_id
+                ))
+            })?;
+        let mut content = format!(
+            "The user explicitly selected the `{}` skill for this turn.\n\nSelected skill:\n- id: \
+             {}\n- description: {}\n\nTurn contract:\n- Call the `Skill` tool for `{}` before \
+             continuing.\n- Treat the user's message as the task-specific instruction for this \
+             skill.\n- If the user message is empty, follow the skill's default workflow and ask \
+             only if blocked.\n- Do not silently substitute a different skill unless `{}` is \
+             unavailable.",
+            skill.id,
+            skill.id,
+            skill.description.trim(),
+            skill.id,
+            skill.id
+        );
+        if let Some(user_prompt) = skill_invocation
+            .user_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            content.push_str(&format!("\n- User prompt focus: {}", user_prompt));
+        }
+
+        Ok(PromptDeclaration {
+            block_id: format!("submission.skill.{}", skill.id),
+            title: format!("Selected Skill: {}", skill.id),
+            content,
+            render_target: PromptDeclarationRenderTarget::System,
+            layer: SystemPromptLayer::Dynamic,
+            kind: PromptDeclarationKind::ExtensionInstruction,
+            priority_hint: Some(590),
+            always_include: true,
+            source: PromptDeclarationSource::Builtin,
+            capability_name: None,
+            origin: Some(format!("skill-slash:{}", skill.id)),
+        })
+    }
 }
 
 pub fn summarize_session_meta(meta: SessionMeta) -> SessionListSummary {
@@ -324,6 +402,39 @@ fn normalize_prompt_control(
         control.validate()?;
     }
     Ok(control)
+}
+
+fn normalize_submission_text(
+    text: String,
+    skill_invocation: Option<&PromptSkillInvocation>,
+) -> Result<String, ApplicationError> {
+    let text = text.trim().to_string();
+    let Some(skill_invocation) = skill_invocation else {
+        if text.is_empty() {
+            return Err(ApplicationError::InvalidArgument(
+                "prompt must not be empty".to_string(),
+            ));
+        }
+        return Ok(text);
+    };
+
+    let skill_prompt = skill_invocation
+        .user_prompt
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if !text.is_empty() && !skill_prompt.is_empty() && text != skill_prompt {
+        return Err(ApplicationError::InvalidArgument(
+            "skillInvocation.userPrompt must match prompt text".to_string(),
+        ));
+    }
+
+    if !text.is_empty() {
+        Ok(text)
+    } else {
+        Ok(skill_prompt)
+    }
 }
 
 fn normalize_compact_control(control: Option<ExecutionControl>) -> Option<ExecutionControl> {

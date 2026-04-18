@@ -120,15 +120,15 @@
       "actionValue": "new_session"
     },
     {
-      "id": "slash-skill",
-      "title": "/skill",
-      "description": "插入 skill 引用",
+      "id": "review",
+      "title": "/review",
+      "description": "调用 review skill",
       "keywords": [
         "skill",
-        "insert"
+        "review"
       ],
       "actionKind": "insert_text",
-      "actionValue": "/skill "
+      "actionValue": "/review"
     }
   ],
   "banner": {

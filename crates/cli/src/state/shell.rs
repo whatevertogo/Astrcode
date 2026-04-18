@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use astrcode_client::{AstrcodeCurrentModelInfoDto, AstrcodeModelOptionDto};
+
 use crate::capability::TerminalCapabilities;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7,6 +9,8 @@ pub struct ShellState {
     pub connection_origin: String,
     pub working_dir: Option<PathBuf>,
     pub capabilities: TerminalCapabilities,
+    pub current_model: Option<AstrcodeCurrentModelInfoDto>,
+    pub model_options: Vec<AstrcodeModelOptionDto>,
 }
 
 impl Default for ShellState {
@@ -21,6 +25,8 @@ impl Default for ShellState {
                 mouse: false,
                 bracketed_paste: false,
             },
+            current_model: None,
+            model_options: Vec::new(),
         }
     }
 }
@@ -35,6 +41,8 @@ impl ShellState {
             connection_origin,
             working_dir,
             capabilities,
+            current_model: None,
+            model_options: Vec::new(),
         }
     }
 }

@@ -131,12 +131,12 @@ fn terminal_snapshot_fixture_freezes_v1_hydration_shape() {
                 action_value: "new_session".to_string(),
             },
             TerminalSlashCandidateDto {
-                id: "slash-skill".to_string(),
-                title: "/skill".to_string(),
-                description: "插入 skill 引用".to_string(),
-                keywords: vec!["skill".to_string(), "insert".to_string()],
+                id: "review".to_string(),
+                title: "/review".to_string(),
+                description: "调用 review skill".to_string(),
+                keywords: vec!["skill".to_string(), "review".to_string()],
                 action_kind: TerminalSlashActionKindDto::InsertText,
-                action_value: "/skill ".to_string(),
+                action_value: "/review".to_string(),
             },
         ],
         banner: Some(TerminalBannerDto {

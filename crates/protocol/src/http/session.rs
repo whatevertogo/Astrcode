@@ -50,9 +50,23 @@ pub struct SessionListItem {
 /// `POST /api/sessions/:id/prompt` 请求体——向会话提交用户提示词。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct PromptSkillInvocation {
+    /// 用户显式选择的 skill id（kebab-case）。
+    pub skill_id: String,
+    /// slash 命令头之后剩余的用户提示词。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_prompt: Option<String>,
+}
+
+/// `POST /api/sessions/:id/prompt` 请求体——向会话提交用户提示词。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptRequest {
     /// 用户输入的文本内容
     pub text: String,
+    /// 用户通过一级 slash 命令显式点名的 skill。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_invocation: Option<PromptSkillInvocation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control: Option<ExecutionControlDto>,
 }

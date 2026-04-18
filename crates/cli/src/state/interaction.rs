@@ -1,13 +1,15 @@
 use std::collections::BTreeSet;
 
-use astrcode_client::{AstrcodeConversationSlashCandidateDto, AstrcodeSessionListItem};
+use astrcode_client::{
+    AstrcodeConversationSlashCandidateDto, AstrcodeModelOptionDto, AstrcodeSessionListItem,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PaneFocus {
-    Transcript,
     #[default]
     Composer,
     Palette,
+    Browser,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -132,18 +134,27 @@ pub struct ResumePaletteState {
     pub selected: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelPaletteState {
+    pub query: String,
+    pub items: Vec<AstrcodeModelOptionDto>,
+    pub selected: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PaletteState {
     #[default]
     Closed,
     Slash(SlashPaletteState),
     Resume(ResumePaletteState),
+    Model(ModelPaletteState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteSelection {
     ResumeSession(String),
     SlashCandidate(AstrcodeConversationSlashCandidateDto),
+    ModelOption(AstrcodeModelOptionDto),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,33 +178,22 @@ pub struct TranscriptState {
     pub expanded_cells: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BrowserState {
+    pub open: bool,
+    pub selected_cell: usize,
+    pub last_seen_cell_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InteractionState {
     pub status: StatusLine,
-    pub scroll_anchor: u16,
-    pub follow_transcript_tail: bool,
-    pub selection_drives_scroll: bool,
     pub pane_focus: PaneFocus,
     pub last_non_palette_focus: PaneFocus,
     pub composer: ComposerState,
     pub palette: PaletteState,
     pub transcript: TranscriptState,
-}
-
-impl Default for InteractionState {
-    fn default() -> Self {
-        Self {
-            status: StatusLine::default(),
-            scroll_anchor: 0,
-            follow_transcript_tail: true,
-            selection_drives_scroll: true,
-            pane_focus: PaneFocus::default(),
-            last_non_palette_focus: PaneFocus::default(),
-            composer: ComposerState::default(),
-            palette: PaletteState::default(),
-            transcript: TranscriptState::default(),
-        }
-    }
+    pub browser: BrowserState,
 }
 
 impl InteractionState {
@@ -259,51 +259,25 @@ impl InteractionState {
         self.composer.take()
     }
 
-    pub fn scroll_up(&mut self) {
-        self.scroll_up_by(1);
-    }
-
-    pub fn scroll_up_by(&mut self, lines: u16) {
-        self.follow_transcript_tail = false;
-        self.selection_drives_scroll = false;
-        self.scroll_anchor = self.scroll_anchor.saturating_add(lines.max(1));
-    }
-
-    pub fn scroll_down(&mut self) {
-        self.scroll_down_by(1);
-    }
-
-    pub fn scroll_down_by(&mut self, lines: u16) {
-        self.scroll_anchor = self.scroll_anchor.saturating_sub(lines.max(1));
-        self.follow_transcript_tail = self.scroll_anchor == 0;
-        self.selection_drives_scroll = self.follow_transcript_tail;
-    }
-
-    pub fn reset_scroll(&mut self) {
-        self.scroll_anchor = 0;
-        self.follow_transcript_tail = true;
-        self.selection_drives_scroll = true;
-    }
-
     pub fn cycle_focus_forward(&mut self) {
         self.set_focus(match self.pane_focus {
-            PaneFocus::Transcript => PaneFocus::Composer,
-            PaneFocus::Composer => PaneFocus::Transcript,
+            PaneFocus::Composer => PaneFocus::Composer,
             PaneFocus::Palette => PaneFocus::Palette,
+            PaneFocus::Browser => PaneFocus::Browser,
         });
     }
 
     pub fn cycle_focus_backward(&mut self) {
         self.set_focus(match self.pane_focus {
-            PaneFocus::Transcript => PaneFocus::Composer,
-            PaneFocus::Composer => PaneFocus::Transcript,
+            PaneFocus::Composer => PaneFocus::Composer,
             PaneFocus::Palette => PaneFocus::Palette,
+            PaneFocus::Browser => PaneFocus::Browser,
         });
     }
 
     pub fn set_focus(&mut self, focus: PaneFocus) {
         self.pane_focus = focus;
-        if !matches!(focus, PaneFocus::Palette) {
+        if !matches!(focus, PaneFocus::Palette | PaneFocus::Browser) {
             self.last_non_palette_focus = focus;
         }
     }
@@ -312,21 +286,15 @@ impl InteractionState {
         if cell_count == 0 {
             return;
         }
-        self.set_focus(PaneFocus::Transcript);
         self.transcript.selected_cell = (self.transcript.selected_cell + 1) % cell_count;
-        self.follow_transcript_tail = false;
-        self.selection_drives_scroll = true;
     }
 
     pub fn transcript_prev(&mut self, cell_count: usize) {
         if cell_count == 0 {
             return;
         }
-        self.set_focus(PaneFocus::Transcript);
         self.transcript.selected_cell =
             (self.transcript.selected_cell + cell_count - 1) % cell_count;
-        self.follow_transcript_tail = false;
-        self.selection_drives_scroll = true;
     }
 
     pub fn sync_transcript_cells(&mut self, cell_count: usize) {
@@ -351,10 +319,68 @@ impl InteractionState {
     }
 
     pub fn reset_for_snapshot(&mut self) {
-        self.reset_scroll();
         self.palette = PaletteState::Closed;
         self.transcript = TranscriptState::default();
+        self.browser = BrowserState::default();
         self.set_focus(PaneFocus::Composer);
+    }
+
+    pub fn open_browser(&mut self, cell_count: usize) {
+        self.browser.open = true;
+        if cell_count == 0 {
+            self.browser.selected_cell = 0;
+        } else if self.browser.selected_cell >= cell_count {
+            self.browser.selected_cell = cell_count - 1;
+        }
+        self.browser.last_seen_cell_count = cell_count;
+        self.transcript.selected_cell = self.browser.selected_cell;
+        self.pane_focus = PaneFocus::Browser;
+    }
+
+    pub fn close_browser(&mut self) {
+        self.browser.open = false;
+        self.set_focus(PaneFocus::Composer);
+    }
+
+    pub fn browser_next(&mut self, cell_count: usize, page_size: usize) {
+        if cell_count == 0 {
+            return;
+        }
+        self.open_browser(cell_count);
+        self.browser.selected_cell =
+            (self.browser.selected_cell + page_size.max(1)).min(cell_count - 1);
+        if self.browser.selected_cell == cell_count - 1 {
+            self.browser.last_seen_cell_count = cell_count;
+        }
+        self.transcript.selected_cell = self.browser.selected_cell;
+    }
+
+    pub fn browser_prev(&mut self, cell_count: usize, page_size: usize) {
+        if cell_count == 0 {
+            return;
+        }
+        self.open_browser(cell_count);
+        self.browser.selected_cell = self.browser.selected_cell.saturating_sub(page_size.max(1));
+        self.transcript.selected_cell = self.browser.selected_cell;
+    }
+
+    pub fn browser_first(&mut self, cell_count: usize) {
+        if cell_count == 0 {
+            return;
+        }
+        self.open_browser(cell_count);
+        self.browser.selected_cell = 0;
+        self.transcript.selected_cell = 0;
+    }
+
+    pub fn browser_last(&mut self, cell_count: usize) {
+        if cell_count == 0 {
+            return;
+        }
+        self.open_browser(cell_count);
+        self.browser.selected_cell = cell_count - 1;
+        self.browser.last_seen_cell_count = cell_count;
+        self.transcript.selected_cell = self.browser.selected_cell;
     }
 
     pub fn set_resume_palette(
@@ -392,6 +418,28 @@ impl InteractionState {
         self.pane_focus = PaneFocus::Palette;
     }
 
+    pub fn set_model_palette(
+        &mut self,
+        query: impl Into<String>,
+        items: Vec<AstrcodeModelOptionDto>,
+    ) {
+        self.palette = PaletteState::Model(ModelPaletteState {
+            query: query.into(),
+            items,
+            selected: 0,
+        });
+        self.pane_focus = PaneFocus::Palette;
+    }
+
+    pub fn sync_model_items(&mut self, items: Vec<AstrcodeModelOptionDto>) {
+        if let PaletteState::Model(palette) = &mut self.palette {
+            palette.items = items;
+            if palette.selected >= palette.items.len() {
+                palette.selected = 0;
+            }
+        }
+    }
+
     pub fn sync_slash_items(&mut self, items: Vec<AstrcodeConversationSlashCandidateDto>) {
         if let PaletteState::Slash(palette) = &mut self.palette {
             palette.items = items;
@@ -418,7 +466,13 @@ impl InteractionState {
             PaletteState::Slash(palette) if !palette.items.is_empty() => {
                 palette.selected = (palette.selected + 1) % palette.items.len();
             },
-            PaletteState::Closed | PaletteState::Resume(_) | PaletteState::Slash(_) => {},
+            PaletteState::Model(palette) if !palette.items.is_empty() => {
+                palette.selected = (palette.selected + 1) % palette.items.len();
+            },
+            PaletteState::Closed
+            | PaletteState::Resume(_)
+            | PaletteState::Slash(_)
+            | PaletteState::Model(_) => {},
         }
     }
 
@@ -432,7 +486,14 @@ impl InteractionState {
                 palette.selected = (palette.selected + palette.items.len().saturating_sub(1))
                     % palette.items.len();
             },
-            PaletteState::Closed | PaletteState::Resume(_) | PaletteState::Slash(_) => {},
+            PaletteState::Model(palette) if !palette.items.is_empty() => {
+                palette.selected = (palette.selected + palette.items.len().saturating_sub(1))
+                    % palette.items.len();
+            },
+            PaletteState::Closed
+            | PaletteState::Resume(_)
+            | PaletteState::Slash(_)
+            | PaletteState::Model(_) => {},
         }
     }
 
@@ -447,20 +508,23 @@ impl InteractionState {
                 .get(palette.selected)
                 .cloned()
                 .map(PaletteSelection::SlashCandidate),
+            PaletteState::Model(palette) => palette
+                .items
+                .get(palette.selected)
+                .cloned()
+                .map(PaletteSelection::ModelOption),
             PaletteState::Closed => None,
         }
     }
 
     pub fn clear_surface_state(&mut self) {
         match self.pane_focus {
-            PaneFocus::Transcript => {
-                self.reset_scroll();
-                self.transcript.expanded_cells.clear();
-            },
             PaneFocus::Composer => {
                 self.status = StatusLine::default();
+                self.transcript.expanded_cells.clear();
             },
             PaneFocus::Palette => self.close_palette(),
+            PaneFocus::Browser => self.close_browser(),
         }
     }
 }
@@ -472,21 +536,19 @@ mod tests {
     #[test]
     fn tab_flow_cycles_two_surfaces() {
         let mut state = InteractionState::default();
-        state.set_focus(PaneFocus::Transcript);
         state.cycle_focus_forward();
         assert_eq!(state.pane_focus, PaneFocus::Composer);
         state.cycle_focus_forward();
-        assert_eq!(state.pane_focus, PaneFocus::Transcript);
+        assert_eq!(state.pane_focus, PaneFocus::Composer);
     }
 
     #[test]
     fn close_palette_restores_previous_focus() {
         let mut state = InteractionState::default();
-        state.set_focus(PaneFocus::Transcript);
         state.set_slash_palette("", Vec::new());
         assert_eq!(state.pane_focus, PaneFocus::Palette);
         state.close_palette();
-        assert_eq!(state.pane_focus, PaneFocus::Transcript);
+        assert_eq!(state.pane_focus, PaneFocus::Composer);
     }
 
     #[test]
@@ -496,6 +558,29 @@ mod tests {
         assert!(state.is_cell_expanded("assistant-1"));
         state.toggle_cell_expanded("assistant-1");
         assert!(!state.is_cell_expanded("assistant-1"));
+    }
+
+    #[test]
+    fn browser_open_close_and_navigation_track_selected_cell() {
+        let mut state = InteractionState::default();
+        state.open_browser(4);
+        assert!(state.browser.open);
+        assert_eq!(state.pane_focus, PaneFocus::Browser);
+
+        state.browser_next(4, 1);
+        assert_eq!(state.browser.selected_cell, 1);
+        state.browser_next(4, 5);
+        assert_eq!(state.browser.selected_cell, 3);
+        state.browser_prev(4, 2);
+        assert_eq!(state.browser.selected_cell, 1);
+        state.browser_first(4);
+        assert_eq!(state.browser.selected_cell, 0);
+        state.browser_last(4);
+        assert_eq!(state.browser.selected_cell, 3);
+
+        state.close_browser();
+        assert!(!state.browser.open);
+        assert_eq!(state.pane_focus, PaneFocus::Composer);
     }
 
     #[test]
@@ -521,11 +606,11 @@ mod tests {
     }
 
     #[test]
-    fn manual_scroll_disables_selection_driven_scroll() {
+    fn transcript_navigation_updates_selected_cell() {
         let mut state = InteractionState::default();
         state.transcript_next(4);
-        assert!(state.selection_drives_scroll);
-        state.scroll_up();
-        assert!(!state.selection_drives_scroll);
+        assert_eq!(state.transcript.selected_cell, 1);
+        state.transcript_prev(4);
+        assert_eq!(state.transcript.selected_cell, 0);
     }
 }

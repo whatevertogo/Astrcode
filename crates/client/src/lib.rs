@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use astrcode_protocol::http::{
     AuthExchangeRequest, AuthExchangeResponse, CompactSessionRequest, CompactSessionResponse,
-    CreateSessionRequest, ExecutionControlDto, PromptAcceptedResponse, PromptRequest,
-    SessionListItem,
+    CreateSessionRequest, CurrentModelInfoDto, ExecutionControlDto, ModelOptionDto,
+    PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest, SessionListItem,
     conversation::v1::{
         ConversationCursorDto, ConversationDeltaDto, ConversationErrorEnvelopeDto,
         ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
@@ -35,9 +35,12 @@ pub use astrcode_protocol::http::{
     CompactSessionRequest as AstrcodeCompactSessionRequest,
     CompactSessionResponse as AstrcodeCompactSessionResponse,
     CreateSessionRequest as AstrcodeCreateSessionRequest,
-    ExecutionControlDto as AstrcodeExecutionControlDto, PhaseDto as AstrcodePhaseDto,
-    PromptAcceptedResponse as AstrcodePromptAcceptedResponse,
-    PromptRequest as AstrcodePromptRequest, SessionListItem as AstrcodeSessionListItem,
+    CurrentModelInfoDto as AstrcodeCurrentModelInfoDto,
+    ExecutionControlDto as AstrcodeExecutionControlDto, ModelOptionDto as AstrcodeModelOptionDto,
+    PhaseDto as AstrcodePhaseDto, PromptAcceptedResponse as AstrcodePromptAcceptedResponse,
+    PromptRequest as AstrcodePromptRequest, PromptSkillInvocation as AstrcodePromptSkillInvocation,
+    SaveActiveSelectionRequest as AstrcodeSaveActiveSelectionRequest,
+    SessionListItem as AstrcodeSessionListItem,
     conversation::v1::{
         ConversationAssistantBlockDto as AstrcodeConversationAssistantBlockDto,
         ConversationBannerDto as AstrcodeConversationBannerDto,
@@ -247,6 +250,62 @@ where
             true,
         )
         .await
+    }
+
+    pub async fn get_current_model(&self) -> Result<CurrentModelInfoDto, ClientError> {
+        self.send_json::<CurrentModelInfoDto, Value>(
+            TransportMethod::Get,
+            "/api/models/current",
+            Vec::new(),
+            None,
+            true,
+        )
+        .await
+    }
+
+    pub async fn list_models(&self) -> Result<Vec<ModelOptionDto>, ClientError> {
+        self.send_json::<Vec<ModelOptionDto>, Value>(
+            TransportMethod::Get,
+            "/api/models",
+            Vec::new(),
+            None,
+            true,
+        )
+        .await
+    }
+
+    pub async fn save_active_selection(
+        &self,
+        request: SaveActiveSelectionRequest,
+    ) -> Result<(), ClientError> {
+        let response = self
+            .transport
+            .execute(TransportRequest {
+                method: TransportMethod::Post,
+                url: self.url("/api/config/active-selection"),
+                auth_token: Some(self.require_api_token().await?),
+                query: Vec::new(),
+                json_body: Some(serde_json::to_value(request).map_err(|error| {
+                    ClientError::new(
+                        ClientErrorKind::UnexpectedResponse,
+                        format!("serialize request body failed: {error}"),
+                    )
+                })?),
+            })
+            .await
+            .map_err(ClientError::from_transport)?;
+        if response.status == 204 {
+            Ok(())
+        } else {
+            Err(ClientError::new(
+                ClientErrorKind::UnexpectedResponse,
+                format!(
+                    "save active selection expected 204 response, got {}",
+                    response.status
+                ),
+            )
+            .with_status(response.status))
+        }
     }
 
     pub async fn request_compact(
@@ -515,8 +574,8 @@ mod tests {
 
     use astrcode_protocol::http::{
         CompactSessionRequest, CompactSessionResponse, ConversationSlashActionKindDto,
-        ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto, ExecutionControlDto,
-        PhaseDto,
+        ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto, CurrentModelInfoDto,
+        ExecutionControlDto, PhaseDto, SaveActiveSelectionRequest,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -795,12 +854,12 @@ mod tests {
                 status: 200,
                 body: json!({
                     "items": [{
-                        "id": "skill-review",
+                        "id": "review",
                         "title": "Review skill",
                         "description": "插入 review skill",
                         "keywords": ["skill", "review"],
                         "actionKind": "insert_text",
-                        "actionValue": "/skill review"
+                        "actionValue": "/review"
                     }]
                 })
                 .to_string(),
@@ -823,12 +882,12 @@ mod tests {
             candidates,
             ConversationSlashCandidatesResponseDto {
                 items: vec![ConversationSlashCandidateDto {
-                    id: "skill-review".to_string(),
+                    id: "review".to_string(),
                     title: "Review skill".to_string(),
                     description: "插入 review skill".to_string(),
                     keywords: vec!["skill".to_string(), "review".to_string()],
                     action_kind: ConversationSlashActionKindDto::InsertText,
-                    action_value: "/skill review".to_string(),
+                    action_value: "/review".to_string(),
                 }]
             }
         );
@@ -1044,5 +1103,89 @@ mod tests {
             .await
             .expect("compact should succeed");
         assert!(response.deferred);
+    }
+
+    #[tokio::test]
+    async fn save_active_selection_accepts_no_content_response() {
+        let transport = MockTransport::default();
+        transport.push(MockCall::Request {
+            expected: TransportRequest {
+                method: TransportMethod::Post,
+                url: "http://localhost:5529/api/config/active-selection".to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: Some(json!({
+                    "activeProfile": "anthropic",
+                    "activeModel": "claude-sonnet"
+                })),
+            },
+            result: Ok(TransportResponse {
+                status: 204,
+                body: String::new(),
+            }),
+        });
+
+        let client = AstrcodeClient::with_transport(
+            ClientConfig {
+                origin: "http://localhost:5529".to_string(),
+                api_token: Some("session-token".to_string()),
+                api_token_expires_at_ms: Some(super::current_timestamp_ms() + 30_000),
+                stream_buffer: 8,
+            },
+            transport,
+        );
+
+        client
+            .save_active_selection(SaveActiveSelectionRequest {
+                active_profile: "anthropic".to_string(),
+                active_model: "claude-sonnet".to_string(),
+            })
+            .await
+            .expect("save active selection should succeed");
+    }
+
+    #[tokio::test]
+    async fn get_current_model_decodes_model_summary() {
+        let transport = MockTransport::default();
+        transport.push(MockCall::Request {
+            expected: TransportRequest {
+                method: TransportMethod::Get,
+                url: "http://localhost:5529/api/models/current".to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: None,
+            },
+            result: Ok(TransportResponse {
+                status: 200,
+                body: json!({
+                    "profileName": "anthropic",
+                    "model": "claude-sonnet",
+                    "providerKind": "anthropic"
+                })
+                .to_string(),
+            }),
+        });
+
+        let client = AstrcodeClient::with_transport(
+            ClientConfig {
+                origin: "http://localhost:5529".to_string(),
+                api_token: Some("session-token".to_string()),
+                api_token_expires_at_ms: Some(super::current_timestamp_ms() + 30_000),
+                stream_buffer: 8,
+            },
+            transport,
+        );
+
+        assert_eq!(
+            client
+                .get_current_model()
+                .await
+                .expect("current model should decode"),
+            CurrentModelInfoDto {
+                profile_name: "anthropic".to_string(),
+                model: "claude-sonnet".to_string(),
+                provider_kind: "anthropic".to_string(),
+            }
+        );
     }
 }

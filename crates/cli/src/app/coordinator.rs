@@ -4,11 +4,13 @@ use anyhow::Result;
 use astrcode_client::{
     AstrcodeClientTransport, AstrcodeCompactSessionRequest, AstrcodeConversationBannerErrorCodeDto,
     AstrcodeConversationErrorEnvelopeDto, AstrcodeCreateSessionRequest,
-    AstrcodeExecutionControlDto, AstrcodePromptRequest, ConversationStreamItem,
+    AstrcodeExecutionControlDto, AstrcodePromptRequest, AstrcodePromptSkillInvocation,
+    AstrcodeSaveActiveSelectionRequest, ConversationStreamItem,
 };
 
 use super::{
-    Action, AppController, filter_resume_sessions, required_working_dir, resume_query_from_input,
+    Action, AppController, filter_model_options, filter_resume_sessions, model_query_from_input,
+    required_working_dir, resume_query_from_input, slash_candidates_with_local_commands,
     slash_query_from_input,
 };
 use crate::{
@@ -34,30 +36,10 @@ where
 
     pub(super) async fn submit_current_input(&mut self) {
         let input = self.state.take_input();
-        match classify_input(input) {
+        match classify_input(input, &self.state.conversation.slash_candidates) {
             InputAction::Empty => {},
             InputAction::SubmitPrompt { text } => {
-                let Some(session_id) = self.state.conversation.active_session_id.clone() else {
-                    self.state.set_error_status("no active session");
-                    return;
-                };
-                // 新一轮对话开始时恢复 transcript 跟随尾部，避免旧的手动滚动状态
-                // 把新回复固定在历史位置，看起来像“后半段没渲染”。
-                self.state.resume_transcript_tail();
-                self.state.set_status("submitting prompt");
-                let client = self.client.clone();
-                self.dispatch_async(async move {
-                    let result = client
-                        .submit_prompt(
-                            &session_id,
-                            AstrcodePromptRequest {
-                                text,
-                                control: None,
-                            },
-                        )
-                        .await;
-                    Some(Action::PromptSubmitted { session_id, result })
-                });
+                self.submit_prompt_request(text, None).await;
             },
             InputAction::RunCommand(command) => {
                 self.execute_command(command).await;
@@ -70,6 +52,13 @@ where
             PaletteAction::SwitchSession { session_id } => {
                 self.state.close_palette();
                 self.begin_session_hydration(session_id).await;
+            },
+            PaletteAction::SelectModel {
+                profile_name,
+                model,
+            } => {
+                self.state.close_palette();
+                self.apply_model_selection(profile_name, model).await;
             },
             PaletteAction::ReplaceInput { text } => {
                 self.state.close_palette();
@@ -114,6 +103,17 @@ where
                 self.state.set_resume_query(query, items);
                 self.refresh_sessions().await;
             },
+            Command::Model { query } => {
+                let query = query.unwrap_or_default();
+                let items = filter_model_options(&self.state.shell.model_options, query.as_str());
+                self.state.replace_input(if query.is_empty() {
+                    "/model".to_string()
+                } else {
+                    format!("/model {query}")
+                });
+                self.state.set_model_query(query.clone(), items);
+                self.refresh_model_options(query).await;
+            },
             Command::Compact => {
                 let Some(session_id) = self.state.conversation.active_session_id.clone() else {
                     self.state.set_error_status("no active session");
@@ -148,14 +148,16 @@ where
                     Some(Action::CompactRequested { session_id, result })
                 });
             },
-            Command::Skill { query } => {
-                let query = query.unwrap_or_default();
-                self.state.replace_input(if query.is_empty() {
-                    "/skill".to_string()
-                } else {
-                    format!("/skill {query}")
-                });
-                self.open_slash_palette(query).await;
+            Command::SkillInvoke { skill_id, prompt } => {
+                let text = prompt.clone().unwrap_or_default();
+                self.submit_prompt_request(
+                    text,
+                    Some(AstrcodePromptSkillInvocation {
+                        skill_id,
+                        user_prompt: prompt,
+                    }),
+                )
+                .await;
             },
             Command::Unknown { raw } => {
                 self.state
@@ -234,6 +236,22 @@ where
         });
     }
 
+    pub(super) async fn refresh_current_model(&self) {
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client.get_current_model().await;
+            Some(Action::CurrentModelLoaded(result))
+        });
+    }
+
+    pub(super) async fn refresh_model_options(&self, query: String) {
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client.list_models().await;
+            Some(Action::ModelOptionsLoaded { query, result })
+        });
+    }
+
     pub(super) async fn open_slash_palette(&mut self, query: String) {
         if !self
             .state
@@ -245,10 +263,14 @@ where
         {
             self.state.replace_input("/".to_string());
         }
+        let candidates = slash_candidates_with_local_commands(
+            &self.state.conversation.slash_candidates,
+            query.as_str(),
+        );
         let items = if query.trim().is_empty() {
-            self.state.conversation.slash_candidates.clone()
+            candidates
         } else {
-            filter_slash_candidates(&self.state.conversation.slash_candidates, &query)
+            filter_slash_candidates(&candidates, &query)
         };
         self.state.set_slash_query(query.clone(), items);
         self.refresh_slash_candidates(query).await;
@@ -299,11 +321,32 @@ where
                     return;
                 }
                 let query = self.slash_query_for_current_input();
-                self.state.set_slash_query(
-                    query.clone(),
-                    filter_slash_candidates(&self.state.conversation.slash_candidates, &query),
+                let candidates = slash_candidates_with_local_commands(
+                    &self.state.conversation.slash_candidates,
+                    query.as_str(),
                 );
+                self.state
+                    .set_slash_query(query.clone(), filter_slash_candidates(&candidates, &query));
                 self.refresh_slash_candidates(query).await;
+            },
+            PaletteState::Model(_) => {
+                if !self
+                    .state
+                    .interaction
+                    .composer
+                    .as_str()
+                    .trim_start()
+                    .starts_with("/model")
+                {
+                    self.state.close_palette();
+                    return;
+                }
+                let query = model_query_from_input(self.state.interaction.composer.as_str());
+                self.state.set_model_query(
+                    query.clone(),
+                    filter_model_options(&self.state.shell.model_options, query.as_str()),
+                );
+                self.refresh_model_options(query).await;
             },
             PaletteState::Closed => {},
         }
@@ -356,5 +399,49 @@ where
 
     pub(super) fn slash_query_for_current_input(&self) -> String {
         slash_query_from_input(self.state.interaction.composer.as_str())
+    }
+
+    async fn apply_model_selection(&mut self, profile_name: String, model: String) {
+        self.state.set_status(format!("switching model to {model}"));
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client
+                .save_active_selection(AstrcodeSaveActiveSelectionRequest {
+                    active_profile: profile_name.clone(),
+                    active_model: model.clone(),
+                })
+                .await;
+            Some(Action::ModelSelectionSaved {
+                profile_name,
+                model,
+                result,
+            })
+        });
+    }
+
+    async fn submit_prompt_request(
+        &mut self,
+        text: String,
+        skill_invocation: Option<AstrcodePromptSkillInvocation>,
+    ) {
+        let Some(session_id) = self.state.conversation.active_session_id.clone() else {
+            self.state.set_error_status("no active session");
+            return;
+        };
+        self.state.set_status("submitting prompt");
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client
+                .submit_prompt(
+                    &session_id,
+                    AstrcodePromptRequest {
+                        text,
+                        skill_invocation,
+                        control: None,
+                    },
+                )
+                .await;
+            Some(Action::PromptSubmitted { session_id, result })
+        });
     }
 }
