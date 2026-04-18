@@ -1,7 +1,6 @@
 pub mod cells;
 pub mod composer;
 pub mod custom_terminal;
-pub mod hud;
 pub mod insert_history;
 mod markdown;
 pub mod overlay;

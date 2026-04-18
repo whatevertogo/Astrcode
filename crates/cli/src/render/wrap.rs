@@ -3,21 +3,7 @@ use std::borrow::Cow;
 use textwrap::{Options, WordSeparator, wrap};
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContentKind {
-    Prose,
-    CodeBlock,
-    UrlOrPath,
-    Table,
-    ToolLog,
-    Whitespace,
-}
-
 pub fn wrap_plain_text(text: &str, width: usize) -> Vec<String> {
-    wrap_content(ContentKind::Prose, text, width)
-}
-
-pub fn wrap_content(kind: ContentKind, text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
     for raw_line in text.split('\n') {
@@ -26,22 +12,17 @@ pub fn wrap_content(kind: ContentKind, text: &str, width: usize) -> Vec<String> 
             continue;
         }
 
-        let options = match classify_line(kind, raw_line) {
-            ContentKind::CodeBlock | ContentKind::ToolLog => base_options(width).break_words(true),
-            ContentKind::UrlOrPath => base_options(width).break_words(true),
-            ContentKind::Table => base_options(width).break_words(true),
-            ContentKind::Whitespace => {
-                lines.push(String::new());
-                continue;
-            },
-            ContentKind::Prose => base_options(width),
+        let options = if looks_like_path_or_url(raw_line) {
+            base_options(width).break_words(true)
+        } else {
+            base_options(width)
         };
 
         let wrapped = wrap(raw_line, options);
         if wrapped.is_empty() {
             lines.push(String::new());
         } else {
-            lines.extend(wrapped.into_iter().map(|line| normalize_line(line)));
+            lines.extend(wrapped.into_iter().map(normalize_line));
         }
     }
 
@@ -55,22 +36,6 @@ fn base_options(width: usize) -> Options<'static> {
     Options::new(width)
         .word_separator(WordSeparator::AsciiSpace)
         .break_words(false)
-}
-
-fn classify_line(kind: ContentKind, line: &str) -> ContentKind {
-    if line.trim().is_empty() {
-        return ContentKind::Whitespace;
-    }
-    if matches!(
-        kind,
-        ContentKind::CodeBlock | ContentKind::ToolLog | ContentKind::Table
-    ) {
-        return kind;
-    }
-    if looks_like_path_or_url(line) {
-        return ContentKind::UrlOrPath;
-    }
-    kind
 }
 
 fn looks_like_path_or_url(line: &str) -> bool {

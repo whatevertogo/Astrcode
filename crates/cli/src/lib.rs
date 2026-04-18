@@ -4,7 +4,6 @@ pub mod capability;
 pub mod chat;
 pub mod command;
 pub mod launcher;
-pub mod model;
 pub mod render;
 pub mod state;
 pub mod tui;
