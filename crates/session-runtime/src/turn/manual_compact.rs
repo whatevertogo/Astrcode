@@ -49,6 +49,8 @@ pub(crate) async fn build_manual_compact_events(
         working_dir: request.working_dir,
         step_index: 0,
         messages: &projected.messages,
+        session_state: Some(request.session_state),
+        current_agent_id: None,
         submission_prompt_declarations: &[],
     })
     .await?;

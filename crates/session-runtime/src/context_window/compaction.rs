@@ -167,7 +167,7 @@ pub async fn auto_compact(
         }
     };
 
-    let summary = parsed_output.summary.clone();
+    let summary = sanitize_compact_summary(&parsed_output.summary);
     let output_summary_chars = summary.chars().count().min(u32::MAX as usize) as u32;
     let compacted_messages = compacted_messages(&summary, split.suffix);
     let post_tokens_estimate = estimate_request_tokens(&compacted_messages, compact_prompt_context);
@@ -279,7 +279,8 @@ fn latest_previous_summary(messages: &[LlmMessage]) -> Option<String> {
         LlmMessage::User {
             content,
             origin: UserMessageOrigin::CompactSummary,
-        } => parse_compact_summary_message(content).map(|envelope| envelope.summary),
+        } => parse_compact_summary_message(content)
+            .map(|envelope| sanitize_compact_summary(&envelope.summary)),
         _ => None,
     })
 }
@@ -390,11 +391,192 @@ fn summarize_persisted_tool_output(content: &str) -> String {
     )
 }
 
+fn sanitize_compact_summary(summary: &str) -> String {
+    let had_route_sensitive_content = summary_has_route_sensitive_content(summary);
+    let mut sanitized = summary.trim().to_string();
+    sanitized = direct_child_validation_regex()
+        .replace_all(
+            &sanitized,
+            "direct-child validation rejected a stale child reference; use the live direct-child \
+             snapshot or the latest live tool result instead.",
+        )
+        .into_owned();
+    sanitized = child_agent_reference_block_regex()
+        .replace_all(
+            &sanitized,
+            "Child agent reference metadata existed earlier, but compacted history is not an \
+             authoritative routing source.",
+        )
+        .into_owned();
+    for (regex, replacement) in [
+        (
+            route_key_regex("agentId"),
+            "${key}<latest-direct-child-agentId>",
+        ),
+        (
+            route_key_regex("childAgentId"),
+            "${key}<latest-direct-child-agentId>",
+        ),
+        (route_key_regex("parentAgentId"), "${key}<parent-agentId>"),
+        (route_key_regex("subRunId"), "${key}<direct-child-subRunId>"),
+        (route_key_regex("parentSubRunId"), "${key}<parent-subRunId>"),
+        (route_key_regex("sessionId"), "${key}<session-id>"),
+        (
+            route_key_regex("childSessionId"),
+            "${key}<child-session-id>",
+        ),
+        (route_key_regex("openSessionId"), "${key}<child-session-id>"),
+    ] {
+        sanitized = regex.replace_all(&sanitized, replacement).into_owned();
+    }
+    sanitized = exact_agent_instruction_regex()
+        .replace_all(
+            &sanitized,
+            "Use only the latest live child snapshot or tool result for agent routing.",
+        )
+        .into_owned();
+    sanitized = raw_root_agent_id_regex()
+        .replace_all(&sanitized, "<agent-id>")
+        .into_owned();
+    sanitized = raw_agent_id_regex()
+        .replace_all(&sanitized, "<agent-id>")
+        .into_owned();
+    sanitized = raw_subrun_id_regex()
+        .replace_all(&sanitized, "<subrun-id>")
+        .into_owned();
+    sanitized = raw_session_id_regex()
+        .replace_all(&sanitized, "<session-id>")
+        .into_owned();
+    sanitized = collapse_compaction_whitespace(&sanitized);
+    if had_route_sensitive_content {
+        ensure_compact_boundary_section(&sanitized)
+    } else {
+        sanitized
+    }
+}
+
+fn ensure_compact_boundary_section(summary: &str) -> String {
+    if summary.contains("## Compact Boundary") {
+        return summary.to_string();
+    }
+    format!(
+        "## Compact Boundary\n- Historical `agentId`, `subRunId`, and `sessionId` values from \
+         compacted history are non-authoritative.\n- Use the live direct-child snapshot or the \
+         latest live tool result / child notification for routing.\n\n{}",
+        summary.trim()
+    )
+}
+
+fn summary_has_route_sensitive_content(summary: &str) -> bool {
+    direct_child_validation_regex().is_match(summary)
+        || child_agent_reference_block_regex().is_match(summary)
+        || exact_agent_instruction_regex().is_match(summary)
+        || raw_root_agent_id_regex().is_match(summary)
+        || raw_agent_id_regex().is_match(summary)
+        || raw_subrun_id_regex().is_match(summary)
+        || raw_session_id_regex().is_match(summary)
+        || [
+            route_key_regex("agentId"),
+            route_key_regex("childAgentId"),
+            route_key_regex("parentAgentId"),
+            route_key_regex("subRunId"),
+            route_key_regex("parentSubRunId"),
+            route_key_regex("sessionId"),
+            route_key_regex("childSessionId"),
+            route_key_regex("openSessionId"),
+        ]
+        .into_iter()
+        .any(|regex| regex.is_match(summary))
+}
+
+fn child_agent_reference_block_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"(?is)Child agent reference:\s*(?:\n- .*)+")
+            .expect("child agent reference regex should compile")
+    })
+}
+
+fn direct_child_validation_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"(?i)not a direct child of caller[^\n]*")
+            .expect("direct child validation regex should compile")
+    })
+}
+
+fn route_key_regex(key: &str) -> &'static Regex {
+    static AGENT_ID: OnceLock<Regex> = OnceLock::new();
+    static CHILD_AGENT_ID: OnceLock<Regex> = OnceLock::new();
+    static PARENT_AGENT_ID: OnceLock<Regex> = OnceLock::new();
+    static SUB_RUN_ID: OnceLock<Regex> = OnceLock::new();
+    static PARENT_SUB_RUN_ID: OnceLock<Regex> = OnceLock::new();
+    static SESSION_ID: OnceLock<Regex> = OnceLock::new();
+    static CHILD_SESSION_ID: OnceLock<Regex> = OnceLock::new();
+    static OPEN_SESSION_ID: OnceLock<Regex> = OnceLock::new();
+    let slot = match key {
+        "agentId" => &AGENT_ID,
+        "childAgentId" => &CHILD_AGENT_ID,
+        "parentAgentId" => &PARENT_AGENT_ID,
+        "subRunId" => &SUB_RUN_ID,
+        "parentSubRunId" => &PARENT_SUB_RUN_ID,
+        "sessionId" => &SESSION_ID,
+        "childSessionId" => &CHILD_SESSION_ID,
+        "openSessionId" => &OPEN_SESSION_ID,
+        other => panic!("unsupported route key regex: {other}"),
+    };
+    slot.get_or_init(|| {
+        Regex::new(&format!(
+            r"(?i)(?P<key>`?{key}`?\s*[:=]\s*`?)[^`\s,;\])]+`?"
+        ))
+        .expect("route key regex should compile")
+    })
+}
+
+fn exact_agent_instruction_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(
+            r"(?i)(use this exact `agentid` value[^\n]*|copy it byte-for-byte[^\n]*|keep `agentid` exact[^\n]*)",
+        )
+        .expect("exact agent instruction regex should compile")
+    })
+}
+
+fn raw_root_agent_id_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"\broot-agent:[A-Za-z0-9._:-]+\b")
+            .expect("raw root agent id regex should compile")
+    })
+}
+
+fn raw_agent_id_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"\bagent-[A-Za-z0-9._:-]+\b").expect("raw agent id regex should compile")
+    })
+}
+
+fn raw_subrun_id_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"\bsubrun-[A-Za-z0-9._:-]+\b").expect("raw subrun regex should compile")
+    })
+}
+
+fn raw_session_id_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"\bsession-[A-Za-z0-9._:-]+\b").expect("raw session regex should compile")
+    })
+}
+
 fn strip_child_agent_reference_hint(content: &str) -> String {
     let Some((prefix, child_ref_block)) = content.split_once("\n\nChild agent reference:") else {
         return content.to_string();
     };
-    let mut extracted = Vec::new();
+    let mut has_reference_fields = false;
     for line in child_ref_block.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("- agentId:")
@@ -402,13 +584,18 @@ fn strip_child_agent_reference_hint(content: &str) -> String {
             || trimmed.starts_with("- openSessionId:")
             || trimmed.starts_with("- status:")
         {
-            extracted.push(trimmed.trim_start_matches('-').trim().to_string());
+            has_reference_fields = true;
         }
     }
-    let child_ref_summary = if extracted.is_empty() {
-        "Child agent reference preserved.".to_string()
+    let child_ref_summary = if has_reference_fields {
+        "Child agent reference existed in the original tool result. Do not reuse any agentId, \
+         subRunId, or sessionId from compacted history; rely on the latest live tool result or \
+         current direct-child snapshot instead."
+            .to_string()
     } else {
-        format!("Child agent reference preserved: {}", extracted.join(", "))
+        "Child agent reference metadata existed in the original tool result, but compacted history \
+         is not an authoritative source for later agent routing."
+            .to_string()
     };
     let prefix = prefix.trim();
     if prefix.is_empty() {
@@ -1001,6 +1188,41 @@ mod tests {
                 origin: UserMessageOrigin::User
             } if content == "real user"
         ));
+    }
+
+    #[test]
+    fn normalize_compaction_tool_content_removes_exact_child_identifiers() {
+        let normalized = normalize_compaction_tool_content(
+            "spawn 已在后台启动。\n\nChild agent reference:\n- agentId: agent-1\n- subRunId: \
+             subrun-1\n- sessionId: session-parent\n- openSessionId: session-child\n- status: \
+             running\nUse this exact `agentId` value in later send/observe/close calls.",
+        );
+
+        assert!(normalized.contains("spawn 已在后台启动。"));
+        assert!(normalized.contains("Do not reuse any agentId"));
+        assert!(!normalized.contains("agent-1"));
+        assert!(!normalized.contains("subrun-1"));
+        assert!(!normalized.contains("session-child"));
+    }
+
+    #[test]
+    fn sanitize_compact_summary_replaces_stale_route_identifiers_with_boundary_guidance() {
+        let sanitized = sanitize_compact_summary(
+            "## Progress\n- Spawned agent-3 and later called observe(agent-2).\n- Error: agent \
+             'agent-2' is not a direct child of caller 'agent-root:session-parent' (actual \
+             parent: agent-1); send/observe/close only support direct children.\n- Child ref \
+             payload: agentId=agent-2 subRunId=subrun-2 openSessionId=session-child-2",
+        );
+
+        assert!(sanitized.contains("## Compact Boundary"));
+        assert!(sanitized.contains("live direct-child snapshot"));
+        assert!(sanitized.contains("<agent-id>"));
+        assert!(sanitized.contains("<subrun-id>") || sanitized.contains("<direct-child-subRunId>"));
+        assert!(sanitized.contains("<child-session-id>") || sanitized.contains("<session-id>"));
+        assert!(!sanitized.contains("agent-2"));
+        assert!(!sanitized.contains("subrun-2"));
+        assert!(!sanitized.contains("session-child-2"));
+        assert!(!sanitized.contains("not a direct child of caller"));
     }
 
     #[test]

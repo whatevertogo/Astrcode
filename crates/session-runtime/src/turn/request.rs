@@ -67,6 +67,8 @@ pub(crate) struct PromptOutputRequest<'a> {
     pub working_dir: &'a Path,
     pub step_index: usize,
     pub messages: &'a [LlmMessage],
+    pub session_state: Option<&'a crate::SessionState>,
+    pub current_agent_id: Option<&'a str>,
     pub submission_prompt_declarations: &'a [PromptDeclaration],
 }
 
@@ -119,6 +121,8 @@ pub async fn assemble_prompt_request(
         working_dir: request.working_dir,
         step_index: request.step_index,
         messages: &messages,
+        session_state: Some(request.session_state),
+        current_agent_id: request.agent.agent_id.as_ref().map(|id| id.as_str()),
         submission_prompt_declarations: request.prompt_declarations,
     })
     .await?;
@@ -183,6 +187,8 @@ pub async fn assemble_prompt_request(
                     working_dir: request.working_dir,
                     step_index: request.step_index,
                     messages: &messages,
+                    session_state: Some(request.session_state),
+                    current_agent_id: request.agent.agent_id.as_ref().map(|id| id.as_str()),
                     submission_prompt_declarations: request.prompt_declarations,
                 })
                 .await?;
@@ -242,6 +248,8 @@ pub(crate) async fn build_prompt_output(
         working_dir,
         step_index,
         messages,
+        session_state,
+        current_agent_id,
         submission_prompt_declarations,
     } = request;
     let facts = prompt_facts_provider
@@ -269,6 +277,11 @@ pub(crate) async fn build_prompt_output(
         agent_profiles,
         mut prompt_declarations,
     } = facts;
+    if let Some(direct_child_snapshot) =
+        live_direct_child_snapshot_declaration(session_state, current_agent_id)?
+    {
+        prompt_declarations.push(direct_child_snapshot);
+    }
     prompt_declarations.extend_from_slice(submission_prompt_declarations);
     gateway
         .build_prompt(PromptBuildRequest {
@@ -287,6 +300,61 @@ pub(crate) async fn build_prompt_output(
         })
         .await
         .map_err(|error| astrcode_core::AstrError::Internal(error.to_string()))
+}
+
+fn live_direct_child_snapshot_declaration(
+    session_state: Option<&crate::SessionState>,
+    current_agent_id: Option<&str>,
+) -> Result<Option<PromptDeclaration>> {
+    let Some(session_state) = session_state else {
+        return Ok(None);
+    };
+    let Some(current_agent_id) = current_agent_id.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+
+    let direct_children = session_state.child_nodes_for_parent(current_agent_id)?;
+    let children_block = if direct_children.is_empty() {
+        "- (none)\n- If work needs a new branch, use `spawn` instead of guessing an older \
+         `agentId`."
+            .to_string()
+    } else {
+        direct_children
+            .iter()
+            .map(|node| {
+                format!(
+                    "- agentId=`{}` status=`{:?}` subRunId=`{}` childSessionId=`{}` lineage=`{:?}`",
+                    node.agent_id(),
+                    node.status,
+                    node.sub_run_id(),
+                    node.child_session_id,
+                    node.lineage_kind
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    Ok(Some(PromptDeclaration {
+        block_id: "agent.live.direct_children".to_string(),
+        title: "Live Direct Child Snapshot".to_string(),
+        content: format!(
+            "Authoritative direct-child snapshot for the current agent.\n\nRouting rules:\n- Only \
+             use `agentId` values from this snapshot or from a newer live tool result / child \
+             notification in the current prompt tail.\n- Never reuse `agentId`, `subRunId`, or \
+             `sessionId` from compact summaries, stale errors, or historical notes.\n- If a child \
+             is absent from this snapshot, treat it as unavailable for `send`, `observe`, or \
+             `close` at prompt-build time.\n\nDirect children:\n{children_block}"
+        ),
+        render_target: astrcode_core::PromptDeclarationRenderTarget::System,
+        layer: astrcode_core::SystemPromptLayer::Dynamic,
+        kind: astrcode_core::PromptDeclarationKind::ExtensionInstruction,
+        priority_hint: Some(592),
+        always_include: true,
+        source: astrcode_core::PromptDeclarationSource::Builtin,
+        capability_name: None,
+        origin: Some(format!("live-direct-children:{current_agent_id}")),
+    }))
 }
 
 pub(crate) fn build_prompt_metadata(
@@ -354,12 +422,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use astrcode_core::{
-        AstrError, LlmOutput, LlmProvider, LlmRequest, ModelLimits, PromptBuildOutput,
-        PromptBuildRequest, PromptDeclaration, PromptDeclarationKind,
-        PromptDeclarationRenderTarget, PromptDeclarationSource, PromptFacts, PromptFactsProvider,
-        PromptFactsRequest, PromptProvider, ResolvedRuntimeConfig, ResourceProvider,
-        ResourceReadResult, ResourceRequestContext, StorageEventPayload, SystemPromptLayer,
-        ToolDefinition,
+        AgentLifecycleStatus, AstrError, ChildExecutionIdentity, ChildSessionLineageKind,
+        ChildSessionNode, ChildSessionStatusSource, LlmOutput, LlmProvider, LlmRequest,
+        ModelLimits, ParentExecutionRef, PromptBuildOutput, PromptBuildRequest, PromptDeclaration,
+        PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource, PromptFacts,
+        PromptFactsProvider, PromptFactsRequest, PromptProvider, ResolvedRuntimeConfig,
+        ResourceProvider, ResourceReadResult, ResourceRequestContext, StorageEventPayload,
+        SystemPromptLayer, ToolDefinition,
     };
     use astrcode_kernel::{CapabilityRouter, KernelGateway};
     use async_trait::async_trait;
@@ -606,6 +675,8 @@ mod tests {
             working_dir: Path::new("."),
             step_index: 0,
             messages: &[],
+            session_state: None,
+            current_agent_id: None,
             submission_prompt_declarations: &submission_declarations,
         })
         .await
@@ -616,5 +687,67 @@ mod tests {
         assert_eq!(captured.len(), 2);
         assert_eq!(captured[0].origin.as_deref(), Some("facts-origin"));
         assert_eq!(captured[1].origin.as_deref(), Some("submission-origin"));
+    }
+
+    #[test]
+    fn live_direct_child_snapshot_declaration_only_uses_current_agents_children() {
+        let session_state = test_session_state();
+        session_state
+            .upsert_child_session_node(ChildSessionNode {
+                identity: ChildExecutionIdentity {
+                    agent_id: "agent-child-1".into(),
+                    session_id: "session-parent".into(),
+                    sub_run_id: "subrun-child-1".into(),
+                },
+                child_session_id: "session-child-1".into(),
+                parent_session_id: "session-parent".into(),
+                parent: ParentExecutionRef {
+                    parent_agent_id: Some("agent-root".into()),
+                    parent_sub_run_id: Some("subrun-root".into()),
+                },
+                parent_turn_id: "turn-1".into(),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status: AgentLifecycleStatus::Idle,
+                status_source: ChildSessionStatusSource::Durable,
+                created_by_tool_call_id: None,
+                lineage_snapshot: None,
+            })
+            .expect("direct child should insert");
+        session_state
+            .upsert_child_session_node(ChildSessionNode {
+                identity: ChildExecutionIdentity {
+                    agent_id: "agent-grandchild-1".into(),
+                    session_id: "session-child-1".into(),
+                    sub_run_id: "subrun-grandchild-1".into(),
+                },
+                child_session_id: "session-grandchild-1".into(),
+                parent_session_id: "session-child-1".into(),
+                parent: ParentExecutionRef {
+                    parent_agent_id: Some("agent-child-1".into()),
+                    parent_sub_run_id: Some("subrun-child-1".into()),
+                },
+                parent_turn_id: "turn-2".into(),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status: AgentLifecycleStatus::Running,
+                status_source: ChildSessionStatusSource::Durable,
+                created_by_tool_call_id: None,
+                lineage_snapshot: None,
+            })
+            .expect("grandchild should insert");
+
+        let declaration =
+            live_direct_child_snapshot_declaration(Some(&session_state), Some("agent-root"))
+                .expect("declaration build should succeed")
+                .expect("root declaration should exist");
+
+        assert_eq!(declaration.block_id, "agent.live.direct_children");
+        assert!(declaration.content.contains("agentId=`agent-child-1`"));
+        assert!(declaration.content.contains("subRunId=`subrun-child-1`"));
+        assert!(!declaration.content.contains("agent-grandchild-1"));
+        assert!(
+            declaration
+                .content
+                .contains("Never reuse `agentId`, `subRunId`, or `sessionId`")
+        );
     }
 }

@@ -21,6 +21,7 @@ const chatContextValue: ChatScreenContextValue = {
   onCloseSubRun: () => {},
   onNavigateSubRunPath: () => {},
   onOpenChildSession: () => {},
+  onForkFromTurn: () => {},
   onSubmitPrompt: () => {},
   onInterrupt: () => {},
   onCancelSubRun: () => {},

@@ -1,7 +1,9 @@
 import React, { Component, useCallback, useEffect, useRef } from 'react';
 import type { Message, SubRunViewData, ThreadItem } from '../../types';
-import { emptyStateSurface, errorSurface } from '../../lib/styles';
+import { contextMenu as contextMenuClass, emptyStateSurface, errorSurface, menuItem } from '../../lib/styles';
 import { cn } from '../../lib/utils';
+import { useContextMenu } from '../../hooks/useContextMenu';
+import { resolveForkTurnIdFromMessage } from '../../lib/sessionFork';
 import AssistantMessage from './AssistantMessage';
 import CompactMessage from './CompactMessage';
 import SubRunBlock from './SubRunBlock';
@@ -140,6 +142,51 @@ function isRowNested(options?: { nested?: boolean }): boolean {
   return options?.nested === true;
 }
 
+function ForkableRow({
+  message,
+  nested,
+  children,
+}: {
+  message: Message;
+  nested?: boolean;
+  children: React.ReactNode;
+}) {
+  const { activeSubRunPath, conversationControl, onForkFromTurn } = useChatScreenContext();
+  const { contextMenu, menuRef, openMenu, closeMenu } = useContextMenu();
+  const turnId =
+    activeSubRunPath.length === 0 && !nested
+      ? resolveForkTurnIdFromMessage(message, conversationControl)
+      : null;
+
+  if (!turnId) {
+    return <>{children}</>;
+  }
+
+  return (
+    <>
+      <div onContextMenu={openMenu}>{children}</div>
+      {contextMenu && (
+        <div
+          ref={menuRef}
+          className={contextMenuClass}
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+        >
+          <button
+            className={menuItem}
+            type="button"
+            onClick={() => {
+              void onForkFromTurn(turnId);
+              closeMenu();
+            }}
+          >
+            从此处 fork
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function MessageList({
   threadItems,
   childSubRuns,
@@ -265,18 +312,21 @@ export default function MessageList({
           : undefined);
 
       return (
-        <div
-          key={options?.key ?? msg.id}
-          className={cn(
-            isRowNested(options) ? 'w-full' : 'mx-auto w-[min(100%,var(--chat-content-max-width))]',
-            'min-w-0 transition-[margin-top] duration-200 ease-out',
-            isContinuation && '-mt-4'
-          )}
-        >
-          <MessageBoundary message={msg}>
-            {renderMessageContent(msg, isContinuation, metricsToAttach, options)}
-          </MessageBoundary>
-        </div>
+        <ForkableRow key={options?.key ?? msg.id} message={msg} nested={options?.nested}>
+          <div
+            className={cn(
+              isRowNested(options)
+                ? 'w-full'
+                : 'mx-auto w-[min(100%,var(--chat-content-max-width))]',
+              'min-w-0 transition-[margin-top] duration-200 ease-out',
+              isContinuation && '-mt-4'
+            )}
+          >
+            <MessageBoundary message={msg}>
+              {renderMessageContent(msg, isContinuation, metricsToAttach, options)}
+            </MessageBoundary>
+          </div>
+        </ForkableRow>
       );
     },
     [renderMessageContent]

@@ -64,6 +64,20 @@ export async function listSessionsWithMeta(): Promise<SessionMeta[]> {
   return requestJson<SessionMeta[]>('/api/sessions');
 }
 
+export async function forkSession(
+  sessionId: string,
+  options?: { turnId?: string; storageSeq?: number }
+): Promise<SessionMeta> {
+  return requestJson<SessionMeta>(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      turnId: options?.turnId,
+      storageSeq: options?.storageSeq,
+    }),
+  });
+}
+
 export async function submitPrompt(
   sessionId: string,
   text: string,

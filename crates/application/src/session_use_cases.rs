@@ -44,6 +44,37 @@ impl App {
             .map_err(ApplicationError::from)
     }
 
+    pub async fn fork_session(
+        &self,
+        session_id: &str,
+        fork_point: astrcode_session_runtime::ForkPoint,
+    ) -> Result<SessionMeta, ApplicationError> {
+        self.validate_non_empty("sessionId", session_id)?;
+        let normalized_session_id = astrcode_session_runtime::normalize_session_id(session_id);
+        let result = self
+            .session_runtime
+            .fork_session(
+                &astrcode_core::SessionId::from(normalized_session_id),
+                fork_point,
+            )
+            .await
+            .map_err(ApplicationError::from)?;
+        let meta = self
+            .session_runtime
+            .list_session_metas()
+            .await
+            .map_err(ApplicationError::from)?
+            .into_iter()
+            .find(|meta| meta.session_id == result.new_session_id.as_str())
+            .ok_or_else(|| {
+                ApplicationError::Internal(format!(
+                    "forked session '{}' was created but metadata is unavailable",
+                    result.new_session_id
+                ))
+            })?;
+        Ok(meta)
+    }
+
     pub async fn delete_project(
         &self,
         working_dir: &str,

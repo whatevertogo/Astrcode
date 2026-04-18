@@ -49,7 +49,10 @@ pub use state::{
     display_name_from_working_dir, normalize_session_id, normalize_working_dir,
     prepare_session_execution,
 };
-pub use turn::{AgentPromptSubmission, TurnCollaborationSummary, TurnFinishReason, TurnSummary};
+pub use turn::{
+    AgentPromptSubmission, ForkPoint, ForkResult, TurnCollaborationSummary, TurnFinishReason,
+    TurnSummary,
+};
 pub(crate) use turn::{TurnOutcome, TurnRunResult, run_turn};
 
 const ROOT_AGENT_ID: &str = "root-agent";

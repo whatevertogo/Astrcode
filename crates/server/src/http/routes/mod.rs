@@ -98,6 +98,7 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             "/api/sessions/{id}/compact",
             post(sessions::compact_session),
         )
+        .route("/api/sessions/{id}/fork", post(sessions::fork_session))
         .route(
             "/api/sessions/{id}/interrupt",
             post(sessions::interrupt_session),

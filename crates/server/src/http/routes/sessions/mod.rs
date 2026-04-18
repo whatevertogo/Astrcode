@@ -9,8 +9,8 @@ mod stream;
 
 use axum::http::StatusCode;
 pub(crate) use mutation::{
-    compact_session, create_session, delete_project, delete_session, interrupt_session,
-    submit_prompt,
+    compact_session, create_session, delete_project, delete_session, fork_session,
+    interrupt_session, submit_prompt,
 };
 pub(crate) use query::list_sessions;
 pub(crate) use stream::session_catalog_events;

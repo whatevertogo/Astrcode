@@ -1,6 +1,6 @@
 1. 关闭对话框可以更好的看llm的排版
 2. 语音选项左下角
-3.增加agent可选tools 
+3. 增加agent可选tools 
  ---
  name: coordinator
  description: Coordinates work across specialized agents
@@ -10,5 +10,6 @@
 
 5. 终端的输入输出功能
 6. fork agent
-7. pending messages
+7. pending messages(完成部分)
 8. 更好的compact功能
+9. 多agent共享任务列表

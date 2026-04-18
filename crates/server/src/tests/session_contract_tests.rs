@@ -1,7 +1,8 @@
 use astrcode_core::{
-    AgentEventContext, CancelToken, SpawnAgentParams, ToolContext,
-    agent::executor::SubAgentExecutor,
+    AgentEventContext, CancelToken, EventTranslator, SessionId, SpawnAgentParams, StorageEvent,
+    StorageEventPayload, ToolContext, UserMessageOrigin, agent::executor::SubAgentExecutor,
 };
+use astrcode_session_runtime::append_and_broadcast;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -12,6 +13,86 @@ use crate::{AUTH_HEADER_NAME, routes::build_api_router, test_support::test_state
 
 // Why: 这些契约测试是 API 接口稳定性的核心保障，
 // 防止 server 在重构后回退到隐式容错或启发式行为。
+
+async fn append_root_event(state: &crate::AppState, session_id: &str, event: StorageEvent) {
+    let session_state = state
+        ._runtime_handles
+        .session_runtime
+        .get_session_state(&SessionId::from(session_id.to_string()))
+        .await
+        .expect("session state should load");
+    let mut translator = EventTranslator::new(
+        session_state
+            .current_phase()
+            .expect("session phase should be readable"),
+    );
+    append_and_broadcast(&session_state, &event, &mut translator)
+        .await
+        .expect("event should persist");
+}
+
+async fn seed_completed_root_turn(state: &crate::AppState, session_id: &str, turn_id: &str) {
+    let agent = AgentEventContext::root_execution("root-agent", "test-profile");
+    append_root_event(
+        state,
+        session_id,
+        StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent: agent.clone(),
+            payload: StorageEventPayload::UserMessage {
+                content: "hello".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: chrono::Utc::now(),
+            },
+        },
+    )
+    .await;
+    append_root_event(
+        state,
+        session_id,
+        StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent: agent.clone(),
+            payload: StorageEventPayload::AssistantFinal {
+                content: "world".to_string(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                timestamp: Some(chrono::Utc::now()),
+            },
+        },
+    )
+    .await;
+    append_root_event(
+        state,
+        session_id,
+        StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent,
+            payload: StorageEventPayload::TurnDone {
+                timestamp: chrono::Utc::now(),
+                reason: Some("completed".to_string()),
+            },
+        },
+    )
+    .await;
+}
+
+async fn seed_unfinished_root_turn(state: &crate::AppState, session_id: &str, turn_id: &str) {
+    append_root_event(
+        state,
+        session_id,
+        StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent: AgentEventContext::root_execution("root-agent", "test-profile"),
+            payload: StorageEventPayload::UserMessage {
+                content: "still running".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: chrono::Utc::now(),
+            },
+        },
+    )
+    .await;
+}
 
 async fn spawn_test_child_agent(
     state: &crate::AppState,
@@ -104,6 +185,172 @@ async fn submit_prompt_contract_returns_accepted_shape() {
     .expect("payload should deserialize");
     assert_eq!(payload["sessionId"], created.session_id.to_string());
     assert!(!payload["turnId"].as_str().unwrap_or_default().is_empty());
+}
+
+#[tokio::test]
+async fn fork_session_contract_returns_new_session_meta() {
+    let (state, _guard) = test_state(None).await;
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .app
+        .create_session(temp_dir.path().display().to_string())
+        .await
+        .expect("session should be created");
+    state
+        .app
+        .submit_prompt(&created.session_id, "hello".to_string())
+        .await
+        .expect("prompt should be accepted");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/fork", created.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable"),
+    )
+    .expect("payload should deserialize");
+    assert_eq!(payload["parentSessionId"], created.session_id);
+    assert_ne!(payload["sessionId"], created.session_id);
+}
+
+#[tokio::test]
+async fn fork_session_contract_accepts_completed_turn_id() {
+    let (state, _guard) = test_state(None).await;
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .app
+        .create_session(temp_dir.path().display().to_string())
+        .await
+        .expect("session should be created");
+    seed_completed_root_turn(&state, &created.session_id, "turn-completed").await;
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/fork", created.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"turnId":"turn-completed"}"#))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable"),
+    )
+    .expect("payload should deserialize");
+    assert_eq!(payload["parentSessionId"], created.session_id);
+    assert_eq!(payload["parentStorageSeq"], 4);
+    assert_ne!(payload["sessionId"], created.session_id);
+}
+
+#[tokio::test]
+async fn fork_session_contract_rejects_unfinished_turn_id() {
+    let (state, _guard) = test_state(None).await;
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .app
+        .create_session(temp_dir.path().display().to_string())
+        .await
+        .expect("session should be created");
+    seed_unfinished_root_turn(&state, &created.session_id, "turn-running").await;
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/fork", created.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"turnId":"turn-running"}"#))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload: serde_json::Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable"),
+    )
+    .expect("payload should deserialize");
+    assert!(
+        payload["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("has not completed"),
+        "unfinished turn should return a specific validation error"
+    );
+}
+
+#[tokio::test]
+async fn fork_session_contract_rejects_mutually_exclusive_request() {
+    let (state, _guard) = test_state(None).await;
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let created = state
+        .app
+        .create_session(temp_dir.path().display().to_string())
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/fork", created.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"turnId":"turn-1","storageSeq":42}"#))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn fork_session_contract_returns_not_found_for_missing_session() {
+    let (state, _guard) = test_state(None).await;
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/sessions/nonexistent/fork")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 // ─── SubRun 状态查询契约 ──────────────────────────────────

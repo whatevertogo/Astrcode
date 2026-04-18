@@ -140,14 +140,17 @@ function childSummaryNotificationKind(lifecycle: AgentLifecycle): ChildSessionNo
   return lifecycle === 'idle' || lifecycle === 'terminated' ? 'delivered' : 'progress_summary';
 }
 
-function parseCompactTrigger(value: unknown): LastCompactMeta['trigger'] {
+function parseCompactTrigger(
+  value: unknown,
+  fallback: LastCompactMeta['trigger'] = 'manual'
+): LastCompactMeta['trigger'] {
   switch (value) {
     case 'auto':
     case 'manual':
     case 'deferred':
       return value;
     default:
-      return 'manual';
+      return fallback;
   }
 }
 
@@ -193,6 +196,7 @@ function parseLastCompactMeta(value: unknown): LastCompactMeta | undefined {
 function parseConversationControlState(record: ConversationRecord): ConversationControlState {
   const controlRecord = asRecord(record.control);
   const phase = parsePhase(controlRecord?.phase ?? record.phase);
+  const lastCompactMeta = parseLastCompactMeta(controlRecord?.lastCompactMeta);
   return {
     phase,
     canSubmitPrompt: controlRecord?.canSubmitPrompt !== false,
@@ -200,7 +204,7 @@ function parseConversationControlState(record: ConversationRecord): Conversation
     compactPending: controlRecord?.compactPending === true,
     compacting: controlRecord?.compacting === true,
     activeTurnId: pickOptionalString(controlRecord ?? {}, 'activeTurnId') ?? undefined,
-    lastCompactMeta: parseLastCompactMeta(controlRecord?.lastCompactMeta),
+    lastCompactMeta,
   };
 }
 
@@ -390,13 +394,19 @@ function projectConversationMessages(
         if (pickString(block, 'noteKind') !== 'compact') {
           return;
         }
+        const compactMetaRecord = asRecord(block.compactMeta);
+        const trigger =
+          parseCompactTrigger(
+            compactMetaRecord?.trigger ??
+              pickString(block, 'compactTrigger') ??
+              pickString(block, 'trigger'),
+            state.control.lastCompactMeta?.trigger ?? 'manual'
+          );
         messages.push({
           id: `conversation-compact:${id}`,
           kind: 'compact',
           turnId,
-          trigger: parseCompactTrigger(
-            block.compactMeta ? asRecord(block.compactMeta)?.trigger : undefined
-          ),
+          trigger,
           meta: parseCompactMeta(block.compactMeta) ?? {
             mode: 'full',
             instructionsPresent: false,

@@ -464,4 +464,103 @@ describe('projectConversationState', () => {
     });
     expect(rehydratedProjection.messages[0]).toMatchObject(liveProjection.messages[0]);
   });
+
+  it('projects compact system notes with the explicit auto trigger from compactMeta', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-compact-1',
+      phase: 'done',
+      blocks: [
+        {
+          id: 'compact-1',
+          kind: 'system_note',
+          turnId: 'turn-compact-1',
+          noteKind: 'compact',
+          markdown: '压缩摘要',
+          compactMeta: {
+            trigger: 'auto',
+            mode: 'incremental',
+            instructionsPresent: false,
+            fallbackUsed: false,
+            retryCount: 0,
+            inputUnits: 4,
+            outputSummaryChars: 12,
+          },
+        },
+      ],
+      control: {
+        ...baseControl,
+        lastCompactMeta: {
+          trigger: 'manual',
+          meta: {
+            mode: 'full',
+            instructionsPresent: false,
+            fallbackUsed: false,
+            retryCount: 0,
+            inputUnits: 0,
+            outputSummaryChars: 0,
+          },
+        },
+      },
+      childSummaries: [],
+    };
+
+    const projection = projectConversationState(state);
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]).toMatchObject({
+      kind: 'compact',
+      trigger: 'auto',
+      meta: {
+        mode: 'incremental',
+        inputUnits: 4,
+      },
+    });
+  });
+
+  it('falls back to control lastCompactMeta trigger when compact block omits it', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-compact-2',
+      phase: 'done',
+      blocks: [
+        {
+          id: 'compact-2',
+          kind: 'system_note',
+          turnId: 'turn-compact-2',
+          noteKind: 'compact',
+          markdown: '压缩摘要',
+          compactMeta: {
+            mode: 'full',
+            instructionsPresent: false,
+            fallbackUsed: false,
+            retryCount: 1,
+            inputUnits: 7,
+            outputSummaryChars: 24,
+          },
+        },
+      ],
+      control: {
+        ...baseControl,
+        lastCompactMeta: {
+          trigger: 'auto',
+          meta: {
+            mode: 'full',
+            instructionsPresent: false,
+            fallbackUsed: false,
+            retryCount: 1,
+            inputUnits: 7,
+            outputSummaryChars: 24,
+          },
+        },
+      },
+      childSummaries: [],
+    };
+
+    const projection = projectConversationState(state);
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]).toMatchObject({
+      kind: 'compact',
+      trigger: 'auto',
+    });
+  });
 });

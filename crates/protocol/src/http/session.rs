@@ -18,6 +18,16 @@ pub struct CreateSessionRequest {
     pub working_dir: String,
 }
 
+/// `POST /api/sessions/:id/fork` 请求体——从稳定前缀分叉新会话。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkSessionRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_seq: Option<u64>,
+}
+
 /// 会话列表中的单个会话摘要。
 ///
 /// 用于 `GET /api/sessions` 响应，返回所有会话的概览信息。

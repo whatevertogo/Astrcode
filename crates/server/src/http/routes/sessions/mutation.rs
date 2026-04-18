@@ -1,6 +1,6 @@
 use astrcode_protocol::http::{
     CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
-    PromptAcceptedResponse, PromptRequest, SessionListItem,
+    ForkSessionRequest, PromptAcceptedResponse, PromptRequest, SessionListItem,
 };
 use axum::{
     Json,
@@ -111,6 +111,41 @@ pub(crate) async fn compact_session(
             message: summary.message,
         }),
     ))
+}
+
+pub(crate) async fn fork_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    request: Option<Json<ForkSessionRequest>>,
+) -> Result<Json<SessionListItem>, ApiError> {
+    require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
+    let request = request
+        .map(|request| request.0)
+        .unwrap_or(ForkSessionRequest {
+            turn_id: None,
+            storage_seq: None,
+        });
+    if request.turn_id.is_some() && request.storage_seq.is_some() {
+        return Err(ApiError::bad_request(
+            "turnId and storageSeq are mutually exclusive".to_string(),
+        ));
+    }
+    let fork_point = match (request.turn_id, request.storage_seq) {
+        (Some(turn_id), None) => astrcode_session_runtime::ForkPoint::TurnEnd(turn_id),
+        (None, Some(storage_seq)) => astrcode_session_runtime::ForkPoint::StorageSeq(storage_seq),
+        (None, None) => astrcode_session_runtime::ForkPoint::Latest,
+        (Some(_), Some(_)) => unreachable!("validated above"),
+    };
+    let meta = state
+        .app
+        .fork_session(&session_id, fork_point)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(to_session_list_item(
+        astrcode_application::summarize_session_meta(meta),
+    )))
 }
 
 pub(crate) async fn delete_session(

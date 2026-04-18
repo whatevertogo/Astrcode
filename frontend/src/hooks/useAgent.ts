@@ -24,6 +24,7 @@ import {
   createSession,
   deleteProject,
   deleteSession,
+  forkSession,
   interruptSession,
   listSessionsWithMeta,
   submitPrompt,
@@ -366,6 +367,16 @@ export function useAgent() {
     return listSessionsWithMeta();
   }, []);
 
+  const handleForkSession = useCallback(
+    async (
+      sessionId: string,
+      options?: { turnId?: string; storageSeq?: number }
+    ): Promise<SessionMeta> => {
+      return forkSession(sessionId, options);
+    },
+    []
+  );
+
   const handleLoadConversationView = useCallback(
     async (
       sessionId: string,
@@ -505,6 +516,7 @@ export function useAgent() {
 
   return {
     createSession: handleCreateSession,
+    forkSession: handleForkSession,
     listSessionsWithMeta: handleListSessionsWithMeta,
     loadConversationView: handleLoadConversationView,
     connectSession,

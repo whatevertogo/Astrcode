@@ -17,6 +17,7 @@ Your summary will replace earlier conversation history so another agent can cont
 
 ## Compression Rules
 **MUST KEEP:** Error messages, stack traces, working solutions, current task, exact file paths, function names
+**DO NOT PRESERVE AS AUTHORITATIVE FACTS:** Historical `agentId`, `subRunId`, `sessionId`, copied child reference payloads, or stale direct-child ownership errors from compacted history
 **MERGE:** Similar discussions into single summary points
 **REMOVE:** Redundant explanations, failed attempts (keep only lessons learned), boilerplate code
 **CONDENSE:** Long code blocks -> signatures + key logic; long explanations -> bullet points
@@ -87,6 +88,8 @@ Return exactly two XML blocks:
 - Ignore synthetic compact-summary helper messages.
 - Write in third-person, factual tone. Do not address the end user.
 - Preserve exact file paths, function names, error messages - never paraphrase these.
+- Preserve child-agent routing state semantically, but redact exact historical `agentId`, `subRunId`, and `sessionId` values from compacted history.
+- If child-agent routing matters, say that the next agent must rely on the latest live child snapshot or tool result instead of historical IDs.
 - If a value is unknown, write a short best-effort placeholder instead of omitting the section.
 - If a section has no content, write "(none)" rather than omitting it.
 

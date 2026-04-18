@@ -26,7 +26,8 @@ use crate::{
     actor::SessionActor,
     state::{SessionWriter, append_and_broadcast},
     turn::events::{
-        CompactAppliedStats, assistant_final_event, compact_applied_event, user_message_event,
+        CompactAppliedStats, assistant_final_event, compact_applied_event, turn_done_event,
+        user_message_event,
     },
 };
 
@@ -329,6 +330,15 @@ pub(crate) fn root_assistant_final_event(
     )
 }
 
+pub(crate) fn root_turn_done_event(turn_id: &str, reason: Option<String>) -> StorageEvent {
+    turn_done_event(
+        turn_id,
+        &astrcode_core::AgentEventContext::default(),
+        reason,
+        chrono::Utc::now(),
+    )
+}
+
 pub(crate) fn root_compact_applied_event(
     turn_id: &str,
     summary: impl Into<String>,
@@ -431,6 +441,58 @@ impl BranchingTestEventStore {
             .get(session_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    pub(crate) fn seed_session(
+        &self,
+        session_id: &str,
+        working_dir: &str,
+        events: Vec<StoredEvent>,
+    ) {
+        let max_seq = events
+            .iter()
+            .map(|stored| stored.storage_seq)
+            .max()
+            .unwrap_or(0);
+        self.next_seq
+            .fetch_max(max_seq, std::sync::atomic::Ordering::SeqCst);
+        self.events
+            .lock()
+            .expect("events lock should work")
+            .insert(session_id.to_string(), events.clone());
+
+        let now = chrono::Utc::now();
+        let mut meta = SessionMeta {
+            session_id: session_id.to_string(),
+            working_dir: working_dir.to_string(),
+            display_name: crate::display_name_from_working_dir(Path::new(working_dir)),
+            title: "New Session".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_session_id: None,
+            parent_storage_seq: None,
+            phase: Phase::Idle,
+        };
+        if let Some(stored) = events.iter().find(|stored| {
+            matches!(
+                stored.event.payload,
+                StorageEventPayload::SessionStart { .. }
+            )
+        }) {
+            if let StorageEventPayload::SessionStart {
+                parent_session_id,
+                parent_storage_seq,
+                ..
+            } = &stored.event.payload
+            {
+                meta.parent_session_id = parent_session_id.clone();
+                meta.parent_storage_seq = *parent_storage_seq;
+            }
+        }
+        self.metas
+            .lock()
+            .expect("metas lock should work")
+            .insert(session_id.to_string(), meta);
     }
 }
 

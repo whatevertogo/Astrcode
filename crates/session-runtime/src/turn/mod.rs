@@ -7,6 +7,7 @@ mod branch;
 mod compaction_cycle;
 mod continuation_cycle;
 mod events;
+mod fork;
 mod interrupt;
 pub(crate) mod llm_cycle;
 mod loop_control;
@@ -22,6 +23,7 @@ mod summary;
 pub(crate) mod tool_cycle;
 mod tool_result_budget;
 
+pub use fork::{ForkPoint, ForkResult};
 pub use loop_control::{TurnLoopTransition, TurnStopCause};
 pub use submit::AgentPromptSubmission;
 pub use summary::{TurnCollaborationSummary, TurnFinishReason, TurnSummary};

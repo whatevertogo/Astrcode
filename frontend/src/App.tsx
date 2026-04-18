@@ -63,6 +63,7 @@ export default function App() {
 
   const {
     createSession,
+    forkSession,
     listSessionsWithMeta,
     loadConversationView,
     connectSession,
@@ -197,6 +198,22 @@ export default function App() {
     [refreshSessions]
   );
 
+  const handleForkFromTurn = useCallback(
+    async (turnId: string) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) {
+        return;
+      }
+      try {
+        const forked = await forkSession(sessionId, { turnId });
+        await refreshSessions({ preferredSessionId: forked.sessionId });
+      } catch (error) {
+        logger.error('App', 'Failed to fork session:', error);
+      }
+    },
+    [forkSession, refreshSessions]
+  );
+
   useSessionCatalogEvents({
     onEvent: handleSessionCatalogEvent,
     onResync: () => {
@@ -266,6 +283,7 @@ export default function App() {
       onCloseSubRun: handleCloseSubRun,
       onNavigateSubRunPath: handleNavigateSubRunPath,
       onOpenChildSession: handleOpenChildSession,
+      onForkFromTurn: handleForkFromTurn,
       onSubmitPrompt: handleSubmit,
       onInterrupt: handleInterrupt,
       onCancelSubRun: cancelSubRun,
@@ -290,6 +308,7 @@ export default function App() {
       handleInterrupt,
       handleNavigateSubRunPath,
       handleOpenChildSession,
+      handleForkFromTurn,
       handleOpenSubRun,
       handleSubmit,
       isSidebarOpen,

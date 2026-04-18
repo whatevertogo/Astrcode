@@ -24,6 +24,7 @@ export interface ChatScreenContextValue {
   onCloseSubRun: () => void | Promise<void>;
   onNavigateSubRunPath: (subRunPath: string[]) => void | Promise<void>;
   onOpenChildSession: (childSessionId: string) => void | Promise<void>;
+  onForkFromTurn: (turnId: string) => void | Promise<void>;
   onSubmitPrompt: (text: string) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
   onCancelSubRun: (sessionId: string, subRunId: string) => void | Promise<void>;

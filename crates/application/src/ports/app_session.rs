@@ -3,8 +3,8 @@ use astrcode_core::{
     SessionMeta, StoredEvent,
 };
 use astrcode_session_runtime::{
-    AgentPromptSubmission, ConversationSnapshotFacts, ConversationStreamReplayFacts,
-    SessionCatalogEvent, SessionControlStateSnapshot, SessionReplay, SessionRuntime,
+    AgentPromptSubmission, ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint,
+    ForkResult, SessionCatalogEvent, SessionControlStateSnapshot, SessionReplay, SessionRuntime,
     SessionTranscriptSnapshot,
 };
 use async_trait::async_trait;
@@ -19,6 +19,11 @@ pub trait AppSessionPort: Send + Sync {
 
     async fn list_session_metas(&self) -> astrcode_core::Result<Vec<SessionMeta>>;
     async fn create_session(&self, working_dir: String) -> astrcode_core::Result<SessionMeta>;
+    async fn fork_session(
+        &self,
+        session_id: &SessionId,
+        fork_point: ForkPoint,
+    ) -> astrcode_core::Result<ForkResult>;
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()>;
     async fn delete_project(&self, working_dir: &str)
     -> astrcode_core::Result<DeleteProjectResult>;
@@ -81,6 +86,14 @@ impl AppSessionPort for SessionRuntime {
 
     async fn create_session(&self, working_dir: String) -> astrcode_core::Result<SessionMeta> {
         self.create_session(working_dir).await
+    }
+
+    async fn fork_session(
+        &self,
+        session_id: &SessionId,
+        fork_point: ForkPoint,
+    ) -> astrcode_core::Result<ForkResult> {
+        self.fork_session(session_id, fork_point).await
     }
 
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()> {

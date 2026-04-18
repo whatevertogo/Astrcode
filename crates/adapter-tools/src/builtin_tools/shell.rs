@@ -675,13 +675,13 @@ fn default_shell_for_prompt() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, io};
+    use std::{collections::VecDeque, io, path::Path};
 
     use astrcode_core::ToolOutputDelta;
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::{builtin_tools::read_file::ReadFileTool, test_support::test_tool_context_for};
 
     struct ChunkedReader {
         chunks: VecDeque<Vec<u8>>,
@@ -839,6 +839,59 @@ mod tests {
 
         assert!(result.ok);
         assert!(result.output.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn shell_persists_large_output_and_read_file_can_open_it() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let shell_ctx = test_tool_context_for(temp.path())
+            .with_resolved_inline_limit(4 * 1024)
+            .with_max_output_size(20 * 1024);
+        let tool = ShellTool;
+        let args = if cfg!(windows) {
+            json!({
+                "command": "[Console]::Write(('x' * 10000))",
+                "shell": "pwsh"
+            })
+        } else {
+            json!({
+                "command": "yes x | head -c 10000",
+                "shell": "sh"
+            })
+        };
+
+        let result = tool
+            .execute("tc-shell-persisted".to_string(), args, &shell_ctx)
+            .await
+            .expect("shell tool should persist oversized output");
+
+        assert!(result.ok);
+        assert!(result.output.starts_with("<persisted-output>"));
+        let metadata = result.metadata.as_ref().expect("metadata should exist");
+        let persisted_absolute = metadata["persistedOutput"]["absolutePath"]
+            .as_str()
+            .expect("persisted absolute path should be present");
+        assert!(Path::new(persisted_absolute).exists());
+
+        let read_tool = ReadFileTool;
+        let read_result = read_tool
+            .execute(
+                "tc-shell-read-persisted".to_string(),
+                json!({
+                    "path": persisted_absolute,
+                    "charOffset": 0,
+                    "maxChars": 2048
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should open persisted shell output");
+
+        assert!(read_result.ok);
+        assert!(read_result.output.contains('x'));
+        assert!(read_result.output.len() >= 1024);
+        let read_metadata = read_result.metadata.expect("metadata should exist");
+        assert_eq!(read_metadata["persistedRead"], json!(true));
     }
 
     #[tokio::test]
