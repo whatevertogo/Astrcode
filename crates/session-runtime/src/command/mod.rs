@@ -2,12 +2,14 @@ use std::path::Path;
 
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, ChildSessionNotification, EventTranslator,
-    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
-    MailboxQueuedPayload, Result, StorageEvent, StorageEventPayload, StoredEvent,
+    InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
+    Result, StorageEvent, StorageEventPayload, StoredEvent,
 };
 use chrono::Utc;
 
-use crate::{MailboxEventAppend, SessionRuntime, append_and_broadcast, append_mailbox_event};
+use crate::{
+    InputQueueEventAppend, SessionRuntime, append_and_broadcast, append_input_queue_event,
+};
 
 pub(crate) struct SessionCommands<'a> {
     runtime: &'a SessionRuntime,
@@ -18,66 +20,66 @@ impl<'a> SessionCommands<'a> {
         Self { runtime }
     }
 
-    pub async fn append_agent_mailbox_queued(
+    pub async fn append_agent_input_queued(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxQueuedPayload,
+        payload: InputQueuedPayload,
     ) -> Result<StoredEvent> {
-        self.append_agent_mailbox_event(
+        self.append_agent_input_event(
             session_id,
             turn_id,
             agent,
-            MailboxEventAppend::Queued(payload),
+            InputQueueEventAppend::Queued(payload),
         )
         .await
     }
 
-    pub async fn append_agent_mailbox_discarded(
+    pub async fn append_agent_input_discarded(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxDiscardedPayload,
+        payload: InputDiscardedPayload,
     ) -> Result<StoredEvent> {
-        self.append_agent_mailbox_event(
+        self.append_agent_input_event(
             session_id,
             turn_id,
             agent,
-            MailboxEventAppend::Discarded(payload),
+            InputQueueEventAppend::Discarded(payload),
         )
         .await
     }
 
-    pub async fn append_agent_mailbox_batch_started(
+    pub async fn append_agent_input_batch_started(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchStartedPayload,
+        payload: InputBatchStartedPayload,
     ) -> Result<StoredEvent> {
-        self.append_agent_mailbox_event(
+        self.append_agent_input_event(
             session_id,
             turn_id,
             agent,
-            MailboxEventAppend::BatchStarted(payload),
+            InputQueueEventAppend::BatchStarted(payload),
         )
         .await
     }
 
-    pub async fn append_agent_mailbox_batch_acked(
+    pub async fn append_agent_input_batch_acked(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchAckedPayload,
+        payload: InputBatchAckedPayload,
     ) -> Result<StoredEvent> {
-        self.append_agent_mailbox_event(
+        self.append_agent_input_event(
             session_id,
             turn_id,
             agent,
-            MailboxEventAppend::BatchAcked(payload),
+            InputQueueEventAppend::BatchAcked(payload),
         )
         .await
     }
@@ -177,16 +179,16 @@ impl<'a> SessionCommands<'a> {
         Ok(false)
     }
 
-    async fn append_agent_mailbox_event(
+    async fn append_agent_input_event(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        event: MailboxEventAppend,
+        event: InputQueueEventAppend,
     ) -> Result<StoredEvent> {
         let session_id = astrcode_core::SessionId::from(crate::normalize_session_id(session_id));
         let session_state = self.runtime.query().session_state(&session_id).await?;
         let mut translator = EventTranslator::new(session_state.current_phase()?);
-        append_mailbox_event(&session_state, turn_id, agent, event, &mut translator).await
+        append_input_queue_event(&session_state, turn_id, agent, event, &mut translator).await
     }
 }

@@ -27,12 +27,12 @@ use std::{
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
-    AgentCollaborationPolicyContext, AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope,
-    AgentTurnOutcome, ArtifactRef, ChildExecutionIdentity, CloseAgentParams, CollaborationResult,
-    DelegationMetadata, InvocationKind, ObserveParams, ParentDelivery, ParentDeliveryOrigin,
-    ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload,
-    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, ResolvedExecutionLimitsSnapshot, Result, RuntimeMetricsRecorder,
+    AgentCollaborationPolicyContext, AgentEventContext, AgentLifecycleStatus, AgentTurnOutcome,
+    ArtifactRef, ChildExecutionIdentity, CloseAgentParams, CollaborationResult, DelegationMetadata,
+    InvocationKind, ObserveParams, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
+    ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload, PromptDeclaration,
+    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource,
+    QueuedInputEnvelope, ResolvedExecutionLimitsSnapshot, Result, RuntimeMetricsRecorder,
     SendAgentParams, SpawnAgentParams, SubRunHandle, SubRunHandoff, SubRunResult,
     SystemPromptLayer, ToolContext,
 };
@@ -91,6 +91,7 @@ pub(crate) fn subrun_event_context_for_parent_turn(
 
 pub(crate) const IMPLICIT_ROOT_PROFILE_ID: &str = "default";
 pub(crate) const AGENT_COLLABORATION_POLICY_REVISION: &str = "agent-collaboration-v1";
+const MAX_OBSERVE_GUARD_ENTRIES: usize = 1024;
 
 pub(crate) struct CollaborationFactRecord<'a> {
     pub(crate) action: AgentCollaborationActionKind,
@@ -452,11 +453,11 @@ async fn ensure_handle_has_resolved_limits(
     .await
 }
 
-pub(crate) fn child_delivery_mailbox_envelope(
+pub(crate) fn child_delivery_input_queue_envelope(
     notification: &astrcode_core::ChildSessionNotification,
     target_agent_id: String,
-) -> AgentMailboxEnvelope {
-    AgentMailboxEnvelope {
+) -> QueuedInputEnvelope {
+    QueuedInputEnvelope {
         delivery_id: notification.notification_id.clone(),
         from_agent_id: notification.child_ref.agent_id().to_string(),
         to_agent_id: target_agent_id,
@@ -669,7 +670,7 @@ pub struct AgentOrchestrationService {
     profiles: Arc<ProfileResolutionService>,
     task_registry: Arc<TaskRegistry>,
     metrics: Arc<dyn RuntimeMetricsRecorder>,
-    observe_guard: Arc<Mutex<HashMap<String, ObserveSnapshotSignature>>>,
+    observe_guard: Arc<Mutex<ObserveGuardState>>,
 }
 
 impl AgentOrchestrationService {
@@ -688,7 +689,7 @@ impl AgentOrchestrationService {
             profiles,
             task_registry,
             metrics,
-            observe_guard: Arc::new(Mutex::new(HashMap::new())),
+            observe_guard: Arc::new(Mutex::new(ObserveGuardState::default())),
         }
     }
 
@@ -1017,11 +1018,58 @@ struct ObserveSnapshotSignature {
     last_turn_outcome: Option<AgentTurnOutcome>,
     phase: String,
     turn_count: u32,
-    pending_message_count: usize,
     active_task: Option<String>,
-    pending_task: Option<String>,
-    recent_mailbox_messages: Vec<String>,
-    last_output: Option<String>,
+    last_output_tail: Option<String>,
+    last_turn_tail: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ObserveGuardEntry {
+    sequence: u64,
+    signature: ObserveSnapshotSignature,
+}
+
+#[derive(Debug, Default)]
+struct ObserveGuardState {
+    next_sequence: u64,
+    entries: HashMap<String, ObserveGuardEntry>,
+}
+
+impl ObserveGuardState {
+    fn is_unchanged(&self, key: &str, signature: &ObserveSnapshotSignature) -> bool {
+        self.entries
+            .get(key)
+            .is_some_and(|entry| &entry.signature == signature)
+    }
+
+    fn remember(&mut self, key: String, signature: ObserveSnapshotSignature) {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.entries.insert(
+            key.clone(),
+            ObserveGuardEntry {
+                sequence,
+                signature,
+            },
+        );
+        self.evict_oldest_if_needed(&key);
+    }
+
+    fn evict_oldest_if_needed(&mut self, keep_key: &str) {
+        if self.entries.len() <= MAX_OBSERVE_GUARD_ENTRIES {
+            return;
+        }
+        let Some(oldest_key) = self
+            .entries
+            .iter()
+            .filter(|(key, _)| key.as_str() != keep_key)
+            .min_by_key(|(_, entry)| entry.sequence)
+            .map(|(key, _)| key.clone())
+        else {
+            return;
+        };
+        self.entries.remove(&oldest_key);
+    }
 }
 
 // ── 实现 SubAgentExecutor（供 spawn 工具使用）──────────────────────
@@ -1216,7 +1264,7 @@ mod tests {
 
     use super::{
         IMPLICIT_ROOT_PROFILE_ID, build_delegation_metadata, build_fresh_child_contract,
-        build_resumed_child_contract, child_delivery_mailbox_envelope,
+        build_resumed_child_contract, child_delivery_input_queue_envelope,
         implicit_session_root_agent_id, root_execution_event_context,
         terminal_notification_message, terminal_notification_turn_outcome,
     };
@@ -1292,7 +1340,7 @@ mod tests {
     }
 
     #[test]
-    fn child_delivery_mailbox_envelope_reuses_terminal_projection_fields() {
+    fn child_delivery_input_queue_envelope_reuses_terminal_projection_fields() {
         let notification = ChildSessionNotification {
             notification_id: "delivery-1".to_string().into(),
             child_ref: ChildAgentRef {
@@ -1326,7 +1374,8 @@ mod tests {
             }),
         };
 
-        let envelope = child_delivery_mailbox_envelope(&notification, "agent-parent".to_string());
+        let envelope =
+            child_delivery_input_queue_envelope(&notification, "agent-parent".to_string());
 
         assert_eq!(terminal_notification_message(&notification), "final reply");
         assert_eq!(

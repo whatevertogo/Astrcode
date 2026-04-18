@@ -13,7 +13,7 @@ use crate::{
     query::{
         agent::build_agent_observe_snapshot,
         conversation::{build_conversation_replay_frames, project_conversation_snapshot},
-        mailbox::recoverable_parent_deliveries,
+        input_queue::recoverable_parent_deliveries,
         turn::{has_terminal_turn_signal, project_turn_outcome},
     },
 };
@@ -143,14 +143,12 @@ impl<'a> SessionQueries<'a> {
         let session_id = SessionId::from(crate::normalize_session_id(open_session_id));
         let session_state = self.session_state(&session_id).await?;
         let projected = session_state.snapshot_projected_state()?;
-        let mailbox_projection = session_state.mailbox_projection_for_agent(target_agent_id)?;
-        let stored_events = self.stored_events(&session_id).await?;
+        let input_queue_projection =
+            session_state.input_queue_projection_for_agent(target_agent_id)?;
         Ok(build_agent_observe_snapshot(
             lifecycle_status,
             &projected,
-            &mailbox_projection,
-            &stored_events,
-            target_agent_id,
+            &input_queue_projection,
         ))
     }
 
@@ -196,7 +194,7 @@ impl<'a> SessionQueries<'a> {
         let session_id = SessionId::from(crate::normalize_session_id(session_id));
         let session_state = self.session_state(&session_id).await?;
         Ok(session_state
-            .mailbox_projection_for_agent(agent_id)?
+            .input_queue_projection_for_agent(agent_id)?
             .pending_delivery_ids
             .into_iter()
             .map(Into::into)
@@ -319,16 +317,16 @@ fn record_targets_turn(record: &SessionEventRecord, turn_id: &str) -> bool {
         | AgentEvent::ChildSessionNotification {
             turn_id: Some(id), ..
         }
-        | AgentEvent::AgentMailboxQueued {
+        | AgentEvent::AgentInputQueued {
             turn_id: Some(id), ..
         }
-        | AgentEvent::AgentMailboxBatchStarted {
+        | AgentEvent::AgentInputBatchStarted {
             turn_id: Some(id), ..
         }
-        | AgentEvent::AgentMailboxBatchAcked {
+        | AgentEvent::AgentInputBatchAcked {
             turn_id: Some(id), ..
         }
-        | AgentEvent::AgentMailboxDiscarded {
+        | AgentEvent::AgentInputDiscarded {
             turn_id: Some(id), ..
         }
         | AgentEvent::Error {

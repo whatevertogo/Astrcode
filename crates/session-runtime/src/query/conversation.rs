@@ -480,10 +480,10 @@ impl ConversationDeltaProjector {
             | AgentEvent::PromptMetrics { .. }
             | AgentEvent::SubRunStarted { .. }
             | AgentEvent::SubRunFinished { .. }
-            | AgentEvent::AgentMailboxQueued { .. }
-            | AgentEvent::AgentMailboxBatchStarted { .. }
-            | AgentEvent::AgentMailboxBatchAcked { .. }
-            | AgentEvent::AgentMailboxDiscarded { .. }
+            | AgentEvent::AgentInputQueued { .. }
+            | AgentEvent::AgentInputBatchStarted { .. }
+            | AgentEvent::AgentInputBatchAcked { .. }
+            | AgentEvent::AgentInputDiscarded { .. }
             | AgentEvent::UserMessage { .. }
             | AgentEvent::AssistantMessage { .. }
             | AgentEvent::CompactApplied { .. }

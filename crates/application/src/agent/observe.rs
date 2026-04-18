@@ -1,21 +1,17 @@
 //! # 四工具模型 — Observe 实现
 //!
-//! `observe` 是四工具模型（send / observe / close / interrupt）中的只读观察操作。
-//! 从旧 runtime/service/agent/observe.rs 迁入，去掉对 RuntimeService 的依赖。
-//!
-//! 快照聚合两层：
-//! 1. 从 kernel AgentControl 获取 lifecycle / turn_outcome
-//! 2. 从 session-runtime 获取稳定 observe 视图
+//! `observe` 现在只返回只读快照，不再派生下一步建议，也不再暴露 input queue
+//! 的内部补洞语义。
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
-    CollaborationResult, ObserveAgentResult, ObserveParams,
+    CollaborationResult, ObserveParams, ObserveSnapshot,
 };
 
 use super::{AgentOrchestrationService, ObserveSnapshotSignature};
 
 impl AgentOrchestrationService {
-    /// 获取目标 child agent 的增强快照（四工具模型 observe）。
+    /// 获取目标 child agent 的只读快照。
     pub async fn observe_child(
         &self,
         params: ObserveParams,
@@ -40,7 +36,6 @@ impl AgentOrchestrationService {
             .get_lifecycle(&params.agent_id)
             .await
             .unwrap_or(AgentLifecycleStatus::Pending);
-
         let last_turn_outcome = self.kernel.get_turn_outcome(&params.agent_id).await;
 
         let open_session_id = child
@@ -48,7 +43,7 @@ impl AgentOrchestrationService {
             .clone()
             .unwrap_or_else(|| child.session_id.clone());
 
-        let observe_snapshot = self
+        let snapshot = self
             .session_runtime
             .observe_agent_session(&open_session_id, &params.agent_id, lifecycle_status)
             .await
@@ -57,52 +52,17 @@ impl AgentOrchestrationService {
                     "failed to build observe snapshot: {e}"
                 ))
             })?;
-        let recommended_next_action = recommended_next_action(
-            lifecycle_status,
-            observe_snapshot.pending_message_count,
-            observe_snapshot.active_task.as_deref(),
-            observe_snapshot.pending_task.as_deref(),
-        )
-        .to_string();
-        let recommended_reason = recommended_reason(
-            lifecycle_status,
-            last_turn_outcome,
-            observe_snapshot.pending_message_count,
-            observe_snapshot.active_task.as_deref(),
-            observe_snapshot.pending_task.as_deref(),
-            child.delegation.as_ref(),
-        );
-        let delivery_freshness = delivery_freshness(
-            lifecycle_status,
-            observe_snapshot.pending_message_count,
-            observe_snapshot.active_task.as_deref(),
-            observe_snapshot.pending_task.as_deref(),
-        )
-        .to_string();
 
-        let observe_result = ObserveAgentResult {
+        let observe_result = ObserveSnapshot {
             agent_id: child.agent_id.to_string(),
-            sub_run_id: child.sub_run_id.to_string(),
-            session_id: child.session_id.to_string(),
-            open_session_id: open_session_id.to_string(),
-            parent_agent_id: child
-                .parent_agent_id
-                .clone()
-                .unwrap_or_default()
-                .to_string(),
+            session_id: open_session_id.to_string(),
             lifecycle_status,
             last_turn_outcome,
-            phase: format!("{:?}", observe_snapshot.phase),
-            turn_count: observe_snapshot.turn_count,
-            pending_message_count: observe_snapshot.pending_message_count,
-            active_task: observe_snapshot.active_task,
-            pending_task: observe_snapshot.pending_task,
-            recent_mailbox_messages: observe_snapshot.recent_mailbox_messages,
-            last_output: observe_snapshot.last_output,
-            delegation: child.delegation.clone(),
-            recommended_next_action,
-            recommended_reason,
-            delivery_freshness,
+            phase: format!("{:?}", snapshot.phase),
+            turn_count: snapshot.turn_count,
+            active_task: snapshot.active_task,
+            last_output_tail: snapshot.last_output_tail,
+            last_turn_tail: snapshot.last_turn_tail,
         };
         let signature = observe_signature(&observe_result);
         if self.observe_snapshot_is_unchanged(&child, &collaboration, &signature)? {
@@ -129,10 +89,10 @@ impl AgentOrchestrationService {
         self.remember_observe_snapshot(&child, &collaboration, signature)?;
 
         log::info!(
-            "observe: snapshot for child agent '{}' (lifecycle={:?}, pending={})",
+            "observe: snapshot for child agent '{}' (lifecycle={:?}, phase={})",
             params.agent_id,
             lifecycle_status,
-            observe_result.pending_message_count
+            observe_result.phase
         );
         self.record_fact_best_effort(
             collaboration.runtime(),
@@ -142,7 +102,10 @@ impl AgentOrchestrationService {
                     AgentCollaborationOutcomeKind::Accepted,
                 )
                 .child(&child)
-                .summary(format_observe_summary(&observe_result)),
+                .summary(format_observe_summary(
+                    &observe_result,
+                    child.delegation.as_ref(),
+                )),
         )
         .await;
 
@@ -150,7 +113,7 @@ impl AgentOrchestrationService {
             agent_ref: self
                 .project_child_ref_status(self.build_child_ref_from_handle(&child).await)
                 .await,
-            summary: format_observe_summary(&observe_result),
+            summary: format_observe_summary(&observe_result, child.delegation.as_ref()),
             observe_result: Box::new(observe_result),
             delegation: child.delegation.clone(),
         })
@@ -166,9 +129,7 @@ impl AgentOrchestrationService {
         let guard = self.observe_guard.lock().map_err(|_| {
             super::AgentOrchestrationError::Internal("observe guard lock poisoned".to_string())
         })?;
-        Ok(guard
-            .get(&guard_key)
-            .is_some_and(|previous| previous == signature))
+        Ok(guard.is_unchanged(&guard_key, signature))
     }
 
     fn remember_observe_snapshot(
@@ -181,7 +142,7 @@ impl AgentOrchestrationService {
         let mut guard = self.observe_guard.lock().map_err(|_| {
             super::AgentOrchestrationError::Internal("observe guard lock poisoned".to_string())
         })?;
-        guard.insert(guard_key, signature);
+        guard.remember(guard_key, signature);
         Ok(())
     }
 }
@@ -199,166 +160,43 @@ fn observe_guard_key(
     )
 }
 
-fn observe_signature(result: &ObserveAgentResult) -> ObserveSnapshotSignature {
+fn observe_signature(result: &ObserveSnapshot) -> ObserveSnapshotSignature {
     ObserveSnapshotSignature {
         lifecycle_status: result.lifecycle_status,
         last_turn_outcome: result.last_turn_outcome,
         phase: result.phase.clone(),
         turn_count: result.turn_count,
-        pending_message_count: result.pending_message_count,
         active_task: result.active_task.clone(),
-        pending_task: result.pending_task.clone(),
-        recent_mailbox_messages: result.recent_mailbox_messages.clone(),
-        last_output: result.last_output.clone(),
+        last_output_tail: result.last_output_tail.clone(),
+        last_turn_tail: result.last_turn_tail.clone(),
     }
 }
 
-fn recommended_next_action(
-    lifecycle_status: AgentLifecycleStatus,
-    pending_message_count: usize,
-    active_task: Option<&str>,
-    pending_task: Option<&str>,
-) -> &'static str {
-    match lifecycle_status {
-        AgentLifecycleStatus::Pending | AgentLifecycleStatus::Running => "wait",
-        AgentLifecycleStatus::Terminated => "none",
-        AgentLifecycleStatus::Idle if active_task.is_some() || pending_task.is_some() => "wait",
-        AgentLifecycleStatus::Idle if pending_message_count > 0 => "wait",
-        AgentLifecycleStatus::Idle => "send_or_close",
-    }
-}
-
-fn recommended_reason(
-    lifecycle_status: AgentLifecycleStatus,
-    last_turn_outcome: Option<astrcode_core::AgentTurnOutcome>,
-    pending_message_count: usize,
-    active_task: Option<&str>,
-    pending_task: Option<&str>,
+fn format_observe_summary(
+    result: &ObserveSnapshot,
     delegation: Option<&astrcode_core::DelegationMetadata>,
 ) -> String {
-    let branch_summary = delegation
-        .map(|metadata| format!("责任分支：{}。", metadata.responsibility_summary))
-        .unwrap_or_default();
-    let restricted_summary = delegation
-        .and_then(|metadata| metadata.capability_limit_summary.as_ref())
-        .map(|summary| format!(" {}", summary))
-        .unwrap_or_default();
-
-    match lifecycle_status {
-        AgentLifecycleStatus::Pending | AgentLifecycleStatus::Running => {
-            if let Some(task) = active_task {
-                format!("{branch_summary}子 Agent 仍在处理当前任务：{task}{restricted_summary}")
-            } else if let Some(task) = pending_task {
-                format!(
-                    "{branch_summary}子 Agent 还有待消费的 mailbox \
-                     任务：{task}{restricted_summary}"
-                )
-            } else {
-                format!(
-                    "{branch_summary}子 Agent 仍在执行中，当前更适合继续等待。{restricted_summary}"
-                )
-            }
-        },
-        AgentLifecycleStatus::Terminated => format!(
-            "{branch_summary}子 Agent 已终止，不能再接收 send；如需继续工作应改由当前 Agent \
-             或新的分支处理。{restricted_summary}"
-        ),
-        AgentLifecycleStatus::Idle if active_task.is_some() || pending_task.is_some() => {
-            format!(
-                "{branch_summary}子 Agent 当前空闲，但还有待处理任务痕迹，先等待当前 mailbox \
-                 周期稳定。{restricted_summary}"
-            )
-        },
-        AgentLifecycleStatus::Idle if pending_message_count > 0 => {
-            format!(
-                "{branch_summary}子 Agent 已空闲，但 mailbox \
-                 里仍有待处理消息；先等待这些消息被消费。{restricted_summary}"
-            )
-        },
-        AgentLifecycleStatus::Idle => match last_turn_outcome {
-            Some(astrcode_core::AgentTurnOutcome::Completed) => format!(
-                "{branch_summary}子 Agent 已完成上一轮工作；如果责任边界不变可直接 send \
-                 复用，否则 close 结束该分支。{}{}",
-                delegation
-                    .map(|metadata| metadata.reuse_scope_summary.as_str())
-                    .unwrap_or(""),
-                restricted_summary
-            ),
-            Some(astrcode_core::AgentTurnOutcome::Failed) => format!(
-                "{branch_summary}子 Agent 上一轮失败；若要继续同一责任可 send 明确返工要求，否则 \
-                 close 止损。{}{}",
-                delegation
-                    .map(|metadata| metadata.reuse_scope_summary.as_str())
-                    .unwrap_or(""),
-                restricted_summary
-            ),
-            Some(astrcode_core::AgentTurnOutcome::Cancelled) => format!(
-                "{branch_summary}子 Agent 上一轮已取消；通常更适合 \
-                 close，只有在确实要复用同一分支时才 send。{}{}",
-                delegation
-                    .map(|metadata| metadata.reuse_scope_summary.as_str())
-                    .unwrap_or(""),
-                restricted_summary
-            ),
-            Some(astrcode_core::AgentTurnOutcome::TokenExceeded) => format!(
-                "{branch_summary}子 Agent 上一轮受 token \
-                 限制中断；若继续复用，请先收窄任务范围后再 send。{}{}",
-                delegation
-                    .map(|metadata| metadata.reuse_scope_summary.as_str())
-                    .unwrap_or(""),
-                restricted_summary
-            ),
-            None => format!(
-                "{branch_summary}子 Agent 当前空闲，可根据责任是否继续存在来选择 send 或 \
-                 close。{}{}",
-                delegation
-                    .map(|metadata| metadata.reuse_scope_summary.as_str())
-                    .unwrap_or(""),
-                restricted_summary
-            ),
-        },
+    let mut parts = Vec::new();
+    parts.push(format!(
+        "子 Agent {} 当前为 {:?}",
+        result.agent_id, result.lifecycle_status
+    ));
+    if let Some(metadata) = delegation {
+        parts.push(format!("责任分支：{}", metadata.responsibility_summary));
     }
-}
-
-fn delivery_freshness(
-    lifecycle_status: AgentLifecycleStatus,
-    pending_message_count: usize,
-    active_task: Option<&str>,
-    pending_task: Option<&str>,
-) -> &'static str {
-    match lifecycle_status {
-        AgentLifecycleStatus::Pending | AgentLifecycleStatus::Running => "pending_child_work",
-        AgentLifecycleStatus::Terminated => "terminated",
-        AgentLifecycleStatus::Idle if active_task.is_some() || pending_task.is_some() => {
-            "pending_child_work"
-        },
-        AgentLifecycleStatus::Idle if pending_message_count > 0 => "pending_child_work",
-        AgentLifecycleStatus::Idle => "ready_for_follow_up",
+    if let Some(task) = result.active_task.as_deref() {
+        parts.push(format!("当前任务：{task}"));
     }
-}
-
-fn format_observe_summary(result: &ObserveAgentResult) -> String {
-    let branch_prefix = result
-        .delegation
-        .as_ref()
-        .map(|metadata| format!("责任分支：{}；", metadata.responsibility_summary))
-        .unwrap_or_default();
-    let base = format!(
-        "子 Agent {} 当前为 {:?}；{}建议 {}：{}",
-        result.agent_id,
-        result.lifecycle_status,
-        branch_prefix,
-        result.recommended_next_action,
-        result.recommended_reason
-    );
-    if result.recent_mailbox_messages.is_empty() {
-        return base;
+    if let Some(output) = result.last_output_tail.as_deref() {
+        parts.push(format!("最近输出：{output}"));
     }
-
-    format!(
-        "{base}；最近 mailbox 摘要：{}",
-        result.recent_mailbox_messages.join(" | ")
-    )
+    if !result.last_turn_tail.is_empty() {
+        parts.push(format!(
+            "最后一轮尾部：{}",
+            result.last_turn_tail.join(" | ")
+        ));
+    }
+    parts.join("；")
 }
 
 #[cfg(test)]
@@ -366,115 +204,64 @@ mod tests {
     use std::time::Duration;
 
     use astrcode_core::{
-        AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken,
-        DelegationMetadata, ObserveParams, SessionId, StorageEventPayload, ToolContext,
+        AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken, ObserveParams,
+        SessionId, StorageEventPayload, ToolContext,
         agent::executor::{CollaborationExecutor, SubAgentExecutor},
     };
     use tokio::time::sleep;
 
-    use super::{
-        delivery_freshness, format_observe_summary, recommended_next_action, recommended_reason,
+    use super::format_observe_summary;
+    use crate::agent::{
+        ObserveGuardState, ObserveSnapshotSignature,
+        test_support::{TestLlmBehavior, build_agent_test_harness},
     };
-    use crate::agent::test_support::{TestLlmBehavior, build_agent_test_harness};
 
     #[test]
-    fn recommendation_helpers_prefer_wait_for_running_child() {
-        assert_eq!(
-            recommended_next_action(
-                astrcode_core::AgentLifecycleStatus::Running,
-                0,
-                Some("scan repo"),
-                None,
-            ),
-            "wait"
-        );
-        assert_eq!(
-            delivery_freshness(
-                astrcode_core::AgentLifecycleStatus::Running,
-                0,
-                Some("scan repo"),
-                None,
-            ),
-            "pending_child_work"
-        );
-        assert!(
-            recommended_reason(
-                astrcode_core::AgentLifecycleStatus::Running,
-                None,
-                0,
-                Some("scan repo"),
-                None,
-                None,
-            )
-            .contains("scan repo")
-        );
-    }
-
-    #[test]
-    fn recommendation_helpers_prefer_send_or_close_for_idle_child() {
-        assert_eq!(
-            recommended_next_action(astrcode_core::AgentLifecycleStatus::Idle, 0, None, None),
-            "send_or_close"
-        );
-        assert_eq!(
-            delivery_freshness(astrcode_core::AgentLifecycleStatus::Idle, 0, None, None),
-            "ready_for_follow_up"
-        );
-    }
-
-    #[test]
-    fn observe_summary_is_decision_oriented() {
-        let result = astrcode_core::ObserveAgentResult {
+    fn observe_summary_is_snapshot_oriented() {
+        let result = astrcode_core::ObserveSnapshot {
             agent_id: "agent-7".to_string(),
-            sub_run_id: "subrun-7".to_string(),
-            session_id: "session-parent".to_string(),
-            open_session_id: "session-child".to_string(),
-            parent_agent_id: "agent-root".to_string(),
+            session_id: "session-child".to_string(),
             lifecycle_status: astrcode_core::AgentLifecycleStatus::Idle,
             last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
             phase: "Idle".to_string(),
             turn_count: 1,
-            pending_message_count: 0,
-            active_task: None,
-            pending_task: None,
-            recent_mailbox_messages: vec!["最近一条消息".to_string()],
-            last_output: Some("done".to_string()),
-            delegation: None,
-            recommended_next_action: "send_or_close".to_string(),
-            recommended_reason: "上一轮已完成".to_string(),
-            delivery_freshness: "ready_for_follow_up".to_string(),
+            active_task: Some("整理结论".to_string()),
+            last_output_tail: Some("done".to_string()),
+            last_turn_tail: vec!["最近一条消息".to_string()],
         };
 
-        let summary = format_observe_summary(&result);
-        assert!(summary.contains("建议 send_or_close"));
+        let summary = format_observe_summary(&result, None);
         assert!(summary.contains("agent-7"));
-        assert!(summary.contains("最近 mailbox 摘要"));
+        assert!(summary.contains("当前任务：整理结论"));
+        assert!(summary.contains("最后一轮尾部"));
     }
 
     #[test]
-    fn recommended_reason_keeps_restricted_branch_boundary_visible() {
-        let reason = recommended_reason(
-            astrcode_core::AgentLifecycleStatus::Idle,
-            Some(astrcode_core::AgentTurnOutcome::Completed),
-            0,
-            None,
-            None,
-            Some(&DelegationMetadata {
-                responsibility_summary: "只检查缓存层".to_string(),
-                reuse_scope_summary: "只有当下一步仍属于同一责任分支，\
-                                      且所需操作仍落在当前收缩后的 capability surface \
-                                      内时，才应继续复用这个 child。"
-                    .to_string(),
-                restricted: true,
-                capability_limit_summary: Some(
-                    "本分支当前只允许使用这些工具：readFile, grep。".to_string(),
-                ),
-            }),
-        );
+    fn observe_guard_state_is_bounded() {
+        let mut state = ObserveGuardState::default();
+        for index in 0..1100 {
+            state.remember(
+                format!("session:turn-{index}:parent:child"),
+                ObserveSnapshotSignature {
+                    lifecycle_status: astrcode_core::AgentLifecycleStatus::Idle,
+                    last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Completed),
+                    phase: "Idle".to_string(),
+                    turn_count: index as u32,
+                    active_task: None,
+                    last_output_tail: None,
+                    last_turn_tail: Vec::new(),
+                },
+            );
+        }
 
-        assert!(reason.contains("只检查缓存层"));
-        assert!(reason.contains("当前收缩后的 capability surface"));
-        assert!(reason.contains("readFile, grep"));
+        assert!(
+            state.entries.len() <= 1024,
+            "observe guard should evict old entries instead of unbounded growth"
+        );
+        assert!(
+            state.entries.contains_key("session:turn-1099:parent:child"),
+            "latest observe snapshot should be retained"
+        );
     }
 
     #[tokio::test]
@@ -561,14 +348,11 @@ mod tests {
         let observe_result = result
             .observe_result()
             .expect("observe result should exist");
-        assert_eq!(observe_result.recommended_next_action, "send_or_close");
-        assert_eq!(observe_result.delivery_freshness, "ready_for_follow_up");
-        assert!(
-            result
-                .summary()
-                .unwrap_or_default()
-                .contains("建议 send_or_close")
+        assert_eq!(
+            observe_result.lifecycle_status,
+            astrcode_core::AgentLifecycleStatus::Idle
         );
+        assert!(result.summary().unwrap_or_default().contains("子 Agent"));
 
         let parent_events = harness
             .session_runtime

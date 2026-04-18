@@ -14,9 +14,9 @@ use serde_json::Value;
 
 use crate::{
     AgentCollaborationFact, AgentEventContext, AstrError, ChildAgentRef, ChildSessionNotification,
-    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
-    MailboxQueuedPayload, PersistedToolOutput, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, Result, SubRunResult, ToolOutputStream, UserMessageOrigin,
+    InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
+    PersistedToolOutput, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, Result,
+    SubRunResult, ToolOutputStream, UserMessageOrigin,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -252,35 +252,35 @@ pub enum StorageEventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
-    /// Durable mailbox 消息入队。
+    /// Durable input queue 消息入队。
     ///
-    /// 记录一条协作消息成功进入目标 agent 的 mailbox。
+    /// 记录一条协作消息成功进入目标 agent 的 input queue。
     /// live inbox 只能在该事件 append 成功后更新。
-    AgentMailboxQueued {
+    AgentInputQueued {
         #[serde(flatten)]
-        payload: MailboxQueuedPayload,
+        payload: InputQueuedPayload,
     },
-    /// Mailbox 批次开始消费。
+    /// input queue 批次开始消费。
     ///
     /// snapshot drain 时写入，记录本轮接管了哪些 delivery_ids。
-    /// 必须是 mailbox-wake turn 的第一条 durable 事件。
-    AgentMailboxBatchStarted {
+    /// 必须是 input-queue turn 的第一条 durable 事件。
+    AgentInputBatchStarted {
         #[serde(flatten)]
-        payload: MailboxBatchStartedPayload,
+        payload: InputBatchStartedPayload,
     },
-    /// Mailbox 批次确认完成。
+    /// input queue 批次确认完成。
     ///
     /// durable turn completion 后写入，标记对应 delivery_ids 已被消费。
-    AgentMailboxBatchAcked {
+    AgentInputBatchAcked {
         #[serde(flatten)]
-        payload: MailboxBatchAckedPayload,
+        payload: InputBatchAckedPayload,
     },
-    /// Mailbox 消息丢弃。
+    /// input queue 消息丢弃。
     ///
     /// close 时写入，记录被主动丢弃的 pending delivery_ids。
-    AgentMailboxDiscarded {
+    AgentInputDiscarded {
         #[serde(flatten)]
-        payload: MailboxDiscardedPayload,
+        payload: InputDiscardedPayload,
     },
     /// 错误事件。
     Error {

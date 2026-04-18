@@ -1,15 +1,15 @@
-//! Mailbox 相关只读恢复投影。
+//! input queue 相关只读恢复投影。
 //!
-//! Why: mailbox 的 durable 恢复规则属于只读投影，不应该散落在
+//! Why: input queue 的 durable 恢复规则属于只读投影，不应该散落在
 //! `application` 的父子编排流程里重复实现。
 
 use std::collections::{HashMap, HashSet};
 
-use astrcode_core::{MailboxProjection, StorageEventPayload, StoredEvent};
+use astrcode_core::{InputQueueProjection, StorageEventPayload, StoredEvent};
 use astrcode_kernel::PendingParentDelivery;
 
 pub fn recoverable_parent_deliveries(events: &[StoredEvent]) -> Vec<PendingParentDelivery> {
-    let projection_index = MailboxProjection::replay_index(events);
+    let projection_index = InputQueueProjection::replay_index(events);
     let mut recoverable_by_agent = HashMap::<String, HashSet<String>>::new();
     for (agent_id, projection) in projection_index {
         let active_ids = projection
@@ -32,7 +32,7 @@ pub fn recoverable_parent_deliveries(events: &[StoredEvent]) -> Vec<PendingParen
     let queued_at_by_delivery = events
         .iter()
         .filter_map(|stored| match &stored.event.payload {
-            StorageEventPayload::AgentMailboxQueued { payload } => Some((
+            StorageEventPayload::AgentInputQueued { payload } => Some((
                 payload.envelope.delivery_id.clone(),
                 payload.envelope.queued_at,
             )),
@@ -77,10 +77,10 @@ pub fn recoverable_parent_deliveries(events: &[StoredEvent]) -> Vec<PendingParen
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, AgentTurnOutcome,
-        ChildAgentRef, ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, MailboxQueuedPayload, ParentExecutionRef, StorageEvent,
-        StorageEventPayload, StoredEvent,
+        AgentEventContext, AgentLifecycleStatus, AgentTurnOutcome, ChildAgentRef,
+        ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNotification,
+        ChildSessionNotificationKind, InputQueuedPayload, ParentExecutionRef, QueuedInputEnvelope,
+        StorageEvent, StorageEventPayload, StoredEvent,
     };
 
     use super::recoverable_parent_deliveries;
@@ -136,9 +136,9 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("turn-parent".to_string()),
                     agent: AgentEventContext::default(),
-                    payload: StorageEventPayload::AgentMailboxQueued {
-                        payload: MailboxQueuedPayload {
-                            envelope: AgentMailboxEnvelope {
+                    payload: StorageEventPayload::AgentInputQueued {
+                        payload: InputQueuedPayload {
+                            envelope: QueuedInputEnvelope {
                                 delivery_id: notification.notification_id.clone(),
                                 from_agent_id: notification.child_ref.agent_id().to_string(),
                                 to_agent_id: "agent-parent".to_string(),

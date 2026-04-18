@@ -133,6 +133,7 @@ pub fn estimate_message_tokens(message: &LlmMessage) -> usize {
                 + estimate_text_tokens(content)
                 + match origin {
                     UserMessageOrigin::User => 0,
+                    UserMessageOrigin::QueuedInput => 8,
                     UserMessageOrigin::AutoContinueNudge => 6,
                     UserMessageOrigin::ContinuationPrompt => 10,
                     UserMessageOrigin::ReactivationPrompt => 8,

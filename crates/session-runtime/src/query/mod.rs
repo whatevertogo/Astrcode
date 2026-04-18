@@ -5,7 +5,7 @@
 
 mod agent;
 mod conversation;
-mod mailbox;
+mod input_queue;
 mod service;
 mod terminal;
 mod text;
@@ -22,7 +22,7 @@ pub use conversation::{
     ConversationThinkingBlockFacts, ConversationTranscriptErrorKind, ConversationUserBlockFacts,
     ToolCallBlockFacts, ToolCallStreamsFacts,
 };
-pub use mailbox::recoverable_parent_deliveries;
+pub use input_queue::recoverable_parent_deliveries;
 pub(crate) use service::SessionQueries;
 pub use terminal::{LastCompactMetaSnapshot, SessionControlStateSnapshot};
 pub(crate) use transcript::current_turn_messages;

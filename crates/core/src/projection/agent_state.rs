@@ -235,10 +235,10 @@ impl AgentStateProjector {
             | StorageEventPayload::SubRunFinished { .. }
             | StorageEventPayload::ChildSessionNotification { .. }
             | StorageEventPayload::AgentCollaborationFact { .. }
-            | StorageEventPayload::AgentMailboxQueued { .. }
-            | StorageEventPayload::AgentMailboxBatchStarted { .. }
-            | StorageEventPayload::AgentMailboxBatchAcked { .. }
-            | StorageEventPayload::AgentMailboxDiscarded { .. }
+            | StorageEventPayload::AgentInputQueued { .. }
+            | StorageEventPayload::AgentInputBatchStarted { .. }
+            | StorageEventPayload::AgentInputBatchAcked { .. }
+            | StorageEventPayload::AgentInputDiscarded { .. }
             | StorageEventPayload::Error { .. } => {},
         }
     }

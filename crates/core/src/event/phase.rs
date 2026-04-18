@@ -33,10 +33,10 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
         | StorageEventPayload::SubRunFinished { .. }
         | StorageEventPayload::ChildSessionNotification { .. }
         | StorageEventPayload::AgentCollaborationFact { .. }
-        | StorageEventPayload::AgentMailboxQueued { .. }
-        | StorageEventPayload::AgentMailboxBatchStarted { .. }
-        | StorageEventPayload::AgentMailboxBatchAcked { .. }
-        | StorageEventPayload::AgentMailboxDiscarded { .. } => Phase::Idle,
+        | StorageEventPayload::AgentInputQueued { .. }
+        | StorageEventPayload::AgentInputBatchStarted { .. }
+        | StorageEventPayload::AgentInputBatchAcked { .. }
+        | StorageEventPayload::AgentInputDiscarded { .. } => Phase::Idle,
         StorageEventPayload::AssistantDelta { .. }
         | StorageEventPayload::ThinkingDelta { .. }
         | StorageEventPayload::AssistantFinal { .. } => Phase::Streaming,
@@ -90,6 +90,7 @@ impl PhaseTracker {
             &event.payload,
             StorageEventPayload::UserMessage {
                 origin: UserMessageOrigin::AutoContinueNudge
+                    | UserMessageOrigin::QueuedInput
                     | UserMessageOrigin::ContinuationPrompt
                     | UserMessageOrigin::ReactivationPrompt
                     | UserMessageOrigin::CompactSummary,
@@ -107,10 +108,10 @@ impl PhaseTracker {
                 | StorageEventPayload::SubRunFinished { .. }
                 | StorageEventPayload::ChildSessionNotification { .. }
                 | StorageEventPayload::AgentCollaborationFact { .. }
-                | StorageEventPayload::AgentMailboxQueued { .. }
-                | StorageEventPayload::AgentMailboxBatchStarted { .. }
-                | StorageEventPayload::AgentMailboxBatchAcked { .. }
-                | StorageEventPayload::AgentMailboxDiscarded { .. }
+                | StorageEventPayload::AgentInputQueued { .. }
+                | StorageEventPayload::AgentInputBatchStarted { .. }
+                | StorageEventPayload::AgentInputBatchAcked { .. }
+                | StorageEventPayload::AgentInputDiscarded { .. }
         ) {
             return None;
         }

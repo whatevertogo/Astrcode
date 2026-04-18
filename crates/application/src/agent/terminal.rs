@@ -583,19 +583,19 @@ mod tests {
         assert!(
             parent_events.iter().any(|stored| matches!(
                 &stored.event.payload,
-                StorageEventPayload::AgentMailboxQueued { payload }
+                StorageEventPayload::AgentInputQueued { payload }
                     if payload.envelope.message == "子 Agent 总结"
             )),
-            "durable mailbox message should reuse child final excerpt"
+            "durable input queue message should reuse child final excerpt"
         );
         assert!(
             parent_events.iter().any(|stored| matches!(
                 &stored.event.payload,
-                StorageEventPayload::UserMessage { content, .. }
-                    if content.contains("delivery_id: child-terminal:")
-                        && content.contains("message: 子 Agent 总结")
+                StorageEventPayload::UserMessage { content, origin, .. }
+                    if *origin == astrcode_core::UserMessageOrigin::QueuedInput
+                        && content.contains("子 Agent 总结")
             )),
-            "wake prompt should consume the same delivery summary"
+            "wake turn should consume the same delivery summary as queued input"
         );
         let metrics = harness.metrics.snapshot();
         assert_eq!(

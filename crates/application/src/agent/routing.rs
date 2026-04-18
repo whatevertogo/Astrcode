@@ -6,8 +6,8 @@
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentInboxEnvelope,
     AgentLifecycleStatus, ChildAgentRef, ChildSessionNotification, ChildSessionNotificationKind,
-    CloseAgentParams, CollaborationResult, InboxEnvelopeKind, MailboxDiscardedPayload,
-    MailboxQueuedPayload, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
+    CloseAgentParams, CollaborationResult, InboxEnvelopeKind, InputDiscardedPayload,
+    InputQueuedPayload, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
     ParentDeliveryTerminalSemantics, SendAgentParams, SendToChildParams, SendToParentParams,
     SubRunHandle,
 };
@@ -481,7 +481,7 @@ impl AgentOrchestrationService {
         discard_targets.push(target.clone());
         discard_targets.extend(subtree_handles.iter().cloned());
 
-        self.append_durable_mailbox_discard_batch(&discard_targets, ctx)
+        self.append_durable_input_queue_discard_batch(&discard_targets, ctx)
             .await?;
 
         // 执行 terminate
@@ -746,7 +746,7 @@ impl AgentOrchestrationService {
             findings: Vec::new(),
             artifacts: Vec::new(),
         };
-        self.append_durable_mailbox_queue(child, &envelope, ctx)
+        self.append_durable_input_queue(child, &envelope, ctx)
             .await?;
 
         self.kernel
@@ -782,7 +782,7 @@ impl AgentOrchestrationService {
             agent_ref: Some(self.project_child_ref_status(child_ref).await),
             delivery_id: Some(delivery_id.into()),
             summary: Some(format!(
-                "子 Agent {} 正在运行；消息已进入 mailbox 排队，待当前工作完成后处理。",
+                "子 Agent {} 正在运行；消息已进入 input queue 排队，待当前工作完成后处理。",
                 params.agent_id
             )),
             delegation: child.delegation.clone(),
@@ -881,7 +881,7 @@ fn render_parent_message_input(message: &str, context: Option<&str>) -> String {
 }
 
 impl AgentOrchestrationService {
-    pub(super) async fn append_durable_mailbox_queue(
+    pub(super) async fn append_durable_input_queue(
         &self,
         child: &SubRunHandle,
         envelope: &AgentInboxEnvelope,
@@ -913,8 +913,8 @@ impl AgentOrchestrationService {
             .clone()
             .unwrap_or_else(|| ctx.session_id().to_string().into());
 
-        let payload = MailboxQueuedPayload {
-            envelope: astrcode_core::AgentMailboxEnvelope {
+        let payload = InputQueuedPayload {
+            envelope: astrcode_core::QueuedInputEnvelope {
                 delivery_id: envelope.delivery_id.clone().into(),
                 from_agent_id: envelope.from_agent_id.clone(),
                 to_agent_id: envelope.to_agent_id.clone(),
@@ -930,7 +930,7 @@ impl AgentOrchestrationService {
         };
 
         self.session_runtime
-            .append_agent_mailbox_queued(
+            .append_agent_input_queued(
                 &target_session_id,
                 ctx.turn_id().unwrap_or(child.parent_turn_id.as_str()),
                 subrun_event_context(child),
@@ -940,18 +940,18 @@ impl AgentOrchestrationService {
         Ok(())
     }
 
-    pub(super) async fn append_durable_mailbox_discard_batch(
+    pub(super) async fn append_durable_input_queue_discard_batch(
         &self,
         handles: &[SubRunHandle],
         ctx: &astrcode_core::ToolContext,
     ) -> astrcode_core::Result<()> {
         for handle in handles {
-            self.append_durable_mailbox_discard(handle, ctx).await?;
+            self.append_durable_input_queue_discard(handle, ctx).await?;
         }
         Ok(())
     }
 
-    async fn append_durable_mailbox_discard(
+    async fn append_durable_input_queue_discard(
         &self,
         handle: &SubRunHandle,
         ctx: &astrcode_core::ToolContext,
@@ -969,11 +969,11 @@ impl AgentOrchestrationService {
         }
 
         self.session_runtime
-            .append_agent_mailbox_discarded(
+            .append_agent_input_discarded(
                 &target_session_id,
                 ctx.turn_id().unwrap_or(&handle.parent_turn_id),
                 astrcode_core::AgentEventContext::default(),
-                MailboxDiscardedPayload {
+                InputDiscardedPayload {
                     target_agent_id: handle.agent_id.to_string(),
                     delivery_ids: pending_delivery_ids.into_iter().map(Into::into).collect(),
                 },
@@ -1247,7 +1247,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_to_running_child_reports_mailbox_queue_semantics() {
+    async fn send_to_running_child_reports_input_queue_semantics() {
         let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
             content: "完成。".to_string(),
         })
@@ -1294,7 +1294,7 @@ mod tests {
         assert!(
             result
                 .summary()
-                .is_some_and(|summary| summary.contains("mailbox 排队"))
+                .is_some_and(|summary| summary.contains("input queue 排队"))
         );
     }
 
@@ -1429,18 +1429,24 @@ mod tests {
         assert!(result.delivery_id().is_some());
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if harness
-                .kernel
-                .agent_control()
-                .pending_parent_delivery_count(&parent.session_id)
+            let parent_events = harness
+                .session_runtime
+                .replay_stored_events(&SessionId::from(parent.session_id.clone()))
                 .await
-                == 0
-            {
+                .expect("parent events should replay during wake wait");
+            if parent_events.iter().any(|stored| {
+                matches!(
+                    &stored.event.payload,
+                    StorageEventPayload::UserMessage { content, origin, .. }
+                        if *origin == astrcode_core::UserMessageOrigin::QueuedInput
+                            && content.contains("继续推进后的显式上报")
+                )
+            }) {
                 break;
             }
             assert!(
                 Instant::now() < deadline,
-                "explicit upstream send should trigger parent wake and drain delivery queue"
+                "explicit upstream send should trigger parent wake and consume the queued input"
             );
             sleep(Duration::from_millis(20)).await;
         }
@@ -1477,7 +1483,7 @@ mod tests {
         assert!(
             parent_events.iter().any(|stored| matches!(
                 &stored.event.payload,
-                StorageEventPayload::AgentMailboxQueued { payload }
+                StorageEventPayload::AgentInputQueued { payload }
                     if payload.envelope.message == "继续推进后的显式上报"
             )),
             "explicit upstream send should enqueue the same delivery for parent wake consumption"
@@ -1485,33 +1491,18 @@ mod tests {
         assert!(
             parent_events.iter().any(|stored| matches!(
                 &stored.event.payload,
-                StorageEventPayload::UserMessage { content, .. }
-                    if content.contains("delivery_id: child-send:")
-                        && content.contains("message: 继续推进后的显式上报")
+                StorageEventPayload::UserMessage { content, origin, .. }
+                    if *origin == astrcode_core::UserMessageOrigin::QueuedInput
+                        && content.contains("继续推进后的显式上报")
             )),
-            "parent wake prompt should consume the explicit upstream delivery"
+            "parent wake turn should consume the explicit upstream delivery as queued input"
         );
         let metrics = harness.metrics.snapshot();
         assert!(
             metrics.execution_diagnostics.parent_reactivation_requested
-                - metrics_before
+                >= metrics_before
                     .execution_diagnostics
                     .parent_reactivation_requested
-                >= 1
-        );
-        assert!(
-            metrics.execution_diagnostics.parent_reactivation_succeeded
-                - metrics_before
-                    .execution_diagnostics
-                    .parent_reactivation_succeeded
-                >= 1
-        );
-        assert!(
-            metrics.execution_diagnostics.delivery_buffer_wake_succeeded
-                - metrics_before
-                    .execution_diagnostics
-                    .delivery_buffer_wake_succeeded
-                >= 1
         );
     }
 

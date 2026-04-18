@@ -188,6 +188,8 @@ pub enum UserMessageOrigin {
     /// 用户直接输入
     #[default]
     User,
+    /// 从 durable 输入队列恢复并注入的内部输入。
+    QueuedInput,
     /// turn 内 budget 允许继续时注入的内部续写提示。
     AutoContinueNudge,
     /// assistant 输出被截断后，为同一 turn 续写而注入的内部提示。

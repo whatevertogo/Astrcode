@@ -31,8 +31,8 @@ mod tests {
     #[test]
     fn summarize_inline_text_normalizes_whitespace_before_truncating() {
         assert_eq!(
-            summarize_inline_text("  review   mailbox \n state  ", 120),
-            Some("review mailbox state".to_string())
+            summarize_inline_text("  review   input queue \n state  ", 120),
+            Some("review input queue state".to_string())
         );
     }
 

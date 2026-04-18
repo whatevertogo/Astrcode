@@ -30,7 +30,7 @@ graph TB
         ACTOR["SessionActor<br/>live truth · 推进"]
         TURN["Turn 状态机<br/>LLM → Tool → Compact"]
         CTX["Context Window<br/>预算分配 · 裁剪 · 压缩"]
-        MAIL["Mailbox / Delivery<br/>子 Agent 消息契约"]
+        MAIL["Input Queue / Delivery<br/>子 Agent 消息契约"]
         QUERY["Query / Command<br/>读写分离"]
     end
 

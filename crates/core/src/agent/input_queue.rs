@@ -1,6 +1,6 @@
-//! # Mailbox 持久化类型
+//! # Input Queue 持久化类型
 //!
-//! 定义四工具协作模型下的 mailbox 消息、批次、durable 事件载荷和 observe 快照。
+//! 定义四工具协作模型下的 input queue 消息、批次、durable 事件载荷和 observe 快照。
 //!
 //! 所有类型都是纯 DTO，不含运行时策略或状态机逻辑。
 //! 事件载荷由 `core` 定义结构，由 `runtime` 负责实际写入 session event log。
@@ -11,7 +11,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    DelegationMetadata,
     lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
     require_non_empty_trimmed,
 };
@@ -29,16 +28,16 @@ pub type DeliveryId = crate::ids::DeliveryId;
 /// batch_id 在 turn 的 durable 生命周期内保持不变。
 pub type BatchId = String;
 
-// ── Mailbox 消息信封 ──────────────────────────────────────────────
+// ── Input Queue 消息信封 ──────────────────────────────────────────
 
-/// 一条 durable 协作消息，是 mailbox 的最小可恢复单元。
+/// 一条 durable 协作消息，是 input queue 的最小可恢复单元。
 ///
 /// 入队时捕获发送方的状态快照（enqueue-time snapshot），
 /// 后续注入 prompt 或 observe 时继续使用这些快照值，
 /// 而不是注入时现查——保证因果链可追溯。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentMailboxEnvelope {
+pub struct QueuedInputEnvelope {
     pub delivery_id: DeliveryId,
     pub from_agent_id: String,
     pub to_agent_id: String,
@@ -52,53 +51,53 @@ pub struct AgentMailboxEnvelope {
     pub sender_open_session_id: String,
 }
 
-// ── Durable Mailbox 事件载荷 ──────────────────────────────────────
+// ── Durable input queue 事件载荷 ──────────────────────────────────────
 
-/// `AgentMailboxQueued` 事件载荷。
+/// `AgentInputQueued` 事件载荷。
 ///
-/// 记录一条刚成功进入 mailbox 的协作消息。
+/// 记录一条刚成功进入 input queue 的协作消息。
 /// live inbox 只能在 Queued append 成功后更新，顺序不能反过来。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct MailboxQueuedPayload {
+pub struct InputQueuedPayload {
     #[serde(flatten)]
-    pub envelope: AgentMailboxEnvelope,
+    pub envelope: QueuedInputEnvelope,
 }
 
-/// `AgentMailboxBatchStarted` 事件载荷。
+/// `AgentInputBatchStarted` 事件载荷。
 ///
 /// 记录某个 agent 在本轮开始时通过 snapshot drain 接管了哪些消息。
-/// 必须是 mailbox-wake turn 的第一条 durable 事件，
+/// 必须是 input-queue drain turn 的第一条 durable 事件，
 /// 以确保 replay 时能准确恢复"本轮接管了什么"这一 durable 事实。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct MailboxBatchStartedPayload {
+pub struct InputBatchStartedPayload {
     pub target_agent_id: String,
     pub turn_id: String,
     pub batch_id: BatchId,
     pub delivery_ids: Vec<DeliveryId>,
 }
 
-/// `AgentMailboxBatchAcked` 事件载荷。
+/// `AgentInputBatchAcked` 事件载荷。
 ///
 /// 记录某轮在 durable turn completion 后确认处理完成。
 /// 不允许在模型流结束但 turn 尚未 durable 提交时提前 ack。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct MailboxBatchAckedPayload {
+pub struct InputBatchAckedPayload {
     pub target_agent_id: String,
     pub turn_id: String,
     pub batch_id: BatchId,
     pub delivery_ids: Vec<DeliveryId>,
 }
 
-/// `AgentMailboxDiscarded` 事件载荷。
+/// `AgentInputDiscarded` 事件载荷。
 ///
-/// 记录 close 时主动丢弃的 pending mailbox 消息。
+/// 记录 close 时主动丢弃的 pending input queue 消息。
 /// replay 时这些消息不再重建为 pending。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct MailboxDiscardedPayload {
+pub struct InputDiscardedPayload {
     pub target_agent_id: String,
     pub delivery_ids: Vec<DeliveryId>,
 }
@@ -164,9 +163,9 @@ impl CloseParams {
 
 // ── Observe 快照结果 ──────────────────────────────────────────────
 
-// ── Mailbox Projection（派生读模型）──────────────────────────────
+// ── Input Queue Projection（派生读模型）───────────────────────────
 
-/// Mailbox 的派生读模型，从 durable 事件重建。
+/// Input queue 的派生读模型，从 durable 事件重建。
 ///
 /// 唯一 durable 真相仍是 event log，此结构只是 replay 后的缓存视图。
 /// 用于 `observe`、wake 调度决策和恢复。
@@ -178,7 +177,7 @@ impl CloseParams {
 /// - `Discarded` → 标记为丢弃，停止重建
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct MailboxProjection {
+pub struct InputQueueProjection {
     /// 待处理消息 ID（Queued - Acked - Discarded 后剩余）。
     pub pending_delivery_ids: Vec<DeliveryId>,
     /// 当前 started-but-not-acked 的批次 ID。
@@ -189,10 +188,10 @@ pub struct MailboxProjection {
     pub discarded_delivery_ids: Vec<DeliveryId>,
 }
 
-impl MailboxProjection {
-    /// 从 durable 事件流重建指定 agent 的 MailboxProjection。
+impl InputQueueProjection {
+    /// 从 durable 事件流重建指定 agent 的 InputQueueProjection。
     ///
-    /// 遍历所有事件，只处理与 `target_agent_id` 相关的 mailbox 事件：
+    /// 遍历所有事件，只处理与 `target_agent_id` 相关的 input queue 事件：
     /// - `Queued` 按 `to_agent_id` 过滤（消息是发给谁的）
     /// - `BatchStarted/BatchAcked/Discarded` 按 `target_agent_id` 过滤（谁在消费/丢弃）
     pub fn replay_for_agent(events: &[StoredEvent], target_agent_id: &str) -> Self {
@@ -204,33 +203,33 @@ impl MailboxProjection {
         projection
     }
 
-    /// 从完整 durable 事件流重建按目标 agent 组织的 mailbox 投影索引。
-    pub fn replay_index(events: &[StoredEvent]) -> HashMap<String, MailboxProjection> {
+    /// 从完整 durable 事件流重建按目标 agent 组织的 input queue 投影索引。
+    pub fn replay_index(events: &[StoredEvent]) -> HashMap<String, InputQueueProjection> {
         let mut index = HashMap::new();
         for stored in events {
             match &stored.event.payload {
-                crate::StorageEventPayload::AgentMailboxQueued { payload } => {
+                crate::StorageEventPayload::AgentInputQueued { payload } => {
                     let projection = index
                         .entry(payload.envelope.to_agent_id.clone())
-                        .or_insert_with(MailboxProjection::default);
+                        .or_insert_with(InputQueueProjection::default);
                     Self::apply_event_for_agent(projection, stored, &payload.envelope.to_agent_id);
                 },
-                crate::StorageEventPayload::AgentMailboxBatchStarted { payload } => {
+                crate::StorageEventPayload::AgentInputBatchStarted { payload } => {
                     let projection = index
                         .entry(payload.target_agent_id.clone())
-                        .or_insert_with(MailboxProjection::default);
+                        .or_insert_with(InputQueueProjection::default);
                     Self::apply_event_for_agent(projection, stored, &payload.target_agent_id);
                 },
-                crate::StorageEventPayload::AgentMailboxBatchAcked { payload } => {
+                crate::StorageEventPayload::AgentInputBatchAcked { payload } => {
                     let projection = index
                         .entry(payload.target_agent_id.clone())
-                        .or_insert_with(MailboxProjection::default);
+                        .or_insert_with(InputQueueProjection::default);
                     Self::apply_event_for_agent(projection, stored, &payload.target_agent_id);
                 },
-                crate::StorageEventPayload::AgentMailboxDiscarded { payload } => {
+                crate::StorageEventPayload::AgentInputDiscarded { payload } => {
                     let projection = index
                         .entry(payload.target_agent_id.clone())
-                        .or_insert_with(MailboxProjection::default);
+                        .or_insert_with(InputQueueProjection::default);
                     Self::apply_event_for_agent(projection, stored, &payload.target_agent_id);
                 },
                 _ => {},
@@ -239,16 +238,16 @@ impl MailboxProjection {
         index
     }
 
-    /// 将单条 durable mailbox 事件应用到指定目标 agent 的投影。
+    /// 将单条 durable input queue 事件应用到指定目标 agent 的投影。
     pub fn apply_event_for_agent(
-        projection: &mut MailboxProjection,
+        projection: &mut InputQueueProjection,
         stored: &StoredEvent,
         target_agent_id: &str,
     ) {
         use crate::StorageEventPayload;
 
         match &stored.event.payload {
-            StorageEventPayload::AgentMailboxQueued { payload } => {
+            StorageEventPayload::AgentInputQueued { payload } => {
                 if payload.envelope.to_agent_id != target_agent_id {
                     return;
                 }
@@ -259,14 +258,14 @@ impl MailboxProjection {
                     projection.pending_delivery_ids.push(id.clone());
                 }
             },
-            StorageEventPayload::AgentMailboxBatchStarted { payload } => {
+            StorageEventPayload::AgentInputBatchStarted { payload } => {
                 if payload.target_agent_id != target_agent_id {
                     return;
                 }
                 projection.active_batch_id = Some(payload.batch_id.clone());
                 projection.active_delivery_ids = payload.delivery_ids.clone();
             },
-            StorageEventPayload::AgentMailboxBatchAcked { payload } => {
+            StorageEventPayload::AgentInputBatchAcked { payload } => {
                 if payload.target_agent_id != target_agent_id {
                     return;
                 }
@@ -279,7 +278,7 @@ impl MailboxProjection {
                     projection.active_delivery_ids.clear();
                 }
             },
-            StorageEventPayload::AgentMailboxDiscarded { payload } => {
+            StorageEventPayload::AgentInputDiscarded { payload } => {
                 if payload.target_agent_id != target_agent_id {
                     return;
                 }
@@ -307,7 +306,7 @@ impl MailboxProjection {
     }
 
     /// 返回当前待处理消息数量。
-    pub fn pending_message_count(&self) -> usize {
+    pub fn pending_input_count(&self) -> usize {
         self.pending_delivery_ids.len()
     }
 }
@@ -316,16 +315,13 @@ impl MailboxProjection {
 
 /// `observe` 工具返回的目标 Agent 查询结果。
 ///
-/// 融合 live control state、对话投影和 mailbox 派生信息。
+/// 融合 live control state 与对话投影。
 /// 是读模型而非领域实体。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ObserveAgentResult {
+pub struct ObserveSnapshot {
     pub agent_id: String,
-    pub sub_run_id: String,
     pub session_id: String,
-    pub open_session_id: String,
-    pub parent_agent_id: String,
     /// 当前生命周期状态。
     pub lifecycle_status: AgentLifecycleStatus,
     /// 最近一轮执行结果。
@@ -334,31 +330,15 @@ pub struct ObserveAgentResult {
     pub phase: String,
     /// 当前轮次数。
     pub turn_count: u32,
-    /// durable replay 为准的待处理消息数量。
-    pub pending_message_count: usize,
     /// 当前正在处理的任务摘要。
-    pub active_task: Option<String>,
-    /// 下一条待处理任务摘要。
-    pub pending_task: Option<String>,
-    /// 最近几条 mailbox 消息摘要，仅用于帮助判断最近协作上下文。
-    ///
-    /// 这是 tail view，不是全量 mailbox dump，避免 observe 结果过长。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recent_mailbox_messages: Vec<String>,
-    /// 最近 assistant 输出摘要。
-    pub last_output: Option<String>,
-    /// responsibility continuity / restricted-child 的轻量元数据。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delegation: Option<DelegationMetadata>,
-    /// 面向下一步决策的建议动作。
-    ///
-    /// 这是 advisory projection，不是新的业务真相；
-    /// 调用方仍应以 lifecycle/outcome 等原始事实为准。
-    pub recommended_next_action: String,
-    /// 对建议动作的简短说明。
-    pub recommended_reason: String,
-    /// 交付新鲜度投影，帮助调用方判断是继续等待还是立即处理。
-    pub delivery_freshness: String,
+    pub active_task: Option<String>,
+    /// 最近 assistant 输出尾部。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_output_tail: Option<String>,
+    /// 最后一个 turn 的尾部内容。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_turn_tail: Vec<String>,
 }
 
 #[cfg(test)]
@@ -405,74 +385,73 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_projection_replay_tracks_full_lifecycle() {
+    fn input_queue_projection_replay_tracks_full_lifecycle() {
         use crate::{StorageEvent, StorageEventPayload, StoredEvent};
 
         let agent = crate::AgentEventContext::default();
-        let events = vec![
-            StoredEvent {
-                storage_seq: 1,
-                event: StorageEvent {
-                    turn_id: Some("t1".into()),
-                    agent: agent.clone(),
-                    payload: StorageEventPayload::AgentMailboxQueued {
-                        payload: MailboxQueuedPayload {
-                            envelope: AgentMailboxEnvelope {
-                                delivery_id: "d1".into(),
-                                from_agent_id: "parent".into(),
-                                to_agent_id: "child".into(),
-                                message: "hello".into(),
-                                queued_at: chrono::Utc::now(),
-                                sender_lifecycle_status:
-                                    crate::agent::lifecycle::AgentLifecycleStatus::Running,
-                                sender_last_turn_outcome: None,
-                                sender_open_session_id: "s-parent".into(),
-                            },
+        let queued = StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent {
+                turn_id: Some("t1".into()),
+                agent: agent.clone(),
+                payload: StorageEventPayload::AgentInputQueued {
+                    payload: InputQueuedPayload {
+                        envelope: QueuedInputEnvelope {
+                            delivery_id: "d1".into(),
+                            from_agent_id: "parent".into(),
+                            to_agent_id: "child".into(),
+                            message: "hello".into(),
+                            queued_at: chrono::Utc::now(),
+                            sender_lifecycle_status:
+                                crate::agent::lifecycle::AgentLifecycleStatus::Running,
+                            sender_last_turn_outcome: None,
+                            sender_open_session_id: "s-parent".into(),
                         },
                     },
                 },
             },
-            StoredEvent {
-                storage_seq: 2,
-                event: StorageEvent {
-                    turn_id: Some("t2".into()),
-                    agent: agent.clone(),
-                    payload: StorageEventPayload::AgentMailboxBatchStarted {
-                        payload: MailboxBatchStartedPayload {
-                            target_agent_id: "child".into(),
-                            turn_id: "t2".into(),
-                            batch_id: "b1".into(),
-                            delivery_ids: vec!["d1".into()],
-                        },
+        };
+        let started = StoredEvent {
+            storage_seq: 2,
+            event: StorageEvent {
+                turn_id: Some("t2".into()),
+                agent: agent.clone(),
+                payload: StorageEventPayload::AgentInputBatchStarted {
+                    payload: InputBatchStartedPayload {
+                        target_agent_id: "child".into(),
+                        turn_id: "t2".into(),
+                        batch_id: "b1".into(),
+                        delivery_ids: vec!["d1".into()],
                     },
                 },
             },
-            StoredEvent {
-                storage_seq: 3,
-                event: StorageEvent {
-                    turn_id: Some("t2".into()),
-                    agent: agent.clone(),
-                    payload: StorageEventPayload::AgentMailboxBatchAcked {
-                        payload: MailboxBatchAckedPayload {
-                            target_agent_id: "child".into(),
-                            turn_id: "t2".into(),
-                            batch_id: "b1".into(),
-                            delivery_ids: vec!["d1".into()],
-                        },
+        };
+        let acked = StoredEvent {
+            storage_seq: 3,
+            event: StorageEvent {
+                turn_id: Some("t2".into()),
+                agent,
+                payload: StorageEventPayload::AgentInputBatchAcked {
+                    payload: InputBatchAckedPayload {
+                        target_agent_id: "child".into(),
+                        turn_id: "t2".into(),
+                        batch_id: "b1".into(),
+                        delivery_ids: vec!["d1".into()],
                     },
                 },
             },
-        ];
+        };
+        let events = vec![queued, started, acked];
 
-        let projection = MailboxProjection::replay_for_agent(&events, "child");
+        let projection = InputQueueProjection::replay_for_agent(&events, "child");
         assert!(projection.pending_delivery_ids.is_empty());
         assert!(projection.active_batch_id.is_none());
         assert!(projection.active_delivery_ids.is_empty());
-        assert_eq!(projection.pending_message_count(), 0);
+        assert_eq!(projection.pending_input_count(), 0);
     }
 
     #[test]
-    fn mailbox_projection_replay_tracks_discarded() {
+    fn input_queue_projection_replay_tracks_discarded() {
         use crate::{StorageEvent, StorageEventPayload, StoredEvent};
 
         let agent = crate::AgentEventContext::default();
@@ -482,9 +461,9 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("t1".into()),
                     agent: agent.clone(),
-                    payload: StorageEventPayload::AgentMailboxQueued {
-                        payload: MailboxQueuedPayload {
-                            envelope: AgentMailboxEnvelope {
+                    payload: StorageEventPayload::AgentInputQueued {
+                        payload: InputQueuedPayload {
+                            envelope: QueuedInputEnvelope {
                                 delivery_id: "d1".into(),
                                 from_agent_id: "parent".into(),
                                 to_agent_id: "child".into(),
@@ -504,8 +483,8 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("t1".into()),
                     agent: agent.clone(),
-                    payload: StorageEventPayload::AgentMailboxDiscarded {
-                        payload: MailboxDiscardedPayload {
+                    payload: StorageEventPayload::AgentInputDiscarded {
+                        payload: InputDiscardedPayload {
                             target_agent_id: "child".into(),
                             delivery_ids: vec!["d1".into()],
                         },
@@ -514,13 +493,13 @@ mod tests {
             },
         ];
 
-        let projection = MailboxProjection::replay_for_agent(&events, "child");
+        let projection = InputQueueProjection::replay_for_agent(&events, "child");
         assert!(projection.pending_delivery_ids.is_empty());
         assert!(projection.discarded_delivery_ids.contains(&"d1".into()));
     }
 
     #[test]
-    fn mailbox_projection_started_but_not_acked_keeps_pending() {
+    fn input_queue_projection_started_but_not_acked_keeps_pending() {
         use crate::{StorageEvent, StorageEventPayload, StoredEvent};
 
         let agent = crate::AgentEventContext::default();
@@ -530,9 +509,9 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("t1".into()),
                     agent: agent.clone(),
-                    payload: StorageEventPayload::AgentMailboxQueued {
-                        payload: MailboxQueuedPayload {
-                            envelope: AgentMailboxEnvelope {
+                    payload: StorageEventPayload::AgentInputQueued {
+                        payload: InputQueuedPayload {
+                            envelope: QueuedInputEnvelope {
                                 delivery_id: "d1".into(),
                                 from_agent_id: "parent".into(),
                                 to_agent_id: "child".into(),
@@ -552,8 +531,8 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("t2".into()),
                     agent: agent.clone(),
-                    payload: StorageEventPayload::AgentMailboxBatchStarted {
-                        payload: MailboxBatchStartedPayload {
+                    payload: StorageEventPayload::AgentInputBatchStarted {
+                        payload: InputBatchStartedPayload {
                             target_agent_id: "child".into(),
                             turn_id: "t2".into(),
                             batch_id: "b1".into(),
@@ -564,15 +543,15 @@ mod tests {
             },
         ];
 
-        let projection = MailboxProjection::replay_for_agent(&events, "child");
+        let projection = InputQueueProjection::replay_for_agent(&events, "child");
         // Started 但未 Acked，d1 仍在 pending 中（at-least-once 语义）
         assert!(projection.pending_delivery_ids.contains(&"d1".into()));
         assert_eq!(projection.active_batch_id.as_deref(), Some("b1"));
-        assert_eq!(projection.pending_message_count(), 1);
+        assert_eq!(projection.pending_input_count(), 1);
     }
 
     #[test]
-    fn mailbox_projection_per_agent_filtering_isolates_agents() {
+    fn input_queue_projection_per_agent_filtering_isolates_agents() {
         use crate::{StorageEvent, StorageEventPayload, StoredEvent};
 
         let agent = crate::AgentEventContext::default();
@@ -583,9 +562,9 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("t1".into()),
                     agent: agent.clone(),
-                    payload: StorageEventPayload::AgentMailboxQueued {
-                        payload: MailboxQueuedPayload {
-                            envelope: AgentMailboxEnvelope {
+                    payload: StorageEventPayload::AgentInputQueued {
+                        payload: InputQueuedPayload {
+                            envelope: QueuedInputEnvelope {
                                 delivery_id: "d-a".into(),
                                 from_agent_id: "parent".into(),
                                 to_agent_id: "agent-a".into(),
@@ -605,9 +584,9 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("t1".into()),
                     agent: agent.clone(),
-                    payload: StorageEventPayload::AgentMailboxQueued {
-                        payload: MailboxQueuedPayload {
-                            envelope: AgentMailboxEnvelope {
+                    payload: StorageEventPayload::AgentInputQueued {
+                        payload: InputQueuedPayload {
+                            envelope: QueuedInputEnvelope {
                                 delivery_id: "d-b".into(),
                                 from_agent_id: "parent".into(),
                                 to_agent_id: "agent-b".into(),
@@ -624,15 +603,15 @@ mod tests {
             },
         ];
 
-        let projection_a = MailboxProjection::replay_for_agent(&events, "agent-a");
+        let projection_a = InputQueueProjection::replay_for_agent(&events, "agent-a");
         assert_eq!(projection_a.pending_delivery_ids, vec!["d-a".into()]);
-        assert_eq!(projection_a.pending_message_count(), 1);
+        assert_eq!(projection_a.pending_input_count(), 1);
 
-        let projection_b = MailboxProjection::replay_for_agent(&events, "agent-b");
+        let projection_b = InputQueueProjection::replay_for_agent(&events, "agent-b");
         assert_eq!(projection_b.pending_delivery_ids, vec!["d-b".into()]);
-        assert_eq!(projection_b.pending_message_count(), 1);
+        assert_eq!(projection_b.pending_input_count(), 1);
 
-        let projection_c = MailboxProjection::replay_for_agent(&events, "agent-c");
-        assert_eq!(projection_c.pending_message_count(), 0);
+        let projection_c = InputQueueProjection::replay_for_agent(&events, "agent-c");
+        assert_eq!(projection_c.pending_input_count(), 0);
     }
 }

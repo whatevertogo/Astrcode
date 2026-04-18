@@ -5,8 +5,8 @@ use std::{
 
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentId, AgentLifecycleStatus, ChildSessionNode,
-    ChildSessionNotification, DeleteProjectResult, EventStore, MailboxBatchAckedPayload,
-    MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload, Phase,
+    ChildSessionNotification, DeleteProjectResult, EventStore, InputBatchAckedPayload,
+    InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload, Phase,
     PromptFactsProvider, ResolvedRuntimeConfig, Result, RuntimeMetricsRecorder, SessionId,
     SessionMeta, StoredEvent, event::generate_session_id,
 };
@@ -43,7 +43,7 @@ pub use query::{
     SessionControlStateSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
     ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
 };
-pub(crate) use state::{MailboxEventAppend, SessionStateEventSink, append_mailbox_event};
+pub(crate) use state::{InputQueueEventAppend, SessionStateEventSink, append_input_queue_event};
 pub use state::{
     SessionSnapshot, SessionState, append_and_broadcast, complete_session_execution,
     display_name_from_working_dir, normalize_session_id, normalize_working_dir,
@@ -254,7 +254,7 @@ impl SessionRuntime {
     /// 按需加载 session 并返回内部状态引用。
     ///
     /// 用于 agent 编排层需要直接操作 SessionState 的场景
-    /// （如 mailbox 追加、对话投影读取等）。
+    /// （如 input queue 追加、对话投影读取等）。
     pub async fn get_session_state(&self, session_id: &SessionId) -> Result<Arc<SessionState>> {
         self.query().session_state(session_id).await
     }
@@ -296,7 +296,7 @@ impl SessionRuntime {
 
     /// 回放指定 session 的全部持久化事件。
     ///
-    /// 用于 agent 编排层需要从 durable 事件中提取 mailbox 信封等场景。
+    /// 用于 agent 编排层需要从 durable 事件中提取 input queue 信封等场景。
     pub async fn replay_stored_events(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
         self.query().stored_events(session_id).await
     }
@@ -324,7 +324,7 @@ impl SessionRuntime {
             .await
     }
 
-    /// 读取指定 agent 当前 mailbox durable 投影中的待处理 delivery id。
+    /// 读取指定 agent 当前 input queue durable 投影中的待处理 delivery id。
     pub async fn pending_delivery_ids_for_agent(
         &self,
         session_id: &str,
@@ -335,51 +335,51 @@ impl SessionRuntime {
             .await
     }
 
-    pub async fn append_agent_mailbox_queued(
+    pub async fn append_agent_input_queued(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxQueuedPayload,
+        payload: InputQueuedPayload,
     ) -> Result<StoredEvent> {
         self.command()
-            .append_agent_mailbox_queued(session_id, turn_id, agent, payload)
+            .append_agent_input_queued(session_id, turn_id, agent, payload)
             .await
     }
 
-    pub async fn append_agent_mailbox_discarded(
+    pub async fn append_agent_input_discarded(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxDiscardedPayload,
+        payload: InputDiscardedPayload,
     ) -> Result<StoredEvent> {
         self.command()
-            .append_agent_mailbox_discarded(session_id, turn_id, agent, payload)
+            .append_agent_input_discarded(session_id, turn_id, agent, payload)
             .await
     }
 
-    pub async fn append_agent_mailbox_batch_started(
+    pub async fn append_agent_input_batch_started(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchStartedPayload,
+        payload: InputBatchStartedPayload,
     ) -> Result<StoredEvent> {
         self.command()
-            .append_agent_mailbox_batch_started(session_id, turn_id, agent, payload)
+            .append_agent_input_batch_started(session_id, turn_id, agent, payload)
             .await
     }
 
-    pub async fn append_agent_mailbox_batch_acked(
+    pub async fn append_agent_input_batch_acked(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchAckedPayload,
+        payload: InputBatchAckedPayload,
     ) -> Result<StoredEvent> {
         self.command()
-            .append_agent_mailbox_batch_acked(session_id, turn_id, agent, payload)
+            .append_agent_input_batch_acked(session_id, turn_id, agent, payload)
             .await
     }
 
@@ -409,7 +409,7 @@ impl SessionRuntime {
             .await
     }
 
-    /// 从 durable mailbox + child notification 中恢复仍可重试的父级 delivery。
+    /// 从 durable input queue + child notification 中恢复仍可重试的父级 delivery。
     pub async fn recoverable_parent_deliveries(
         &self,
         parent_session_id: &str,

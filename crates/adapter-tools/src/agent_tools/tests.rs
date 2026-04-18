@@ -647,29 +647,17 @@ impl CollaborationExecutor for RecordingCollabExecutor {
         self.observe_calls.lock().expect("lock").push(params);
         Ok(CollaborationResult::Observed {
             agent_ref: sample_child_ref(),
-            summary: format!(
-                "子 Agent {} 当前为 Idle；建议 send_or_close：上一轮已完成。",
-                agent_id
-            ),
-            observe_result: Box::new(astrcode_core::ObserveAgentResult {
+            summary: format!("子 Agent {} 当前为 Idle；最近输出：done。", agent_id),
+            observe_result: Box::new(astrcode_core::ObserveSnapshot {
                 agent_id: agent_id.to_string(),
-                sub_run_id: "subrun-42".to_string(),
-                session_id: "session-parent".to_string(),
-                open_session_id: "session-child-42".to_string(),
-                parent_agent_id: "agent-parent".to_string(),
+                session_id: "session-child-42".to_string(),
                 lifecycle_status: AgentLifecycleStatus::Idle,
                 last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 phase: "Idle".to_string(),
                 turn_count: 1,
-                pending_message_count: 0,
                 active_task: None,
-                pending_task: None,
-                recent_mailbox_messages: vec!["最近一条 mailbox 摘要".to_string()],
-                last_output: Some("done".to_string()),
-                delegation: Some(sample_delegation(false)),
-                recommended_next_action: "send_or_close".to_string(),
-                recommended_reason: "上一轮已完成。".to_string(),
-                delivery_freshness: "ready_for_follow_up".to_string(),
+                last_output_tail: Some("done".to_string()),
+                last_turn_tail: vec!["最近一条 input queue 摘要".to_string()],
             }),
             delegation: Some(sample_delegation(false)),
         })
@@ -926,9 +914,9 @@ async fn observe_agent_tool_parses_params_and_delegates_to_executor() {
             .metadata
             .as_ref()
             .and_then(|value| value.get("observe_result"))
-            .and_then(|value| value.get("recommendedNextAction"))
+            .and_then(|value| value.get("phase"))
             .and_then(|value| value.as_str())
-            .is_some_and(|value| value == "send_or_close")
+            .is_some_and(|value| value == "Idle")
     );
     let calls = executor.observe_calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
@@ -943,25 +931,16 @@ fn collaboration_result_metadata_projects_idle_reuse_and_branch_mismatch_hints()
         CollaborationResult::Observed {
             agent_ref: sample_child_ref(),
             summary: "子 Agent agent-42 当前为 Idle。".to_string(),
-            observe_result: Box::new(astrcode_core::ObserveAgentResult {
+            observe_result: Box::new(astrcode_core::ObserveSnapshot {
                 agent_id: "agent-42".to_string(),
-                sub_run_id: "subrun-42".to_string(),
-                session_id: "session-parent".to_string(),
-                open_session_id: "session-child-42".to_string(),
-                parent_agent_id: "agent-parent".to_string(),
+                session_id: "session-child-42".to_string(),
                 lifecycle_status: AgentLifecycleStatus::Idle,
                 last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 phase: "Idle".to_string(),
                 turn_count: 1,
-                pending_message_count: 0,
                 active_task: None,
-                pending_task: None,
-                recent_mailbox_messages: Vec::new(),
-                last_output: Some("done".to_string()),
-                delegation: Some(sample_delegation(false)),
-                recommended_next_action: "send_or_close".to_string(),
-                recommended_reason: "同一责任分支可继续 send。".to_string(),
-                delivery_freshness: "ready_for_follow_up".to_string(),
+                last_turn_tail: Vec::new(),
+                last_output_tail: Some("done".to_string()),
             }),
             delegation: Some(sample_delegation(false)),
         },
@@ -997,25 +976,16 @@ fn collaboration_result_metadata_projects_restricted_child_broader_tool_hint() {
         CollaborationResult::Observed {
             agent_ref: sample_child_ref(),
             summary: "restricted child idle".to_string(),
-            observe_result: Box::new(astrcode_core::ObserveAgentResult {
+            observe_result: Box::new(astrcode_core::ObserveSnapshot {
                 agent_id: "agent-42".to_string(),
-                sub_run_id: "subrun-42".to_string(),
-                session_id: "session-parent".to_string(),
-                open_session_id: "session-child-42".to_string(),
-                parent_agent_id: "agent-parent".to_string(),
+                session_id: "session-child-42".to_string(),
                 lifecycle_status: AgentLifecycleStatus::Idle,
                 last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 phase: "Idle".to_string(),
                 turn_count: 1,
-                pending_message_count: 0,
                 active_task: None,
-                pending_task: None,
-                recent_mailbox_messages: Vec::new(),
-                last_output: Some("done".to_string()),
-                delegation: Some(sample_delegation(true)),
-                recommended_next_action: "send_or_close".to_string(),
-                recommended_reason: "同一责任分支且工具面匹配时可继续复用。".to_string(),
-                delivery_freshness: "ready_for_follow_up".to_string(),
+                last_turn_tail: Vec::new(),
+                last_output_tail: Some("done".to_string()),
             }),
             delegation: Some(sample_delegation(true)),
         },
@@ -1142,7 +1112,7 @@ fn collaboration_tool_definitions_exclude_runtime_internals() {
     assert!(!close_def.description.contains("CancelToken"));
 
     let observe_def = ObserveAgentTool::new(boxed_collaboration_executor(executor)).definition();
-    assert!(!observe_def.description.contains("MailboxProjection"));
+    assert!(!observe_def.description.contains("InputQueueProjection"));
 }
 
 #[test]

@@ -43,7 +43,7 @@
 `application` MUST NOT 继续承载以下单 session 真相细节：
 
 - 单 session 终态投影与轮询判定
-- durable mailbox append 细节
+- durable input queue append 细节
 - child/open session observe 快照拼装
 - recoverable delivery 重放与投影细节
 - conversation/tool display 的底层 transcript/replay 聚合细节
@@ -71,7 +71,7 @@
 
 #### Scenario: application 只通过 session-runtime 稳定接口读取单 session 细节
 
-- **WHEN** `application` 需要判断 turn 终态、读取 observe 视图或追加 mailbox durable 事件
+- **WHEN** `application` 需要判断 turn 终态、读取 observe 视图或追加 input queue durable 事件
 - **THEN** 统一通过 `SessionRuntime` 暴露的稳定 query/command 入口完成
 - **AND** 不直接操作 `SessionState`、event replay 细节或投影组装过程
 

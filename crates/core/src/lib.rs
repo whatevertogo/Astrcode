@@ -73,12 +73,12 @@ pub use agent::{
     SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStatus, SubRunStorageMode,
     SubagentContextOverrides,
     executor::{CollaborationExecutor, SubAgentExecutor},
-    lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
-    mailbox::{
-        AgentMailboxEnvelope, BatchId, CloseParams, DeliveryId, MailboxBatchAckedPayload,
-        MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxProjection,
-        MailboxQueuedPayload, ObserveAgentResult, ObserveParams, SendParams,
+    input_queue::{
+        BatchId, CloseParams, DeliveryId, InputBatchAckedPayload, InputBatchStartedPayload,
+        InputDiscardedPayload, InputQueueProjection, InputQueuedPayload, ObserveParams,
+        ObserveSnapshot, QueuedInputEnvelope, SendParams,
     },
+    lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
     normalize_non_empty_unique_string_list,
 };
 pub use cancel::CancelToken;

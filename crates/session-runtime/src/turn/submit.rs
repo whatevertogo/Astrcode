@@ -288,7 +288,8 @@ impl SessionRuntime {
         self.submit_prompt_inner(
             session_id,
             None,
-            text,
+            Some(text),
+            Vec::new(),
             runtime,
             SubmitBusyPolicy::BranchOnBusy,
             submission,
@@ -314,7 +315,8 @@ impl SessionRuntime {
         self.submit_prompt_inner(
             session_id,
             None,
-            text,
+            Some(text),
+            Vec::new(),
             runtime,
             SubmitBusyPolicy::RejectOnBusy,
             submission,
@@ -333,7 +335,8 @@ impl SessionRuntime {
         self.submit_prompt_inner(
             session_id,
             Some(turn_id),
-            text,
+            Some(text),
+            Vec::new(),
             runtime,
             SubmitBusyPolicy::RejectOnBusy,
             submission,
@@ -351,7 +354,8 @@ impl SessionRuntime {
         self.submit_prompt_inner(
             session_id,
             None,
-            text,
+            Some(text),
+            Vec::new(),
             runtime,
             SubmitBusyPolicy::BranchOnBusy,
             submission,
@@ -364,19 +368,47 @@ impl SessionRuntime {
         })
     }
 
+    pub async fn submit_queued_inputs_for_agent_with_turn_id(
+        &self,
+        session_id: &str,
+        turn_id: TurnId,
+        queued_inputs: Vec<String>,
+        runtime: ResolvedRuntimeConfig,
+        submission: AgentPromptSubmission,
+    ) -> Result<Option<ExecutionAccepted>> {
+        self.submit_prompt_inner(
+            session_id,
+            Some(turn_id),
+            None,
+            queued_inputs,
+            runtime,
+            SubmitBusyPolicy::RejectOnBusy,
+            submission,
+        )
+        .await
+    }
+
     async fn submit_prompt_inner(
         &self,
         session_id: &str,
         turn_id: Option<TurnId>,
-        text: String,
+        live_user_input: Option<String>,
+        queued_inputs: Vec<String>,
         runtime: ResolvedRuntimeConfig,
         busy_policy: SubmitBusyPolicy,
         submission: AgentPromptSubmission,
     ) -> Result<Option<ExecutionAccepted>> {
-        let text = text.trim().to_string();
-        if text.is_empty() {
+        let live_user_input = live_user_input
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+        let queued_inputs = queued_inputs
+            .into_iter()
+            .map(|content| content.trim().to_string())
+            .filter(|content| !content.is_empty())
+            .collect::<Vec<_>>();
+        if live_user_input.is_none() && queued_inputs.is_empty() {
             return Err(astrcode_core::AstrError::Validation(
-                "prompt must not be empty".to_string(),
+                "turn submission must include live user input or queued inputs".to_string(),
             ));
         }
 
@@ -404,10 +436,6 @@ impl SessionRuntime {
             return Ok(None);
         };
 
-        let pending_reactivation_messages = submit_target
-            .actor
-            .state()
-            .pending_reactivation_messages()?;
         let AgentPromptSubmission {
             agent,
             capability_router,
@@ -418,13 +446,6 @@ impl SessionRuntime {
             source_tool_call_id,
         } = submission;
 
-        let user_message = user_message_event(
-            turn_id.as_str(),
-            &agent,
-            text,
-            UserMessageOrigin::User,
-            Utc::now(),
-        );
         prepare_session_execution(
             submit_target.actor.state(),
             submit_target.session_id.as_str(),
@@ -441,7 +462,28 @@ impl SessionRuntime {
             Phase::Thinking;
 
         let mut translator = EventTranslator::new(submit_target.actor.state().current_phase()?);
-        append_and_broadcast(submit_target.actor.state(), &user_message, &mut translator).await?;
+        for content in &queued_inputs {
+            let queued_event = user_message_event(
+                turn_id.as_str(),
+                &agent,
+                content.clone(),
+                UserMessageOrigin::QueuedInput,
+                Utc::now(),
+            );
+            append_and_broadcast(submit_target.actor.state(), &queued_event, &mut translator)
+                .await?;
+        }
+        if let Some(text) = &live_user_input {
+            let user_message = user_message_event(
+                turn_id.as_str(),
+                &agent,
+                text.clone(),
+                UserMessageOrigin::User,
+                Utc::now(),
+            );
+            append_and_broadcast(submit_target.actor.state(), &user_message, &mut translator)
+                .await?;
+        }
         if let Some(event) = subrun_started_event(
             turn_id.as_str(),
             &agent,
@@ -453,12 +495,12 @@ impl SessionRuntime {
         }
         let mut messages = current_turn_messages(submit_target.actor.state())?;
         if !injected_messages.is_empty() {
-            let insert_at = messages.len().saturating_sub(1);
+            let insert_at = if live_user_input.is_some() {
+                messages.len().saturating_sub(1)
+            } else {
+                messages.len()
+            };
             messages.splice(insert_at..insert_at, injected_messages);
-        }
-        if !pending_reactivation_messages.is_empty() {
-            let insert_at = messages.len().saturating_sub(1);
-            messages.splice(insert_at..insert_at, pending_reactivation_messages);
         }
 
         tokio::spawn(execute_turn_and_finalize(TurnExecutionTask {
@@ -632,8 +674,8 @@ mod tests {
             TurnLoopTransition, TurnStopCause,
             test_support::{
                 BranchingTestEventStore, NoopMetrics, append_root_turn_event_to_actor,
-                assert_contains_compact_summary, assert_contains_error_message,
-                root_compact_applied_event, test_actor, test_runtime,
+                assert_contains_compact_summary, assert_contains_error_message, test_actor,
+                test_runtime,
             },
         },
     };
@@ -930,7 +972,8 @@ mod tests {
             .submit_prompt_inner(
                 &session.session_id,
                 None,
-                "hello".to_string(),
+                Some("hello".to_string()),
+                Vec::new(),
                 ResolvedRuntimeConfig::default(),
                 SubmitBusyPolicy::RejectOnBusy,
                 AgentPromptSubmission::default(),
@@ -959,7 +1002,8 @@ mod tests {
             .submit_prompt_inner(
                 &session.session_id,
                 None,
-                "hello".to_string(),
+                Some("hello".to_string()),
+                Vec::new(),
                 ResolvedRuntimeConfig {
                     max_concurrent_branch_depth: 2,
                     ..ResolvedRuntimeConfig::default()
@@ -1010,7 +1054,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_prompt_inner_injects_pending_reactivation_only_once() {
+    async fn submit_prompt_inner_appends_queued_inputs_before_live_user_prompt() {
         let requests = Arc::new(Mutex::new(Vec::<Vec<LlmMessage>>::new()));
         let kernel = Arc::new(
             Kernel::builder()
@@ -1034,52 +1078,16 @@ mod tests {
             .create_session(".")
             .await
             .expect("test session should be created");
-        let session_state = runtime
-            .get_session_state(&SessionId::from(session.session_id.clone()))
-            .await
-            .expect("session state should load");
-        let mut translator = EventTranslator::new(session_state.current_phase().expect("phase"));
-
-        append_and_broadcast(
-            &session_state,
-            &crate::turn::test_support::root_user_message_event("turn-0", "older question"),
-            &mut translator,
-        )
-        .await
-        .expect("older user event should append");
-        append_and_broadcast(
-            &session_state,
-            &crate::turn::test_support::root_assistant_final_event("turn-0", "older answer"),
-            &mut translator,
-        )
-        .await
-        .expect("older assistant event should append");
-        append_and_broadcast(
-            &session_state,
-            &root_compact_applied_event("turn-compact", "history summary", 1, 100, 40, 2, 60),
-            &mut translator,
-        )
-        .await
-        .expect("compact event should append");
-        append_and_broadcast(
-            &session_state,
-            &crate::turn::events::user_message_event(
-                "turn-compact",
-                &AgentEventContext::default(),
-                "Recovered file context".to_string(),
-                UserMessageOrigin::ReactivationPrompt,
-                Utc::now(),
-            ),
-            &mut translator,
-        )
-        .await
-        .expect("reactivation event should append");
 
         let accepted = runtime
             .submit_prompt_inner(
                 &session.session_id,
                 None,
-                "first after compact".to_string(),
+                Some("live user input".to_string()),
+                vec![
+                    "queued child result".to_string(),
+                    "queued reactivation context".to_string(),
+                ],
                 ResolvedRuntimeConfig::default(),
                 SubmitBusyPolicy::RejectOnBusy,
                 AgentPromptSubmission::default(),
@@ -1093,46 +1101,30 @@ mod tests {
                 accepted.turn_id.as_str(),
             )
             .await
-            .expect("first turn should finish");
-
-        let second = runtime
-            .submit_prompt_inner(
-                &session.session_id,
-                None,
-                "second turn".to_string(),
-                ResolvedRuntimeConfig::default(),
-                SubmitBusyPolicy::RejectOnBusy,
-                AgentPromptSubmission::default(),
-            )
-            .await
-            .expect("second submit should not error")
-            .expect("second submit should be accepted");
-        runtime
-            .wait_for_turn_terminal_snapshot(second.session_id.as_str(), second.turn_id.as_str())
-            .await
-            .expect("second turn should finish");
+            .expect("turn should finish");
 
         let requests = requests.lock().expect("recorded requests lock should work");
-        assert_eq!(requests.len(), 2, "expected two model requests");
+        assert_eq!(requests.len(), 1, "expected one model request");
 
         assert!(matches!(
             requests[0].as_slice(),
             [
-                LlmMessage::User { origin: UserMessageOrigin::CompactSummary, .. },
-                LlmMessage::User { origin: UserMessageOrigin::ReactivationPrompt, content },
-                LlmMessage::User { origin: UserMessageOrigin::User, content: user_content },
-            ] if content == "Recovered file context" && user_content == "first after compact"
-        ));
-        assert!(
-            requests[1].iter().all(|message| !matches!(
-                message,
                 LlmMessage::User {
-                    origin: UserMessageOrigin::ReactivationPrompt,
-                    ..
+                    content: first_queued,
+                    origin: UserMessageOrigin::QueuedInput,
+                },
+                LlmMessage::User {
+                    content: second_queued,
+                    origin: UserMessageOrigin::QueuedInput,
+                },
+                LlmMessage::User {
+                    content: user_content,
+                    origin: UserMessageOrigin::User,
                 }
-            )),
-            "reactivation prompt should only be injected into the first post-compact turn"
-        );
+            ] if first_queued == "queued child result"
+                && second_queued == "queued reactivation context"
+                && user_content == "live user input"
+        ));
     }
 
     #[tokio::test]
@@ -1165,7 +1157,8 @@ mod tests {
             .submit_prompt_inner(
                 &session.session_id,
                 None,
-                "child task".to_string(),
+                Some("child task".to_string()),
+                Vec::new(),
                 ResolvedRuntimeConfig::default(),
                 SubmitBusyPolicy::RejectOnBusy,
                 AgentPromptSubmission {

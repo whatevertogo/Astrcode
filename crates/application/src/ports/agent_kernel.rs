@@ -59,6 +59,7 @@ pub trait AgentKernelPort: AppKernelPort {
         &self,
         parent_session_id: &str,
     ) -> Option<Vec<PendingParentDelivery>>;
+    async fn pending_parent_delivery_count(&self, parent_session_id: &str) -> usize;
     async fn requeue_parent_delivery_batch(&self, parent_session_id: &str, delivery_ids: &[String]);
     async fn consume_parent_delivery_batch(
         &self,
@@ -181,6 +182,12 @@ impl AgentKernelPort for Kernel {
     ) -> Option<Vec<PendingParentDelivery>> {
         self.agent()
             .checkout_parent_delivery_batch(parent_session_id)
+            .await
+    }
+
+    async fn pending_parent_delivery_count(&self, parent_session_id: &str) -> usize {
+        self.agent_control()
+            .pending_parent_delivery_count(parent_session_id)
             .await
     }
 

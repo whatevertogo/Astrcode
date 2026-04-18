@@ -1,7 +1,7 @@
 //! # observe 工具
 //!
-//! 四工具模型中的观测工具。返回目标 child agent 的增强快照，
-//! 融合 live control state、对话投影和 mailbox 派生信息。
+//! 四工具模型中的观测工具。返回目标 child agent 的只读快照，
+//! 融合 live control state 与对话投影。
 
 use std::sync::Arc;
 
@@ -19,10 +19,10 @@ use crate::agent_tools::{
 
 const TOOL_NAME: &str = "observe";
 
-/// 获取目标 child agent 增强快照的观测工具。
+/// 获取目标 child agent 只读快照的观测工具。
 ///
 /// 只返回直接子 agent 的快照，非直接父、兄弟、跨树调用被拒绝。
-/// 快照融合三层数据：live lifecycle、对话投影、mailbox 派生摘要。
+/// 快照只返回状态、任务与最近输出尾部。
 pub struct ObserveAgentTool {
     executor: Arc<dyn CollaborationExecutor>,
 }
@@ -39,8 +39,8 @@ Use `observe` to decide the next action for one direct child.
 
 - Use the exact `agentId` returned earlier
 - Call it only when you cannot decide between `wait`, `send`, or `close` without a fresh snapshot
-- Read both the raw facts and the advisory fields in the result
-- Treat the mailbox section as a short tail view of recent messages, not as full history
+- Read the snapshot fields directly; `observe` no longer returns advisory next-step fields
+- Treat the tail fields as short excerpts, not as full history
 
 Do not poll repeatedly with no decision attached. If you are simply waiting for a running child,
 pause briefly with your current shell tool (for example `sleep`) instead of spending another
@@ -94,18 +94,14 @@ impl Tool for ObserveAgentTool {
                      `agent-01`.",
                 )
                 .caveat(
-                    "`observe` returns raw lifecycle/outcome facts plus advisory decision fields. \
-                     Treat the advice as guidance, not as a replacement for the facts.",
-                )
-                .caveat(
                     "Prefer one well-timed observe over repeated checking. If you are just \
                      waiting for a running child, use your current shell tool to sleep briefly and \
                      then continue, instead of polling `observe` again. Do not alternate \
                      `sleep -> observe -> sleep -> observe` while no new delivery has arrived.",
                 )
                 .caveat(
-                    "`observe` only exposes a short mailbox tail and latest output excerpt. It is \
-                     intentionally not a full mailbox or transcript dump.",
+                    "`observe` only exposes recent output and the last turn tail. It is \
+                     intentionally not a full transcript dump.",
                 )
                 .prompt_tag("collaboration"),
             )

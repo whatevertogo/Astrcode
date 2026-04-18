@@ -152,7 +152,7 @@ agent delegation experience 也遵循同样的分层边界：
 - 共享协作协议由 `adapter-prompt::contributors::workflow_examples` 承担，只负责四工具的通用决策规则与 fresh / resumed / restricted 三种 delegation mode。
 - 行为模板目录由 `adapter-prompt::contributors::agent_profile_summary` 承担，只回答“什么样的 child 适合做什么事”，不能伪装成 capability 授权目录。
 - child 专属 execution contract 只能通过 `PromptDeclaration` 注入，沿 child launch / resume 的 submission-time 链路进入 prompt，不能回退到工具 description 或 profile 文本拼装。
-- `observe` / collaboration result 中的 reuse / close / respawn 建议只能是 advisory projection；真正的事实源仍然是 lifecycle、turn outcome、mailbox 投影与 resolved capability surface。
+- `observe` / collaboration result 中的 reuse / close / respawn 建议只能是 advisory projection；真正的事实源仍然是 lifecycle、turn outcome、input queue 投影与 resolved capability surface。
 
 ### 4.5 `session-runtime`
 
@@ -163,7 +163,7 @@ agent delegation experience 也遵循同样的分层边界：
   - transcript snapshot/replay
   - interrupt/compact/run_turn
   - branch/subrun 的单 session 执行真相
-  - child delivery / mailbox / observe 的会话内推进部分
+- child delivery / input queue / observe 的会话内推进部分
   - context window / compaction / request assembly
 - `session-runtime` 不负责：
   - 全局 plugin discovery
@@ -176,7 +176,7 @@ agent delegation experience 也遵循同样的分层边界：
 
 1. **优先 Event Log，再做投影**
    - 长期目标是把 session 视为 append-only event log，而不是一组可变字段。
-   - durable 真相来自 `SessionLog`；`history view`、`branch snapshot`、mailbox replay 等读模型都应以 log 投影为准。
+   - durable 真相来自 `SessionLog`；`history view`、`branch snapshot`、input queue replay 等读模型都应以 log 投影为准。
    - `SessionState` 不是“纯 log projection”，而是 `projection cache + live execution control`：例如 `running`、`cancel token`、turn lease、待执行 compact 请求这类运行态协调信息允许只存在于 live state。
    - 当前项目已经部分符合这个方向：`EventStore.append/replay`、`SessionState` 内部 projector、`history/replay` 查询都建立在事件回放之上。
    - 长期仍应继续收口：减少“字段即 durable 真相”的写法，让 `SessionLog -> Projection` 与 `LiveControlState` 的边界都显式可见。
@@ -195,13 +195,13 @@ agent delegation experience 也遵循同样的分层边界：
      - compaction 策略可替换
      - budget 决策与 prompt 拼装解耦
 
-4. **Mailbox / child delivery 优先使用类型化消息契约**
+4. **Input Queue / child delivery 优先使用类型化消息契约**
    - child delivery、interrupt、observe、wake、close 这些能力，长期应尽量通过明确的消息类型表达，而不是靠共享可变状态和隐式约定拼接。
-   - 当前项目已经有 durable mailbox 事件、Envelope DTO 与投影；这部分是 durable contract，不应再重复包装出第二套“伪类型化 mailbox”。
+   - 当前项目已经有 durable input queue 事件、Envelope DTO 与投影；这部分是 durable contract，不应再重复包装出第二套“伪类型化 input queue”。
    - 后续真正需要继续 typed 化的是 `SessionActor` / wake / interrupt / close 的 live command path，让 actor loop 按明确消息处理运行态协调，而不是继续扩张共享状态与隐式约定。
 
 5. **Query 与 Command 逻辑继续分离**
-   - 写侧负责追加事件、推进 turn、驱动 mailbox。
+   - 写侧负责追加事件、推进 turn、驱动 input queue。
    - 读侧负责 transcript snapshot、stream replay、context view 等投影查询。
    - 当前项目已经开始分离：有 `query/` 模块，也有 `SessionQueries` / `SessionCommands` 这类内部 helper。
    - `SessionRuntime` 对外仍是过渡 façade，但应只承担构造和薄委托；新增读写能力时，优先落到 `query` 或 `command` 子域，再由 façade 暴露稳定入口。

@@ -6,11 +6,11 @@
 //!
 //! 子模块划分：
 //! - `lifecycle`：AgentLifecycleStatus + AgentTurnOutcome（四工具模型的状态拆层）
-//! - `mailbox`：durable mailbox 信封、事件载荷、四工具参数和 observe 快照
+//! - `input queue`：durable input queue 信封、事件载荷、四工具参数和 observe 快照
 
 pub mod executor;
+pub mod input_queue;
 pub mod lifecycle;
-pub mod mailbox;
 
 use serde::{Deserialize, Serialize};
 
@@ -1020,7 +1020,7 @@ pub enum CollaborationResult {
     Observed {
         agent_ref: ChildAgentRef,
         summary: String,
-        observe_result: Box<mailbox::ObserveAgentResult>,
+        observe_result: Box<input_queue::ObserveSnapshot>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         delegation: Option<DelegationMetadata>,
     },
@@ -1056,7 +1056,7 @@ impl CollaborationResult {
         }
     }
 
-    pub fn observe_result(&self) -> Option<&mailbox::ObserveAgentResult> {
+    pub fn observe_result(&self) -> Option<&input_queue::ObserveSnapshot> {
         match self {
             Self::Observed { observe_result, .. } => Some(observe_result.as_ref()),
             Self::Sent { .. } | Self::Closed { .. } => None,

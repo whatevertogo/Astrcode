@@ -1,20 +1,22 @@
 //! 父级 delivery 唤醒调度。
 //!
 //! wake 是跨会话协作编排，不属于 session-runtime 的单会话真相面。
-//! 这里负责把 child terminal delivery 追加到 durable mailbox、排入 kernel queue，
+//! 这里负责把 child terminal delivery 追加到 durable input queue、排入 kernel queue，
 //! 再通过“不分叉”的父级 wake turn 继续驱动父 agent。
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentEventContext,
-    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxQueuedPayload,
-    StorageEventPayload, TurnId,
+    InputBatchAckedPayload, InputBatchStartedPayload, InputQueuedPayload, StorageEventPayload,
+    TurnId,
 };
 
 use super::{
     AgentOrchestrationError, AgentOrchestrationService, CollaborationFactRecord,
-    child_delivery_mailbox_envelope, root_execution_event_context, subrun_event_context,
+    child_delivery_input_queue_envelope, root_execution_event_context, subrun_event_context,
     terminal_notification_message,
 };
+
+const MAX_AUTOMATIC_INPUT_FOLLOW_UPS: u8 = 8;
 
 impl AgentOrchestrationService {
     pub async fn reactivate_parent_agent_if_idle(
@@ -27,11 +29,11 @@ impl AgentOrchestrationService {
         let parent_session_id = astrcode_session_runtime::normalize_session_id(parent_session_id);
 
         if let Err(error) = self
-            .append_parent_delivery_mailbox_queue(&parent_session_id, parent_turn_id, notification)
+            .append_parent_delivery_input_queue(&parent_session_id, parent_turn_id, notification)
             .await
         {
             log::warn!(
-                "failed to persist durable parent mailbox queue before wake: parentSession='{}', \
+                "failed to persist durable parent input queue before wake: parentSession='{}', \
                  childAgent='{}', deliveryId='{}', error='{}'",
                 parent_session_id,
                 notification.child_ref.agent_id(),
@@ -62,7 +64,7 @@ impl AgentOrchestrationService {
         }
 
         if let Err(error) = self
-            .try_start_parent_delivery_turn(&parent_session_id)
+            .try_start_parent_delivery_turn(&parent_session_id, MAX_AUTOMATIC_INPUT_FOLLOW_UPS)
             .await
         {
             self.metrics.record_parent_reactivation_failed();
@@ -80,6 +82,7 @@ impl AgentOrchestrationService {
     pub async fn try_start_parent_delivery_turn(
         &self,
         parent_session_id: &str,
+        remaining_follow_ups: u8,
     ) -> Result<bool, AgentOrchestrationError> {
         let parent_session_id = astrcode_session_runtime::normalize_session_id(parent_session_id);
         self.reconcile_parent_delivery_queue(&parent_session_id)
@@ -108,13 +111,13 @@ impl AgentOrchestrationService {
             })?;
         let wake_agent = self.resolve_wake_agent_context(&delivery_batch).await;
         let wake_turn_id = TurnId::from(format!("turn-{}", chrono::Utc::now().timestamp_millis()));
-        let wake_prompt = build_wake_prompt_from_deliveries(&delivery_batch);
+        let queued_inputs = queued_inputs_from_deliveries(&delivery_batch);
         let accepted = match self
             .session_runtime
-            .try_submit_prompt_for_agent_with_turn_id(
+            .submit_queued_inputs_for_agent_with_turn_id(
                 &parent_session_id,
                 wake_turn_id.clone(),
-                wake_prompt,
+                queued_inputs,
                 self.resolve_runtime_config_for_session(&parent_session_id)
                     .await?,
                 astrcode_session_runtime::AgentPromptSubmission {
@@ -152,8 +155,8 @@ impl AgentOrchestrationService {
             .await
         {
             log::warn!(
-                "failed to persist parent mailbox batch start: parentSession='{}', turnId='{}', \
-                 error='{}'",
+                "failed to persist parent input queue batch start: parentSession='{}', \
+                 turnId='{}', error='{}'",
                 parent_session_id,
                 wake_turn_id,
                 error
@@ -165,6 +168,7 @@ impl AgentOrchestrationService {
             accepted.turn_id.to_string(),
             delivery_batch,
             target_agent_id.to_string(),
+            remaining_follow_ups,
         );
         Ok(true)
     }
@@ -175,6 +179,7 @@ impl AgentOrchestrationService {
         turn_id: String,
         batch_deliveries: Vec<astrcode_kernel::PendingParentDelivery>,
         target_agent_id: String,
+        remaining_follow_ups: u8,
     ) {
         let service = self.clone();
         let handle = tokio::spawn(async move {
@@ -184,6 +189,7 @@ impl AgentOrchestrationService {
                     turn_id,
                     batch_deliveries,
                     target_agent_id,
+                    remaining_follow_ups,
                 )
                 .await
             {
@@ -201,6 +207,7 @@ impl AgentOrchestrationService {
         turn_id: String,
         batch_deliveries: Vec<astrcode_kernel::PendingParentDelivery>,
         target_agent_id: String,
+        remaining_follow_ups: u8,
     ) -> Result<(), AgentOrchestrationError> {
         let batch_delivery_ids = batch_deliveries
             .iter()
@@ -220,7 +227,7 @@ impl AgentOrchestrationService {
                 });
         // 为什么 wake turn 不再自动向更上一级制造 terminal delivery：
         // Claude Code 的稳定点是“worker 每轮进入 idle，但 idle 通知只是状态转换，不代表
-        // 又生成了一项新的上游任务”。这里保持同样边界：wake 只负责消费当前 mailbox batch，
+        // 又生成了一项新的上游任务”。这里保持同样边界：wake 只负责消费当前 input queue batch，
         // 避免把协作协调 turn 误当成新的 child work turn，从而形成自激膨胀。
 
         if wake_succeeded {
@@ -282,9 +289,29 @@ impl AgentOrchestrationService {
                 }
                 self.metrics.record_parent_reactivation_succeeded();
                 self.metrics.record_delivery_buffer_wake_succeeded();
-                let _ = self
-                    .try_start_parent_delivery_turn(&parent_session_id)
-                    .await?;
+                if remaining_follow_ups > 1 {
+                    let _ = self
+                        .try_start_parent_delivery_turn(
+                            &parent_session_id,
+                            remaining_follow_ups.saturating_sub(1),
+                        )
+                        .await?;
+                } else {
+                    let remaining_queued_inputs = self
+                        .kernel
+                        .pending_parent_delivery_count(&parent_session_id)
+                        .await;
+                    if remaining_queued_inputs == 0 {
+                        return Ok(());
+                    }
+                    log::warn!(
+                        "automatic parent input follow-up limit reached: parentSession='{}', \
+                         remainingQueuedInputs='{}', maxAutomaticFollowUps='{}'",
+                        parent_session_id,
+                        remaining_queued_inputs,
+                        MAX_AUTOMATIC_INPUT_FOLLOW_UPS
+                    );
+                }
                 return Ok(());
             }
 
@@ -304,7 +331,7 @@ impl AgentOrchestrationService {
         Ok(())
     }
 
-    async fn append_parent_delivery_mailbox_queue(
+    async fn append_parent_delivery_input_queue(
         &self,
         parent_session_id: &str,
         parent_turn_id: &str,
@@ -321,12 +348,12 @@ impl AgentOrchestrationService {
             })?;
 
         self.session_runtime
-            .append_agent_mailbox_queued(
+            .append_agent_input_queued(
                 parent_session_id,
                 parent_turn_id,
                 AgentEventContext::default(),
-                MailboxQueuedPayload {
-                    envelope: child_delivery_mailbox_envelope(
+                InputQueuedPayload {
+                    envelope: child_delivery_input_queue_envelope(
                         notification,
                         target_agent_id.to_string(),
                     ),
@@ -346,11 +373,11 @@ impl AgentOrchestrationService {
         event_agent: &AgentEventContext,
     ) -> Result<(), AgentOrchestrationError> {
         self.session_runtime
-            .append_agent_mailbox_batch_started(
+            .append_agent_input_batch_started(
                 parent_session_id,
                 turn_id,
                 event_agent.clone(),
-                MailboxBatchStartedPayload {
+                InputBatchStartedPayload {
                     target_agent_id: target_agent_id.to_string(),
                     turn_id: turn_id.to_string(),
                     batch_id: parent_wake_batch_id(turn_id),
@@ -370,11 +397,11 @@ impl AgentOrchestrationService {
         batch_delivery_ids: &[String],
     ) -> Result<(), AgentOrchestrationError> {
         self.session_runtime
-            .append_agent_mailbox_batch_acked(
+            .append_agent_input_batch_acked(
                 parent_session_id,
                 turn_id,
                 AgentEventContext::default(),
-                MailboxBatchAckedPayload {
+                InputBatchAckedPayload {
                     target_agent_id: target_agent_id.to_string(),
                     turn_id: turn_id.to_string(),
                     batch_id: parent_wake_batch_id(turn_id),
@@ -479,45 +506,19 @@ fn parent_wake_batch_id(turn_id: &str) -> String {
     format!("parent-wake-batch:{turn_id}")
 }
 
-fn build_wake_prompt_from_deliveries(
+fn queued_inputs_from_deliveries(
     deliveries: &[astrcode_kernel::PendingParentDelivery],
-) -> String {
-    let guidance = "父级协作唤醒：下面是 direct child agent 刚交付给你的结果。\nTreat each \
-                    delivery as a new message from that child agent and continue the parent \
-                    task.\n如果 child 已完成，请整合结果并继续当前任务；如果 child \
-                    失败或提前关闭，请决定是修正、重试还是向上游明确报告。\n不要忽略这些交付，\
-                    也不要在没有具体修正指令时让 child 重复已经完成的工作。\n如果你看到相同 \
-                    delivery_id 再次出现，把它当作同一条消息的重放，而不是新任务。";
-    let parts = deliveries
+) -> Vec<String> {
+    deliveries
         .iter()
         .map(|delivery| {
             format!(
-                "[Agent Mailbox Message]\ndelivery_id: {}\nfrom_agent_id: \
-                 {}\nsender_lifecycle_status: {:?}\nmessage: {}",
-                delivery.delivery_id,
+                "子 Agent {} 刚交付了一条结果：\n{}",
                 delivery.notification.child_ref.agent_id(),
-                delivery.notification.child_ref.status,
                 terminal_notification_message(&delivery.notification),
             )
         })
-        .collect::<Vec<_>>();
-
-    if parts.len() == 1 {
-        return format!(
-            "{guidance}\n\n{}",
-            parts.into_iter().next().unwrap_or_default()
-        );
-    }
-
-    format!(
-        "{guidance}\n\n请按顺序处理以下子 Agent 交付结果：\n\n{}",
-        parts
-            .into_iter()
-            .enumerate()
-            .map(|(index, part)| format!("{}. {}", index + 1, part))
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    )
+        .collect()
 }
 
 #[cfg(test)]
@@ -525,10 +526,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use astrcode_core::{
-        AgentEventContext, AgentLifecycleStatus, AgentMailboxEnvelope, CancelToken, ChildAgentRef,
+        AgentEventContext, AgentLifecycleStatus, CancelToken, ChildAgentRef,
         ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, EventStore, ParentExecutionRef, Phase, SessionId,
-        StorageEvent, StoredEvent,
+        ChildSessionNotificationKind, EventStore, ParentExecutionRef, Phase, QueuedInputEnvelope,
+        SessionId, StorageEvent, StoredEvent,
     };
     use astrcode_session_runtime::{
         append_and_broadcast, complete_session_execution, prepare_session_execution,
@@ -720,7 +721,7 @@ mod tests {
         complete_session_execution(parent_state.as_ref(), Phase::Idle);
         let started = harness
             .service
-            .try_start_parent_delivery_turn(&parent.session_id)
+            .try_start_parent_delivery_turn(&parent.session_id, MAX_AUTOMATIC_INPUT_FOLLOW_UPS)
             .await
             .expect("retry should succeed");
         assert!(started, "idle parent should start wake turn on retry");
@@ -982,9 +983,9 @@ mod tests {
 
         harness
             .service
-            .append_parent_delivery_mailbox_queue(&parent.session_id, "turn-parent", &notification)
+            .append_parent_delivery_input_queue(&parent.session_id, "turn-parent", &notification)
             .await
-            .expect("durable mailbox queue should append");
+            .expect("durable input queue should append");
         let mut translator = astrcode_core::EventTranslator::new(
             parent_state.current_phase().expect("phase should load"),
         );
@@ -1005,7 +1006,7 @@ mod tests {
 
         let started = harness
             .service
-            .try_start_parent_delivery_turn(&parent.session_id)
+            .try_start_parent_delivery_turn(&parent.session_id, MAX_AUTOMATIC_INPUT_FOLLOW_UPS)
             .await
             .expect("wake should recover pending durable delivery");
         assert!(started, "recovered durable delivery should start wake turn");
@@ -1035,20 +1036,20 @@ mod tests {
             .expect("parent events should replay");
         assert!(parent_events.iter().any(|stored| matches!(
             &stored.event.payload,
-            StorageEventPayload::AgentMailboxBatchStarted { payload }
+            StorageEventPayload::AgentInputBatchStarted { payload }
                 if payload.target_agent_id == root.agent_id.to_string()
                     && payload.delivery_ids == vec![notification.notification_id.clone()]
         )));
         assert!(parent_events.iter().any(|stored| matches!(
             &stored.event.payload,
-            StorageEventPayload::AgentMailboxBatchAcked { payload }
+            StorageEventPayload::AgentInputBatchAcked { payload }
                 if payload.target_agent_id == root.agent_id.to_string()
                     && payload.delivery_ids == vec![notification.notification_id.clone()]
         )));
     }
 
     #[test]
-    fn wake_prompt_uses_delivery_message_without_removed_fields() {
+    fn queued_inputs_use_delivery_message_without_removed_fields() {
         let delivered = sample_notification(
             "session-parent",
             "agent-parent",
@@ -1063,7 +1064,7 @@ mod tests {
         assert_eq!(terminal_notification_message(&delivered), "最终回复摘录");
         assert_eq!(terminal_notification_message(&failed), "子 Agent 已完成");
 
-        let prompt = build_wake_prompt_from_deliveries(&[
+        let queued_inputs = queued_inputs_from_deliveries(&[
             astrcode_kernel::PendingParentDelivery {
                 delivery_id: "delivery-1".to_string(),
                 parent_session_id: "session-parent".to_string(),
@@ -1079,10 +1080,10 @@ mod tests {
                 notification: failed,
             },
         ]);
-        assert!(prompt.contains("Treat each delivery as a new message from that child agent"));
-        assert!(prompt.contains("不要忽略这些交付"));
-        assert!(prompt.contains("message: 最终回复摘录"));
-        assert!(prompt.contains("message: 子 Agent 已完成"));
+        assert_eq!(queued_inputs.len(), 2);
+        assert!(queued_inputs[0].contains("子 Agent"));
+        assert!(queued_inputs[0].contains("最终回复摘录"));
+        assert!(queued_inputs[1].contains("子 Agent 已完成"));
     }
 
     #[test]
@@ -1107,9 +1108,9 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("turn-wake-1".to_string()),
                     agent: AgentEventContext::default(),
-                    payload: StorageEventPayload::AgentMailboxQueued {
-                        payload: MailboxQueuedPayload {
-                            envelope: AgentMailboxEnvelope {
+                    payload: StorageEventPayload::AgentInputQueued {
+                        payload: InputQueuedPayload {
+                            envelope: QueuedInputEnvelope {
                                 delivery_id: delivered.notification_id.clone(),
                                 from_agent_id: delivered.child_ref.agent_id().to_string(),
                                 to_agent_id: "agent-parent".to_string(),
@@ -1133,8 +1134,8 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("turn-wake-1".to_string()),
                     agent: AgentEventContext::default(),
-                    payload: StorageEventPayload::AgentMailboxBatchStarted {
-                        payload: MailboxBatchStartedPayload {
+                    payload: StorageEventPayload::AgentInputBatchStarted {
+                        payload: InputBatchStartedPayload {
                             target_agent_id: "agent-parent".to_string(),
                             turn_id: "turn-wake-1".to_string(),
                             batch_id: parent_wake_batch_id("turn-wake-1"),
@@ -1149,9 +1150,9 @@ mod tests {
                 event: StorageEvent {
                     turn_id: Some("turn-parent".to_string()),
                     agent: AgentEventContext::default(),
-                    payload: StorageEventPayload::AgentMailboxQueued {
-                        payload: MailboxQueuedPayload {
-                            envelope: AgentMailboxEnvelope {
+                    payload: StorageEventPayload::AgentInputQueued {
+                        payload: InputQueuedPayload {
+                            envelope: QueuedInputEnvelope {
                                 delivery_id: failed.notification_id.clone(),
                                 from_agent_id: failed.child_ref.agent_id().to_string(),
                                 to_agent_id: "agent-parent".to_string(),

@@ -276,7 +276,7 @@ AstrCode/
 - **`core`**：领域语义、强类型 ID、端口契约、`CapabilitySpec`、稳定配置模型。不依赖传输层或具体实现；`CapabilitySpec` 是运行时内部的能力语义真相。
 - **`protocol`**：HTTP/SSE/Plugin 的 DTO 与 wire 类型，仅依赖 `core`；其中 `CapabilityWireDescriptor` 只承担协议边界传输职责，不是运行时内部的能力真相。
 - **`kernel`**：全局控制面 — capability router/registry、agent tree、统一事件协调。
-- **`session-runtime`**：单会话真相 — turn 执行、事件回放、compact、context window、mailbox 推进。
+- **`session-runtime`**：单会话真相 — turn 执行、事件回放、compact、context window、input queue 推进。
 - **`application`**：用例编排入口（`App`）+ 治理入口（`AppGovernance`），负责参数校验、权限、策略、reload 编排。
 - **`server`**：HTTP/SSE 边界与唯一组合根（`bootstrap/runtime.rs`），只负责 DTO 映射和装配。
 - **`adapter-*`**：端口实现层，不持有业务真相，不偷渡业务策略。
