@@ -224,7 +224,9 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
                           {streamMessage.stream === 'stderr' ? '错误输出' : '工具结果'}
                         </span>
                       </div>
-                      <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
+                      <span className="shrink-0 text-text-muted">
+                        {statusLabel(message.status)}
+                      </span>
                     </div>
                     {resultTextSurface(
                       streamMessage.content,
@@ -241,7 +243,9 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
                           {shellDisplay?.command ? `$ ${shellDisplay.command}` : message.toolName}
                         </span>
                       </div>
-                      <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
+                      <span className="shrink-0 text-text-muted">
+                        {statusLabel(message.status)}
+                      </span>
                     </div>
                     {resultTextSurface(explicitError, 'error')}
                   </section>
@@ -253,7 +257,9 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
                         <span className={cn('shrink-0', pillNeutral)}>结果</span>
                         <span className="truncate font-mono text-text-muted">persisted output</span>
                       </div>
-                      <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
+                      <span className="shrink-0 text-text-muted">
+                        {statusLabel(message.status)}
+                      </span>
                     </div>
                     {persistedToolResultSurface(
                       persistedOutput.absolutePath,

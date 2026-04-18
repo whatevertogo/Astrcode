@@ -1,6 +1,11 @@
 import React, { Component, useCallback, useEffect, useRef } from 'react';
 import type { Message, SubRunViewData, ThreadItem } from '../../types';
-import { contextMenu as contextMenuClass, emptyStateSurface, errorSurface, menuItem } from '../../lib/styles';
+import {
+  contextMenu as contextMenuClass,
+  emptyStateSurface,
+  errorSurface,
+  menuItem,
+} from '../../lib/styles';
 import { cn } from '../../lib/utils';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { resolveForkTurnIdFromMessage } from '../../lib/sessionFork';

@@ -101,9 +101,7 @@ export function extractToolShellDisplay(metadata: unknown): ToolShellDisplayMeta
   };
 }
 
-export function extractPersistedToolOutput(
-  metadata: unknown
-): PersistedToolOutputMetadata | null {
+export function extractPersistedToolOutput(metadata: unknown): PersistedToolOutputMetadata | null {
   const container = asRecord(metadata);
   const persisted = asRecord(container?.persistedOutput);
   if (!persisted) {

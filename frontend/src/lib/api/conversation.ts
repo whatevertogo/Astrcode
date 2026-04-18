@@ -395,13 +395,12 @@ function projectConversationMessages(
           return;
         }
         const compactMetaRecord = asRecord(block.compactMeta);
-        const trigger =
-          parseCompactTrigger(
-            compactMetaRecord?.trigger ??
-              pickString(block, 'compactTrigger') ??
-              pickString(block, 'trigger'),
-            state.control.lastCompactMeta?.trigger ?? 'manual'
-          );
+        const trigger = parseCompactTrigger(
+          compactMetaRecord?.trigger ??
+            pickString(block, 'compactTrigger') ??
+            pickString(block, 'trigger'),
+          state.control.lastCompactMeta?.trigger ?? 'manual'
+        );
         messages.push({
           id: `conversation-compact:${id}`,
           kind: 'compact',
