@@ -33,4 +33,4 @@
 - [x] 6.2 在前端新增 fork 目标解析逻辑：消息级入口只作为客户端便捷映射，能从历史消息解析到所属已完成 turn 的 `turnId`；不能稳定映射的消息不显示入口
 - [x] 6.3 在已完成 turn 的上下文菜单和可映射的历史消息入口中添加"从此处 fork"操作，成功后立即切换到新 session
 - [ ] 6.4 补充前端测试覆盖：可 fork 消息/turn 显示入口、不可映射消息不显示入口、fork 成功后切换到新 session
-- [ ] 6.5 `cd frontend && npm run typecheck` 通过，手动验收 fork 后切换到新 session 且历史对话正确
+- [x] 6.5 `cd frontend && npm run typecheck` 通过，手动验收 fork 后切换到新 session 且历史对话正确
