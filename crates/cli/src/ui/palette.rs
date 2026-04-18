@@ -47,10 +47,6 @@ pub fn palette_lines(
     }
 }
 
-pub fn palette_visible(palette: &PaletteState) -> bool {
-    !matches!(palette, PaletteState::Closed)
-}
-
 fn visible_window<T>(items: &[T], selected: usize, max_items: usize) -> Vec<(usize, &T)> {
     if items.is_empty() || max_items == 0 {
         return Vec::new();

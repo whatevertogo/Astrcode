@@ -8,7 +8,7 @@ mod palette;
 mod text;
 mod theme;
 
-pub use palette::{palette_lines, palette_visible};
+pub use palette::palette_lines;
 use ratatui::text::{Line, Span};
 pub use text::truncate_to_width;
 pub use theme::{CodexTheme, ThemePalette};

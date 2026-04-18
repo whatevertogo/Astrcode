@@ -22,10 +22,6 @@ impl CodexTheme {
         Self { capabilities }
     }
 
-    pub fn app_background(&self) -> Style {
-        Style::default()
-    }
-
     pub fn menu_block_style(&self) -> Style {
         Style::default().fg(self.text_primary())
     }
