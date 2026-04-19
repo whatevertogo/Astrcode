@@ -136,10 +136,10 @@ impl CapabilityExecutionResult {
         }
     }
 
-    /// 转换为 LLM 工具执行结果。
+    /// 将通用能力执行结果转换为 LLM 工具执行结果。
     ///
-    /// 将通用的能力执行结果映射为 `ToolExecutionResult`，
-    /// 以便前端渲染工具调用卡片。
+    /// 填充 tool_call_id 并将 JSON 输出序列化为可读文本，
+    /// 使结果能直接用于前端工具卡片渲染和 LLM 上下文回传。
     pub fn into_tool_execution_result(self, tool_call_id: String) -> ToolExecutionResult {
         let output = self.output_text();
         ToolExecutionResult {

@@ -597,6 +597,10 @@ pub fn max_tool_concurrency() -> usize {
         .max(1)
 }
 
+/// 从 `Option<AgentConfig>` 解析出完整的 `ResolvedAgentConfig`。
+///
+/// 逐字段用用户配置覆盖默认值，缺失字段使用默认值。
+/// 所有数值型字段都有 `.max(1)` 保护，防止配置为 0 导致除零或无限循环。
 pub fn resolve_agent_config(agent: Option<&AgentConfig>) -> ResolvedAgentConfig {
     let defaults = ResolvedAgentConfig::default();
     ResolvedAgentConfig {
@@ -626,6 +630,10 @@ pub fn resolve_agent_config(agent: Option<&AgentConfig>) -> ResolvedAgentConfig 
     }
 }
 
+/// 从 `RuntimeConfig` 解析出完整的 `ResolvedRuntimeConfig`。
+///
+/// 与 `resolve_agent_config` 类似，逐字段覆盖 + 默认值兜底 + 下界保护。
+/// `compact_threshold_percent` 额外 `.clamp(1, 100)` 防止百分比越界。
 pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig {
     let defaults = ResolvedRuntimeConfig::default();
     ResolvedRuntimeConfig {

@@ -19,6 +19,11 @@ use super::{
 const MAX_AUTOMATIC_INPUT_FOLLOW_UPS: u8 = 8;
 
 impl AgentOrchestrationService {
+    /// 父级 delivery 唤醒调度入口。
+    ///
+    /// 当子 agent turn 终态或显式上行 send 产生 delivery 时调用，
+    /// 执行三步：持久化 durable input queue → 排入 kernel delivery buffer → 尝试启动父级 wake
+    /// turn。 任何一步失败都会记录指标但不会传播错误（best-effort）。
     pub async fn reactivate_parent_agent_if_idle(
         &self,
         parent_session_id: &str,
@@ -79,6 +84,16 @@ impl AgentOrchestrationService {
         }
     }
 
+    /// 尝试为父级 session 启动一个 delivery 消费 turn。
+    ///
+    /// 流程：
+    /// 1. reconcile：从 durable 存储恢复可能丢失的 delivery
+    /// 2. checkout：从 kernel buffer 批量取出待消费 delivery
+    /// 3. 提交 queued_inputs prompt（而非普通用户 prompt）
+    /// 4. 如果提交失败或 session 忙，requeue 让后续重试
+    /// 5. 成功后启动 wake completion watcher 等待终态
+    ///
+    /// `remaining_follow_ups` 控制自动 follow-up 深度，防止无限递归消费。
     pub async fn try_start_parent_delivery_turn(
         &self,
         parent_session_id: &str,
@@ -201,6 +216,15 @@ impl AgentOrchestrationService {
         self.task_registry.register_turn_task(handle);
     }
 
+    /// 父级 wake turn 完成后的收口处理。
+    ///
+    /// 判断 wake turn 是否成功（Idle + TurnDone + 无 Error）：
+    /// - 成功：消费 delivery batch、记录 Consumed fact、 如果还有剩余 delivery 则自动触发下一轮
+    ///   follow-up
+    /// - 失败：requeue delivery batch 让后续重试
+    ///
+    /// 关键设计：wake turn 不会向更上一级制造新的 terminal delivery，
+    /// 避免"协作协调 turn"被误当成新的 child work turn 而形成自激膨胀。
     async fn finalize_parent_wake_turn(
         &self,
         parent_session_id: String,
@@ -413,6 +437,12 @@ impl AgentOrchestrationService {
         Ok(())
     }
 
+    /// 从 durable 存储恢复可能丢失的 parent delivery。
+    ///
+    /// 场景：进程崩溃后重启，kernel buffer 中的内存状态已丢失，
+    /// 但 durable input queue 中仍有未消费的 queued 事件。
+    /// 此函数通过 `recoverable_parent_deliveries` 从存储事件中
+    /// 重建 delivery 并重新排入 kernel buffer。
     async fn reconcile_parent_delivery_queue(
         &self,
         parent_session_id: &str,

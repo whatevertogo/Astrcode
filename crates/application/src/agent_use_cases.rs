@@ -62,6 +62,13 @@ impl App {
     }
 
     /// 查询指定 session/sub-run 的共享状态摘要。
+    ///
+    /// 查找策略（按优先级）：
+    /// 1. Live 状态：从 kernel 获取 sub-run 或 root agent 的实时状态
+    /// 2. Durable 状态：遍历 child session 的存储事件，投影出持久化的 sub-run 状态
+    /// 3. 都找不到：返回默认的 Idle 状态摘要
+    ///
+    /// Durable 路径用于进程重启后 kernel 内存状态已丢失的场景。
     pub async fn get_subrun_status_summary(
         &self,
         session_id: &str,
@@ -97,6 +104,11 @@ impl App {
         ))
     }
 
+    /// 从 durable 存储事件中投影子运行状态。
+    ///
+    /// 遍历所有 child session 的存储事件，寻找匹配 requested_subrun_id 的
+    /// SubRunStarted / SubRunFinished 事件，构建状态摘要。
+    /// 用于进程重启后 kernel 内存状态已丢失的场景。
     async fn durable_subrun_status_summary(
         &self,
         parent_session_id: &str,

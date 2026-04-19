@@ -1,3 +1,11 @@
+//! 治理面子域集成测试。
+//!
+//! 验证 `GovernanceSurfaceAssembler` 在不同场景下的端到端行为：
+//! - session turn 治理面构建与 prompt declarations 注入
+//! - fresh/resumed child 治理面继承与委派策略
+//! - 工具白名单、审批管线、协作策略上下文的正确性
+//! - 各种 capability selector（all / subset / none / union / difference）的编译结果
+
 use std::sync::Arc;
 
 use astrcode_core::{

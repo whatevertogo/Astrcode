@@ -35,6 +35,7 @@ struct ChildTerminalDeliveryProjection {
 /// 注意：这里显式携带 parent routing truth。
 /// `ChildAgentRef` 只用于 stable child reference / projection，
 /// 禁止再从 `child_ref.session_id` 反推父侧 notification 的落点。
+/// 所有 notification 必须通过显式传入的 `parent_session_id` + `parent_turn_id` 路由。
 pub(super) struct ChildTurnTerminalContext {
     child: astrcode_core::SubRunHandle,
     execution_session_id: String,
@@ -67,6 +68,10 @@ impl ChildTurnTerminalContext {
 }
 
 impl AgentOrchestrationService {
+    /// 启动后台 watcher 等待 child turn 结束后执行终态收口。
+    ///
+    /// 注册到 task_registry 以便在 shutdown 时统一 abort。
+    /// watcher 完成后执行：终态映射 → fallback delivery → 父级 reactivation。
     pub(super) fn spawn_child_turn_terminal_watcher(
         &self,
         child: astrcode_core::SubRunHandle,
@@ -107,6 +112,15 @@ impl AgentOrchestrationService {
         self.finalize_child_turn_with_outcome(watch, outcome).await
     }
 
+    /// Child turn 终态收口主流程。
+    ///
+    /// 1. 将 turn outcome 映射为 `SubRunResult`（TokenExceeded 视为完成而非失败）
+    /// 2. 原子更新 live tree 的 lifecycle 和 turn outcome
+    /// 3. 记录子代理执行指标
+    /// 4. 检查是否已有显式 terminal delivery（如 send_to_parent 产生的）， 如果有则跳过 fallback
+    ///    delivery
+    /// 5. 投影出 fallback `ChildSessionNotification` 并追加到父 session
+    /// 6. 触发父级 reactivation（wake）
     pub(super) async fn finalize_child_turn_with_outcome(
         &self,
         watch: ChildTurnTerminalContext,
@@ -321,6 +335,10 @@ fn child_terminal_notification_id(sub_run_id: &str, turn_id: &str, status: SubRu
 }
 
 /// 从 `SubRunResult` 投影出 `ChildTerminalDeliveryProjection`。
+///
+/// 优先使用 result handoff 中携带的显式 delivery（由 send_to_parent 产生），
+/// 如果没有则构造 fallback delivery。Fallback 会根据终态类型生成
+/// 对应的 payload（Completed / Failed / CloseRequest）。
 fn project_child_terminal_delivery(
     result: &SubRunResult,
     fallback_notification_id: &str,

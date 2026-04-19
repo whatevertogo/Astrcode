@@ -190,8 +190,10 @@ impl PluginRegistry {
 
     /// 记录插件运行时失败事件。
     ///
-    /// 失败计数递增；连续失败 3 次及以上时健康状态降级为 `Unavailable`，
-    /// 否则标记为 `Degraded`。用于实现渐进式健康度评估。
+    /// 实现渐进式健康度评估：
+    /// - 1~2 次失败 → `Degraded`（降级但不完全禁用，后续成功可恢复）
+    /// - 3 次及以上 → `Unavailable`（完全禁用，需要人工或自动恢复机制介入）
+    /// - 非 Initialized 状态的插件 → 直接 `Unavailable`
     pub fn record_runtime_failure(
         &self,
         name: &str,

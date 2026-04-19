@@ -12,6 +12,10 @@ use super::{AgentOrchestrationService, ObserveSnapshotSignature};
 
 impl AgentOrchestrationService {
     /// 获取目标 child agent 的只读快照。
+    ///
+    /// 返回子代理的 lifecycle、phase、turn count、active task、最近输出等状态信息。
+    /// 内置幂等去重：同一 turn 内连续 observe 相同状态会被拒绝（state_unchanged），
+    /// 防止 LLM 在等待子代理完成时无意义地反复 poll。
     pub async fn observe_child(
         &self,
         params: ObserveParams,

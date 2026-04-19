@@ -257,6 +257,11 @@ impl AgentStateProjector {
         clone.state
     }
 
+    /// 将累积中的 assistant 内容刷入消息历史。
+    ///
+    /// 在遇到 UserMessage / ToolResult / TurnDone / CompactApplied 时调用，
+    /// 确保前一轮 assistant 的文本和工具调用先落袋为安，
+    /// 再处理新消息类型的开始。
     fn flush_pending_assistant(&mut self) {
         if self.pending_content.is_some() || !self.pending_tool_calls.is_empty() {
             let content = self.pending_content.take().unwrap_or_default();
@@ -268,6 +273,13 @@ impl AgentStateProjector {
         }
     }
 
+    /// 应用上下文压缩：将旧消息前缀替换为摘要，保留最近 N 轮。
+    ///
+    /// 执行步骤：
+    /// 1. 确定裁剪位置（优先使用 `messages_removed` 精确回放，兼容旧日志回退到
+    ///    `preserved_recent_turns`）
+    /// 2. `split_off` 切分：前半段丢弃，后半段保留
+    /// 3. 在头部插入 compact summary 消息作为上下文衔接
     fn apply_compaction(
         &mut self,
         summary: &str,
@@ -310,7 +322,10 @@ impl AgentStateProjector {
 }
 
 /// 从消息列表末尾向前扫描，找到第 N 个 User-origin 消息的位置。
-/// 用途：定义"保留最近 N 轮"的裁剪边界，User-origin 消息视为 turn 起点。
+///
+/// 用于定义"保留最近 N 轮"的裁剪边界：
+/// 从末尾往前数第 `preserved_recent_turns` 个 User 消息即为保留起点。
+/// 如果不足 N 个 User 消息，返回第一个 User 消息的位置。
 fn recent_turn_start_index(
     messages: &[LlmMessage],
     preserved_recent_turns: usize,
@@ -337,8 +352,10 @@ fn recent_turn_start_index(
     last_index
 }
 
-/// Pure function: project an event sequence into an AgentState.
-/// No IO, no side effects.
+/// 纯函数：将事件序列投影为 AgentState。
+///
+/// 无 IO、无副作用——相同输入总是产生相同输出。
+/// 适用于冷启动恢复、`/history` 回放和状态快照获取。
 pub fn project(events: &[StorageEvent]) -> AgentState {
     AgentStateProjector::from_events(events).snapshot()
 }

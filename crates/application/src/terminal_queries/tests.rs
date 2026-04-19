@@ -1,3 +1,11 @@
+//! 终端查询子域集成测试。
+//!
+//! 验证终端查询在完整应用栈上的端到端行为，使用真实的 `App` 组装
+//! （而非 mock），覆盖：
+//! - 会话恢复候选列表过滤
+//! - 快照查询与游标比较
+//! - 终端摘要提取
+
 use std::{path::Path, sync::Arc, time::Duration};
 
 use astrcode_core::AgentEvent;

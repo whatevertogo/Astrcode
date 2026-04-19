@@ -25,7 +25,10 @@ use crate::{
     ToolExecutionResult, UserMessageOrigin, session::SessionEventRecord, split_assistant_content,
 };
 
-/// 回放存储事件为会话事件记录
+/// 批量回放存储事件为会话事件记录。
+///
+/// 用于 `/history` 端点和冷启动恢复：将持久化的 `StoredEvent` 序列
+/// 经过 `EventTranslator` 转换为前端可消费的 `AgentEvent` 记录。
 ///
 /// ## 断点续传
 ///
@@ -472,6 +475,15 @@ impl EventTranslator {
         }
     }
 
+    /// 从存储事件中提取或推断 turn_id。
+    ///
+    /// 策略：
+    /// - 事件自身携带 turn_id → 直接使用并缓存为当前 turn
+    /// - SessionStart → 返回 None（会话启动事件不属于任何 turn）
+    /// - 其他无 turn_id 的事件 → 复用上一条事件的 turn_id
+    ///
+    /// 这样即使部分辅助事件（如 CompactApplied）未携带 turn_id，
+    /// 也能正确归属到当前 turn 上下文中。
     fn turn_id_for(&mut self, event: &StorageEvent) -> Option<String> {
         if let Some(turn_id) = event.turn_id() {
             let turn_id = turn_id.to_string();

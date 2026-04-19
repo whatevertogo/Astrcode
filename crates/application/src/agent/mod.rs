@@ -143,6 +143,11 @@ pub(crate) async fn persist_delegation_for_handle(
     Ok(handle)
 }
 
+/// 将 child terminal notification 包装为 durable input queue 信封。
+///
+/// 提取 notification 中 delivery 的消息文本作为信封内容，
+/// 同时携带 sender 的 lifecycle status、turn outcome 和 open session id，
+/// 供父级 wake turn 消费时了解子代理的最新状态。
 pub(crate) fn child_delivery_input_queue_envelope(
     notification: &astrcode_core::ChildSessionNotification,
     target_agent_id: String,
@@ -159,6 +164,10 @@ pub(crate) fn child_delivery_input_queue_envelope(
     }
 }
 
+/// 从 notification 的 delivery payload 中提取可读消息文本。
+///
+/// 优先使用 delivery.payload.message()，为空时回退到默认提示。
+/// 这是终端通知、durable input queue、wake turn 共享的消息提取逻辑。
 pub(crate) fn terminal_notification_message(
     notification: &astrcode_core::ChildSessionNotification,
 ) -> String {
@@ -171,6 +180,11 @@ pub(crate) fn terminal_notification_message(
         .unwrap_or_else(|| "子 Agent 未提供可读交付。".to_string())
 }
 
+/// 从 child notification 推断 sender 的 last turn outcome。
+///
+/// 仅在 child 处于 Idle 状态时才有有效的 outcome（表示已完成一轮 turn）。
+/// 根据 delivery payload 类型映射：Completed → Completed, Failed → Failed, CloseRequest →
+/// Cancelled。 用于 durable input queue 信封中的 sender 状态追踪。
 pub(crate) fn terminal_notification_turn_outcome(
     notification: &astrcode_core::ChildSessionNotification,
 ) -> Option<AgentTurnOutcome> {
@@ -234,6 +248,10 @@ pub(crate) fn child_collaboration_artifacts(
     artifacts
 }
 
+/// 构建子代理协作的 artifact 引用列表（subRun + agent + parentSession + session + parentAgent）。
+///
+/// `include_parent_sub_run` 控制 是否包含 parentSubRun artifact，
+/// spawn handoff 时不需要（因为已有 subRun），其他场景需要。
 pub(crate) fn child_reference_artifacts(
     child: &SubRunHandle,
     parent_session_id: &str,

@@ -108,6 +108,15 @@ impl App {
             .await
     }
 
+    /// 带 skill 调用选项的 prompt 提交。
+    ///
+    /// 完整流程：
+    /// 1. 规范化文本（处理 skill invocation 与纯文本的交互）
+    /// 2. 校验 ExecutionControl 参数
+    /// 3. 加载 runtime 配置 + 确保 session root agent context
+    /// 4. 若有 skill invocation，解析 skill 并构建 prompt declaration
+    /// 5. 构建治理面（工具白名单、审批策略、协作指导等）
+    /// 6. 委托 session-runtime 提交 prompt
     pub async fn submit_prompt_with_options(
         &self,
         session_id: &str,
@@ -378,6 +387,11 @@ impl App {
             .map_err(ApplicationError::from)
     }
 
+    /// 确保 session 存在一个 root agent context，如果没有则自动注册隐式 root agent。
+    ///
+    /// 查找逻辑：先通过 kernel 查找已有 handle，找不到则注册隐式 root agent
+    /// （ID 为 `root-agent:{session_id}`，profile 为 `default`）。
+    /// 这是 prompt 提交前的前置步骤，保证 session 总有一个可用的 agent context。
     pub(crate) async fn ensure_session_root_agent_context(
         &self,
         session_id: &str,
@@ -458,6 +472,11 @@ fn normalize_prompt_control(
     Ok(control)
 }
 
+/// 规范化 prompt 提交文本，处理 skill invocation 与纯文本的交互。
+///
+/// - 纯文本提交：不允许空文本
+/// - Skill invocation：文本可以为空（由 skill prompt 填充）， 但如果同时提供了文本和 skill
+///   userPrompt，两者必须一致
 fn normalize_submission_text(
     text: String,
     skill_invocation: Option<&PromptSkillInvocation>,
@@ -491,6 +510,10 @@ fn normalize_submission_text(
     }
 }
 
+/// 为手动 compact 请求构建 ExecutionControl。
+///
+/// 强制设置 `manual_compact = true`（如果调用方未指定），
+/// 因为 compact 的语义要求这个标志。
 fn normalize_compact_control(control: Option<ExecutionControl>) -> Option<ExecutionControl> {
     let mut control = control.unwrap_or(ExecutionControl {
         max_steps: None,

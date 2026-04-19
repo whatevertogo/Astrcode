@@ -1,3 +1,18 @@
+//! # 声明式治理模式系统
+//!
+//! 定义运行时治理模式（Governance Mode）的完整 DSL：
+//!
+//! - **ModeId**: 模式唯一标识（内置 code / plan / review）
+//! - **CapabilitySelector**: 能力选择器 DSL（支持 AllTools / Name / Kind / Tag / Union /
+//!   Intersection / Difference）
+//! - **ActionPolicies**: 动作策略规则集（Allow / Deny / Ask 三种裁决效果）
+//! - **GovernanceModeSpec**: 完整模式定义（能力表面 + 动作策略 + 子策略 + 执行策略 + 提示词程序 +
+//!   转换策略）
+//! - **ResolvedTurnEnvelope**: 运行时 turn 级解析后的完整治理信封
+//!
+//! 模式由声明式配置文件加载，运行时通过 `GovernanceModeSpec::validate()` 校验后，
+//! 由治理层解析为 `ResolvedTurnEnvelope` 注入每个 turn 的执行上下文。
+
 use serde::{Deserialize, Serialize};
 
 use crate::{

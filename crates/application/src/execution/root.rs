@@ -140,6 +140,10 @@ fn validate_root_request(request: &RootExecutionRequest) -> Result<(), Applicati
     Ok(())
 }
 
+/// 校验根执行请求不支持 context overrides。
+///
+/// 根执行没有"父上下文"可继承，任何显式 overrides 都不会真正改变执行输入。
+/// 宁可明确拒绝，也不要伪装成"已接受但生效未知"。
 fn validate_root_context_overrides_supported(
     overrides: Option<&SubagentContextOverrides>,
 ) -> Result<(), ApplicationError> {

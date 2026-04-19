@@ -1,3 +1,9 @@
+//! Composer 输入补全的 skill 查询端口。
+//!
+//! 定义 `ComposerSkillPort` trait 和 `ComposerResolvedSkill` 类型，
+//! 将 composer 输入补全与 adapter-skills 的实现细节解耦。
+//! 应用层不应直接依赖 `adapter-skills`，而是通过此端口获取当前会话可见的 skill 信息。
+
 use std::path::Path;
 
 use crate::ComposerSkillSummary;

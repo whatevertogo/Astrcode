@@ -40,17 +40,29 @@ pub use prompt::{
 
 use crate::{ApplicationError, CompiledModeEnvelope, ExecutionControl};
 
+/// Session busy 时的行为策略。
+///
+/// - `BranchOnBusy`：自动创建分支 session 继续处理（默认）
+/// - `RejectOnBusy`：拒绝请求并返回错误
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GovernanceBusyPolicy {
     BranchOnBusy,
     RejectOnBusy,
 }
 
+/// 审批管线状态。
+///
+/// 如果 mode 要求审批某些能力调用，`pending` 会携带一个 `ApprovalPending` 占位骨架，
+/// 在实际执行前需要用户确认。
 #[derive(Clone, PartialEq, Default)]
 pub struct GovernanceApprovalPipeline {
     pub pending: Option<astrcode_core::ApprovalPending<CapabilityCall>>,
 }
 
+/// 编译完成的治理面，一次性消费的 turn 级上下文快照。
+///
+/// 包含工具白名单、审批管线、prompt declarations、注入消息、协作策略等全部治理决策。
+/// 通过 `into_submission()` 转换为 `AgentPromptSubmission` 供 session-runtime 消费。
 #[derive(Clone)]
 pub struct ResolvedGovernanceSurface {
     pub mode_id: ModeId,

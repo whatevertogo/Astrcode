@@ -1,3 +1,13 @@
+//! Agent 编排子域依赖的 session 稳定端口。
+//!
+//! `AgentSessionPort` 继承 `AppSessionPort`，扩展了 agent 协作编排所需的全部 session 操作：
+//! child session 建立、prompt 提交（带 turn id）、durable input queue 管理、
+//! collaboration fact 追加、observe 快照、turn 终态等待。
+//!
+//! 先按职责分组在一个端口中表达完整协作流程，未来根据演化决定是否继续瘦身。
+//!
+//! 同时提供 `SessionRuntime` 对 `AgentSessionPort` 的 blanket impl。
+
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, ExecutionAccepted,
     InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,

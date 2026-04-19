@@ -119,6 +119,8 @@ impl ToolExecutionResult {
     ///
     /// 成功时直接返回输出；失败时拼接错误信息和输出，
     /// 确保 LLM 能理解工具执行的结果。
+    /// 如果关联了子 agent（child_ref），追加精确引用提示，
+    /// 防止 LLM 自作主张改写 agentId。
     pub fn model_content(&self) -> String {
         let base = if self.ok {
             self.output.clone()

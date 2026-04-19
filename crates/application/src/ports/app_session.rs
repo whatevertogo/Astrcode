@@ -1,3 +1,11 @@
+//! `App` 依赖的 session-runtime 稳定端口。
+//!
+//! 定义 `AppSessionPort` trait，将应用层与 `SessionRuntime` 具体实现解耦。
+//! `App` 只编排 session 用例（创建、提交、快照、compact 等），
+//! 不直接耦合 `SessionRuntime` 的内部状态管理。
+//!
+//! 同时提供 `SessionRuntime` 对 `AppSessionPort` 的 blanket impl。
+
 use astrcode_core::{
     ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionId,
     SessionMeta, StoredEvent,

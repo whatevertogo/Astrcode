@@ -1,3 +1,14 @@
+//! 运行时可观测性指标收集器。
+//!
+//! `RuntimeObservabilityCollector` 实现 `RuntimeMetricsRecorder` 和
+//! `ObservabilitySnapshotProvider` 两个 trait，在内存中聚合运行时指标：
+//! - 子代理执行计时与终态统计
+//! - 父级 reactivation 成功/失败计数
+//! - delivery buffer 队列状态
+//! - agent 协作事实追踪
+//!
+//! 快照通过 `snapshot()` 返回不可变结构供 API 层消费。
+
 use std::{
     collections::HashMap,
     sync::{

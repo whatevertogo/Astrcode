@@ -166,6 +166,16 @@ impl AgentOrchestrationService {
             .await
     }
 
+    /// 子代理上行消息投递（send to parent）。
+    ///
+    /// 完整校验链：
+    /// 1. 验证调用者有 child agent context
+    /// 2. 验证调用者的 handle 存在
+    /// 3. 验证存在 direct parent agent（root agent 不能上行）
+    /// 4. 验证 parent handle 存在且未终止
+    /// 5. 验证有 source turn id
+    ///
+    /// 投递后触发父级 reactivation，让父级消费这条 delivery。
     async fn send_to_parent(
         &self,
         params: SendToParentParams,
@@ -470,7 +480,14 @@ impl AgentOrchestrationService {
         }
     }
 
-    /// 关闭子 agent 及其子树（close 协作工具的业务逻辑）。
+    /// 关闭子 agent 及其整个子树（close 协作工具的业务逻辑）。
+    ///
+    /// 流程：
+    /// 1. 验证调用者是目标子 agent 的直接父级
+    /// 2. 收集子树所有 handle 用于 durable discard
+    /// 3. 持久化 InputDiscarded 事件，标记待处理消息为已丢弃
+    /// 4. 执行 kernel.terminate_subtree() 级联终止
+    /// 5. 记录 Close collaboration fact
     pub async fn close_child(
         &self,
         params: CloseAgentParams,
@@ -559,6 +576,7 @@ impl AgentOrchestrationService {
     }
 
     /// resume 失败时恢复之前 drain 出的 inbox 信封。
+    ///
     /// 必须在 resume 前先 drain（否则无法取到 pending 消息来组合 resume prompt），
     /// 但如果 resume 本身失败，必须把信封放回去，避免消息丢失。
     async fn restore_pending_inbox(&self, agent_id: &str, pending: Vec<AgentInboxEnvelope>) {
@@ -583,6 +601,17 @@ impl AgentOrchestrationService {
         Err(super::AgentOrchestrationError::Internal(message))
     }
 
+    /// 如果子 agent 处于 Idle 且不占据并发槽位（如 Resume lineage），
+    /// 则尝试 resume 它以处理新消息，而非排队等待。
+    ///
+    /// Resume 流程：
+    /// 1. 排空 inbox 中待处理消息
+    /// 2. 将待处理消息与新的 send 输入拼接为 resume prompt
+    /// 3. 调用 kernel.resume() 重启子 agent turn
+    /// 4. 构建 resumed 治理面并提交 prompt
+    /// 5. 注册 turn terminal watcher 等待终态
+    ///
+    /// 如果 resume 失败，会恢复之前排空的 inbox 避免消息丢失。
     async fn resume_idle_child_if_needed(
         &self,
         child: &SubRunHandle,
@@ -773,6 +802,12 @@ impl AgentOrchestrationService {
         }))
     }
 
+    /// 向正在运行的子 agent 追加消息。
+    ///
+    /// 子 agent 正忙时不能 resume，消息通过 inbox 机制排队：
+    /// 1. 持久化 InputQueued 事件（durable，crash 可恢复）
+    /// 2. 通过 kernel.deliver() 投递到内存 inbox
+    /// 3. 记录 collaboration fact（Queued outcome）
     async fn queue_message_for_active_child(
         &self,
         child: &SubRunHandle,
@@ -843,6 +878,9 @@ impl AgentOrchestrationService {
 }
 
 /// 将待处理的 inbox 信封与新的 send 输入拼接为 resume 消息。
+///
+/// 如果只有一条消息（无 pending），直接返回该消息；
+/// 多条消息时加上"请按顺序处理以下追加要求"前缀并编号。
 fn compose_reusable_child_message(
     pending: &[astrcode_core::AgentInboxEnvelope],
     params: &astrcode_core::SendToChildParams,
@@ -875,6 +913,10 @@ fn compose_reusable_child_message(
     format!("请按顺序处理以下追加要求：\n\n{enumerated}")
 }
 
+/// 根据 delivery payload 类型推断 terminal semantics。
+///
+/// Progress 消息是 NonTerminal（不表示结束），
+/// Completed / Failed / CloseRequest 是 Terminal（表示结束）。
 fn parent_delivery_terminal_semantics(
     payload: &ParentDeliveryPayload,
 ) -> ParentDeliveryTerminalSemantics {
@@ -1039,6 +1081,7 @@ impl AgentOrchestrationService {
 ///
 /// `Idle` + `None` outcome 的含义是：agent 已空闲但还没有完成过一轮 turn，
 /// 此时保留调用方传入的 fallback 状态（通常是 handle 上的旧 lifecycle）。
+/// 这避免了把刚 spawn 还没执行过 turn 的 agent 误标为 Idle。
 fn project_collaboration_lifecycle(
     lifecycle: AgentLifecycleStatus,
     last_turn_outcome: Option<astrcode_core::AgentTurnOutcome>,

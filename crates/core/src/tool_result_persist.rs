@@ -173,10 +173,13 @@ fn camel_to_screaming_snake(s: &str) -> String {
 
 /// 实际写磁盘操作。
 ///
-/// 包含完整的降级链路：
-/// 1. `create_dir_all` 失败 → 截断预览
-/// 2. `fs::write` 失败 → 截断预览
+/// 包含完整的降级链路——任何一步失败都不会 panic：
+/// 1. `create_dir_all` 失败 → 降级为截断预览
+/// 2. `fs::write` 失败 → 降级为截断预览
 /// 3. 成功 → 生成 `<persisted-output>` 短引用 + 结构化 persisted metadata
+///
+/// 工具调用 ID 会被清洗（只保留字母数字和 `-_`，取前 64 字符），
+/// 防止路径穿越攻击（如 `../../etc/passwd`）。
 fn write_to_disk(session_dir: &Path, tool_call_id: &str, content: &str) -> PersistedToolResult {
     let content_bytes = content.len();
     let results_dir = session_dir.join(TOOL_RESULTS_DIR);
@@ -230,7 +233,11 @@ fn write_to_disk(session_dir: &Path, tool_call_id: &str, content: &str) -> Persi
     }
 }
 
-/// 生成 `<persisted-output>` 格式的短引用。
+/// 生成 `<persisted-output>` 格式的短引用文本。
+///
+/// 该文本会替换原始工具结果进入消息历史，LLM 看到的是这段引用
+/// 而非完整内容。引用中包含路径、大小和建议的首次读取参数，
+/// 引导 LLM 使用 readFile 按需读取。
 fn format_persisted_output(persisted: &PersistedToolOutput) -> String {
     format!(
         "<persisted-output>\nLarge tool output was saved to a file instead of being \

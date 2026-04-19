@@ -1,3 +1,8 @@
+//! # 执行结果公共字段
+//!
+//! 提取工具结果与能力结果中共享的 `error / metadata / duration_ms / truncated` 字段，
+//! 避免两套结果类型平行复制相同字段。
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

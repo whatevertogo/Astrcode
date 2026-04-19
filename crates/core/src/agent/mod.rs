@@ -1331,6 +1331,12 @@ impl AgentEventContext {
     }
 
     /// 校验该上下文是否适合作为 durable StorageEvent 的 agent 头部。
+    ///
+    /// 校验规则：
+    /// - RootExecution：必须有 agent_id + agent_profile，不能有任何 sub-run 字段
+    /// - SubRun：必须有 agent_id + parent_turn_id + agent_profile + sub_run_id， 且必须是带
+    ///   child_session_id 的 IndependentSession
+    /// - 非空上下文必须声明 invocation_kind
     pub fn validate_for_storage_event(&self) -> Result<()> {
         if self.is_empty() {
             return Ok(());

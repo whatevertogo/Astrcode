@@ -215,6 +215,10 @@ fn default_resolved_limits_for_gateway(
     }
 }
 
+/// 为 handle 补填 resolved_limits。
+///
+/// 某些老路径注册的 root agent（如隐式注册）可能没有在注册时就写入 limits，
+/// 此函数检测到空 allowed_tools 时从 gateway 全量 capability 补填。
 async fn ensure_handle_has_resolved_limits(
     kernel: &dyn crate::AgentKernelPort,
     gateway: &astrcode_kernel::KernelGateway,
@@ -426,6 +430,15 @@ impl AgentOrchestrationService {
         Err(astrcode_core::AstrError::Internal(message))
     }
 
+    /// 确保当前 ToolContext 中存在一个有效的 parent agent handle。
+    ///
+    /// 查找策略（按优先级）：
+    /// 1. ctx 中已有显式 agent_id → 直接查找已有 handle；若为 depth=0 且无 resolved_limits 则补填
+    /// 2. ctx 中已有显式 agent_id 但无 handle → 若是 RootExecution 调用则自动注册，否则报 NotFound
+    /// 3. ctx 中无 agent_id → 按 session 查找隐式 root handle
+    /// 4. 以上都找不到 → 注册隐式 root agent（`root-agent:{session_id}`）
+    ///
+    /// 返回的 handle 保证已携带 resolved_limits（来自 gateway 全量 capability）。
     pub(super) async fn ensure_parent_agent_handle(
         &self,
         ctx: &ToolContext,
@@ -522,6 +535,11 @@ impl AgentOrchestrationService {
         .map_err(AgentOrchestrationError::Internal)
     }
 
+    /// 校验当前 turn 的 spawn 预算是否耗尽。
+    ///
+    /// 每个 parent agent 在单个 turn 内可 spawn 的子 agent 数量受
+    /// `collaboration_policy.max_spawn_per_turn` 限制。
+    /// 超限时引导 LLM 复用已有 child（send/observe/close）。
     pub(super) async fn enforce_spawn_budget_for_turn(
         &self,
         parent_agent_id: &str,

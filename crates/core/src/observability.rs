@@ -1,3 +1,19 @@
+//! # 运行时可观测性
+//!
+//! 定义运行时指标快照和记录接口，用于监控运行时健康状况和性能。
+//!
+//! ## 快照类型
+//!
+//! - `OperationMetricsSnapshot`: 单一操作的计数/耗时/失败率
+//! - `ReplayMetricsSnapshot`: SSE 回放操作的缓存命中/磁盘回退
+//! - `SubRunExecutionMetricsSnapshot`: 子执行域的完成/取消/token 超限统计
+//! - `ExecutionDiagnosticsSnapshot`: 子会话生命周期和缓存切换的结构化诊断
+//! - `AgentCollaborationScorecardSnapshot`: agent-tool 协作效果的评估读模型
+//! - `RuntimeObservabilitySnapshot`: 聚合所有指标的顶层快照
+//!
+//! `RuntimeMetricsRecorder` 是窄写入接口，业务层只通过它记录事实，
+//! 不反向依赖具体快照实现。
+
 use crate::{AgentCollaborationFact, AgentTurnOutcome, SubRunStorageMode};
 
 /// 回放路径：优先缓存，不足时回退到磁盘。

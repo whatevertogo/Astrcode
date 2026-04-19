@@ -163,6 +163,11 @@ fn ensure_subagent_profile_mode(profile: &AgentProfile) -> Result<(), Applicatio
     ensure_profile_mode(profile, &[AgentMode::SubAgent, AgentMode::All], "subagent")
 }
 
+/// 将 kernel spawn 错误映射为用户友好的应用层错误。
+///
+/// - MaxDepthExceeded → InvalidArgument（提示复用已有 child）
+/// - MaxConcurrentExceeded → Conflict（提示等待或关闭已有 child）
+/// - ParentAgentNotFound → NotFound
 fn map_spawn_error(error: AgentControlError) -> ApplicationError {
     match error {
         AgentControlError::MaxDepthExceeded { current, max } => {
