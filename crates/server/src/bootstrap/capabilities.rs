@@ -22,6 +22,7 @@ use astrcode_adapter_tools::{
         shell::ShellTool,
         skill_tool::SkillTool,
         tool_search::{ToolSearchIndex, ToolSearchTool},
+        upsert_session_plan::UpsertSessionPlanTool,
         write_file::WriteFileTool,
     },
 };
@@ -52,6 +53,7 @@ pub(crate) fn build_core_tool_invokers(
         Arc::new(ShellTool),
         Arc::new(ToolSearchTool::new(tool_search_index)),
         Arc::new(SkillTool::new(skill_catalog)),
+        Arc::new(UpsertSessionPlanTool),
     ];
 
     let invokers = tools

@@ -21,6 +21,8 @@ use astrcode_core::{
     SubmitBusyPolicy, TransitionPolicySpec,
 };
 
+use super::builtin_prompts::{code_mode_prompt, plan_mode_prompt, review_mode_prompt};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeSummary {
     pub id: ModeId,
@@ -154,10 +156,7 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
             prompt_program: vec![PromptProgramEntry {
                 block_id: "mode.code".to_string(),
                 title: "Execution Mode".to_string(),
-                content: "You are in execution mode. Prefer direct progress, make concrete code \
-                          changes when needed, and use delegation only when isolation or \
-                          parallelism materially helps."
-                    .to_string(),
+                content: code_mode_prompt().to_string(),
                 priority_hint: Some(600),
             }],
             transition_policy: transitions.clone(),
@@ -166,15 +165,18 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
             id: ModeId::plan(),
             name: "Plan".to_string(),
             description: "规划模式，只暴露只读工具并禁止继续委派。".to_string(),
-            capability_selector: CapabilitySelector::Difference {
-                base: Box::new(CapabilitySelector::AllTools),
-                subtract: Box::new(CapabilitySelector::Union(vec![
-                    CapabilitySelector::SideEffect(astrcode_core::SideEffect::Local),
-                    CapabilitySelector::SideEffect(astrcode_core::SideEffect::Workspace),
-                    CapabilitySelector::SideEffect(astrcode_core::SideEffect::External),
-                    CapabilitySelector::Tag("agent".to_string()),
-                ])),
-            },
+            capability_selector: CapabilitySelector::Union(vec![
+                CapabilitySelector::Difference {
+                    base: Box::new(CapabilitySelector::AllTools),
+                    subtract: Box::new(CapabilitySelector::Union(vec![
+                        CapabilitySelector::SideEffect(astrcode_core::SideEffect::Local),
+                        CapabilitySelector::SideEffect(astrcode_core::SideEffect::Workspace),
+                        CapabilitySelector::SideEffect(astrcode_core::SideEffect::External),
+                        CapabilitySelector::Tag("agent".to_string()),
+                    ])),
+                },
+                CapabilitySelector::Name("upsertSessionPlan".to_string()),
+            ]),
             action_policies: ActionPolicies {
                 default_effect: ActionPolicyEffect::Allow,
                 rules: vec![ActionPolicyRule {
@@ -201,10 +203,7 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
             prompt_program: vec![PromptProgramEntry {
                 block_id: "mode.plan".to_string(),
                 title: "Planning Mode".to_string(),
-                content: "You are in planning mode. Focus on analysis, proposals, sequencing, and \
-                          constraints. Do not write files or perform side-effecting actions in \
-                          this turn."
-                    .to_string(),
+                content: plan_mode_prompt().to_string(),
                 priority_hint: Some(600),
             }],
             transition_policy: transitions.clone(),
@@ -246,9 +245,7 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
             prompt_program: vec![PromptProgramEntry {
                 block_id: "mode.review".to_string(),
                 title: "Review Mode".to_string(),
-                content: "You are in review mode. Prioritize findings, risks, regressions, and \
-                          verification gaps. Stay read-only and avoid speculative edits."
-                    .to_string(),
+                content: review_mode_prompt().to_string(),
                 priority_hint: Some(600),
             }],
             transition_policy: transitions,

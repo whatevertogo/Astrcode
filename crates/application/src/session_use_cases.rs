@@ -19,6 +19,12 @@ use crate::{
     },
     format_local_rfc3339,
     governance_surface::{GovernanceBusyPolicy, SessionGovernanceInput},
+    session_plan::{
+        active_plan_summary, build_plan_exit_declaration, build_plan_prompt_context,
+        build_plan_prompt_declarations, copy_session_plan_artifacts,
+        current_mode_requires_plan_context, load_session_plan_state, mark_session_plan_approved,
+        parse_plan_approval,
+    },
 };
 
 impl App {
@@ -54,6 +60,10 @@ impl App {
         fork_point: astrcode_session_runtime::ForkPoint,
     ) -> Result<SessionMeta, ApplicationError> {
         self.validate_non_empty("sessionId", session_id)?;
+        let source_working_dir = self
+            .session_runtime
+            .get_session_working_dir(session_id)
+            .await?;
         let normalized_session_id = astrcode_session_runtime::normalize_session_id(session_id);
         let result = self
             .session_runtime
@@ -76,6 +86,11 @@ impl App {
                     result.new_session_id
                 ))
             })?;
+        copy_session_plan_artifacts(
+            session_id,
+            result.new_session_id.as_str(),
+            Path::new(&source_working_dir),
+        )?;
         Ok(meta)
     }
 
@@ -136,14 +151,42 @@ impl App {
             .config_service
             .load_resolved_runtime_config(Some(Path::new(&working_dir)))?;
         let root_agent = self.ensure_session_root_agent_context(session_id).await?;
-        let prompt_declarations =
-            match skill_invocation {
-                Some(skill_invocation) => vec![self.build_submission_skill_declaration(
+        let mut current_mode_id = self
+            .session_runtime
+            .session_mode_state(session_id)
+            .await
+            .map_err(ApplicationError::from)?
+            .current_mode_id;
+        let mut prompt_declarations = Vec::new();
+
+        if current_mode_id == ModeId::plan() {
+            let plan_state = load_session_plan_state(session_id, Path::new(&working_dir))?;
+            if plan_state
+                .as_ref()
+                .is_some_and(|state| state.status.as_str() == "awaiting_approval")
+                && parse_plan_approval(&text).approved
+            {
+                let _ = mark_session_plan_approved(session_id, Path::new(&working_dir))?;
+                self.switch_mode(session_id, ModeId::code()).await?;
+                current_mode_id = ModeId::code();
+                if let Some(summary) = active_plan_summary(session_id, Path::new(&working_dir))? {
+                    prompt_declarations.push(build_plan_exit_declaration(session_id, &summary));
+                }
+            } else if current_mode_requires_plan_context(&current_mode_id) {
+                let context =
+                    build_plan_prompt_context(session_id, Path::new(&working_dir), &text)?;
+                prompt_declarations.extend(build_plan_prompt_declarations(session_id, &context));
+            }
+        }
+
+        if let Some(skill_invocation) = skill_invocation {
+            prompt_declarations.push(
+                self.build_submission_skill_declaration(
                     Path::new(&working_dir),
                     &skill_invocation,
-                )?],
-                None => Vec::new(),
-            };
+                )?,
+            );
+        }
         let surface = self.governance_surface.session_surface(
             self.kernel.as_ref(),
             SessionGovernanceInput {
@@ -154,12 +197,7 @@ impl App {
                     .agent_profile
                     .clone()
                     .unwrap_or_else(|| IMPLICIT_ROOT_PROFILE_ID.to_string()),
-                mode_id: self
-                    .session_runtime
-                    .session_mode_state(session_id)
-                    .await
-                    .map_err(ApplicationError::from)?
-                    .current_mode_id,
+                mode_id: current_mode_id,
                 runtime,
                 control,
                 extra_prompt_declarations: prompt_declarations,

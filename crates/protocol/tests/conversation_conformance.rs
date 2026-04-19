@@ -37,6 +37,7 @@ fn conversation_snapshot_fixture_freezes_authoritative_tool_block_shape() {
             compacting: false,
             active_turn_id: Some("turn-42".to_string()),
             last_compact_meta: None,
+            active_plan: None,
         },
         blocks: vec![ConversationBlockDto::ToolCall(
             ConversationToolCallBlockDto {

@@ -9,16 +9,16 @@ use astrcode_application::terminal::{
 };
 use astrcode_core::ChildAgentRef;
 use astrcode_protocol::http::{
-    ChildAgentRefDto, ConversationAssistantBlockDto, ConversationBannerDto,
-    ConversationBannerErrorCodeDto, ConversationBlockDto, ConversationBlockPatchDto,
-    ConversationBlockStatusDto, ConversationChildHandoffBlockDto, ConversationChildHandoffKindDto,
-    ConversationChildSummaryDto, ConversationControlStateDto, ConversationCursorDto,
-    ConversationDeltaDto, ConversationErrorBlockDto, ConversationErrorEnvelopeDto,
-    ConversationLastCompactMetaDto, ConversationSlashActionKindDto, ConversationSlashCandidateDto,
-    ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
-    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
-    ConversationThinkingBlockDto, ConversationToolCallBlockDto, ConversationToolStreamsDto,
-    ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
+    ChildAgentRefDto, ConversationActivePlanDto, ConversationAssistantBlockDto,
+    ConversationBannerDto, ConversationBannerErrorCodeDto, ConversationBlockDto,
+    ConversationBlockPatchDto, ConversationBlockStatusDto, ConversationChildHandoffBlockDto,
+    ConversationChildHandoffKindDto, ConversationChildSummaryDto, ConversationControlStateDto,
+    ConversationCursorDto, ConversationDeltaDto, ConversationErrorBlockDto,
+    ConversationErrorEnvelopeDto, ConversationLastCompactMetaDto, ConversationSlashActionKindDto,
+    ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto,
+    ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto,
+    ConversationSystemNoteKindDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
+    ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
 };
 use astrcode_session_runtime::{
     ConversationBlockFacts, ConversationBlockPatchFacts, ConversationBlockStatus,
@@ -428,6 +428,11 @@ fn to_conversation_control_state_dto(
                 trigger: meta.trigger,
                 meta: meta.meta,
             }),
+        active_plan: summary.active_plan.map(|plan| ConversationActivePlanDto {
+            path: plan.path,
+            status: plan.status,
+            title: plan.title,
+        }),
     }
 }
 

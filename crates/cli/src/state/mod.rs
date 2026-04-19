@@ -477,6 +477,7 @@ mod tests {
                 compacting: false,
                 active_turn_id: None,
                 last_compact_meta: None,
+                active_plan: None,
             },
             blocks: vec![AstrcodeConversationBlockDto::Assistant(
                 AstrcodeConversationAssistantBlockDto {
@@ -623,6 +624,7 @@ mod tests {
             compacting: false,
             active_turn_id: Some("turn-1".to_string()),
             last_compact_meta: None,
+            active_plan: None,
         });
         let frame = state.thinking_playback.frame;
         state.advance_thinking_playback();

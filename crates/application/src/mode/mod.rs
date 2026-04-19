@@ -8,6 +8,7 @@
 //!   prompt）
 //! - `validator`：校验 mode 之间的合法转换
 
+pub(crate) mod builtin_prompts;
 mod catalog;
 mod compiler;
 mod validator;

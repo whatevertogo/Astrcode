@@ -27,5 +27,7 @@ pub mod shell;
 pub mod skill_tool;
 /// 外部工具搜索：按需展开 MCP/plugin 工具 schema
 pub mod tool_search;
+/// session 计划工件写工具：仅允许写当前 session 的 plan 目录
+pub mod upsert_session_plan;
 /// 文件写入工具：创建/覆盖文本文件
 pub mod write_file;

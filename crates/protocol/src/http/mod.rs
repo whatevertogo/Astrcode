@@ -43,12 +43,12 @@ pub use config::{
     TestConnectionRequest, TestResultDto,
 };
 pub use conversation::v1::{
-    ConversationAssistantBlockDto, ConversationBannerDto, ConversationBannerErrorCodeDto,
-    ConversationBlockDto, ConversationBlockPatchDto, ConversationBlockStatusDto,
-    ConversationChildHandoffBlockDto, ConversationChildHandoffKindDto, ConversationChildSummaryDto,
-    ConversationControlStateDto, ConversationCursorDto, ConversationDeltaDto,
-    ConversationErrorBlockDto, ConversationErrorEnvelopeDto, ConversationLastCompactMetaDto,
-    ConversationSlashActionKindDto, ConversationSlashCandidateDto,
+    ConversationActivePlanDto, ConversationAssistantBlockDto, ConversationBannerDto,
+    ConversationBannerErrorCodeDto, ConversationBlockDto, ConversationBlockPatchDto,
+    ConversationBlockStatusDto, ConversationChildHandoffBlockDto, ConversationChildHandoffKindDto,
+    ConversationChildSummaryDto, ConversationControlStateDto, ConversationCursorDto,
+    ConversationDeltaDto, ConversationErrorBlockDto, ConversationErrorEnvelopeDto,
+    ConversationLastCompactMetaDto, ConversationSlashActionKindDto, ConversationSlashCandidateDto,
     ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
     ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
     ConversationThinkingBlockDto, ConversationToolCallBlockDto, ConversationToolStreamsDto,

@@ -811,6 +811,7 @@ mod tests {
                 manual_compact_pending: false,
                 compacting: false,
                 last_compact_meta: None,
+                active_plan: None,
             },
             child_summaries: Vec::new(),
             slash_candidates: Vec::new(),

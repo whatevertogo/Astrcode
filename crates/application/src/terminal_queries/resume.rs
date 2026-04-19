@@ -7,6 +7,7 @@ use std::{cmp::Reverse, collections::HashSet, path::Path};
 
 use crate::{
     App, ApplicationError, ComposerOptionKind, ComposerOptionsRequest, SessionMeta,
+    session_plan::active_plan_summary,
     terminal::{
         ConversationAuthoritativeSummary, ConversationFocus, TerminalChildSummaryFacts,
         TerminalControlFacts, TerminalResumeCandidateFacts, TerminalSlashAction,
@@ -156,7 +157,19 @@ impl App {
             .session_runtime
             .session_control_state(session_id)
             .await?;
-        Ok(super::map_control_facts(control))
+        let mut facts = super::map_control_facts(control);
+        let working_dir = self
+            .session_runtime
+            .get_session_working_dir(session_id)
+            .await?;
+        facts.active_plan = active_plan_summary(session_id, Path::new(&working_dir))?.map(|plan| {
+            crate::terminal::ActivePlanFacts {
+                path: plan.path,
+                status: plan.status,
+                title: plan.title,
+            }
+        });
+        Ok(facts)
     }
 
     pub async fn conversation_authoritative_summary(

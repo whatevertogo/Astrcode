@@ -61,6 +61,22 @@ function bundledSidecarName(targetTriple) {
     : `astrcode-server-${targetTriple}`;
 }
 
+function filesAreByteEqual(sourcePath, targetPath) {
+  if (!fs.existsSync(targetPath)) {
+    return false;
+  }
+
+  const sourceStat = fs.statSync(sourcePath);
+  const targetStat = fs.statSync(targetPath);
+  if (sourceStat.size !== targetStat.size) {
+    return false;
+  }
+
+  const sourceBuffer = fs.readFileSync(sourcePath);
+  const targetBuffer = fs.readFileSync(targetPath);
+  return sourceBuffer.equals(targetBuffer);
+}
+
 function prepareSidecar(currentMode) {
   const targetTriple = resolveTargetTriple();
   const release = currentMode === "build";
@@ -95,6 +111,12 @@ function prepareSidecar(currentMode) {
 
   fs.mkdirSync(sidecarDir, { recursive: true });
   try {
+    if (filesAreByteEqual(sourceBinary, targetBinary)) {
+      console.log(
+        `[tauri-frontend] Sidecar unchanged, skipped copy: ${targetBinary}`,
+      );
+      return;
+    }
     fs.copyFileSync(sourceBinary, targetBinary);
     // Preserve executable permissions on Unix-like systems
     if (process.platform !== "win32") {

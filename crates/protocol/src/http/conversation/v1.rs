@@ -318,6 +318,8 @@ pub struct ConversationControlStateDto {
     pub active_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_compact_meta: Option<ConversationLastCompactMetaDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_plan: Option<ConversationActivePlanDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -326,6 +328,14 @@ pub struct ConversationLastCompactMetaDto {
     pub trigger: ConversationCompactTriggerDto,
     #[serde(flatten)]
     pub meta: ConversationCompactMetaDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationActivePlanDto {
+    pub path: String,
+    pub status: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

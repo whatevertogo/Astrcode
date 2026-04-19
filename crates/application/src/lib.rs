@@ -17,6 +17,7 @@ use crate::config::ConfigService;
 mod agent_use_cases;
 mod governance_surface;
 mod ports;
+mod session_plan;
 mod session_use_cases;
 mod terminal_queries;
 #[cfg(test)]
