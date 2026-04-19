@@ -11,12 +11,14 @@ use astrcode_core::{
     SessionMeta, StoredEvent,
 };
 use astrcode_session_runtime::{
-    AgentPromptSubmission, ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint,
-    ForkResult, SessionCatalogEvent, SessionControlStateSnapshot, SessionModeSnapshot,
-    SessionReplay, SessionRuntime, SessionTranscriptSnapshot,
+    ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint, ForkResult,
+    SessionCatalogEvent, SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay,
+    SessionRuntime, SessionTranscriptSnapshot,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
+
+use super::AppAgentPromptSubmission;
 
 /// `App` 依赖的 session-runtime 稳定端口。
 ///
@@ -41,7 +43,7 @@ pub trait AppSessionPort: Send + Sync {
         session_id: &str,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<ExecutionAccepted>;
     async fn interrupt_session(&self, session_id: &str) -> astrcode_core::Result<()>;
     async fn compact_session(
@@ -134,9 +136,9 @@ impl AppSessionPort for SessionRuntime {
         session_id: &str,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<ExecutionAccepted> {
-        self.submit_prompt_for_agent(session_id, text, runtime, submission)
+        self.submit_prompt_for_agent(session_id, text, runtime, submission.into())
             .await
     }
 

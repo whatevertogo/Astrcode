@@ -23,7 +23,9 @@ use crate::{
     },
     state::compact_history_event_log_path,
     turn::{
-        events::{CompactAppliedStats, compact_applied_event, prompt_metrics_event},
+        events::{
+            CompactAppliedStats, compact_applied_event, prompt_metrics_event, user_message_event,
+        },
         tool_result_budget::{
             ApplyToolResultBudgetRequest, ToolResultBudgetOutcome, ToolResultBudgetStats,
             ToolResultReplacementState, apply_tool_result_budget,
@@ -148,8 +150,10 @@ pub async fn assemble_prompt_request(
                 Some(&prompt_output.system_prompt),
                 CompactConfig {
                     keep_recent_turns: request.settings.compact_keep_recent_turns,
+                    keep_recent_user_messages: request.settings.compact_keep_recent_user_messages,
                     trigger: CompactTrigger::Auto,
                     summary_reserve_tokens: request.settings.summary_reserve_tokens,
+                    max_output_tokens: request.settings.compact_max_output_tokens,
                     max_retry_attempts: request.settings.compact_max_retry_attempts,
                     history_path: Some(compact_history_event_log_path(
                         request.session_id,
@@ -175,7 +179,7 @@ pub async fn assemble_prompt_request(
                     Some(request.turn_id),
                     request.agent,
                     CompactTrigger::Auto,
-                    compaction.summary,
+                    compaction.summary.clone(),
                     CompactAppliedStats {
                         meta: compaction.meta,
                         preserved_recent_turns: compaction.preserved_recent_turns,
@@ -186,6 +190,24 @@ pub async fn assemble_prompt_request(
                     },
                     compaction.timestamp,
                 ));
+                if let Some(digest) = compaction.recent_user_context_digest.clone() {
+                    events.push(user_message_event(
+                        request.turn_id,
+                        request.agent,
+                        digest,
+                        UserMessageOrigin::RecentUserContextDigest,
+                        compaction.timestamp,
+                    ));
+                }
+                for content in &compaction.recent_user_context_messages {
+                    events.push(user_message_event(
+                        request.turn_id,
+                        request.agent,
+                        content.clone(),
+                        UserMessageOrigin::RecentUserContext,
+                        compaction.timestamp,
+                    ));
+                }
 
                 prompt_output = build_prompt_output(PromptOutputRequest {
                     gateway: request.gateway,

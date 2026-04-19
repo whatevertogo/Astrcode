@@ -23,7 +23,7 @@ use super::{
 };
 use crate::{
     EventSink, FinishReason, LlmAccumulator, LlmClientConfig, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, ModelLimits, Utf8StreamDecoder, build_http_client, cache_tracker::CacheTracker,
+    ModelLimits, Utf8StreamDecoder, build_http_client, cache_tracker::CacheTracker,
     classify_http_error, is_retryable_status, wait_retry_delay,
 };
 
@@ -103,8 +103,12 @@ impl AnthropicProvider {
         tools: &[ToolDefinition],
         system_prompt: Option<&str>,
         system_prompt_blocks: &[SystemPromptBlock],
+        max_output_tokens_override: Option<usize>,
         stream: bool,
     ) -> AnthropicRequest {
+        let effective_max_output_tokens = max_output_tokens_override
+            .unwrap_or(self.limits.max_output_tokens)
+            .min(self.limits.max_output_tokens);
         let use_official_endpoint = is_official_anthropic_api_url(&self.messages_api_url);
         let use_automatic_cache = use_official_endpoint;
         let mut remaining_cache_breakpoints = ANTHROPIC_CACHE_BREAKPOINT_LIMIT;
@@ -138,7 +142,7 @@ impl AnthropicProvider {
 
         AnthropicRequest {
             model: self.model.clone(),
-            max_tokens: self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
+            max_tokens: effective_max_output_tokens.min(u32::MAX as usize) as u32,
             cache_control: request_cache_control,
             messages: anthropic_messages,
             system,
@@ -149,7 +153,7 @@ impl AnthropicProvider {
             thinking: if use_official_endpoint {
                 thinking_config_for_model(
                     &self.model,
-                    self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
+                    effective_max_output_tokens.min(u32::MAX as usize) as u32,
                 )
             } else {
                 None
@@ -282,12 +286,6 @@ impl LlmProvider for AnthropicProvider {
         true
     }
 
-    fn prompt_metrics_input_tokens(&self, usage: LlmUsage) -> usize {
-        usage
-            .input_tokens
-            .saturating_add(usage.cache_read_input_tokens)
-    }
-
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let cancel = request.cancel;
 
@@ -309,6 +307,7 @@ impl LlmProvider for AnthropicProvider {
             &request.tools,
             request.system_prompt.as_deref(),
             &request.system_prompt_blocks,
+            request.max_output_tokens_override,
             sink.is_some(),
         );
         let response = self.send_request(&body, cancel.clone()).await?;

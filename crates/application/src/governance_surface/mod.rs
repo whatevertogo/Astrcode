@@ -3,7 +3,7 @@
 //! 统一管理每次 turn 的治理决策：工具白名单、审批策略、子代理委派策略、协作指导 prompt。
 //!
 //! 核心流程：`*GovernanceInput` → `GovernanceSurfaceAssembler` → `ResolvedGovernanceSurface` →
-//! `AgentPromptSubmission`
+//! `AppAgentPromptSubmission`
 //!
 //! 入口场景：
 //! - **Session turn**：`session_surface()` — 用户直接发起的 turn
@@ -25,7 +25,6 @@ use astrcode_core::{
     SpawnCapabilityGrant,
 };
 use astrcode_kernel::CapabilityRouter;
-use astrcode_session_runtime::AgentPromptSubmission;
 pub(crate) use inherited::resolve_inherited_parent_messages;
 #[cfg(test)]
 pub(crate) use inherited::{build_inherited_messages, select_inherited_recent_tail};
@@ -38,7 +37,9 @@ pub use prompt::{
     build_delegation_metadata, build_fresh_child_contract, build_resumed_child_contract,
 };
 
-use crate::{ApplicationError, CompiledModeEnvelope, ExecutionControl};
+use crate::{
+    ApplicationError, CompiledModeEnvelope, ExecutionControl, ports::AppAgentPromptSubmission,
+};
 
 /// Session busy 时的行为策略。
 ///
@@ -62,7 +63,7 @@ pub struct GovernanceApprovalPipeline {
 /// 编译完成的治理面，一次性消费的 turn 级上下文快照。
 ///
 /// 包含工具白名单、审批管线、prompt declarations、注入消息、协作策略等全部治理决策。
-/// 通过 `into_submission()` 转换为 `AgentPromptSubmission` 供 session-runtime 消费。
+/// 通过 `into_submission()` 转换为应用层提交载荷，再交给 session 端口适配到底层 runtime。
 #[derive(Clone)]
 pub struct ResolvedGovernanceSurface {
     pub mode_id: ModeId,
@@ -118,9 +119,9 @@ impl ResolvedGovernanceSurface {
         self,
         agent: astrcode_core::AgentEventContext,
         source_tool_call_id: Option<String>,
-    ) -> AgentPromptSubmission {
+    ) -> AppAgentPromptSubmission {
         let prompt_governance = self.prompt_facts_context();
-        AgentPromptSubmission {
+        AppAgentPromptSubmission {
             agent,
             capability_router: self.capability_router,
             prompt_declarations: self.prompt_declarations,
@@ -130,7 +131,7 @@ impl ResolvedGovernanceSurface {
             source_tool_call_id,
             policy_context: Some(self.policy_context),
             governance_revision: Some(self.governance_revision),
-            approval: self.approval.pending.map(Box::new),
+            approval: self.approval.pending,
             prompt_governance: Some(prompt_governance),
         }
     }

@@ -577,6 +577,8 @@ mod tests {
             UserMessageOrigin::CompactSummary,
             UserMessageOrigin::AutoContinueNudge,
             UserMessageOrigin::ContinuationPrompt,
+            UserMessageOrigin::RecentUserContextDigest,
+            UserMessageOrigin::RecentUserContext,
         ] {
             let records = replay_records(
                 &[StoredEvent {

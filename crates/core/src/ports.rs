@@ -80,6 +80,22 @@ pub enum LlmFinishReason {
     Other(String),
 }
 
+impl LlmFinishReason {
+    pub fn is_max_tokens(&self) -> bool {
+        matches!(self, Self::MaxTokens)
+    }
+
+    /// 从 OpenAI / Anthropic 返回的 finish reason 字符串解析统一枚举。
+    pub fn from_api_value(value: &str) -> Self {
+        match value {
+            "stop" | "end_turn" | "stop_sequence" => Self::Stop,
+            "max_tokens" | "length" => Self::MaxTokens,
+            "tool_calls" | "tool_use" => Self::ToolCalls,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
 /// 流式增量事件。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,6 +121,7 @@ pub struct LlmRequest {
     pub cancel: CancelToken,
     pub system_prompt: Option<String>,
     pub system_prompt_blocks: Vec<SystemPromptBlock>,
+    pub max_output_tokens_override: Option<usize>,
 }
 
 impl LlmRequest {
@@ -119,12 +136,29 @@ impl LlmRequest {
             cancel,
             system_prompt: None,
             system_prompt_blocks: Vec::new(),
+            max_output_tokens_override: None,
         }
     }
 
     pub fn with_system(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
+    }
+
+    pub fn with_max_output_tokens_override(mut self, max_output_tokens: usize) -> Self {
+        self.max_output_tokens_override = Some(max_output_tokens.max(1));
+        self
+    }
+
+    pub fn from_model_request(request: crate::ModelRequest, cancel: CancelToken) -> Self {
+        Self {
+            messages: request.messages,
+            tools: request.tools.into(),
+            cancel,
+            system_prompt: request.system_prompt,
+            system_prompt_blocks: request.system_prompt_blocks,
+            max_output_tokens_override: None,
+        }
     }
 }
 

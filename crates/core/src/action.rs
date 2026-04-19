@@ -198,6 +198,10 @@ pub enum UserMessageOrigin {
     ContinuationPrompt,
     /// 子会话交付后用于唤醒父会话继续决策的内部提示。
     ReactivationPrompt,
+    /// compact 后为最近真实用户消息生成的极短目的摘要。
+    RecentUserContextDigest,
+    /// compact 后重新注入的最近真实用户消息原文。
+    RecentUserContext,
     /// 压缩摘要（上下文压缩后插入的摘要消息）
     CompactSummary,
 }

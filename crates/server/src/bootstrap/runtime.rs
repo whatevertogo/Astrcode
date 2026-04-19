@@ -8,7 +8,7 @@ use std::{
     sync::Arc,
 };
 
-use astrcode_adapter_storage::core_port::FsEventStore;
+use astrcode_adapter_storage::session::FileSystemSessionRepository;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
 use astrcode_application::{
     AgentOrchestrationService, App, AppGovernance, GovernanceSurfaceAssembler,
@@ -200,9 +200,9 @@ pub async fn bootstrap_server_runtime_with_options(
         mode_catalog.as_ref().clone(),
     ));
 
-    let event_store: Arc<dyn EventStore> = Arc::new(FsEventStore::new_with_projects_root(
-        paths.projects_root.clone(),
-    ));
+    let event_store: Arc<dyn EventStore> = Arc::new(
+        FileSystemSessionRepository::new_with_projects_root(paths.projects_root.clone()),
+    );
     let prompt_facts_provider = build_prompt_facts_provider(
         config_service.clone(),
         skill_catalog.clone(),

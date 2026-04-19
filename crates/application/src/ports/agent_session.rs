@@ -15,12 +15,11 @@ use astrcode_core::{
 };
 use astrcode_kernel::PendingParentDelivery;
 use astrcode_session_runtime::{
-    AgentObserveSnapshot, AgentPromptSubmission, ProjectedTurnOutcome, SessionRuntime,
-    TurnTerminalSnapshot,
+    AgentObserveSnapshot, ProjectedTurnOutcome, SessionRuntime, TurnTerminalSnapshot,
 };
 use async_trait::async_trait;
 
-use super::AppSessionPort;
+use super::{AppAgentPromptSubmission, AppSessionPort};
 
 /// Agent 编排子域依赖的 session 稳定端口。
 ///
@@ -39,7 +38,7 @@ pub trait AgentSessionPort: AppSessionPort {
         session_id: &str,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<ExecutionAccepted>;
     async fn try_submit_prompt_for_agent_with_turn_id(
         &self,
@@ -47,7 +46,7 @@ pub trait AgentSessionPort: AppSessionPort {
         turn_id: TurnId,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<Option<ExecutionAccepted>>;
     async fn submit_queued_inputs_for_agent_with_turn_id(
         &self,
@@ -55,7 +54,7 @@ pub trait AgentSessionPort: AppSessionPort {
         turn_id: TurnId,
         queued_inputs: Vec<String>,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<Option<ExecutionAccepted>>;
 
     // Durable input queue / collaboration 事件追加。
@@ -149,9 +148,9 @@ impl AgentSessionPort for SessionRuntime {
         session_id: &str,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<ExecutionAccepted> {
-        self.submit_prompt_for_agent_with_submission(session_id, text, runtime, submission)
+        self.submit_prompt_for_agent_with_submission(session_id, text, runtime, submission.into())
             .await
     }
 
@@ -161,10 +160,14 @@ impl AgentSessionPort for SessionRuntime {
         turn_id: TurnId,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
         self.try_submit_prompt_for_agent_with_turn_id(
-            session_id, turn_id, text, runtime, submission,
+            session_id,
+            turn_id,
+            text,
+            runtime,
+            submission.into(),
         )
         .await
     }
@@ -175,14 +178,14 @@ impl AgentSessionPort for SessionRuntime {
         turn_id: TurnId,
         queued_inputs: Vec<String>,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
         self.submit_queued_inputs_for_agent_with_turn_id(
             session_id,
             turn_id,
             queued_inputs,
             runtime,
-            submission,
+            submission.into(),
         )
         .await
     }

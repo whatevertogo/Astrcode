@@ -72,7 +72,7 @@ pub fn normalize_recovered_phase(phase: Phase) -> Phase {
 ///
 /// 关键设计：
 /// - 内部唤醒消息（AutoContinueNudge / QueuedInput / ContinuationPrompt / ReactivationPrompt /
-///   CompactSummary）不触发 phase 变更，避免 UI 闪烁
+///   RecentUserContextDigest / RecentUserContext / CompactSummary）不触发 phase 变更，避免 UI 闪烁
 /// - 辅助事件（PromptMetrics / CompactApplied / SubRun 等）也不触发 phase 变更
 /// - `force_to` 用于 SessionStart → Idle 和 TurnDone → Idle 这类必须变更的场景
 pub struct PhaseTracker {
@@ -101,6 +101,8 @@ impl PhaseTracker {
                     | UserMessageOrigin::QueuedInput
                     | UserMessageOrigin::ContinuationPrompt
                     | UserMessageOrigin::ReactivationPrompt
+                    | UserMessageOrigin::RecentUserContextDigest
+                    | UserMessageOrigin::RecentUserContext
                     | UserMessageOrigin::CompactSummary,
                 ..
             }

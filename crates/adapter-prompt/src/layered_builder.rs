@@ -331,6 +331,7 @@ pub fn default_layered_prompt_builder() -> LayeredPromptBuilder {
         .with_stable_layer(vec![
             Arc::new(crate::contributors::IdentityContributor),
             Arc::new(crate::contributors::EnvironmentContributor),
+            Arc::new(crate::contributors::ResponseStyleContributor),
         ])
         .with_semi_stable_layer(vec![
             Arc::new(crate::contributors::AgentsMdContributor),

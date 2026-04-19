@@ -36,6 +36,8 @@ pub const DEFAULT_RESERVED_CONTEXT_SIZE: usize = 20_000;
 pub const DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS: u8 = 3;
 pub const DEFAULT_MAX_CONTINUATIONS: u8 = 3;
 pub const DEFAULT_SUMMARY_RESERVE_TOKENS: usize = 20_000;
+pub const DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES: u8 = 8;
+pub const DEFAULT_COMPACT_MAX_OUTPUT_TOKENS: usize = 20_000;
 pub const DEFAULT_MAX_TRACKED_FILES: usize = 10;
 pub const DEFAULT_MAX_RECOVERED_FILES: usize = 5;
 pub const DEFAULT_RECOVERY_TOKEN_BUDGET: usize = 50_000;
@@ -106,6 +108,8 @@ pub struct RuntimeConfig {
     pub tool_result_max_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_keep_recent_turns: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_keep_recent_user_messages: Option<u8>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentConfig>,
@@ -136,6 +140,8 @@ pub struct RuntimeConfig {
     pub max_continuations: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary_reserve_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_max_output_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tracked_files: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,6 +215,7 @@ pub struct ResolvedRuntimeConfig {
     pub compact_threshold_percent: u8,
     pub tool_result_max_bytes: usize,
     pub compact_keep_recent_turns: u8,
+    pub compact_keep_recent_user_messages: u8,
     pub agent: ResolvedAgentConfig,
     pub max_consecutive_failures: usize,
     pub recovery_truncate_bytes: usize,
@@ -222,6 +229,7 @@ pub struct ResolvedRuntimeConfig {
     pub max_output_continuation_attempts: u8,
     pub max_continuations: u8,
     pub summary_reserve_tokens: usize,
+    pub compact_max_output_tokens: usize,
     pub max_tracked_files: usize,
     pub max_recovered_files: usize,
     pub recovery_token_budget: usize,
@@ -272,6 +280,7 @@ impl Default for ResolvedRuntimeConfig {
             compact_threshold_percent: DEFAULT_COMPACT_THRESHOLD_PERCENT,
             tool_result_max_bytes: DEFAULT_TOOL_RESULT_MAX_BYTES,
             compact_keep_recent_turns: DEFAULT_COMPACT_KEEP_RECENT_TURNS,
+            compact_keep_recent_user_messages: DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES,
             agent: ResolvedAgentConfig::default(),
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
             recovery_truncate_bytes: DEFAULT_RECOVERY_TRUNCATE_BYTES,
@@ -285,6 +294,7 @@ impl Default for ResolvedRuntimeConfig {
             max_output_continuation_attempts: DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
             max_continuations: DEFAULT_MAX_CONTINUATIONS,
             summary_reserve_tokens: DEFAULT_SUMMARY_RESERVE_TOKENS,
+            compact_max_output_tokens: DEFAULT_COMPACT_MAX_OUTPUT_TOKENS,
             max_tracked_files: DEFAULT_MAX_TRACKED_FILES,
             max_recovered_files: DEFAULT_MAX_RECOVERED_FILES,
             recovery_token_budget: DEFAULT_RECOVERY_TOKEN_BUDGET,
@@ -434,6 +444,10 @@ impl fmt::Debug for RuntimeConfig {
             .field("compact_threshold_percent", &self.compact_threshold_percent)
             .field("tool_result_max_bytes", &self.tool_result_max_bytes)
             .field("compact_keep_recent_turns", &self.compact_keep_recent_turns)
+            .field(
+                "compact_keep_recent_user_messages",
+                &self.compact_keep_recent_user_messages,
+            )
             .field("agent", &self.agent)
             .field("max_consecutive_failures", &self.max_consecutive_failures)
             .field("recovery_truncate_bytes", &self.recovery_truncate_bytes)
@@ -452,6 +466,7 @@ impl fmt::Debug for RuntimeConfig {
             )
             .field("max_continuations", &self.max_continuations)
             .field("summary_reserve_tokens", &self.summary_reserve_tokens)
+            .field("compact_max_output_tokens", &self.compact_max_output_tokens)
             .field("max_tracked_files", &self.max_tracked_files)
             .field("max_recovered_files", &self.max_recovered_files)
             .field("recovery_token_budget", &self.recovery_token_budget)
@@ -656,6 +671,10 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
             .compact_keep_recent_turns
             .unwrap_or(defaults.compact_keep_recent_turns)
             .max(1),
+        compact_keep_recent_user_messages: runtime
+            .compact_keep_recent_user_messages
+            .unwrap_or(defaults.compact_keep_recent_user_messages)
+            .max(1),
         agent: resolve_agent_config(runtime.agent.as_ref()),
         max_consecutive_failures: runtime
             .max_consecutive_failures
@@ -698,6 +717,10 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
         summary_reserve_tokens: runtime
             .summary_reserve_tokens
             .unwrap_or(defaults.summary_reserve_tokens),
+        compact_max_output_tokens: runtime
+            .compact_max_output_tokens
+            .unwrap_or(defaults.compact_max_output_tokens)
+            .max(1),
         max_tracked_files: runtime
             .max_tracked_files
             .unwrap_or(defaults.max_tracked_files)
@@ -772,6 +795,14 @@ mod tests {
         assert_eq!(
             resolved.tool_result_inline_limit,
             DEFAULT_TOOL_RESULT_INLINE_LIMIT
+        );
+        assert_eq!(
+            resolved.compact_keep_recent_user_messages,
+            DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES
+        );
+        assert_eq!(
+            resolved.compact_max_output_tokens,
+            DEFAULT_COMPACT_MAX_OUTPUT_TOKENS
         );
     }
 

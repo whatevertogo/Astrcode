@@ -10,15 +10,14 @@ use astrcode_core::{
 };
 use astrcode_kernel::PendingParentDelivery;
 use astrcode_session_runtime::{
-    AgentObserveSnapshot, AgentPromptSubmission, ConversationSnapshotFacts,
-    ConversationStreamReplayFacts, ForkPoint, ForkResult, ProjectedTurnOutcome,
-    SessionCatalogEvent, SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay,
-    SessionTranscriptSnapshot, TurnTerminalSnapshot,
+    AgentObserveSnapshot, ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint,
+    ForkResult, ProjectedTurnOutcome, SessionCatalogEvent, SessionControlStateSnapshot,
+    SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot, TurnTerminalSnapshot,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
-use crate::{AgentSessionPort, AppSessionPort};
+use crate::{AgentSessionPort, AppAgentPromptSubmission, AppSessionPort};
 
 fn unimplemented_for_test(area: &str) -> ! {
     panic!("not used in {area}")
@@ -72,7 +71,7 @@ impl AppSessionPort for StubSessionPort {
         _session_id: &str,
         _text: String,
         _runtime: ResolvedRuntimeConfig,
-        _submission: AgentPromptSubmission,
+        _submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<ExecutionAccepted> {
         unimplemented_for_test("application test stub")
     }
@@ -176,7 +175,7 @@ impl AgentSessionPort for StubSessionPort {
         _session_id: &str,
         _text: String,
         _runtime: ResolvedRuntimeConfig,
-        _submission: AgentPromptSubmission,
+        _submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<ExecutionAccepted> {
         unimplemented_for_test("application test stub")
     }
@@ -187,7 +186,7 @@ impl AgentSessionPort for StubSessionPort {
         _turn_id: TurnId,
         _text: String,
         _runtime: ResolvedRuntimeConfig,
-        _submission: AgentPromptSubmission,
+        _submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
         unimplemented_for_test("application test stub")
     }
@@ -198,7 +197,7 @@ impl AgentSessionPort for StubSessionPort {
         _turn_id: TurnId,
         _queued_inputs: Vec<String>,
         _runtime: ResolvedRuntimeConfig,
-        _submission: AgentPromptSubmission,
+        _submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
         unimplemented_for_test("application test stub")
     }

@@ -11,8 +11,7 @@ use std::{
 
 use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_llm::{
-    LlmClientConfig, ModelLimits as AdapterModelLimits, anthropic::AnthropicProvider,
-    openai::OpenAiProvider,
+    LlmClientConfig, ModelLimits, anthropic::AnthropicProvider, openai::OpenAiProvider,
 };
 use astrcode_adapter_mcp::{core_port::McpResourceProvider, manager::McpConnectionManager};
 use astrcode_adapter_prompt::{
@@ -30,8 +29,7 @@ use astrcode_application::{
 
 use super::deps::core::{
     AgentProfile, AstrError, LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelConfig,
-    ModelLimits, PromptProvider, ResolvedRuntimeConfig, ResourceProvider, Result,
-    resolve_runtime_config,
+    PromptProvider, ResolvedRuntimeConfig, ResourceProvider, Result, resolve_runtime_config,
 };
 
 pub(crate) fn build_llm_provider(
@@ -192,20 +190,14 @@ impl ConfigBackedLlmProvider {
                 spec.endpoint.clone(),
                 spec.api_key.clone(),
                 spec.model.clone(),
-                AdapterModelLimits {
-                    context_window: spec.limits.context_window,
-                    max_output_tokens: spec.limits.max_output_tokens,
-                },
+                spec.limits,
                 spec.client_config,
             )?),
             "anthropic" => Arc::new(AnthropicProvider::new(
                 spec.endpoint.clone(),
                 spec.api_key.clone(),
                 spec.model.clone(),
-                AdapterModelLimits {
-                    context_window: spec.limits.context_window,
-                    max_output_tokens: spec.limits.max_output_tokens,
-                },
+                spec.limits,
                 spec.client_config,
             )?),
             other => {

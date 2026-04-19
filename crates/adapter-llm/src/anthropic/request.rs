@@ -494,6 +494,7 @@ mod tests {
             &[],
             Some("Follow the rules"),
             &[],
+            None,
             true,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -556,6 +557,7 @@ mod tests {
             &tools,
             None,
             &system_blocks,
+            None,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -601,6 +603,7 @@ mod tests {
             &[],
             None,
             &[],
+            None,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -642,6 +645,7 @@ mod tests {
             &[],
             None,
             &[],
+            None,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -677,6 +681,7 @@ mod tests {
                 cache_boundary: true,
                 layer: SystemPromptLayer::Stable,
             }],
+            None,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -752,6 +757,7 @@ mod tests {
                     layer: SystemPromptLayer::Dynamic,
                 },
             ],
+            None,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -808,5 +814,30 @@ mod tests {
             body["system"][6].get("cache_control").is_none(),
             "dynamic1 should not have cache_control (Dynamic layer is not cached)"
         );
+    }
+
+    #[test]
+    fn build_request_honors_request_level_max_output_tokens_override() {
+        let provider = AnthropicProvider::new(
+            "https://api.anthropic.com/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+        let messages = [LlmMessage::User {
+            content: "hi".to_string(),
+            origin: UserMessageOrigin::User,
+        }];
+
+        let capped = provider.build_request(&messages, &[], None, &[], Some(2048), false);
+        let clamped = provider.build_request(&messages, &[], None, &[], Some(16_000), false);
+
+        assert_eq!(capped.max_tokens, 2048);
+        assert_eq!(clamped.max_tokens, 8096);
     }
 }

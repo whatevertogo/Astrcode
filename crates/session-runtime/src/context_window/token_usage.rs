@@ -137,6 +137,8 @@ pub fn estimate_message_tokens(message: &LlmMessage) -> usize {
                     UserMessageOrigin::AutoContinueNudge => 6,
                     UserMessageOrigin::ContinuationPrompt => 10,
                     UserMessageOrigin::ReactivationPrompt => 8,
+                    UserMessageOrigin::RecentUserContextDigest => 8,
+                    UserMessageOrigin::RecentUserContext => 8,
                     UserMessageOrigin::CompactSummary => 16,
                 }
         },

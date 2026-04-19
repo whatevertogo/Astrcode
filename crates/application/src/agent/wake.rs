@@ -15,6 +15,7 @@ use super::{
     child_delivery_input_queue_envelope, root_execution_event_context, subrun_event_context,
     terminal_notification_message,
 };
+use crate::AppAgentPromptSubmission;
 
 const MAX_AUTOMATIC_INPUT_FOLLOW_UPS: u8 = 8;
 
@@ -135,7 +136,7 @@ impl AgentOrchestrationService {
                 queued_inputs,
                 self.resolve_runtime_config_for_session(&parent_session_id)
                     .await?,
-                astrcode_session_runtime::AgentPromptSubmission {
+                AppAgentPromptSubmission {
                     agent: wake_agent.clone(),
                     ..Default::default()
                 },

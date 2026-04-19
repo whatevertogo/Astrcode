@@ -118,8 +118,12 @@ impl OpenAiProvider {
         tools: &'a [ToolDefinition],
         system_prompt: Option<&'a str>,
         system_prompt_blocks: &'a [astrcode_core::SystemPromptBlock],
+        max_output_tokens_override: Option<usize>,
         stream: bool,
     ) -> OpenAiChatRequest<'a> {
+        let effective_max_output_tokens = max_output_tokens_override
+            .unwrap_or(self.limits.max_output_tokens)
+            .min(self.limits.max_output_tokens);
         let system_count = if !system_prompt_blocks.is_empty() {
             system_prompt_blocks.len()
         } else if system_prompt.is_some() {
@@ -153,7 +157,7 @@ impl OpenAiProvider {
 
         OpenAiChatRequest {
             model: &self.model,
-            max_tokens: self.limits.max_output_tokens.min(u32::MAX as usize) as u32,
+            max_tokens: effective_max_output_tokens.min(u32::MAX as usize) as u32,
             messages: request_messages,
             prompt_cache_key: self.should_send_prompt_cache_key().then(|| {
                 build_prompt_cache_key(&self.model, system_prompt, system_prompt_blocks, tools)
@@ -305,6 +309,7 @@ impl LlmProvider for OpenAiProvider {
             &request.tools,
             request.system_prompt.as_deref(),
             &request.system_prompt_blocks,
+            request.max_output_tokens_override,
             sink.is_some(),
         );
         let response = self.send_request(&req, cancel.clone()).await?;
@@ -1031,7 +1036,8 @@ mod tests {
             content: "hi".to_string(),
             origin: UserMessageOrigin::User,
         }];
-        let request = provider.build_request(&messages, &[], Some("Follow the rules"), &[], false);
+        let request =
+            provider.build_request(&messages, &[], Some("Follow the rules"), &[], None, false);
 
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(
@@ -1085,7 +1091,7 @@ mod tests {
                 layer: astrcode_core::SystemPromptLayer::Inherited,
             },
         ];
-        let request = provider.build_request(&messages, &[], None, &system_blocks, false);
+        let request = provider.build_request(&messages, &[], None, &system_blocks, None, false);
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         // 应该有 4 个 system 消息 + 1 个 user 消息，无 cache_control 字段
@@ -1145,6 +1151,7 @@ mod tests {
             &[],
             Some("Follow the rules"),
             &[],
+            None,
             false,
         ))
         .expect("request should serialize");
@@ -1153,6 +1160,7 @@ mod tests {
             &[],
             Some("Follow the rules"),
             &[],
+            None,
             false,
         ))
         .expect("request should serialize");
@@ -1165,6 +1173,31 @@ mod tests {
         );
         assert!(official_body.get("prompt_cache_retention").is_none());
         assert!(compatible_body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn build_request_honors_request_level_max_output_tokens_override() {
+        let provider = OpenAiProvider::new(
+            "https://api.openai.com/v1/chat/completions".to_string(),
+            "sk-test".to_string(),
+            "gpt-4.1".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+        let messages = [LlmMessage::User {
+            content: "hi".to_string(),
+            origin: UserMessageOrigin::User,
+        }];
+
+        let capped = provider.build_request(&messages, &[], None, &[], Some(1024), false);
+        let clamped = provider.build_request(&messages, &[], None, &[], Some(4096), false);
+
+        assert_eq!(capped.max_tokens, 1024);
+        assert_eq!(clamped.max_tokens, 2048);
     }
 
     #[tokio::test]

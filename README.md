@@ -186,10 +186,20 @@ cd frontend && npm run build
 ```json
 {
   "runtime": {
-    "maxToolConcurrency": 10
+    "maxToolConcurrency": 10,
+    "compactKeepRecentTurns": 4,
+    "compactKeepRecentUserMessages": 8,
+    "compactMaxOutputTokens": 20000
   }
 }
 ```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `maxToolConcurrency` | 10 | 并发工具上限 |
+| `compactKeepRecentTurns` | 4 | 压缩时保留最近的 turn 数 |
+| `compactKeepRecentUserMessages` | 8 | 压缩时额外保留最近真实用户消息的数量（原文重新注入） |
+| `compactMaxOutputTokens` | 20000 | 压缩请求的最大输出 token 上限（自动取模型限制的较小值） |
 
 ### 内建环境变量
 
@@ -276,14 +286,14 @@ AstrCode/
 - **`core`**：领域语义、强类型 ID、端口契约、`CapabilitySpec`、稳定配置模型。不依赖传输层或具体实现；`CapabilitySpec` 是运行时内部的能力语义真相。
 - **`protocol`**：HTTP/SSE/Plugin 的 DTO 与 wire 类型，仅依赖 `core`；其中 `CapabilityWireDescriptor` 只承担协议边界传输职责，不是运行时内部的能力真相。
 - **`kernel`**：全局控制面 — capability router/registry、agent tree、统一事件协调。
-- **`session-runtime`**：单会话真相 — turn 执行、事件回放、compact、context window、input queue 推进。
-- **`application`**：用例编排入口（`App`）+ 治理入口（`AppGovernance`），负责参数校验、权限、策略、reload 编排。
+- **`session-runtime`**：单会话真相 — turn 执行、事件回放、compact（保留最近用户消息 + 摘要 + 输出上限控制）、context window、input queue 推进。
+- **`application`**：用例编排入口（`App`）+ 治理入口（`AppGovernance`），负责参数校验、权限、策略、reload 编排。通过 `AppAgentPromptSubmission` 端口向 session-runtime 提交 turn。
 - **`server`**：HTTP/SSE 边界与唯一组合根（`bootstrap/runtime.rs`），只负责 DTO 映射和装配。
-- **`adapter-*`**：端口实现层，不持有业务真相，不偷渡业务策略。
+- **`adapter-*`**：端口实现层，不持有业务真相，不偷渡业务策略。核心类型（`LlmProvider`、`LlmRequest`、`EventStore` 等）统一在 `core` 定义，adapter 仅提供具体实现。
 
 ### Agent 协作
 
-- 内置 Agent profile：explore、plan、reviewer、execute
+- 内置 Agent profile：explore、reviewer、execute
 - Agent 文件来源：builtin + 用户级（`~/.astrcode/agents`）+ 项目级（`.astrcode/agents`，祖先链扫描）
 - 子 Agent spawn 时按 task-scoped capability grant 裁剪能力面
 - Agent 工具链：`spawn` -> `send` -> `observe` -> `close` 全生命周期管理
@@ -311,12 +321,20 @@ AstrCode/
 - 提供 Rust SDK（`crates/sdk`），包含 `ToolHandler`、`HookRegistry`、`PluginContext`、`StreamWriter`
 - 插件握手交换的是 `CapabilityWireDescriptor`；宿主内部消费和决策始终基于 `CapabilitySpec`
 
-### 会话持久化
+### 会话持久化与上下文压缩
 
 - JSONL 格式追加写入（append-only event log）
 - 存储路径：`~/.astrcode/projects/<project>/sessions/<session-id>/`
 - 文件锁并发保护（`active-turn.lock`）
 - Query / Command 逻辑分离
+
+**上下文压缩（Compact）**：
+
+- 触发方式：自动（token 阈值触发）和手动（`/compact` 命令或 API）
+- 压缩策略：保留最近 N 个 turn 的完整上下文，对更早的历史生成结构化摘要
+- 最近用户消息保留：压缩后原样重新注入最近 N 条真实用户消息，确保模型不会丢失当前意图
+- 用户上下文摘要：为保留的用户消息生成极短目的摘要（`recent_user_context_digest`），帮助模型快速定位目标
+- 输出控制：压缩请求有独立的 `max_output_tokens` 上限，防止压缩本身消耗过多 token
 
 ### 治理与重载
 
@@ -365,6 +383,8 @@ Tauri 仅作为"薄壳"，负责：
 | `assistantMessage` | 最终助手消息 |
 | `toolCallStart` | 工具调用开始 |
 | `toolCallResult` | 工具调用结果 |
+| `promptMetrics` | 回合级 token / 缓存命中率指标 |
+| `compactApplied` | 上下文压缩完成，携带压缩摘要信息 |
 | `turnDone` | 对话回合结束 |
 | `error` | 错误信息 |
 

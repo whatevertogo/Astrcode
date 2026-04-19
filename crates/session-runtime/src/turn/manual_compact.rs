@@ -63,8 +63,10 @@ pub(crate) async fn build_manual_compact_events(
         Some(&prompt_output.system_prompt),
         CompactConfig {
             keep_recent_turns: settings.compact_keep_recent_turns,
+            keep_recent_user_messages: settings.compact_keep_recent_user_messages,
             trigger: request.trigger,
             summary_reserve_tokens: settings.summary_reserve_tokens,
+            max_output_tokens: settings.compact_max_output_tokens,
             max_retry_attempts: settings.compact_max_retry_attempts,
             history_path: Some(compact_history_event_log_path(
                 request.session_id,
@@ -83,7 +85,7 @@ pub(crate) async fn build_manual_compact_events(
         None,
         &AgentEventContext::default(),
         request.trigger,
-        compaction.summary,
+        compaction.summary.clone(),
         CompactAppliedStats {
             meta: compaction.meta,
             preserved_recent_turns: compaction.preserved_recent_turns,
@@ -94,6 +96,29 @@ pub(crate) async fn build_manual_compact_events(
         },
         compaction.timestamp,
     )];
+
+    if let Some(digest) = compaction.recent_user_context_digest {
+        events.push(StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::UserMessage {
+                content: digest,
+                origin: astrcode_core::UserMessageOrigin::RecentUserContextDigest,
+                timestamp: compaction.timestamp,
+            },
+        });
+    }
+    for content in compaction.recent_user_context_messages {
+        events.push(StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::UserMessage {
+                content,
+                origin: astrcode_core::UserMessageOrigin::RecentUserContext,
+                timestamp: compaction.timestamp,
+            },
+        });
+    }
 
     for message in file_access_tracker.build_recovery_messages(settings.file_recovery_config()) {
         let astrcode_core::LlmMessage::User { content, origin } = message else {

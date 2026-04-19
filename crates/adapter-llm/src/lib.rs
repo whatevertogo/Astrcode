@@ -41,21 +41,21 @@
 //! - [`anthropic`] — Anthropic Messages API 实现
 //! - [`openai`] — OpenAI Chat Completions API 兼容实现
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
-use astrcode_core::{
-    AstrError, CancelToken, LlmMessage, ModelRequest, ReasoningContent, Result, SystemPromptBlock,
-    ToolCallRequest, ToolDefinition,
-};
-use async_trait::async_trait;
+use astrcode_core::{AstrError, CancelToken, LlmEvent, ReasoningContent, Result, ToolCallRequest};
 use log::warn;
 use serde_json::Value;
 use tokio::{select, time::sleep};
 
 pub mod anthropic;
 pub mod cache_tracker;
-pub mod core_port;
 pub mod openai;
+
+pub use astrcode_core::{
+    LlmEventSink as EventSink, LlmFinishReason as FinishReason, LlmOutput, LlmProvider, LlmRequest,
+    LlmUsage, ModelLimits,
+};
 
 // ---------------------------------------------------------------------------
 // Structured LLM error types (P4.3)
@@ -160,76 +160,6 @@ pub fn classify_http_error(status: u16, body: &str) -> LlmError {
 // ---------------------------------------------------------------------------
 // Finish reason (P4.2)
 // ---------------------------------------------------------------------------
-
-/// LLM 响应结束原因，用于判断是否需要自动继续生成。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum FinishReason {
-    /// 模型自然结束输出
-    #[default]
-    Stop,
-    /// 输出被 max_tokens 限制截断，需要继续生成
-    MaxTokens,
-    /// 模型调用了工具
-    ToolCalls,
-    /// 其他未知原因
-    Other(String),
-}
-
-impl FinishReason {
-    /// 判断是否因 max_tokens 截断。
-    pub fn is_max_tokens(&self) -> bool {
-        matches!(self, FinishReason::MaxTokens)
-    }
-
-    /// 从 OpenAI/Anthropic API 返回的 finish_reason/stop_reason 字符串解析。
-    ///
-    /// 支持两种 API 的值：
-    /// - OpenAI: `stop`, `max_tokens`, `length`, `tool_calls`, `content_filter`
-    /// - Anthropic: `end_turn`, `max_tokens`, `tool_use`, `stop_sequence`
-    pub fn from_api_value(value: &str) -> Self {
-        match value {
-            // OpenAI 值
-            "stop" => FinishReason::Stop,
-            "max_tokens" | "length" => FinishReason::MaxTokens,
-            "tool_calls" => FinishReason::ToolCalls,
-            // Anthropic 值
-            "end_turn" | "stop_sequence" => FinishReason::Stop,
-            "tool_use" => FinishReason::ToolCalls,
-            other => FinishReason::Other(other.to_string()),
-        }
-    }
-}
-
-/// 模型能力限制，用于请求预算决策。
-///
-/// 包含上下文窗口大小和最大输出 token 数。它们在 provider 构造阶段就已经被解析为权威值
-/// 或本地手动值，后续的 agent loop 只消费这一份统一结果。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ModelLimits {
-    /// 模型支持的上下文窗口大小（token 数）
-    pub context_window: usize,
-    /// 模型单次响应允许的最大输出 token 数
-    pub max_output_tokens: usize,
-}
-
-/// 模型调用的 token 用量统计。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LlmUsage {
-    /// 输入（prompt）消耗的 token 数
-    pub input_tokens: usize,
-    /// 输出（completion）消耗的 token 数
-    pub output_tokens: usize,
-    /// 本次请求中新写入 provider cache 的输入 token 数。
-    pub cache_creation_input_tokens: usize,
-    /// 本次请求从 provider cache 读取的输入 token 数。
-    pub cache_read_input_tokens: usize,
-}
-
-impl LlmUsage {
-    pub fn total_tokens(self) -> usize {
-        self.input_tokens.saturating_add(self.output_tokens)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Cancel helper (moved from runtime::cancel)
@@ -483,144 +413,10 @@ fn debug_utf8_bytes(bytes: &[u8], valid_up_to: usize, invalid_len: Option<usize>
 /// 返回的 sink 会将每个事件追加到提供的 `Mutex<Vec<LlmEvent>>` 中，
 /// 方便测试断言验证事件序列。
 #[cfg(test)]
-pub fn sink_collector(events: Arc<std::sync::Mutex<Vec<LlmEvent>>>) -> EventSink {
-    Arc::new(move |event| {
+pub fn sink_collector(events: std::sync::Arc<std::sync::Mutex<Vec<LlmEvent>>>) -> EventSink {
+    std::sync::Arc::new(move |event| {
         events.lock().expect("lock").push(event);
     })
-}
-
-/// 运行时范围的模型调用请求。
-///
-/// 封装了模型调用所需的最小上下文：消息历史、可用工具定义、取消令牌和可选的系统提示。
-/// 不包含提供者发现、API 密钥管理等前置逻辑，这些由调用方在构造本结构体之前处理。
-#[derive(Clone, Debug)]
-pub struct LlmRequest {
-    pub messages: Vec<LlmMessage>,
-    pub tools: Arc<[ToolDefinition]>,
-    pub cancel: CancelToken,
-    pub system_prompt: Option<String>,
-    pub system_prompt_blocks: Vec<SystemPromptBlock>,
-}
-
-impl LlmRequest {
-    pub fn new(
-        messages: Vec<LlmMessage>,
-        tools: impl Into<Arc<[ToolDefinition]>>,
-        cancel: CancelToken,
-    ) -> Self {
-        Self {
-            messages,
-            tools: tools.into(),
-            cancel,
-            system_prompt: None,
-            system_prompt_blocks: Vec::new(),
-        }
-    }
-
-    pub fn with_system(mut self, prompt: impl Into<String>) -> Self {
-        self.system_prompt = Some(prompt.into());
-        self
-    }
-
-    pub fn from_model_request(request: ModelRequest, cancel: CancelToken) -> Self {
-        Self {
-            messages: request.messages,
-            tools: request.tools.into(),
-            cancel,
-            system_prompt: request.system_prompt,
-            system_prompt_blocks: request.system_prompt_blocks,
-        }
-    }
-}
-
-/// 流式 LLM 响应事件。
-///
-/// 每个事件代表响应流中的一个增量片段，由 [`LlmAccumulator`] 重新组装为完整输出。
-/// - `TextDelta`: 普通文本增量
-/// - `ThinkingDelta`: 推理过程增量（extended thinking / reasoning）
-/// - `ThinkingSignature`: 推理签名（Anthropic 特有，用于验证 thinking 完整性）
-/// - `ToolCallDelta`: 工具调用增量（id、name 在首个 delta 中出现，arguments 逐片段拼接）
-#[derive(Clone, Debug)]
-pub enum LlmEvent {
-    TextDelta(String),
-    ThinkingDelta(String),
-    ThinkingSignature(String),
-    ToolCallDelta {
-        index: usize,
-        id: Option<String>,
-        name: Option<String>,
-        arguments_delta: String,
-    },
-}
-
-/// 模型调用的完整输出。
-///
-/// 由 [`LlmAccumulator::finish`] 组装而成，包含所有文本内容、工具调用请求和推理内容。
-/// 非流式路径下，`usage` 字段会被填充；流式路径下 `usage` 为 `None`（Anthropic 流式
-/// 响应不返回用量，OpenAI 流式响应的用量在最后一个 chunk 中但当前未提取）。
-///
-/// `finish_reason` 字段用于判断输出是否被 max_tokens 截断 (P4.2)。
-#[derive(Clone, Debug, Default)]
-pub struct LlmOutput {
-    pub content: String,
-    pub tool_calls: Vec<ToolCallRequest>,
-    pub reasoning: Option<ReasoningContent>,
-    pub usage: Option<LlmUsage>,
-    /// 输出结束原因，用于检测 max_tokens 截断。
-    pub finish_reason: FinishReason,
-}
-
-/// 事件回调类型别名。
-///
-/// 用于接收流式 [`LlmEvent`] 的异步回调，通常由前端或上层运行时订阅。
-pub type EventSink = Arc<dyn Fn(LlmEvent) + Send + Sync>;
-
-/// LLM 提供者 trait。
-///
-/// 这是运行时与 LLM 后端交互的核心抽象。每个实现封装了特定 API 的协议细节
-/// （认证、请求格式、SSE 解析等），对外暴露统一的调用接口。
-///
-/// ## 设计约束
-///
-/// - 不管理 API 密钥或模型发现，这些由调用方在构造具体提供者实例时处理
-/// - `generate()` 执行单次模型调用，不维护多轮对话状态
-/// - 流式路径下，事件通过 `sink` 实时发射，同时内部累加返回完整输出
-#[async_trait]
-pub trait LlmProvider: Send + Sync {
-    /// 执行一次模型调用。
-    ///
-    /// `sink` 参数控制调用模式：
-    /// - `None`: 非流式模式，等待完整响应后返回
-    /// - `Some(sink)`: 流式模式，实时发射 [`LlmEvent`] 到 sink，同时累加返回完整输出
-    ///
-    /// 取消令牌通过 `request.cancel` 传递，任何时刻取消都会立即中断请求。
-    async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput>;
-
-    /// 当前 provider 是否原生暴露缓存 token 指标。
-    ///
-    /// OpenAI 兼容接口目前只依赖自动前缀缓存，缺少稳定的 token 统计；Anthropic 则会明确
-    /// 返回 cache creation/read 字段。上层通过这个开关决定是否把 0 值解释成“真实指标”
-    /// 还是“provider 不支持”。
-    fn supports_cache_metrics(&self) -> bool {
-        false
-    }
-
-    /// 将 provider 原始 usage 里的输入 token 规范化成适合前端展示的 prompt 总量。
-    ///
-    /// 某些 provider（如 Anthropic）会把缓存读取的 token 单独放在
-    /// `cache_read_input_tokens`，而 `input_tokens` 只表示本次实际重新发送/计费的部分。
-    /// 前端展示“缓存命中率”时需要一个统一口径的总输入值，因此默认直接回放
-    /// `usage.input_tokens`，特殊 provider 再自行覆盖。
-    fn prompt_metrics_input_tokens(&self, usage: LlmUsage) -> usize {
-        usage.input_tokens
-    }
-
-    /// 返回模型的上下文窗口估算。
-    ///
-    /// 用于调用方判断当前消息历史是否接近上下文限制，触发压缩或截断。
-    ///
-    /// 返回值应已经是 provider 构造阶段解析好的稳定 limits，而不是在这里临时猜测。
-    fn model_limits(&self) -> ModelLimits;
 }
 
 #[derive(Default)]

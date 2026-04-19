@@ -13,7 +13,7 @@
 
 use astrcode_core::{
     AgentEventContext, CancelToken, CompactTrigger, LlmMessage, PromptFactsProvider, Result,
-    StorageEvent,
+    StorageEvent, UserMessageOrigin,
 };
 use astrcode_kernel::KernelGateway;
 
@@ -25,7 +25,7 @@ use crate::{
     },
     state::compact_history_event_log_path,
     turn::{
-        events::{CompactAppliedStats, compact_applied_event},
+        events::{CompactAppliedStats, compact_applied_event, user_message_event},
         request::{PromptOutputRequest, build_prompt_output},
     },
 };
@@ -66,7 +66,7 @@ fn recovery_result_from_compaction(
         Some(turn_id),
         agent,
         CompactTrigger::Auto,
-        compaction.summary,
+        compaction.summary.clone(),
         CompactAppliedStats {
             meta: compaction.meta,
             preserved_recent_turns: compaction.preserved_recent_turns,
@@ -77,6 +77,25 @@ fn recovery_result_from_compaction(
         },
         compaction.timestamp,
     )];
+    let mut events = events;
+    if let Some(digest) = compaction.recent_user_context_digest.clone() {
+        events.push(user_message_event(
+            turn_id,
+            agent,
+            digest,
+            UserMessageOrigin::RecentUserContextDigest,
+            compaction.timestamp,
+        ));
+    }
+    for content in &compaction.recent_user_context_messages {
+        events.push(user_message_event(
+            turn_id,
+            agent,
+            content.clone(),
+            UserMessageOrigin::RecentUserContext,
+            compaction.timestamp,
+        ));
+    }
 
     let mut messages = compaction.messages;
     messages.extend(file_access_tracker.build_recovery_messages(settings.file_recovery_config()));
@@ -112,8 +131,10 @@ pub async fn try_reactive_compact(
         Some(&prompt_output.system_prompt),
         CompactConfig {
             keep_recent_turns: ctx.settings.compact_keep_recent_turns,
+            keep_recent_user_messages: ctx.settings.compact_keep_recent_user_messages,
             trigger: CompactTrigger::Auto,
             summary_reserve_tokens: ctx.settings.summary_reserve_tokens,
+            max_output_tokens: ctx.settings.compact_max_output_tokens,
             max_retry_attempts: ctx.settings.compact_max_retry_attempts,
             history_path: Some(compact_history_event_log_path(
                 ctx.session_id,
@@ -157,9 +178,11 @@ mod tests {
             compact_threshold_percent: 80,
             reserved_context_size: 20_000,
             summary_reserve_tokens: 20_000,
+            compact_max_output_tokens: 20_000,
             compact_max_retry_attempts: 3,
             tool_result_max_bytes: 16_384,
             compact_keep_recent_turns: 1,
+            compact_keep_recent_user_messages: 8,
             max_tracked_files: 8,
             max_recovered_files: 2,
             recovery_token_budget: 512,
@@ -210,6 +233,8 @@ mod tests {
             CompactResult {
                 messages: vec![compacted_message.clone()],
                 summary: "older context summary".to_string(),
+                recent_user_context_digest: None,
+                recent_user_context_messages: Vec::new(),
                 meta: CompactAppliedMeta {
                     mode: CompactMode::RetrySalvage,
                     instructions_present: false,
