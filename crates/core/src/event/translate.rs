@@ -793,6 +793,7 @@ mod tests {
                             provider_cache_metrics_supported: true,
                             prompt_cache_reuse_hits: 3,
                             prompt_cache_reuse_misses: 1,
+                            prompt_cache_unchanged_layers: Vec::new(),
                         },
                     },
                 },

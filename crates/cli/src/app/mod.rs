@@ -1208,7 +1208,9 @@ mod tests {
                     "phase": "idle",
                     "canSubmitPrompt": true,
                     "canRequestCompact": true,
-                    "compactPending": false
+                    "compactPending": false,
+                    "compacting": false,
+                    "currentModeId": "default"
                 },
                 "blocks": [{
                     "kind": "assistant",

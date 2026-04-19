@@ -61,6 +61,7 @@ impl SessionRuntime {
         persist_pending_manual_compact_if_any(
             self.kernel.gateway(),
             self.prompt_facts_provider.as_ref(),
+            &self.event_store,
             actor.working_dir(),
             actor.state(),
             session_id.as_str(),

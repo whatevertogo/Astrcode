@@ -78,6 +78,13 @@ pub struct SessionState {
     input_queue_projection_index: StdMutex<HashMap<String, InputQueueProjection>>,
 }
 
+struct SessionDerivedState {
+    child_nodes: HashMap<String, ChildSessionNode>,
+    active_tasks: HashMap<String, TaskSnapshot>,
+    input_queue_projection_index: HashMap<String, InputQueueProjection>,
+    last_mode_changed_at: Option<DateTime<Utc>>,
+}
+
 impl std::fmt::Debug for SessionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionState")
@@ -110,27 +117,24 @@ impl SessionState {
         recent_records: Vec<SessionEventRecord>,
         recent_stored: Vec<StoredEvent>,
     ) -> Self {
-        let child_nodes = rebuild_child_nodes(&recent_stored);
-        let active_tasks = rebuild_active_tasks(&recent_stored);
-        let input_queue_projection_index = InputQueueProjection::replay_index(&recent_stored);
-        let last_mode_changed_at =
-            recent_stored
-                .iter()
-                .rev()
-                .find_map(|stored| match &stored.event.payload {
+        let derived = SessionDerivedState {
+            child_nodes: rebuild_child_nodes(&recent_stored),
+            active_tasks: rebuild_active_tasks(&recent_stored),
+            input_queue_projection_index: InputQueueProjection::replay_index(&recent_stored),
+            last_mode_changed_at: recent_stored.iter().rev().find_map(|stored| {
+                match &stored.event.payload {
                     StorageEventPayload::ModeChanged { timestamp, .. } => Some(*timestamp),
                     _ => None,
-                });
+                }
+            }),
+        };
         Self::from_parts(
             phase,
             writer,
             projector,
             recent_records,
             recent_stored,
-            child_nodes,
-            active_tasks,
-            input_queue_projection_index,
-            last_mode_changed_at,
+            derived,
         )
     }
 
@@ -171,10 +175,12 @@ impl SessionState {
             projector,
             astrcode_core::replay_records(&tail_events, None),
             tail_events,
-            child_nodes,
-            active_tasks,
-            input_queue_projection_index,
-            last_mode_changed_at,
+            SessionDerivedState {
+                child_nodes,
+                active_tasks,
+                input_queue_projection_index,
+                last_mode_changed_at,
+            },
         ))
     }
 
@@ -184,11 +190,14 @@ impl SessionState {
         projector: AgentStateProjector,
         recent_records: Vec<SessionEventRecord>,
         recent_stored: Vec<StoredEvent>,
-        child_nodes: HashMap<String, ChildSessionNode>,
-        active_tasks: HashMap<String, TaskSnapshot>,
-        input_queue_projection_index: HashMap<String, InputQueueProjection>,
-        last_mode_changed_at: Option<DateTime<Utc>>,
+        derived: SessionDerivedState,
     ) -> Self {
+        let SessionDerivedState {
+            child_nodes,
+            active_tasks,
+            input_queue_projection_index,
+            last_mode_changed_at,
+        } = derived;
         let (broadcaster, _) = broadcast::channel(SESSION_BROADCAST_CAPACITY);
         let (live_broadcaster, _) = broadcast::channel(SESSION_LIVE_BROADCAST_CAPACITY);
         let mut cached_records = RecentSessionEvents::default();

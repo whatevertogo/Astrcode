@@ -113,16 +113,16 @@ impl OpenAiProvider {
     /// 不需要显式标记 `cache_control`，API 自动缓存 >= 1024 tokens 的 prompt 前缀。
     /// 分层 system blocks 的排列顺序（Stable → SemiStable → Inherited → Dynamic）天然提供稳定的
     /// 前缀，对 OpenAI 的自动 prefix matching 最友好。
-    fn build_request<'a>(
-        &'a self,
-        messages: &'a [LlmMessage],
-        tools: &'a [ToolDefinition],
-        system_prompt: Option<&'a str>,
-        system_prompt_blocks: &'a [astrcode_core::SystemPromptBlock],
-        prompt_cache_hints: Option<&'a PromptCacheHints>,
-        max_output_tokens_override: Option<usize>,
-        stream: bool,
-    ) -> OpenAiChatRequest<'a> {
+    fn build_request<'a>(&'a self, input: OpenAiBuildRequestInput<'a>) -> OpenAiChatRequest<'a> {
+        let OpenAiBuildRequestInput {
+            messages,
+            tools,
+            system_prompt,
+            system_prompt_blocks,
+            prompt_cache_hints,
+            max_output_tokens_override,
+            stream,
+        } = input;
         let effective_max_output_tokens = max_output_tokens_override
             .unwrap_or(self.limits.max_output_tokens)
             .min(self.limits.max_output_tokens);
@@ -326,15 +326,15 @@ impl LlmProvider for OpenAiProvider {
     /// - **流式**（`sink = Some`）：逐块读取 SSE 响应，实时发射事件并累加
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
         let cancel = request.cancel;
-        let req = self.build_request(
-            &request.messages,
-            &request.tools,
-            request.system_prompt.as_deref(),
-            &request.system_prompt_blocks,
-            request.prompt_cache_hints.as_ref(),
-            request.max_output_tokens_override,
-            sink.is_some(),
-        );
+        let req = self.build_request(OpenAiBuildRequestInput {
+            messages: &request.messages,
+            tools: &request.tools,
+            system_prompt: request.system_prompt.as_deref(),
+            system_prompt_blocks: &request.system_prompt_blocks,
+            prompt_cache_hints: request.prompt_cache_hints.as_ref(),
+            max_output_tokens_override: request.max_output_tokens_override,
+            stream: sink.is_some(),
+        });
         let response = self.send_request(&req, cancel.clone()).await?;
 
         match sink {
@@ -785,6 +785,16 @@ struct OpenAiChatRequest<'a> {
     stream: bool,
 }
 
+struct OpenAiBuildRequestInput<'a> {
+    messages: &'a [LlmMessage],
+    tools: &'a [ToolDefinition],
+    system_prompt: Option<&'a str>,
+    system_prompt_blocks: &'a [astrcode_core::SystemPromptBlock],
+    prompt_cache_hints: Option<&'a PromptCacheHints>,
+    max_output_tokens_override: Option<usize>,
+    stream: bool,
+}
+
 /// OpenAI 请求消息（user / assistant / system / tool）。
 ///
 /// 与 Anthropic 的内容块数组不同，OpenAI 使用扁平的消息结构：
@@ -1059,15 +1069,15 @@ mod tests {
             content: "hi".to_string(),
             origin: UserMessageOrigin::User,
         }];
-        let request = provider.build_request(
-            &messages,
-            &[],
-            Some("Follow the rules"),
-            &[],
-            None,
-            None,
-            false,
-        );
+        let request = provider.build_request(OpenAiBuildRequestInput {
+            messages: &messages,
+            tools: &[],
+            system_prompt: Some("Follow the rules"),
+            system_prompt_blocks: &[],
+            prompt_cache_hints: None,
+            max_output_tokens_override: None,
+            stream: false,
+        });
 
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(
@@ -1121,8 +1131,15 @@ mod tests {
                 layer: astrcode_core::SystemPromptLayer::Inherited,
             },
         ];
-        let request =
-            provider.build_request(&messages, &[], None, &system_blocks, None, None, false);
+        let request = provider.build_request(OpenAiBuildRequestInput {
+            messages: &messages,
+            tools: &[],
+            system_prompt: None,
+            system_prompt_blocks: &system_blocks,
+            prompt_cache_hints: None,
+            max_output_tokens_override: None,
+            stream: false,
+        });
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         // 应该有 4 个 system 消息 + 1 个 user 消息，无 cache_control 字段
@@ -1177,26 +1194,27 @@ mod tests {
         )
         .expect("provider should build");
 
-        let official_body = serde_json::to_value(official.build_request(
-            &messages,
-            &[],
-            Some("Follow the rules"),
-            &[],
-            None,
-            None,
-            false,
-        ))
+        let official_body = serde_json::to_value(official.build_request(OpenAiBuildRequestInput {
+            messages: &messages,
+            tools: &[],
+            system_prompt: Some("Follow the rules"),
+            system_prompt_blocks: &[],
+            prompt_cache_hints: None,
+            max_output_tokens_override: None,
+            stream: false,
+        }))
         .expect("request should serialize");
-        let compatible_body = serde_json::to_value(compatible.build_request(
-            &messages,
-            &[],
-            Some("Follow the rules"),
-            &[],
-            None,
-            None,
-            false,
-        ))
-        .expect("request should serialize");
+        let compatible_body =
+            serde_json::to_value(compatible.build_request(OpenAiBuildRequestInput {
+                messages: &messages,
+                tools: &[],
+                system_prompt: Some("Follow the rules"),
+                system_prompt_blocks: &[],
+                prompt_cache_hints: None,
+                max_output_tokens_override: None,
+                stream: false,
+            }))
+            .expect("request should serialize");
 
         assert!(
             official_body
@@ -1226,8 +1244,24 @@ mod tests {
             origin: UserMessageOrigin::User,
         }];
 
-        let capped = provider.build_request(&messages, &[], None, &[], None, Some(1024), false);
-        let clamped = provider.build_request(&messages, &[], None, &[], None, Some(4096), false);
+        let capped = provider.build_request(OpenAiBuildRequestInput {
+            messages: &messages,
+            tools: &[],
+            system_prompt: None,
+            system_prompt_blocks: &[],
+            prompt_cache_hints: None,
+            max_output_tokens_override: Some(1024),
+            stream: false,
+        });
+        let clamped = provider.build_request(OpenAiBuildRequestInput {
+            messages: &messages,
+            tools: &[],
+            system_prompt: None,
+            system_prompt_blocks: &[],
+            prompt_cache_hints: None,
+            max_output_tokens_override: Some(4096),
+            stream: false,
+        });
 
         assert_eq!(capped.max_tokens, 1024);
         assert_eq!(clamped.max_tokens, 2048);

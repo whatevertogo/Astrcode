@@ -9,7 +9,7 @@ use chrono::Utc;
 
 use crate::{
     InputQueueEventAppend, SessionRuntime, append_and_broadcast, append_input_queue_event,
-    checkpoint_if_compacted,
+    state::checkpoint_if_compacted,
 };
 
 pub(crate) struct SessionCommands<'a> {

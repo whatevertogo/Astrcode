@@ -81,7 +81,7 @@ struct LayerCache {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CacheLookupResult {
-    Hit(PromptBuildOutput),
+    Hit(Box<PromptBuildOutput>),
     Miss { invalidation_reason: String },
 }
 
@@ -194,7 +194,7 @@ impl LayeredPromptBuilder {
                         .extend(output.diagnostics.items.clone());
                     combined
                         .plan
-                        .extend_with_layer(output.plan, layer_type.prompt_layer());
+                        .extend_with_layer(output.plan.clone(), layer_type.prompt_layer());
                 },
                 CacheLookupResult::Miss {
                     invalidation_reason,
@@ -269,7 +269,7 @@ impl LayeredPromptBuilder {
         };
 
         if entry.fingerprint == fingerprint && !is_cache_expired(entry, &self.options, layer_type) {
-            CacheLookupResult::Hit(entry.output.clone())
+            CacheLookupResult::Hit(Box::new(entry.output.clone()))
         } else if is_cache_expired(entry, &self.options, layer_type) {
             CacheLookupResult::Miss {
                 invalidation_reason: "ttl_expired".to_string(),
@@ -423,7 +423,7 @@ fn set_layer_fingerprint(
     }
 }
 
-fn layer_fingerprint<'a>(hints: &'a PromptCacheHints, layer_type: LayerType) -> Option<&'a String> {
+fn layer_fingerprint(hints: &PromptCacheHints, layer_type: LayerType) -> Option<&String> {
     match layer_type {
         LayerType::Stable => hints.layer_fingerprints.stable.as_ref(),
         LayerType::SemiStable => hints.layer_fingerprints.semi_stable.as_ref(),

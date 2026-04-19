@@ -6,45 +6,45 @@
 //!
 //! ### 领域模型
 //!
-//! - [`agent`]: Agent 协作模型、子运行管理、输入队列
-//! - [`capability`]: 能力规格定义（CapabilitySpec 等）
-//! - [`ids`]: 核心标识符类型（AgentId, SessionId, TurnId 等）
-//! - [`action`]: LLM 消息与工具调用相关的数据结构
+//! - [`agent`][]: Agent 协作模型、子运行管理、输入队列
+//! - [`capability`][]: 能力规格定义（CapabilitySpec 等）
+//! - [`ids`][]: 核心标识符类型（AgentId, SessionId, TurnId 等）
+//! - [`action`][]: LLM 消息与工具调用相关的数据结构
 //!
 //! ### 事件与会话
 //!
-//! - [`event`]: 事件存储与回放系统（JSONL append-only 日志）
-//! - [`session`]: 会话元数据
-//! - [`store`]: 会话存储与事件日志写入
-//! - [`projection`]: Agent 状态投影（从事件流推导状态）
+//! - [`event`][]: 事件存储与回放系统（JSONL append-only 日志）
+//! - [`session`][]: 会话元数据
+//! - [`store`][]: 会话存储与事件日志写入
+//! - [`projection`][]: Agent 状态投影（从事件流推导状态）
 //!
 //! ### 治理与策略
 //!
-//! - [`mode`]: 治理模式（Code/Plan/Review 模式与策略规则）
-//! - [`policy`]: 策略引擎 trait（审批与模型/工具请求检查）
+//! - [`mode`][]: 治理模式（Code/Plan/Review 模式与策略规则）
+//! - [`policy`][]: 策略引擎 trait（审批与模型/工具请求检查）
 //!
 //! ### 扩展点
 //!
-//! - [`ports`]: 核心 port trait 定义（LlmProvider, PromptProvider, EventStore 等）
-//! - [`tool`]: Tool trait 定义（插件系统的基础抽象）
-//! - [`plugin`]: 插件清单与注册表
-//! - [`registry`]: 能力路由器（将能力调用分派到具体的 invoker）
-//! - [`hook`]: 钩子系统（工具/压缩钩子）
+//! - [`ports`][]: 核心 port trait 定义（LlmProvider, PromptProvider, EventStore 等）
+//! - [`tool`][]: Tool trait 定义（插件系统的基础抽象）
+//! - [`plugin`][]: 插件清单与注册表
+//! - [`registry`][]: 能力路由器（将能力调用分派到具体的 invoker）
+//! - [`hook`][]: 钩子系统（工具/压缩钩子）
 //!
 //! ### 运行时与配置
 //!
-//! - [`runtime`]: 运行时协调器接口
-//! - [`config`]: 配置模型（Agent/Model/Runtime 配置）
-//! - [`observability`]: 运行时可观测性指标
+//! - [`runtime`][]: 运行时协调器接口
+//! - [`config`][]: 配置模型（Agent/Model/Runtime 配置）
+//! - [`observability`][]: 运行时可观测性指标
 //!
 //! ### 基础设施
 //!
-//! - [`env`]: 环境变量解析
-//! - [`home`]: 主目录管理
-//! - [`local_server`]: 本地服务器信息
-//! - [`project`]: 项目信息
-//! - [`shell`]: Shell 检测与解析
-//! - [`tool_result_persist`]: 工具结果持久化
+//! - [`env`][]: 环境变量解析
+//! - [`home`][]: 主目录管理
+//! - [`local_server`][]: 本地服务器信息
+//! - [`project`][]: 项目信息
+//! - [`shell`][]: Shell 检测与解析
+//! - [`tool_result_persist`][]: 工具结果持久化
 
 mod action;
 pub mod agent;

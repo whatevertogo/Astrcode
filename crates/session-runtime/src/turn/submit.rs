@@ -14,10 +14,10 @@ use chrono::Utc;
 use crate::{
     SessionRuntime, TurnOutcome,
     actor::SessionActor,
-    checkpoint_if_compacted, prepare_session_execution,
+    prepare_session_execution,
     query::current_turn_messages,
     run_turn,
-    state::{append_and_broadcast, complete_session_execution},
+    state::{append_and_broadcast, checkpoint_if_compacted, complete_session_execution},
     turn::events::{error_event, user_message_event},
 };
 
@@ -809,6 +809,7 @@ mod tests {
         TurnFinalizeContext {
             kernel: summary_kernel(),
             prompt_facts_provider: Arc::new(crate::turn::test_support::NoopPromptFactsProvider),
+            event_store: Arc::new(BranchingTestEventStore::default()),
             metrics: Arc::new(NoopMetrics),
             actor,
             session_id: "session-1".to_string(),

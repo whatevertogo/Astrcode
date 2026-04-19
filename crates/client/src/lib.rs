@@ -767,8 +767,10 @@ mod tests {
                     "control": {
                         "phase": "idle",
                         "canSubmitPrompt": true,
-                    "canRequestCompact": true,
-                    "compactPending": false
+                        "canRequestCompact": true,
+                        "compactPending": false,
+                        "compacting": false,
+                        "currentModeId": "default"
                     }
                 })
                 .to_string(),

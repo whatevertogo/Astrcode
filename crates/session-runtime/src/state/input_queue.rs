@@ -74,9 +74,7 @@ pub(crate) fn apply_input_queue_event_to_index(
     else {
         return;
     };
-    let projection = index
-        .entry(target_agent_id.to_string())
-        .or_insert_with(InputQueueProjection::default);
+    let projection = index.entry(target_agent_id.to_string()).or_default();
     InputQueueProjection::apply_event_for_agent(projection, stored, target_agent_id);
 }
 
