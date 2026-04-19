@@ -10,8 +10,9 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, CapabilitySpec, ExecutionOwner, ExecutionResultCommon, ModeId,
-    Result, SessionId, ToolEventSink, ToolExecutionResult, ToolOutputDelta,
+    AgentEventContext, CancelToken, CapabilitySpec, ChildAgentRef, ExecutionOwner,
+    ExecutionResultCommon, ModeId, Result, SessionId, ToolEventSink, ToolExecutionResult,
+    ToolOutputDelta,
 };
 
 /// 能力调用的上下文信息。
@@ -90,6 +91,9 @@ pub struct CapabilityExecutionResult {
     /// 执行元数据，如 diff 信息、终端输出类型等
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// 能力结果关联的稳定 child reference。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_ref: Option<ChildAgentRef>,
     /// 执行耗时（毫秒）
     pub duration_ms: u64,
     /// 输出是否被截断
@@ -103,6 +107,7 @@ impl CapabilityExecutionResult {
         capability_name: impl Into<String>,
         success: bool,
         output: Value,
+        child_ref: Option<ChildAgentRef>,
         common: ExecutionResultCommon,
     ) -> Self {
         Self {
@@ -111,6 +116,7 @@ impl CapabilityExecutionResult {
             output,
             error: common.error,
             metadata: common.metadata,
+            child_ref,
             duration_ms: common.duration_ms,
             truncated: common.truncated,
         }
@@ -124,6 +130,7 @@ impl CapabilityExecutionResult {
             output,
             error: None,
             metadata: None,
+            child_ref: None,
             duration_ms: 0,
             truncated: false,
         }
@@ -141,6 +148,7 @@ impl CapabilityExecutionResult {
             output,
             error: Some(error.into()),
             metadata: None,
+            child_ref: None,
             duration_ms: 0,
             truncated: false,
         }
@@ -170,7 +178,7 @@ impl CapabilityExecutionResult {
             output,
             error: self.error,
             metadata: self.metadata,
-            child_ref: None,
+            child_ref: self.child_ref,
             duration_ms: self.duration_ms,
             truncated: self.truncated,
         }
@@ -217,6 +225,7 @@ mod tests {
             "plugin.read",
             false,
             json!(null),
+            None,
             ExecutionResultCommon::failure(
                 "transport failed",
                 Some(json!({ "streamEvents": [] })),

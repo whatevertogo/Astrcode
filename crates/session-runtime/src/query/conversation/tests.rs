@@ -443,6 +443,54 @@ fn child_notification_patches_tool_block_and_appends_handoff_block() {
     )));
 }
 
+#[test]
+fn tool_result_child_ref_alone_patches_tool_block() {
+    let child_ref = sample_child_ref();
+    let records = vec![
+        record(
+            "1.1",
+            AgentEvent::ToolCallStart {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                tool_call_id: "call-spawn".to_string(),
+                tool_name: "spawn".to_string(),
+                input: json!({ "description": "inspect" }),
+            },
+        ),
+        record(
+            "1.2",
+            AgentEvent::ToolCallResult {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                result: ToolExecutionResult {
+                    tool_call_id: "call-spawn".to_string(),
+                    tool_name: "spawn".to_string(),
+                    ok: true,
+                    output: "子 Agent 已启动：inspect".to_string(),
+                    error: None,
+                    metadata: Some(json!({ "schema": "subRunResult" })),
+                    child_ref: Some(child_ref.clone()),
+                    duration_ms: 12,
+                    truncated: false,
+                },
+            },
+        ),
+    ];
+
+    let snapshot = project_conversation_snapshot(&records, Phase::CallingTool);
+    let tool = snapshot
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            ConversationBlockFacts::ToolCall(block) => Some(block),
+            _ => None,
+        })
+        .expect("tool block should exist");
+
+    assert_eq!(tool.tool_call_id, "call-spawn");
+    assert_eq!(tool.child_ref.as_ref(), Some(&child_ref));
+}
+
 #[tokio::test]
 async fn runtime_query_builds_snapshot_and_stream_replay_facts() {
     let event_store = Arc::new(ReplayOnlyEventStore::new(vec![
@@ -574,23 +622,27 @@ fn sample_agent_context() -> AgentEventContext {
     AgentEventContext::root_execution("agent-root", "default")
 }
 
+fn sample_child_ref() -> ChildAgentRef {
+    ChildAgentRef {
+        identity: ChildExecutionIdentity {
+            agent_id: "agent-child-1".to_string().into(),
+            session_id: "session-root".to_string().into(),
+            sub_run_id: "subrun-child-1".to_string().into(),
+        },
+        parent: ParentExecutionRef {
+            parent_agent_id: Some("agent-root".to_string().into()),
+            parent_sub_run_id: Some("subrun-root".to_string().into()),
+        },
+        lineage_kind: ChildSessionLineageKind::Spawn,
+        status: AgentLifecycleStatus::Running,
+        open_session_id: "session-child-1".to_string().into(),
+    }
+}
+
 fn sample_child_notification() -> ChildSessionNotification {
     ChildSessionNotification {
         notification_id: "child-note-1".to_string().into(),
-        child_ref: ChildAgentRef {
-            identity: ChildExecutionIdentity {
-                agent_id: "agent-child-1".to_string().into(),
-                session_id: "session-root".to_string().into(),
-                sub_run_id: "subrun-child-1".to_string().into(),
-            },
-            parent: ParentExecutionRef {
-                parent_agent_id: Some("agent-root".to_string().into()),
-                parent_sub_run_id: Some("subrun-root".to_string().into()),
-            },
-            lineage_kind: ChildSessionLineageKind::Spawn,
-            status: AgentLifecycleStatus::Running,
-            open_session_id: "session-child-1".to_string().into(),
-        },
+        child_ref: sample_child_ref(),
         kind: ChildSessionNotificationKind::Delivered,
         source_tool_call_id: Some("call-spawn".to_string().into()),
         delivery: Some(ParentDelivery {

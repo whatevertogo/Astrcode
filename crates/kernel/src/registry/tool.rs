@@ -79,6 +79,7 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
                     result.tool_name,
                     result.ok,
                     Value::String(result.output),
+                    result.child_ref,
                     common,
                 ))
             },

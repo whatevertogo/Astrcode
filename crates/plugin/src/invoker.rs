@@ -131,6 +131,7 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
                 self.capability_spec.name.to_string(),
                 success,
                 result.output,
+                None,
                 astrcode_core::ExecutionResultCommon {
                     error,
                     metadata: Some(result.metadata),
@@ -220,6 +221,7 @@ async fn finish_stream_invocation(
                     capability_name,
                     true,
                     event.payload,
+                    None,
                     astrcode_core::ExecutionResultCommon::success(
                         Some(json!({ "streamEvents": deltas })),
                         started_at.elapsed().as_millis() as u64,
@@ -236,6 +238,7 @@ async fn finish_stream_invocation(
                     capability_name,
                     false,
                     Value::Null,
+                    None,
                     astrcode_core::ExecutionResultCommon::failure(
                         error,
                         Some(json!({ "streamEvents": deltas })),

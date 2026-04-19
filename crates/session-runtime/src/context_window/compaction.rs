@@ -242,13 +242,15 @@ pub async fn auto_compact(
         split.suffix,
     );
     Ok(Some(build_compact_result(
-        compacted_messages,
-        summary,
-        recent_user_context_digest,
-        recent_user_context_messages,
-        preserved_recent_turns,
-        pre_tokens,
-        split.keep_start,
+        CompactResultInput {
+            compacted_messages,
+            summary,
+            recent_user_context_digest,
+            recent_user_context_messages,
+            preserved_recent_turns,
+            pre_tokens,
+            messages_removed: split.keep_start,
+        },
         compact_prompt_context,
         &config,
         execution,
@@ -429,16 +431,16 @@ async fn execute_compact_request_with_retries(
             return Ok(None);
         }
 
-        let request = build_compact_request(
-            prepared_input.messages.clone(),
-            compact_prompt_context,
-            &prepared_input.prompt_mode,
-            effective_max_output_tokens,
-            recent_user_context_messages,
-            config.custom_instructions.as_deref(),
-            retry_state.contract_repair_feedback.as_deref(),
-            cancel.clone(),
-        );
+        let request = LlmRequest::new(prepared_input.messages.clone(), Vec::new(), cancel.clone())
+            .with_system(render_compact_system_prompt(
+                compact_prompt_context,
+                prepared_input.prompt_mode.clone(),
+                effective_max_output_tokens,
+                recent_user_context_messages,
+                config.custom_instructions.as_deref(),
+                retry_state.contract_repair_feedback.as_deref(),
+            ))
+            .with_max_output_tokens_override(effective_max_output_tokens);
 
         match gateway.call_llm(request, None).await {
             Ok(output) => match parse_compact_output(&output.content) {
@@ -478,29 +480,7 @@ async fn execute_compact_request_with_retries(
     }
 }
 
-fn build_compact_request(
-    messages: Vec<LlmMessage>,
-    compact_prompt_context: Option<&str>,
-    prompt_mode: &CompactPromptMode,
-    effective_max_output_tokens: usize,
-    recent_user_context_messages: &[RecentUserContextMessage],
-    custom_instructions: Option<&str>,
-    contract_repair_feedback: Option<&str>,
-    cancel: CancelToken,
-) -> LlmRequest {
-    LlmRequest::new(messages, Vec::new(), cancel)
-        .with_system(render_compact_system_prompt(
-            compact_prompt_context,
-            prompt_mode.clone(),
-            effective_max_output_tokens,
-            recent_user_context_messages,
-            custom_instructions,
-            contract_repair_feedback,
-        ))
-        .with_max_output_tokens_override(effective_max_output_tokens)
-}
-
-fn build_compact_result(
+struct CompactResultInput {
     compacted_messages: Vec<LlmMessage>,
     summary: String,
     recent_user_context_digest: Option<String>,
@@ -508,10 +488,23 @@ fn build_compact_result(
     preserved_recent_turns: usize,
     pre_tokens: usize,
     messages_removed: usize,
+}
+
+fn build_compact_result(
+    input: CompactResultInput,
     compact_prompt_context: Option<&str>,
     config: &CompactConfig,
     execution: CompactExecutionResult,
 ) -> CompactResult {
+    let CompactResultInput {
+        compacted_messages,
+        summary,
+        recent_user_context_digest,
+        recent_user_context_messages,
+        preserved_recent_turns,
+        pre_tokens,
+        messages_removed,
+    } = input;
     let CompactExecutionResult {
         parsed_output,
         prepared_input,

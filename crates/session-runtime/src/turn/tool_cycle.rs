@@ -545,7 +545,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use astrcode_core::{
-        CapabilityKind, StorageEventPayload, Tool, ToolDefinition, ToolOutputStream,
+        AgentLifecycleStatus, CapabilityKind, ChildAgentRef, ChildExecutionIdentity,
+        ChildSessionLineageKind, ParentExecutionRef, StorageEventPayload, Tool, ToolDefinition,
+        ToolOutputStream,
     };
     use async_trait::async_trait;
     use serde_json::{Value, json};
@@ -758,6 +760,68 @@ mod tests {
                 duration_ms: 0,
                 truncated: false,
             })
+        }
+    }
+
+    #[derive(Debug)]
+    struct ChildRefProbeTool;
+
+    #[async_trait]
+    impl Tool for ChildRefProbeTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "child_ref_probe".to_string(),
+                description: "returns a typed child ref".to_string(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        fn capability_spec(
+            &self,
+        ) -> std::result::Result<
+            astrcode_core::CapabilitySpec,
+            astrcode_core::CapabilitySpecBuildError,
+        > {
+            astrcode_core::CapabilitySpec::builder("child_ref_probe", CapabilityKind::Tool)
+                .description("returns a typed child ref")
+                .schema(json!({"type": "object"}), json!({"type": "string"}))
+                .build()
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _input: Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolExecutionResult> {
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "child_ref_probe".to_string(),
+                ok: true,
+                output: "spawn accepted".to_string(),
+                error: None,
+                metadata: Some(json!({ "schema": "subRunResult" })),
+                child_ref: Some(sample_child_ref()),
+                duration_ms: 0,
+                truncated: false,
+            })
+        }
+    }
+
+    fn sample_child_ref() -> ChildAgentRef {
+        ChildAgentRef {
+            identity: ChildExecutionIdentity {
+                agent_id: "agent-child-1".into(),
+                session_id: "session-parent-1".into(),
+                sub_run_id: "subrun-1".into(),
+            },
+            parent: ParentExecutionRef {
+                parent_agent_id: Some("root-agent:session-1".into()),
+                parent_sub_run_id: Some("root-root-agent:session-1".into()),
+            },
+            lineage_kind: ChildSessionLineageKind::Spawn,
+            status: AgentLifecycleStatus::Running,
+            open_session_id: "session-child-1".into(),
         }
     }
 
@@ -1052,6 +1116,55 @@ mod tests {
             ),
             "buffered mode should still broadcast tool result live"
         );
+    }
+
+    #[tokio::test]
+    async fn invoke_single_tool_persists_typed_child_ref_in_tool_result() {
+        let kernel = test_kernel_with_tool(Arc::new(ChildRefProbeTool), 8192);
+        let tool_call = ToolCallRequest {
+            id: "call-child-ref".to_string(),
+            name: "child_ref_probe".to_string(),
+            args: json!({}),
+        };
+        let agent = AgentEventContext::root_execution("root-agent:session-1", "default");
+        let session_state = test_session_state();
+
+        let cancel = CancelToken::new();
+        let (result, fallback_events) = invoke_single_tool(SingleToolInvocation {
+            gateway: kernel.gateway(),
+            session_state: Arc::clone(&session_state),
+            tool_call: &tool_call,
+            session_id: "session-parent-1",
+            working_dir: ".",
+            turn_id: "turn-child-ref",
+            agent: &agent,
+            cancel: &cancel,
+            tool_result_inline_limit: 32 * 1024,
+            event_emission_mode: ToolEventEmissionMode::Immediate,
+        })
+        .await;
+
+        assert!(result.ok, "tool invocation should succeed: {result:?}");
+        assert!(
+            fallback_events.is_empty(),
+            "immediate mode should not fall back to buffered events"
+        );
+        assert_eq!(result.child_ref.as_ref(), Some(&sample_child_ref()));
+
+        let stored = session_state
+            .snapshot_recent_stored_events()
+            .expect("snapshot recent stored events should work");
+        assert!(stored.iter().any(|event| matches!(
+            &event.event.payload,
+            StorageEventPayload::ToolResult {
+                tool_call_id,
+                tool_name,
+                child_ref: Some(child_ref),
+                ..
+            } if tool_call_id == "call-child-ref"
+                && tool_name == "child_ref_probe"
+                && child_ref == &sample_child_ref()
+        )));
     }
 
     #[tokio::test]
