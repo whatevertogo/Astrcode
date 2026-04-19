@@ -217,7 +217,9 @@ async fn send_to_idle_child_reports_resume_semantics() {
         "resumed child should keep the original responsibility branch metadata"
     );
     assert_eq!(
-        result.agent_ref().map(|child_ref| child_ref.lineage_kind),
+        result
+            .child_agent_ref()
+            .map(|child_ref| child_ref.lineage_kind),
         Some(astrcode_core::ChildSessionLineageKind::Resume),
         "resumed child projection should expose resume lineage instead of masquerading as spawn"
     );
@@ -225,7 +227,7 @@ async fn send_to_idle_child_reports_resume_semantics() {
         .kernel
         .get_handle(
             result
-                .agent_ref()
+                .child_agent_ref()
                 .map(|child_ref| child_ref.agent_id().as_str())
                 .expect("child ref should exist"),
         )

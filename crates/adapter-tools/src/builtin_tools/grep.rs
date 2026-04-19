@@ -334,7 +334,7 @@ impl Tool for GrepTool {
                     output: final_output.output,
                     error: None,
                     metadata: Some(serde_json::Value::Object(metadata)),
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: result.has_more || is_persisted,
                 })
@@ -368,7 +368,7 @@ impl Tool for GrepTool {
                     output: final_output.output,
                     error: None,
                     metadata: Some(serde_json::Value::Object(metadata)),
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: is_persisted,
                 })
@@ -678,7 +678,7 @@ fn build_content_result(
         output: final_output.output,
         error: None,
         metadata: Some(serde_json::Value::Object(metadata)),
-        child_ref: None,
+        continuation: None,
         duration_ms: started_at.elapsed().as_millis() as u64,
         truncated: has_more || is_persisted,
     })

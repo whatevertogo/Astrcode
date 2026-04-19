@@ -114,9 +114,10 @@ impl AgentOrchestrationService {
         .await;
 
         Ok(CollaborationResult::Observed {
-            agent_ref: self
-                .project_child_ref_status(self.build_child_ref_from_handle(&child).await)
-                .await,
+            continuation: astrcode_core::ExecutionContinuation::child_agent(
+                self.project_child_ref_status(self.build_child_ref_from_handle(&child).await)
+                    .await,
+            ),
             summary: format_observe_summary(&observe_result, child.delegation.as_ref()),
             observe_result: Box::new(observe_result),
             delegation: child.delegation.clone(),

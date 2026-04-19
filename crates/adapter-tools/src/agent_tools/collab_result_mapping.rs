@@ -60,7 +60,7 @@ pub(crate) fn map_collaboration_result(
         tool_name,
         true,
         output,
-        result.agent_ref().cloned(),
+        result.continuation().cloned(),
         ExecutionResultCommon {
             error: None,
             metadata,

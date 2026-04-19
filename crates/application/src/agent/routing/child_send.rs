@@ -211,7 +211,9 @@ impl AgentOrchestrationService {
         .await;
 
         Ok(Some(CollaborationResult::Sent {
-            agent_ref: Some(self.project_child_ref_status(child_ref).await),
+            continuation: Some(astrcode_core::ExecutionContinuation::child_agent(
+                self.project_child_ref_status(child_ref).await,
+            )),
             delivery_id: None,
             summary: Some(format!(
                 "子 Agent {} 已恢复空闲执行上下文并开始处理新消息。",
@@ -279,7 +281,9 @@ impl AgentOrchestrationService {
         .await;
 
         Ok(CollaborationResult::Sent {
-            agent_ref: Some(self.project_child_ref_status(child_ref).await),
+            continuation: Some(astrcode_core::ExecutionContinuation::child_agent(
+                self.project_child_ref_status(child_ref).await,
+            )),
             delivery_id: Some(delivery_id.into()),
             summary: Some(format!(
                 "子 Agent {} 正在运行；消息已进入 input queue 排队，待当前工作完成后处理。",

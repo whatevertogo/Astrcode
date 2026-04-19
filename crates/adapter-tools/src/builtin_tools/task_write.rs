@@ -145,7 +145,7 @@ impl Tool for TaskWriteTool {
                 serde_json::to_value(metadata)
                     .map_err(|error| AstrError::parse("invalid taskWrite metadata", error))?,
             ),
-            child_ref: None,
+            continuation: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })

@@ -292,7 +292,7 @@ impl CapabilityRouter {
                 output: String::new(),
                 error: Some(format!("unknown tool '{}'", call.name)),
                 metadata: None,
-                child_ref: None,
+                continuation: None,
                 duration_ms: 0,
                 truncated: false,
             };
@@ -307,7 +307,7 @@ impl CapabilityRouter {
                 output: String::new(),
                 error: Some(format!("capability '{}' is not tool-callable", call.name)),
                 metadata: None,
-                child_ref: None,
+                continuation: None,
                 duration_ms: 0,
                 truncated: false,
             };
@@ -324,7 +324,7 @@ impl CapabilityRouter {
                 output: String::new(),
                 error: Some(error.to_string()),
                 metadata: None,
-                child_ref: None,
+                continuation: None,
                 duration_ms: 0,
                 truncated: false,
             },

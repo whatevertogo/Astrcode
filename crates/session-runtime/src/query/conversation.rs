@@ -638,7 +638,10 @@ impl ConversationDeltaProjector {
                     });
                 }
             }
-            if let Some(child_ref) = &result.child_ref {
+            if let Some(child_ref) = result
+                .continuation()
+                .and_then(astrcode_core::ExecutionContinuation::child_agent_ref)
+            {
                 if self.replace_tool_child_ref(index, child_ref) {
                     deltas.push(ConversationDeltaFacts::PatchBlock {
                         block_id: call_block_id.clone(),

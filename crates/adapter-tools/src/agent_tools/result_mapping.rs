@@ -5,8 +5,8 @@
 //! 使 LLM 后续协作工具（send/observe/close）可以直接复用同一 agentId。
 
 use astrcode_core::{
-    ChildAgentRef, ChildSessionLineageKind, ExecutionResultCommon, SubRunResult, SubRunStatus,
-    ToolExecutionResult,
+    ChildAgentRef, ChildSessionLineageKind, ExecutionContinuation, ExecutionResultCommon,
+    SubRunResult, SubRunStatus, ToolExecutionResult,
 };
 use serde_json::{Value, json};
 
@@ -32,7 +32,7 @@ pub(crate) fn invalid_params_result(tool_call_id: String, message: String) -> To
 /// 2. 注入 openSessionId 供前端直接打开子会话视图
 /// 3. 根据 lifecycle + last_turn_outcome 决定 ok/error/output 的组合方式
 pub(crate) fn map_subrun_result(tool_call_id: String, result: SubRunResult) -> ToolExecutionResult {
-    let child_ref = extract_child_ref(&result);
+    let continuation = extract_child_ref(&result).map(ExecutionContinuation::child_agent);
     let error = result
         .failure()
         .map(|failure| failure.technical_message.clone());
@@ -44,7 +44,7 @@ pub(crate) fn map_subrun_result(tool_call_id: String, result: SubRunResult) -> T
         TOOL_NAME,
         !is_failed_outcome(&result),
         output,
-        child_ref,
+        continuation,
         ExecutionResultCommon {
             error,
             metadata: Some(metadata),
@@ -64,7 +64,7 @@ fn is_failed_outcome(result: &SubRunResult) -> bool {
 
 /// 组装 metadata：schema + outcome + handoff + failure + result。
 ///
-/// child/session 真相不再写入 metadata，而是通过 typed `child_ref` 暴露。
+/// child/session 真相不再写入 metadata，而是通过 typed continuation 暴露。
 fn subrun_metadata(result: &SubRunResult) -> Value {
     json!({
         "schema": SUBRUN_RESULT_SCHEMA,

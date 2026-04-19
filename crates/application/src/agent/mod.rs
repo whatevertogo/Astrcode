@@ -538,7 +538,6 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             );
         }
 
-        let accepted_child_session_id = accepted.session_id.to_string();
         let handoff_artifacts = spawn_handoff_artifacts(&handle, &parent_session_id);
 
         Ok(SubRunResult::Running {

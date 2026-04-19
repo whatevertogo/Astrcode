@@ -10,7 +10,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, CapabilitySpec, ChildAgentRef, ExecutionOwner,
+    AgentEventContext, CancelToken, CapabilitySpec, ExecutionContinuation, ExecutionOwner,
     ExecutionResultCommon, ModeId, Result, SessionId, ToolEventSink, ToolExecutionResult,
     ToolOutputDelta,
 };
@@ -91,9 +91,9 @@ pub struct CapabilityExecutionResult {
     /// 执行元数据，如 diff 信息、终端输出类型等
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    /// 能力结果关联的稳定 child reference。
+    /// 能力结果产生的 typed 续接目标。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_ref: Option<ChildAgentRef>,
+    pub continuation: Option<ExecutionContinuation>,
     /// 执行耗时（毫秒）
     pub duration_ms: u64,
     /// 输出是否被截断
@@ -107,7 +107,7 @@ impl CapabilityExecutionResult {
         capability_name: impl Into<String>,
         success: bool,
         output: Value,
-        child_ref: Option<ChildAgentRef>,
+        continuation: Option<ExecutionContinuation>,
         common: ExecutionResultCommon,
     ) -> Self {
         Self {
@@ -116,7 +116,7 @@ impl CapabilityExecutionResult {
             output,
             error: common.error,
             metadata: common.metadata,
-            child_ref,
+            continuation,
             duration_ms: common.duration_ms,
             truncated: common.truncated,
         }
@@ -130,7 +130,7 @@ impl CapabilityExecutionResult {
             output,
             error: None,
             metadata: None,
-            child_ref: None,
+            continuation: None,
             duration_ms: 0,
             truncated: false,
         }
@@ -148,7 +148,7 @@ impl CapabilityExecutionResult {
             output,
             error: Some(error.into()),
             metadata: None,
-            child_ref: None,
+            continuation: None,
             duration_ms: 0,
             truncated: false,
         }
@@ -178,10 +178,14 @@ impl CapabilityExecutionResult {
             output,
             error: self.error,
             metadata: self.metadata,
-            child_ref: self.child_ref,
+            continuation: self.continuation,
             duration_ms: self.duration_ms,
             truncated: self.truncated,
         }
+    }
+
+    pub fn continuation(&self) -> Option<&ExecutionContinuation> {
+        self.continuation.as_ref()
     }
 
     pub fn common(&self) -> ExecutionResultCommon {
@@ -219,7 +223,7 @@ mod tests {
     use super::CapabilityExecutionResult;
     use crate::{
         AgentLifecycleStatus, ChildAgentRef, ChildExecutionIdentity, ChildSessionLineageKind,
-        ExecutionResultCommon, ParentExecutionRef,
+        ExecutionContinuation, ExecutionResultCommon, ParentExecutionRef,
     };
 
     #[test]
@@ -245,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn into_tool_execution_result_preserves_typed_child_ref() {
+    fn into_tool_execution_result_preserves_child_continuation() {
         let child_ref = ChildAgentRef {
             identity: ChildExecutionIdentity {
                 agent_id: "agent-child".into(),
@@ -264,12 +268,15 @@ mod tests {
             "spawn",
             true,
             json!("spawn accepted"),
-            Some(child_ref.clone()),
+            Some(ExecutionContinuation::child_agent(child_ref.clone())),
             ExecutionResultCommon::success(None, 17, false),
         );
 
         let tool_result = result.into_tool_execution_result("call-1".to_string());
-        assert_eq!(tool_result.child_ref, Some(child_ref));
+        assert_eq!(
+            tool_result.continuation,
+            Some(ExecutionContinuation::child_agent(child_ref))
+        );
         assert_eq!(tool_result.duration_ms, 17);
     }
 }

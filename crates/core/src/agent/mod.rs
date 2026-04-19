@@ -1009,7 +1009,7 @@ impl CloseAgentParams {
 pub enum CollaborationResult {
     Sent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        agent_ref: Option<ChildAgentRef>,
+        continuation: Option<crate::ExecutionContinuation>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         delivery_id: Option<DeliveryId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1018,13 +1018,15 @@ pub enum CollaborationResult {
         delegation: Option<DelegationMetadata>,
     },
     Observed {
-        agent_ref: ChildAgentRef,
+        continuation: crate::ExecutionContinuation,
         summary: String,
         observe_result: Box<input_queue::ObserveSnapshot>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         delegation: Option<DelegationMetadata>,
     },
     Closed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continuation: Option<crate::ExecutionContinuation>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
         cascade: bool,
@@ -1033,12 +1035,17 @@ pub enum CollaborationResult {
 }
 
 impl CollaborationResult {
-    pub fn agent_ref(&self) -> Option<&ChildAgentRef> {
+    pub fn continuation(&self) -> Option<&crate::ExecutionContinuation> {
         match self {
-            Self::Sent { agent_ref, .. } => agent_ref.as_ref(),
-            Self::Observed { agent_ref, .. } => Some(agent_ref),
-            Self::Closed { .. } => None,
+            Self::Sent { continuation, .. } => continuation.as_ref(),
+            Self::Observed { continuation, .. } => Some(continuation),
+            Self::Closed { continuation, .. } => continuation.as_ref(),
         }
+    }
+
+    pub fn child_agent_ref(&self) -> Option<&ChildAgentRef> {
+        self.continuation()
+            .and_then(crate::ExecutionContinuation::child_agent_ref)
     }
 
     pub fn delivery_id(&self) -> Option<&DeliveryId> {

@@ -204,7 +204,7 @@ impl Tool for FindFilesTool {
             output: final_output.output,
             error: None,
             metadata: Some(serde_json::Value::Object(metadata)),
-            child_ref: None,
+            continuation: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })

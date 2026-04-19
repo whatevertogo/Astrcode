@@ -141,7 +141,7 @@ pub use event::{
     generate_turn_id, normalize_recovered_phase, phase_of_storage_event, replay_records,
 };
 pub use execution_control::ExecutionControl;
-pub use execution_result::ExecutionResultCommon;
+pub use execution_result::{ExecutionContinuation, ExecutionResultCommon};
 pub use execution_task::{
     EXECUTION_TASK_SNAPSHOT_SCHEMA, ExecutionTaskItem, ExecutionTaskSnapshotMetadata,
     ExecutionTaskStatus, TaskSnapshot,

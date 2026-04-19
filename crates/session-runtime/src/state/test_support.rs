@@ -144,7 +144,7 @@ pub(crate) fn root_task_tool_result_event(
                 serde_json::to_value(ExecutionTaskSnapshotMetadata::from_snapshot(&snapshot))
                     .expect("task metadata should serialize"),
             ),
-            child_ref: None,
+            continuation: None,
             duration_ms: 1,
         },
     }
