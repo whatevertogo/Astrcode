@@ -62,7 +62,7 @@
 
 - **WHEN** `expected_outcome.file_changes` 指定了期望变更的文件路径和内容片段
 - **THEN** 评分器 MUST 检查隔离工作区中对应文件是否包含期望内容
-- **AND** 通过 `git diff --stat` 或文件内容匹配验证
+- **AND** 通过文件存在性、内容片段或精确文本匹配验证
 
 #### Scenario: 约束最大 turn 数
 

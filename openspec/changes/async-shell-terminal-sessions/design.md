@@ -52,26 +52,32 @@
 决策：
 
 - 在 `crates/application` 增加 `ProcessSupervisor`，作为全局用例层基础设施。
+- `core` 提供稳定进程监管端口（例如 `ProcessSupervisorPort`），并通过 `ToolContext` / `CapabilityContext` 向工具执行链路注入。
 - 它下辖两个子域：
   - `AsyncTaskRegistry`：一次性后台命令
   - `TerminalSessionRegistry`：持久终端会话
-- `server` 只在组合根装配；`session-runtime` 通过稳定端口与 supervisor 通信，不直接持有底层 PTY/进程实现。
+- `application` 实现该端口并编排 supervisor；`server/bootstrap` 只负责绑定具体 PTY / process driver。
+- `session-runtime` 与 `adapter-tools` 都通过稳定端口与 supervisor 通信，不直接持有底层 PTY/进程实现，也不反向依赖 `application` concrete type。
 
 原因：
 
 - 进程监管是跨 session 的 live control 基础设施，适合位于 `application`，不应把 PTY/进程实现泄漏到 `session-runtime`。
+- `adapter-tools` 只能依赖 `core`，必须通过稳定端口访问后台任务/终端会话控制面，不能直接引用 `application` 或自行长出第二套子进程真相。
 - `session-runtime` 仍然只负责单会话真相、等待点与恢复，不负责平台进程细节。
 
 备选方案与否决：
 
 - 方案 A：把后台任务 registry 放进 `session-runtime`。否决，因为这会让 `session-runtime` 直接承担跨平台进程实现和全局 live handle 管理。
 - 方案 B：把进程真相放到前端或 server handler。否决，因为这违反“Server is the truth”和组合根边界。
+- 方案 C：让 `adapter-tools` 直接持有 `application` 或 PTY concrete handle。否决，因为这会打破 `adapter-tools -> core` 的依赖边界，并把 live process 真相散落到工具层。
 
 ### 3. 保留 `shell` 为一次性命令工具，新增 Codex 风格的持久执行工具族
 
 决策：
 
 - 现有 `shell` 保持“一次性命令”语义，只增加 `executionMode: auto|foreground|background`。
+- `executionMode=auto` 的最终判定由统一策略解析，而不是由 `shell` 工具根据命令字符串做隐式猜测。
+- 立即返回结果与后台任务 started 事实都必须暴露 `requestedExecutionMode`、`resolvedExecutionMode` 与判定原因，保证前端、排障与回放能看到一致语义。
 - 新增工具族：
   - `exec_command`
   - `write_stdin`
@@ -82,6 +88,7 @@
 原因：
 
 - 一次性命令与持久终端会话的生命周期不同。
+- `auto` 若落在工具本地启发式，会让同一能力在前端展示、durable 事件与重放时出现语义漂移。
 - Codex 的成熟方案不是 `terminal_read(cursor)`，而是 `exec_command + process_id + write_stdin + 流式事件`。
 - 输出主通道应由 durable/live 事件流持续推送，工具返回只负责本次等待窗口内的输出快照与 `process_id`。
 - 这样可以避免额外造一套 cursor 读取协议，同时保留持久 session 和 stdin 控制能力。
@@ -90,6 +97,7 @@
 
 - 方案 A：扩展 `shell`，让同一工具同时承担一次性命令和终端会话。否决，因为 tool call 级语义无法干净表达跨多次交互的终端 session。
 - 方案 B：采用 `terminal_start / terminal_write / terminal_read`。否决，因为这会复制一套读取协议，而 Codex 已证明 `write_stdin + 输出事件 + process_id` 更自然。
+- 方案 C：把 `auto` 判定散落到工具实现。否决，因为这会绕开 `application` 的统一策略与可观测性边界。
 
 ### 4. 后台任务与终端会话都使用独立 durable 事件，而不是复用单个 ToolCallDelta
 
@@ -167,11 +175,11 @@
 
 ## Migration Plan
 
-1. 在 `core`、`protocol`、`session-runtime` 中增加后台任务通知 / terminal session 纯数据结构。
-2. 在 `application` 组装 `ProcessSupervisor`，先接入一次性后台 shell。
-3. 改造 `shell` 为可选择 foreground/background，并打通任务输出落盘与完成通知。
-4. 新增 `exec_command` / `write_stdin` 工具族与 PTY/pipe 实现，接入 supervisor。
-5. 扩展 conversation/query/frontend 渲染 background task 与 terminal session。
+1. 在 `core`、`protocol`、`session-runtime` 中增加后台任务通知 / terminal session 纯数据结构，以及工具访问 `ProcessSupervisor` 的稳定端口与 context 注入。
+2. 在 `application` 组装 `ProcessSupervisor`，由组合根绑定具体 PTY / process driver，先接入一次性后台 shell。
+3. 改造 `shell` 为可选择 foreground/background，并让 `auto` 通过统一策略解析、落盘可审计的 resolved mode 元数据。
+4. 新增 `exec_command` / `write_stdin` 工具族与 PTY/pipe 实现，通过同一 supervisor 端口接入。
+5. 扩展 conversation/query/server/frontend 渲染 background task 与 terminal session。
 6. 同步更新 `PROJECT_ARCHITECTURE.md`，记录新的职责边界。
 
 回滚策略：
@@ -183,6 +191,5 @@
 ## Open Questions
 
 - 一期是否需要同时暴露 `resize_terminal` 与 `close_stdin`，还是先只开放 `write_stdin` / `terminate_terminal`？
-- 后台 shell 的 `auto` 判定阈值应基于超时、命令类型，还是工具显式标记？
 - 后台任务完成后默认只通知用户，还是同时生成一条内部输入唤醒模型继续决策？
 - `ProcessSupervisor` 的可观测性指标是否需要单独纳入 `runtime-observability-pipeline` 的 spec 更新？

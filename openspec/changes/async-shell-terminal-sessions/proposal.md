@@ -8,6 +8,7 @@
 
 - 引入 Claude Code 风格的后台任务执行语义：长耗时工具不再阻塞当前 turn，而是立即返回 `backgroundTaskId`、输出路径和状态摘要，后续通过完成通知与显式读取获取结果。
 - 为长任务建立统一的进程监管面，区分“一次性后台命令”和“持久终端会话”，统一处理生命周期、取消、失败、输出落盘与通知。
+- 为后台 shell 与持久终端会话定义稳定跨层接缝：`core` 提供进程监管端口，`application` 负责 supervisor 编排，具体 PTY / process driver 保持在 adapter/组合根一侧。
 - 保留现有 `shell` 作为一次性命令工具，并增加 `background` 执行模式；同时新增 Codex 风格的持久执行工具族，使 LLM 可以启动带 `process_id` 的终端会话、写入 stdin、在有限等待窗口内拿到新输出并终止或关闭会话。
 - 扩展事件模型、conversation authoritative read model 与前端展示，使“后台任务已启动/已完成/已失败”和“终端会话输出/状态变化”成为正式合同，而不是前端本地猜测。
 - 明确后台任务和终端会话的恢复/失败语义：Astrcode 重启后不得静默丢失状态，必须向用户和模型暴露明确的 lost / failed 结果。
@@ -25,16 +26,17 @@
 ## Impact
 
 - 受影响模块：
-  - `crates/core`：工具结果类型、后台任务/终端事件与端口契约
+  - `crates/core`：工具结果类型、后台任务/终端事件、进程监管端口与 capability/tool context 契约
   - `crates/session-runtime`：完成通知输入、conversation/query 投影、终端会话读取路径
   - `crates/application`：后台任务/终端会话监管与用例编排
   - `crates/adapter-tools`：`shell` 扩展与新终端工具族
-  - `crates/protocol` 与 `frontend`：waiting / terminal session DTO 与渲染
+  - `crates/protocol`、`crates/server` 与 `frontend`：background task / terminal session DTO、projection 与渲染
 - 用户可见影响：
   - 长工具调用不再卡死会话，而是变成后台任务并在完成时收到通知
   - LLM 可以通过正式工具直接操控持久终端会话，并基于 `process_id` 持续交互
 - 开发者可见影响：
   - 工具执行从“同步完成即返回”演进为“foreground / background / persistent-exec-session”多模式合同
+  - `executionMode=auto` 的解析不再散落在工具实现里，而是由统一策略决定并以 `requestedExecutionMode` / `resolvedExecutionMode` 暴露
   - 事件模型需要新增后台任务通知与终端会话语义，避免继续把跨多次交互的输出硬塞进单个 `tool_call_id`
 - 依赖与系统影响：
   - 可能需要引入跨平台 PTY 支撑（例如 `portable-pty` 或等价方案）

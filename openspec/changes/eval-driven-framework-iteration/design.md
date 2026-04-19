@@ -4,6 +4,13 @@ Astrcode 的 `StorageEvent` JSONL 事件日志已经完整记录了 Agent 运行
 
 当前缺失的是：**离线评测层** — 将已完成 session 的事件流转化为可度量、可对比、可诊断的结构化评测数据，用于驱动框架迭代。
 
+本次设计明确区分两条通路：
+
+- **控制面**：通过现有 `astrcode-server` HTTP API 创建 session、提交 turn
+- **数据面**：通过本地共享 session 存储中的 JSONL 读取 durable 事件并提取 trace
+
+因此本次评测运行器的适用场景是本机开发与 CI 共置部署；不覆盖仅能访问远端 HTTP API、但无法访问对应 session 存储目录的纯远程部署。
+
 核心数据流：
 
 ```
@@ -64,7 +71,7 @@ StorageEvent JSONL
 
 ### D2: Trace 提取基于 JSONL 文件直读，而非 server API replay
 
-**选择**：评测 trace 提取器直接读取 JSONL 文件，通过 serde 反序列化为 `StorageEvent`，再转换为 `TurnTrace`。
+**选择**：评测 trace 提取器直接读取 JSONL 文件，通过 serde 反序列化为 `StorageEvent`，再转换为 `SessionTrace`（内含 `Vec<TurnTrace>`）。
 
 **替代方案**：通过 server `/sessions/:id/events` API 获取事件。
 **否决原因**：
@@ -75,7 +82,8 @@ StorageEvent JSONL
 **数据流**：
 ```
 文件路径 → 逐行读取 → serde_json::from_str::<StorageEvent>()
-         → TurnTraceBuilder 累积 → 输出 Vec<TurnTrace>
+         → TurnTraceBuilder / SessionTraceBuilder 累积
+         → 输出 SessionTrace { metadata, turns, lineage }
 ```
 
 ### D3: 评测任务规范使用 YAML 格式
@@ -131,29 +139,31 @@ trait FailurePatternDetector: Send + Sync {
 | `CompactInfoLossDetector` | `CompactApplied` + 后续 `Error` | compact 后紧接着工具调用失败 |
 | `SubRunBudgetDetector` | `SubRunStarted/Finished` | step_count 超过 resolved_limits 阈值 |
 | `EmptyTurnDetector` | `TurnTrace` 整体 | turn 结束但无工具调用且 assistant output 为空 |
-| `ContextOverflowDetector` | `PromptMetrics` + `CompactApplied` | 多次 compact 仍无法压回有效窗口 |
 
-### D5: 评测运行器通过 server HTTP API 驱动
+### D5: 评测运行器通过 HTTP 控制面 + 本地 JSONL 数据面驱动
 
-**选择**：评测运行器是一个独立 binary（`astrcode-eval-runner`），通过 HTTP API 与 `astrcode-server` 交互。
+**选择**：评测运行器是一个独立 binary（`astrcode-eval-runner`），通过 HTTP API 与 `astrcode-server` 交互完成 session/turn 生命周期控制，通过共享 session 存储根目录读取 durable JSONL。
+
+**约束**：`--server-url` 只负责控制面；运行器还必须能够解析并访问对应的本地 session 存储根目录（CLI 参数 `--session-storage-root`，默认使用标准项目级 session 存储规则）。
 
 **执行流程**：
 ```
-1. 启动 N 个 server 实例（或复用一个实例的不同 session）
+1. 连接一个现有 server 实例
 2. 每个评测任务：
    a. 准备工作区：cp -r fixtures/<task> → /tmp/eval-{id}/
    b. 创建 session（POST /sessions，working_dir 指向隔离工作区）
    c. 提交 turn（POST /sessions/:id/turn，body = task.prompt）
-   d. 等待 turn 完成（轮询 SSE 或等待 TurnDone 事件）
-   e. 读取 JSONL trace
-   f. 运行失败诊断
-   g. 与 expected_outcome 对比评分
-   h. 收集结果
+   d. 基于 `session_id` + `session_storage_root` 定位本地 JSONL 文件
+   e. 轮询 JSONL，等待 `TurnDone` durable 事件
+   f. 读取 JSONL trace 并构建 `SessionTrace`
+   g. 运行失败诊断
+   h. 与 expected_outcome 对比评分
+   i. 收集结果
 3. 汇总所有任务结果，与基线对比
 4. 输出评测报告
 ```
 
-**并行策略**：同一 server 实例内通过不同 session 隔离（session 已绑定独立 working_dir），无需多实例。仅在评测集很大时才需要多实例并行。
+**并行策略**：同一 server 实例内通过不同 session 隔离（session 已绑定独立 working_dir），无需多实例。若无法访问共享 session 存储，则运行器应在启动阶段直接失败，而不是退化为不稳定的 SSE 轮询。
 
 ### D6: 评测结果使用 JSON 格式持久化
 
@@ -189,9 +199,9 @@ trait FailurePatternDetector: Send + Sync {
 规则引擎可能对复杂场景产生误判。
 **缓解**：诊断器输出 `severity` + `confidence` 字段，支持配置检测阈值。初始阶段以高精确度优先（宁可漏报不要误报），逐步扩展模式库。
 
-### [Risk] 评测运行器与 server 版本耦合
-运行器依赖 server HTTP API 的稳定性。如果 API 变动，运行器需要同步更新。
-**缓解**：运行器仅使用最稳定的 API surface（创建 session、提交 turn、读取事件），这些 API 变动频率低。同时协议类型复用 `protocol` crate。
+### [Risk] 评测运行器对本地 session 存储布局有耦合
+运行器除了依赖 server HTTP API，还需要与 session JSONL 的存储布局保持一致。如果存储路径规则变化，运行器需要同步更新。
+**缓解**：通过显式 `--session-storage-root` 参数收敛路径来源，并尽量复用现有 session 路径规则，而不是在 runner 内散落隐式拼接逻辑。
 
 ### [Trade-off] 规则诊断 vs LLM 诊断
 规则引擎无法覆盖语义级错误（如"代码逻辑正确但不符合用户意图"）。

@@ -1,6 +1,6 @@
 ## Purpose
 
-定义评测运行器，通过 server HTTP API 编排评测任务的执行、结果收集与基线对比。
+定义评测运行器，通过 server HTTP 控制面与本地 JSONL 数据面编排评测任务的执行、结果收集与基线对比。
 
 ## ADDED Requirements
 
@@ -10,7 +10,7 @@
 
 #### Scenario: 执行指定任务集
 
-- **WHEN** 运行 `astrcode-eval-runner --server-url http://localhost:3000 --task-set eval-tasks/core/`
+- **WHEN** 运行 `astrcode-eval-runner --server-url http://localhost:3000 --session-storage-root ./.astrcode-eval-state --task-set eval-tasks/task-set.yaml`
 - **THEN** 运行器 MUST 加载任务集内所有任务定义
 - **AND** 依次或并行执行每个任务
 - **AND** 输出评测结果到 stdout 或指定文件
@@ -23,7 +23,7 @@
 
 ### Requirement: 运行器 SHALL 通过 server HTTP API 驱动任务执行
 
-每个评测任务的执行 MUST 通过标准 server API 完成。
+每个评测任务的执行 MUST 通过标准 server API 完成控制面操作，并通过共享 session 存储中的 JSONL 完成 durable 结果读取。
 
 #### Scenario: 单任务执行流程
 
@@ -40,8 +40,14 @@
 #### Scenario: 等待 turn 完成
 
 - **WHEN** 运行器提交 turn 后等待完成
-- **THEN** MUST 通过轮询 SSE 事件流或读取 JSONL 文件检测 `TurnDone` 事件
+- **THEN** MUST 通过轮询共享 session 存储中的 JSONL 文件检测 `TurnDone` durable 事件
 - **AND** MUST 设置超时（可配置，默认 5 分钟），超时后标记任务为 `timeout`
+
+#### Scenario: 控制面可达但数据面不可达
+
+- **WHEN** 运行器可以连接 `server-url`，但无法访问对应的 `session_storage_root`
+- **THEN** 运行器 MUST 在启动阶段或首个任务前明确失败
+- **AND** 错误信息 MUST 指出控制面 / 数据面不一致，而不是静默退化为不稳定的等待策略
 
 ### Requirement: 运行器 SHALL 支持工作区隔离与清理
 

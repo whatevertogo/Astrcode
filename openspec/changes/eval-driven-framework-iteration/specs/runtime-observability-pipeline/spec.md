@@ -2,7 +2,7 @@
 
 ### Requirement: Runtime observability SHALL cover read and execution paths
 
-系统 MUST 同时采集读路径与执行路径的关键指标，包括 session rehydrate、SSE catch-up、turn execution、subrun execution、delivery diagnostics 以及 agent collaboration diagnostics。此外，observability 管线 MUST 支持评测场景下的指标导出，将 turn 级指标写入评测结果而非仅推送到 SSE/frontend。
+系统 MUST 同时采集读路径与执行路径的关键指标，包括 session rehydrate、SSE catch-up、turn execution、subrun execution、delivery diagnostics 以及 agent collaboration diagnostics。此外，observability 管线 MUST 保持这些指标在 durable JSONL 中的完整可提取性，使评测运行器能够离线构建评测结果，而不要求新增导出接口或额外 runtime 写路径。
 
 #### Scenario: Read path metrics are recorded
 

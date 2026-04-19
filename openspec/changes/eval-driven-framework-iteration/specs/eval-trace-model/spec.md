@@ -1,12 +1,12 @@
 ## Purpose
 
-定义评测 trace 数据模型，将 StorageEvent JSONL 事件流转化为结构化的 turn 级评测数据。
+定义评测 trace 数据模型，将 StorageEvent JSONL 事件流转化为结构化的 session / turn 级评测数据。
 
 ## ADDED Requirements
 
 ### Requirement: TurnTrace SHALL 作为评测数据的核心单元
 
-系统 MUST 定义 `TurnTrace` 结构体，包含单个 turn 内的所有评测相关信息：用户输入、工具调用序列、助手输出、prompt 指标、compaction 事件、错误事件和时间线。
+系统 MUST 定义 `TurnTrace` 结构体，包含单个 turn 内的所有评测相关信息：用户输入、工具调用序列、助手输出、prompt 指标、compaction 事件、错误事件、协作事实摘要和时间线。
 
 #### Scenario: 从完整的 turn 事件序列提取 TurnTrace
 
@@ -23,24 +23,31 @@
 #### Scenario: turn 内包含子 Agent 执行
 
 - **WHEN** turn 内存在 `SubRunStarted` 和 `SubRunFinished` 事件
-- **THEN** `TurnTrace` MUST 包含 `SubRunTrace`，记录子 Agent 的 step_count、estimated_tokens、执行结果和持续时间
+- **THEN** `TurnTrace` MUST 包含 `SubRunTrace`，记录子 Agent 的 step_count、estimated_tokens、执行结果、持续时间和 `resolved_limits`
 - **AND** 子 Agent 的 `child_session_id` MUST 被记录，支持后续递归提取子 session 的 trace
 
-### Requirement: TraceExtractor SHALL 从 JSONL 文件批量提取 TurnTrace
+#### Scenario: turn 内包含协作评估事实
 
-系统 MUST 提供 `TraceExtractor`，接受 JSONL 文件路径，输出 `Vec<TurnTrace>`。
+- **WHEN** turn 内存在 `AgentCollaborationFact` 事件
+- **THEN** `TurnTrace` MUST 记录协作事实摘要，并在存在 `sub_run_id` 时与对应 `SubRunTrace` 建立关联
+- **AND** 该协作摘要 SHALL 可用于后续 agent delegation 效果评估
+
+### Requirement: TraceExtractor SHALL 从 JSONL 文件提取 SessionTrace
+
+系统 MUST 提供 `TraceExtractor`，接受 JSONL 文件路径，输出 `SessionTrace`；其中 session 级元数据与 `Vec<TurnTrace>` 必须同时可用。
 
 #### Scenario: 从单个 session JSONL 提取所有 turn trace
 
 - **WHEN** 对一个包含多个 turn 的 session JSONL 文件执行提取
-- **THEN** 提取器 MUST 返回与 turn 数量相同的 `TurnTrace` 条目
+- **THEN** 提取器 MUST 返回一个 `SessionTrace`
+- **AND** 其中的 `turns` 数量 MUST 与 durable turn 数量一致
 - **AND** 每个 `TurnTrace` MUST 按事件时间序构建
 
 #### Scenario: 处理包含 SessionStart 的事件流
 
 - **WHEN** JSONL 文件以 `SessionStart` 事件开始
 - **THEN** 提取器 MUST 记录 session 元数据（session_id、working_dir、timestamp）
-- **AND** `SessionStart` 不产生 `TurnTrace`，而是作为 `SessionTrace` 的 header
+- **AND** `SessionStart` 不产生独立 `TurnTrace`，而是作为 `SessionTrace` 的 header
 
 #### Scenario: 处理跨 agent 谱系事件
 
