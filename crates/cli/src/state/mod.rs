@@ -479,6 +479,7 @@ mod tests {
                 active_turn_id: None,
                 last_compact_meta: None,
                 active_plan: None,
+                active_tasks: None,
             },
             blocks: vec![AstrcodeConversationBlockDto::Assistant(
                 AstrcodeConversationAssistantBlockDto {
@@ -627,6 +628,7 @@ mod tests {
             active_turn_id: Some("turn-1".to_string()),
             last_compact_meta: None,
             active_plan: None,
+            active_tasks: None,
         });
         let frame = state.thinking_playback.frame;
         state.advance_thinking_playback();

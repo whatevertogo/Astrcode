@@ -262,6 +262,20 @@ fn next_sse_block(buffer: &str) -> Option<(usize, usize)> {
     None
 }
 
+fn apply_sse_process_result(
+    result: SseProcessResult,
+    stop_reason_out: &mut Option<String>,
+    usage_out: &mut AnthropicUsage,
+) -> bool {
+    if let Some(r) = result.stop_reason {
+        *stop_reason_out = Some(r);
+    }
+    if let Some(usage) = result.usage {
+        usage_out.merge_from(usage);
+    }
+    result.done
+}
+
 pub(super) fn consume_sse_text_chunk(
     chunk_text: &str,
     sse_buffer: &mut String,
@@ -277,13 +291,7 @@ pub(super) fn consume_sse_text_chunk(
         let block = &block[..block_end];
 
         let result = process_sse_block(block, accumulator, sink)?;
-        if let Some(r) = result.stop_reason {
-            *stop_reason_out = Some(r);
-        }
-        if let Some(usage) = result.usage {
-            usage_out.merge_from(usage);
-        }
-        if result.done {
+        if apply_sse_process_result(result, stop_reason_out, usage_out) {
             return Ok(true);
         }
     }
@@ -303,12 +311,20 @@ pub(super) fn flush_sse_buffer(
         return Ok(());
     }
 
-    let result = process_sse_block(sse_buffer, accumulator, sink)?;
-    if let Some(r) = result.stop_reason {
-        *stop_reason_out = Some(r);
+    while let Some((block_end, delimiter_len)) = next_sse_block(sse_buffer) {
+        let block: String = sse_buffer.drain(..block_end + delimiter_len).collect();
+        let block = &block[..block_end];
+
+        let result = process_sse_block(block, accumulator, sink)?;
+        if apply_sse_process_result(result, stop_reason_out, usage_out) {
+            sse_buffer.clear();
+            return Ok(());
+        }
     }
-    if let Some(usage) = result.usage {
-        usage_out.merge_from(usage);
+
+    if !sse_buffer.trim().is_empty() {
+        let result = process_sse_block(sse_buffer, accumulator, sink)?;
+        apply_sse_process_result(result, stop_reason_out, usage_out);
     }
     sse_buffer.clear();
     Ok(())
@@ -324,7 +340,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{consume_sse_text_chunk, parse_sse_block};
+    use super::{consume_sse_text_chunk, flush_sse_buffer, parse_sse_block};
     use crate::{
         LlmAccumulator, LlmEvent, LlmUsage, Utf8StreamDecoder, anthropic::dto::AnthropicUsage,
         sink_collector,
@@ -604,5 +620,52 @@ mod tests {
                 .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "你好"))
         );
         assert_eq!(output.content, "你好");
+    }
+
+    #[test]
+    fn flush_sse_buffer_processes_all_complete_blocks_before_tail_block() {
+        let mut accumulator = LlmAccumulator::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = sink_collector(events.clone());
+        let mut sse_buffer = concat!(
+            "event: content_block_delta\n",
+            "data: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":",
+            "{\"output_tokens\":7}}"
+        )
+        .to_string();
+        let mut stop_reason_out = None;
+        let mut usage_out = AnthropicUsage::default();
+
+        flush_sse_buffer(
+            &mut sse_buffer,
+            &mut accumulator,
+            &sink,
+            &mut stop_reason_out,
+            &mut usage_out,
+        )
+        .expect("flush should process buffered blocks");
+
+        let output = accumulator.finish();
+        let events = events.lock().expect("lock").clone();
+
+        assert!(sse_buffer.is_empty());
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LlmEvent::TextDelta(text) if text == "hello"))
+        );
+        assert_eq!(output.content, "hello");
+        assert_eq!(stop_reason_out.as_deref(), Some("end_turn"));
+        assert_eq!(
+            usage_out.into_llm_usage(),
+            Some(LlmUsage {
+                input_tokens: 0,
+                output_tokens: 7,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            })
+        );
     }
 }

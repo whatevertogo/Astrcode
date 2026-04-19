@@ -1,14 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use astrcode_core::{
-    DeleteProjectResult, Result, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
-    StoredEvent,
+    DeleteProjectResult, RecoveredSessionState, Result, SessionId, SessionMeta,
+    SessionRecoveryCheckpoint, SessionTurnAcquireResult, StorageEvent, StoredEvent,
     ports::EventStore,
     store::{EventLogWriter, SessionManager, StoreResult},
 };
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use super::{
+    batch_appender::{BatchAppender, SharedAppenderRegistry},
+    checkpoint,
     event_log::EventLog,
     iterator::EventLogIterator,
     paths::resolve_existing_session_path,
@@ -16,15 +22,17 @@ use super::{
 };
 
 /// 基于本地文件系统的会话仓储实现。
-#[derive(Debug, Default, Clone)]
+#[derive(Clone)]
 pub struct FileSystemSessionRepository {
     projects_root: Option<PathBuf>,
+    appenders: SharedAppenderRegistry,
 }
 
 impl FileSystemSessionRepository {
     pub fn new() -> Self {
         Self {
             projects_root: None,
+            appenders: default_appender_registry(),
         }
     }
 
@@ -35,6 +43,7 @@ impl FileSystemSessionRepository {
     pub fn new_with_projects_root(projects_root: PathBuf) -> Self {
         Self {
             projects_root: Some(projects_root),
+            appenders: default_appender_registry(),
         }
     }
 
@@ -71,6 +80,24 @@ impl FileSystemSessionRepository {
     pub fn append_sync(&self, session_id: &str, event: &StorageEvent) -> StoreResult<StoredEvent> {
         let mut log = self.open_event_log_sync(session_id)?;
         log.append_stored(event)
+    }
+
+    pub fn recover_session_sync(&self, session_id: &str) -> StoreResult<RecoveredSessionState> {
+        checkpoint::recover_session(self.projects_root.as_deref(), session_id)
+    }
+
+    pub fn checkpoint_session_sync(
+        &self,
+        event_log_path: &Path,
+        session_id: &str,
+        checkpoint: &SessionRecoveryCheckpoint,
+    ) -> StoreResult<()> {
+        checkpoint::persist_checkpoint(
+            self.projects_root.as_deref(),
+            event_log_path,
+            session_id,
+            checkpoint,
+        )
     }
 
     pub fn replay_events_sync(&self, session_id: &str) -> StoreResult<Vec<StoredEvent>> {
@@ -140,6 +167,25 @@ impl FileSystemSessionRepository {
         };
         EventLog::last_storage_seq_from_path(&path)
     }
+
+    async fn appender_for_session(&self, session_id: &str) -> Arc<BatchAppender> {
+        let mut registry = self.appenders.lock().await;
+        if let Some(appender) = registry.get(session_id) {
+            return Arc::clone(appender);
+        }
+        let appender = Arc::new(BatchAppender::new(
+            session_id.to_string(),
+            self.projects_root.clone(),
+        ));
+        registry.insert(session_id.to_string(), Arc::clone(&appender));
+        appender
+    }
+}
+
+impl Default for FileSystemSessionRepository {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
@@ -155,13 +201,11 @@ impl EventStore for FileSystemSessionRepository {
     }
 
     async fn append(&self, session_id: &SessionId, event: &StorageEvent) -> Result<StoredEvent> {
-        let repo = self.clone();
-        let session_id = session_id.to_string();
-        let event = event.clone();
-        run_blocking("append storage event", move || {
-            repo.append_sync(&session_id, &event)
-        })
-        .await
+        let appender = self.appender_for_session(session_id.as_str()).await;
+        appender
+            .append(event.clone())
+            .await
+            .map_err(crate::map_store_error)
     }
 
     async fn replay(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
@@ -171,6 +215,31 @@ impl EventStore for FileSystemSessionRepository {
             repo.replay_events_sync(&session_id)
         })
         .await
+    }
+
+    async fn recover_session(&self, session_id: &SessionId) -> Result<RecoveredSessionState> {
+        let repo = self.clone();
+        let session_id = session_id.to_string();
+        run_blocking("recover storage session", move || {
+            repo.recover_session_sync(&session_id)
+        })
+        .await
+    }
+
+    async fn checkpoint_session(
+        &self,
+        session_id: &SessionId,
+        checkpoint: &SessionRecoveryCheckpoint,
+    ) -> Result<()> {
+        let appender = self.appender_for_session(session_id.as_str()).await;
+        let repo = self.clone();
+        let session_id_string = session_id.to_string();
+        appender
+            .checkpoint_with_payload(checkpoint.clone(), move |event_log_path, checkpoint| {
+                repo.checkpoint_session_sync(event_log_path, &session_id_string, checkpoint)
+            })
+            .await
+            .map_err(crate::map_store_error)
     }
 
     async fn try_acquire_turn(
@@ -222,6 +291,10 @@ impl EventStore for FileSystemSessionRepository {
         })
         .await
     }
+}
+
+fn default_appender_registry() -> SharedAppenderRegistry {
+    Arc::new(Mutex::new(std::collections::HashMap::new()))
 }
 
 async fn run_blocking<T, F>(label: &'static str, work: F) -> Result<T>

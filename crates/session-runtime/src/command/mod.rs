@@ -9,6 +9,7 @@ use chrono::Utc;
 
 use crate::{
     InputQueueEventAppend, SessionRuntime, append_and_broadcast, append_input_queue_event,
+    checkpoint_if_compacted,
 };
 
 pub(crate) struct SessionCommands<'a> {
@@ -172,9 +173,17 @@ impl<'a> SessionCommands<'a> {
         .await;
         actor.state().set_compacting(false);
         if let Some(events) = built? {
+            let mut persisted = Vec::with_capacity(events.len());
             for event in &events {
-                append_and_broadcast(actor.state(), event, &mut translator).await?;
+                persisted.push(append_and_broadcast(actor.state(), event, &mut translator).await?);
             }
+            checkpoint_if_compacted(
+                &self.runtime.event_store,
+                &session_id,
+                actor.state(),
+                &persisted,
+            )
+            .await;
         }
         Ok(false)
     }

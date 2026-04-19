@@ -5,8 +5,9 @@ use std::sync::Arc;
 use astrcode_core::{
     AgentEventContext, AgentLifecycleStatus, AgentStateProjector, ChildAgentRef,
     ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNotification,
-    ChildSessionNotificationKind, EventLogWriter, InvocationKind, ParentExecutionRef, Phase,
-    StorageEvent, StorageEventPayload, StoreResult, StoredEvent, SubRunStorageMode,
+    ChildSessionNotificationKind, EventLogWriter, ExecutionTaskItem, ExecutionTaskSnapshotMetadata,
+    InvocationKind, ParentExecutionRef, Phase, StorageEvent, StorageEventPayload, StoreResult,
+    StoredEvent, SubRunStorageMode, TaskSnapshot,
 };
 
 use super::{SessionState, SessionWriter};
@@ -114,5 +115,44 @@ pub(crate) fn child_notification_event(
             },
             timestamp: Some(chrono::Utc::now()),
         },
+    )
+}
+
+pub(crate) fn root_task_tool_result_event(
+    turn_id: &str,
+    owner: &str,
+    items: Vec<ExecutionTaskItem>,
+) -> StorageEvent {
+    let snapshot = TaskSnapshot {
+        owner: owner.to_string(),
+        items,
+    };
+    StorageEvent {
+        turn_id: Some(turn_id.to_string()),
+        agent: AgentEventContext::default(),
+        payload: StorageEventPayload::ToolResult {
+            tool_call_id: format!("call-{turn_id}"),
+            tool_name: "taskWrite".to_string(),
+            output: "updated execution tasks".to_string(),
+            success: true,
+            error: None,
+            metadata: Some(
+                serde_json::to_value(ExecutionTaskSnapshotMetadata::from_snapshot(&snapshot))
+                    .expect("task metadata should serialize"),
+            ),
+            child_ref: None,
+            duration_ms: 1,
+        },
+    }
+}
+
+pub(crate) fn root_task_write_stored(
+    storage_seq: u64,
+    owner: &str,
+    items: Vec<ExecutionTaskItem>,
+) -> StoredEvent {
+    stored(
+        storage_seq,
+        root_task_tool_result_event(&format!("turn-{storage_seq}"), owner, items),
     )
 }

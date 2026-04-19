@@ -33,6 +33,8 @@ pub mod session_plan;
 pub mod shell;
 /// 技能工具：按需加载 skill 指令
 pub mod skill_tool;
+/// 执行期 task 快照写入工具：维护当前 owner 的工作清单
+pub mod task_write;
 /// 外部工具搜索：按需展开 MCP/plugin 工具 schema
 pub mod tool_search;
 /// session 计划工件写工具：仅允许写当前 session 的 plan 目录

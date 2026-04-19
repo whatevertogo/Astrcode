@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentEvent, AgentLifecycleStatus, ChildSessionNode, Phase, Result, SessionEventRecord,
-    SessionId, StorageEventPayload, StoredEvent,
+    SessionId, StorageEventPayload, StoredEvent, TaskSnapshot,
 };
 use tokio::sync::broadcast::error::RecvError;
 
@@ -89,6 +89,16 @@ impl<'a> SessionQueries<'a> {
         let session_id = SessionId::from(crate::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
         Ok(actor.working_dir().to_string())
+    }
+
+    pub async fn active_task_snapshot(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> Result<Option<TaskSnapshot>> {
+        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let actor = self.runtime.ensure_loaded_session(&session_id).await?;
+        actor.state().active_tasks_for(owner)
     }
 
     pub async fn stored_events(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
@@ -358,9 +368,10 @@ mod tests {
     };
 
     use astrcode_core::{
-        AgentEventContext, DeleteProjectResult, EventStore, EventTranslator, Phase, Result,
-        SessionEventRecord, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
-        StorageEventPayload, StoredEvent, UserMessageOrigin,
+        AgentEventContext, DeleteProjectResult, EventStore, EventTranslator, ExecutionTaskItem,
+        ExecutionTaskStatus, Phase, Result, SessionEventRecord, SessionId, SessionMeta,
+        SessionTurnAcquireResult, StorageEvent, StorageEventPayload, StoredEvent,
+        UserMessageOrigin,
     };
     use async_trait::async_trait;
     use tokio::time::{Duration, timeout};
@@ -550,6 +561,41 @@ mod tests {
             1,
             "truncated cache should trigger only one durable replay for stream recovery"
         );
+    }
+
+    #[tokio::test]
+    async fn active_task_snapshot_reads_authoritative_owner_snapshot() {
+        let runtime = test_runtime(Arc::new(StubEventStore::default()));
+        let session = runtime
+            .create_session(".")
+            .await
+            .expect("session should be created");
+        let session_id = session.session_id.clone();
+        let state = runtime
+            .get_session_state(&session_id.clone().into())
+            .await
+            .expect("state should load");
+
+        state
+            .replace_active_task_snapshot(astrcode_core::TaskSnapshot {
+                owner: "owner-a".to_string(),
+                items: vec![ExecutionTaskItem {
+                    content: "实现 prompt 注入".to_string(),
+                    status: ExecutionTaskStatus::InProgress,
+                    active_form: Some("正在实现 prompt 注入".to_string()),
+                }],
+            })
+            .expect("task snapshot should store");
+
+        let snapshot = runtime
+            .query()
+            .active_task_snapshot(&session_id, "owner-a")
+            .await
+            .expect("query should succeed")
+            .expect("snapshot should exist");
+
+        assert_eq!(snapshot.owner, "owner-a");
+        assert_eq!(snapshot.items[0].content, "实现 prompt 注入");
     }
 
     fn build_large_history() -> Vec<StoredEvent> {

@@ -16,7 +16,7 @@ use crate::{
     AgentCollaborationFact, AgentEventContext, AstrError, ChildAgentRef, ChildSessionNotification,
     InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
     ModeId, PersistedToolOutput, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    Result, SubRunResult, ToolOutputStream, UserMessageOrigin,
+    Result, SubRunResult, SystemPromptLayer, ToolOutputStream, UserMessageOrigin,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -49,6 +49,8 @@ pub struct PromptMetricsPayload {
     pub prompt_cache_reuse_hits: u32,
     #[serde(default)]
     pub prompt_cache_reuse_misses: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt_cache_unchanged_layers: Vec<SystemPromptLayer>,
 }
 
 /// 上下文压缩的触发方式。

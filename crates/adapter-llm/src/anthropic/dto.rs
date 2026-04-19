@@ -172,10 +172,10 @@ impl AnthropicContentBlock {
             None
         };
         match self {
-            AnthropicContentBlock::Text { cache_control, .. } => *cache_control = control,
-            AnthropicContentBlock::Thinking { .. } => return false,
-            AnthropicContentBlock::ToolUse { cache_control, .. } => *cache_control = control,
-            AnthropicContentBlock::ToolResult { cache_control, .. } => *cache_control = control,
+            AnthropicContentBlock::Text { cache_control, .. }
+            | AnthropicContentBlock::Thinking { cache_control, .. }
+            | AnthropicContentBlock::ToolUse { cache_control, .. }
+            | AnthropicContentBlock::ToolResult { cache_control, .. } => *cache_control = control,
         }
         true
     }
@@ -307,4 +307,36 @@ pub(super) fn extract_usage_from_payload(
 
 fn parse_usage_value(value: &Value) -> Option<AnthropicUsage> {
     serde_json::from_value::<AnthropicUsage>(value.clone()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{AnthropicCacheControl, AnthropicContentBlock};
+
+    #[test]
+    fn clearing_cache_control_reports_success_for_non_text_blocks() {
+        let mut block = AnthropicContentBlock::Thinking {
+            thinking: "reasoning".to_string(),
+            signature: None,
+            cache_control: Some(AnthropicCacheControl::ephemeral()),
+        };
+
+        assert!(block.set_cache_control_if_allowed(false));
+        assert!(!block.has_cache_control());
+    }
+
+    #[test]
+    fn enabling_cache_control_still_rejects_unsupported_blocks() {
+        let mut block = AnthropicContentBlock::ToolUse {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            input: json!({ "q": "rust" }),
+            cache_control: None,
+        };
+
+        assert!(!block.set_cache_control_if_allowed(true));
+        assert!(!block.has_cache_control());
+    }
 }

@@ -5,7 +5,8 @@ use astrcode_protocol::http::{
     ConversationDeltaDto, ConversationErrorEnvelopeDto, ConversationPlanBlockDto,
     ConversationPlanBlockersDto, ConversationPlanEventKindDto, ConversationPlanReviewDto,
     ConversationPlanReviewKindDto, ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto,
-    ConversationToolCallBlockDto, ConversationToolStreamsDto, PhaseDto,
+    ConversationTaskItemDto, ConversationTaskStatusDto, ConversationToolCallBlockDto,
+    ConversationToolStreamsDto, PhaseDto,
 };
 use serde_json::json;
 
@@ -40,6 +41,18 @@ fn conversation_snapshot_fixture_freezes_authoritative_tool_block_shape() {
             active_turn_id: Some("turn-42".to_string()),
             last_compact_meta: None,
             active_plan: None,
+            active_tasks: Some(vec![
+                ConversationTaskItemDto {
+                    content: "实现 authoritative task panel".to_string(),
+                    status: ConversationTaskStatusDto::InProgress,
+                    active_form: Some("正在实现 authoritative task panel".to_string()),
+                },
+                ConversationTaskItemDto {
+                    content: "补充前端 hydration 测试".to_string(),
+                    status: ConversationTaskStatusDto::Pending,
+                    active_form: None,
+                },
+            ]),
         },
         blocks: vec![ConversationBlockDto::ToolCall(
             ConversationToolCallBlockDto {

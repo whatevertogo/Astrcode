@@ -3,6 +3,7 @@ import { subRunNotice } from '../../lib/styles';
 import InputBar from './InputBar';
 import MessageList from './MessageList';
 import { ChatScreenProvider, type ChatScreenContextValue } from './ChatScreenContext';
+import TaskPanel from './TaskPanel';
 import TopBar from './TopBar';
 
 interface ChatProps {
@@ -24,6 +25,7 @@ export default function Chat({
     <ChatScreenProvider value={contextValue}>
       <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-panel-bg">
         <TopBar />
+        <TaskPanel />
         <MessageList
           threadItems={threadItems}
           childSubRuns={childSubRuns}

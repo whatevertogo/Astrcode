@@ -585,13 +585,13 @@ type ConversationSse = Sse<axum::response::sse::KeepAliveStream<ConversationEven
 #[cfg(test)]
 mod tests {
     use astrcode_application::terminal::{
-        TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
+        TaskItemFacts, TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
         summarize_conversation_authoritative,
     };
     use astrcode_core::{
         AgentEventContext, AgentLifecycleStatus, ChildExecutionIdentity, ChildSessionLineageKind,
-        ChildSessionNode, ChildSessionStatusSource, ParentExecutionRef, Phase, SessionEventRecord,
-        ToolExecutionResult, ToolOutputStream,
+        ChildSessionNode, ChildSessionStatusSource, ExecutionTaskStatus, ParentExecutionRef, Phase,
+        SessionEventRecord, ToolExecutionResult, ToolOutputStream,
     };
     use astrcode_session_runtime::{
         ConversationBlockPatchFacts, ConversationDeltaFacts, ConversationDeltaFrameFacts,
@@ -755,6 +755,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn authoritative_refresh_emits_control_delta_for_active_tasks() {
+        let facts = sample_stream_facts(Vec::new(), Vec::new());
+        let mut state = ConversationStreamProjectorState::new(
+            "session-root".to_string(),
+            Some("1.4".to_string()),
+            &facts,
+        );
+
+        let mut refreshed_control = facts.control.clone();
+        refreshed_control.active_tasks = Some(vec![
+            TaskItemFacts {
+                content: "实现 authoritative task panel".to_string(),
+                status: ExecutionTaskStatus::InProgress,
+                active_form: Some("正在实现 authoritative task panel".to_string()),
+            },
+            TaskItemFacts {
+                content: "补充前端 hydration 测试".to_string(),
+                status: ExecutionTaskStatus::Pending,
+                active_form: None,
+            },
+        ]);
+
+        let refreshed =
+            ConversationAuthoritativeFacts::from_summary(summarize_conversation_authoritative(
+                &refreshed_control,
+                &facts.child_summaries,
+                &facts.slash_candidates,
+            ));
+
+        let envelopes = state.apply_authoritative_refresh("1.4", refreshed);
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&envelopes[0]).expect("control envelope should encode"),
+            json!({
+                "sessionId": "session-root",
+                "cursor": "1.4",
+                "kind": "update_control_state",
+                "control": {
+                    "phase": "callingTool",
+                    "canSubmitPrompt": false,
+                    "canRequestCompact": true,
+                    "compactPending": false,
+                    "compacting": false,
+                    "currentModeId": "code",
+                    "activeTurnId": "turn-1",
+                    "activeTasks": [
+                        {
+                            "content": "实现 authoritative task panel",
+                            "status": "in_progress",
+                            "activeForm": "正在实现 authoritative task panel"
+                        },
+                        {
+                            "content": "补充前端 hydration 测试",
+                            "status": "pending"
+                        }
+                    ]
+                }
+            })
+        );
+    }
+
     fn sample_stream_facts(
         seed_records: Vec<SessionEventRecord>,
         history: Vec<SessionEventRecord>,
@@ -813,6 +875,7 @@ mod tests {
                 last_compact_meta: None,
                 current_mode_id: "code".to_string(),
                 active_plan: None,
+                active_tasks: None,
             },
             child_summaries: Vec::new(),
             slash_candidates: Vec::new(),

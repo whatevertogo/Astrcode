@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    CancelToken, EventTranslator, Phase, Result, SessionTurnLease, StorageEvent, StoredEvent,
-    ToolEventSink, support,
+    CancelToken, EventStore, EventTranslator, Phase, Result, SessionId, SessionTurnLease,
+    StorageEvent, StorageEventPayload, StoredEvent, ToolEventSink, support,
 };
 use async_trait::async_trait;
 use tokio::sync::Mutex;
@@ -53,6 +53,47 @@ pub fn prepare_session_execution(
 /// 完成 session 执行状态。
 pub fn complete_session_execution(session: &SessionState, phase: Phase) {
     session.complete_execution_state(phase);
+}
+
+pub async fn checkpoint_if_compacted(
+    event_store: &Arc<dyn EventStore>,
+    session_id: &SessionId,
+    session_state: &Arc<SessionState>,
+    persisted_events: &[StoredEvent],
+) {
+    let Some(checkpoint_storage_seq) = persisted_events.last().map(|stored| stored.storage_seq)
+    else {
+        return;
+    };
+    if !persisted_events.iter().any(|stored| {
+        matches!(
+            stored.event.payload,
+            StorageEventPayload::CompactApplied { .. }
+        )
+    }) {
+        return;
+    }
+    let checkpoint = match session_state.recovery_checkpoint(checkpoint_storage_seq) {
+        Ok(checkpoint) => checkpoint,
+        Err(error) => {
+            log::warn!(
+                "failed to build recovery checkpoint for session '{}': {}",
+                session_id,
+                error
+            );
+            return;
+        },
+    };
+    if let Err(error) = event_store
+        .checkpoint_session(session_id, &checkpoint)
+        .await
+    {
+        log::warn!(
+            "failed to persist recovery checkpoint for session '{}': {}",
+            session_id,
+            error
+        );
+    }
 }
 
 pub struct SessionStateEventSink {

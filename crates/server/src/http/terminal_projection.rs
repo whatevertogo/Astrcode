@@ -19,8 +19,9 @@ use astrcode_protocol::http::{
     ConversationPlanReviewKindDto, ConversationSlashActionKindDto, ConversationSlashCandidateDto,
     ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
     ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
-    ConversationThinkingBlockDto, ConversationToolCallBlockDto, ConversationToolStreamsDto,
-    ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
+    ConversationTaskItemDto, ConversationTaskStatusDto, ConversationThinkingBlockDto,
+    ConversationToolCallBlockDto, ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto,
+    ConversationUserBlockDto,
 };
 use astrcode_session_runtime::{
     ConversationBlockFacts, ConversationBlockPatchFacts, ConversationBlockStatus,
@@ -474,6 +475,26 @@ fn to_conversation_control_state_dto(
                 meta: meta.meta,
             }),
         active_plan: summary.active_plan.map(to_plan_reference_dto),
+        active_tasks: summary.active_tasks.map(|tasks| {
+            tasks
+                .into_iter()
+                .map(|task| ConversationTaskItemDto {
+                    content: task.content,
+                    status: match task.status {
+                        astrcode_core::ExecutionTaskStatus::Pending => {
+                            ConversationTaskStatusDto::Pending
+                        },
+                        astrcode_core::ExecutionTaskStatus::InProgress => {
+                            ConversationTaskStatusDto::InProgress
+                        },
+                        astrcode_core::ExecutionTaskStatus::Completed => {
+                            ConversationTaskStatusDto::Completed
+                        },
+                    },
+                    active_form: task.active_form,
+                })
+                .collect()
+        }),
     }
 }
 

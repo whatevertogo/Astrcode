@@ -119,6 +119,7 @@ impl PromptProvider for NoopPromptProvider {
         Ok(PromptBuildOutput {
             system_prompt: "noop".to_string(),
             system_prompt_blocks: Vec::new(),
+            prompt_cache_hints: Default::default(),
             cache_metrics: Default::default(),
             metadata: json!({}),
         })

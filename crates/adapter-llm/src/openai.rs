@@ -29,7 +29,8 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, CancelToken, LlmMessage, ReasoningContent, Result, ToolCallRequest, ToolDefinition,
+    AstrError, CancelToken, LlmMessage, PromptCacheHints, ReasoningContent, Result,
+    ToolCallRequest, ToolDefinition,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -118,6 +119,7 @@ impl OpenAiProvider {
         tools: &'a [ToolDefinition],
         system_prompt: Option<&'a str>,
         system_prompt_blocks: &'a [astrcode_core::SystemPromptBlock],
+        prompt_cache_hints: Option<&'a PromptCacheHints>,
         max_output_tokens_override: Option<usize>,
         stream: bool,
     ) -> OpenAiChatRequest<'a> {
@@ -160,7 +162,13 @@ impl OpenAiProvider {
             max_tokens: effective_max_output_tokens.min(u32::MAX as usize) as u32,
             messages: request_messages,
             prompt_cache_key: self.should_send_prompt_cache_key().then(|| {
-                build_prompt_cache_key(&self.model, system_prompt, system_prompt_blocks, tools)
+                build_prompt_cache_key(
+                    &self.model,
+                    system_prompt,
+                    system_prompt_blocks,
+                    prompt_cache_hints,
+                    tools,
+                )
             }),
             prompt_cache_retention: None,
             tools: if tools.is_empty() {
@@ -264,13 +272,27 @@ fn build_prompt_cache_key(
     model: &str,
     system_prompt: Option<&str>,
     system_prompt_blocks: &[astrcode_core::SystemPromptBlock],
+    prompt_cache_hints: Option<&PromptCacheHints>,
     tools: &[ToolDefinition],
 ) -> String {
     let mut hasher = DefaultHasher::new();
     "astrcode-openai-prompt-cache-v1".hash(&mut hasher);
     model.hash(&mut hasher);
 
-    if !system_prompt_blocks.is_empty() {
+    if let Some(hints) = prompt_cache_hints {
+        if let Some(stable) = &hints.layer_fingerprints.stable {
+            "stable".hash(&mut hasher);
+            stable.hash(&mut hasher);
+        }
+        if let Some(semi_stable) = &hints.layer_fingerprints.semi_stable {
+            "semi_stable".hash(&mut hasher);
+            semi_stable.hash(&mut hasher);
+        }
+        if let Some(inherited) = &hints.layer_fingerprints.inherited {
+            "inherited".hash(&mut hasher);
+            inherited.hash(&mut hasher);
+        }
+    } else if !system_prompt_blocks.is_empty() {
         for block in system_prompt_blocks {
             format!("{:?}", block.layer).hash(&mut hasher);
             block.title.hash(&mut hasher);
@@ -309,6 +331,7 @@ impl LlmProvider for OpenAiProvider {
             &request.tools,
             request.system_prompt.as_deref(),
             &request.system_prompt_blocks,
+            request.prompt_cache_hints.as_ref(),
             request.max_output_tokens_override,
             sink.is_some(),
         );
@@ -1036,8 +1059,15 @@ mod tests {
             content: "hi".to_string(),
             origin: UserMessageOrigin::User,
         }];
-        let request =
-            provider.build_request(&messages, &[], Some("Follow the rules"), &[], None, false);
+        let request = provider.build_request(
+            &messages,
+            &[],
+            Some("Follow the rules"),
+            &[],
+            None,
+            None,
+            false,
+        );
 
         assert_eq!(request.messages[0].role, "system");
         assert_eq!(
@@ -1091,7 +1121,8 @@ mod tests {
                 layer: astrcode_core::SystemPromptLayer::Inherited,
             },
         ];
-        let request = provider.build_request(&messages, &[], None, &system_blocks, None, false);
+        let request =
+            provider.build_request(&messages, &[], None, &system_blocks, None, None, false);
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         // 应该有 4 个 system 消息 + 1 个 user 消息，无 cache_control 字段
@@ -1152,6 +1183,7 @@ mod tests {
             Some("Follow the rules"),
             &[],
             None,
+            None,
             false,
         ))
         .expect("request should serialize");
@@ -1160,6 +1192,7 @@ mod tests {
             &[],
             Some("Follow the rules"),
             &[],
+            None,
             None,
             false,
         ))
@@ -1193,8 +1226,8 @@ mod tests {
             origin: UserMessageOrigin::User,
         }];
 
-        let capped = provider.build_request(&messages, &[], None, &[], Some(1024), false);
-        let clamped = provider.build_request(&messages, &[], None, &[], Some(4096), false);
+        let capped = provider.build_request(&messages, &[], None, &[], None, Some(1024), false);
+        let clamped = provider.build_request(&messages, &[], None, &[], None, Some(4096), false);
 
         assert_eq!(capped.max_tokens, 1024);
         assert_eq!(clamped.max_tokens, 2048);

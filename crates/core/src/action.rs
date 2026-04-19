@@ -115,6 +115,28 @@ pub struct ToolOutputDelta {
 }
 
 impl ToolExecutionResult {
+    /// 用公共执行结果字段一次性构造工具结果，避免先写占位值再二次覆盖。
+    pub fn from_common(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        ok: bool,
+        output: impl Into<String>,
+        child_ref: Option<ChildAgentRef>,
+        common: ExecutionResultCommon,
+    ) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            ok,
+            output: output.into(),
+            error: common.error,
+            metadata: common.metadata,
+            child_ref,
+            duration_ms: common.duration_ms,
+            truncated: common.truncated,
+        }
+    }
+
     /// 生成面向模型的工具结果内容。
     ///
     /// 成功时直接返回输出；失败时拼接错误信息和输出，
@@ -169,14 +191,6 @@ impl ToolExecutionResult {
             duration_ms: self.duration_ms,
             truncated: self.truncated,
         }
-    }
-
-    pub fn with_common(mut self, common: ExecutionResultCommon) -> Self {
-        self.error = common.error;
-        self.metadata = common.metadata;
-        self.duration_ms = common.duration_ms;
-        self.truncated = common.truncated;
-        self
     }
 }
 
@@ -358,7 +372,7 @@ mod tests {
     use serde_json::json;
 
     use super::{ToolExecutionResult, split_assistant_content};
-    use crate::{AgentId, SessionId, SubRunId};
+    use crate::{AgentId, ExecutionResultCommon, SessionId, SubRunId};
 
     #[test]
     fn split_assistant_content_extracts_inline_thinking_blocks() {
@@ -425,5 +439,28 @@ mod tests {
         assert!(content.contains("- agentId: agent-1"));
         assert!(content.contains("- subRunId: subrun-1"));
         assert!(content.contains("Use this exact `agentId` value"));
+    }
+
+    #[test]
+    fn from_common_preserves_failure_fields_without_placeholder_override() {
+        let result = ToolExecutionResult::from_common(
+            "call-1",
+            "spawn",
+            false,
+            "",
+            None,
+            ExecutionResultCommon::failure(
+                "spawn failed",
+                Some(json!({ "schema": "subRunResult" })),
+                17,
+                true,
+            ),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(result.error.as_deref(), Some("spawn failed"));
+        assert_eq!(result.metadata, Some(json!({ "schema": "subRunResult" })));
+        assert_eq!(result.duration_ms, 17);
+        assert!(result.truncated);
     }
 }

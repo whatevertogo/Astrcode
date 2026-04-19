@@ -10,7 +10,18 @@
     "compactPending": false,
     "compacting": false,
     "currentModeId": "code",
-    "activeTurnId": "turn-42"
+    "activeTurnId": "turn-42",
+    "activeTasks": [
+      {
+        "content": "实现 authoritative task panel",
+        "status": "in_progress",
+        "activeForm": "正在实现 authoritative task panel"
+      },
+      {
+        "content": "补充前端 hydration 测试",
+        "status": "pending"
+      }
+    ]
   },
   "blocks": [
     {

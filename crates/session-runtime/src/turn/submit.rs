@@ -2,11 +2,11 @@ use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, ApprovalPending, CancelToken, CapabilityCall,
-    CompletedParentDeliveryPayload, EventTranslator, ExecutionAccepted, LlmMessage, ParentDelivery,
-    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics, Phase,
-    PolicyContext, PromptDeclaration, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
-    ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder, SessionId, StorageEvent,
-    StorageEventPayload, TurnId, UserMessageOrigin,
+    CompletedParentDeliveryPayload, EventStore, EventTranslator, ExecutionAccepted, LlmMessage,
+    ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
+    Phase, PolicyContext, PromptDeclaration, ResolvedExecutionLimitsSnapshot,
+    ResolvedRuntimeConfig, ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder,
+    SessionId, StorageEvent, StorageEventPayload, StoredEvent, TurnId, UserMessageOrigin,
 };
 use astrcode_kernel::CapabilityRouter;
 use chrono::Utc;
@@ -14,7 +14,7 @@ use chrono::Utc;
 use crate::{
     SessionRuntime, TurnOutcome,
     actor::SessionActor,
-    prepare_session_execution,
+    checkpoint_if_compacted, prepare_session_execution,
     query::current_turn_messages,
     run_turn,
     state::{append_and_broadcast, complete_session_execution},
@@ -68,6 +68,7 @@ struct PersistedTurnContext {
 struct TurnFinalizeContext {
     kernel: Arc<astrcode_kernel::Kernel>,
     prompt_facts_provider: Arc<dyn astrcode_core::PromptFactsProvider>,
+    event_store: Arc<dyn EventStore>,
     metrics: Arc<dyn RuntimeMetricsRecorder>,
     actor: Arc<SessionActor>,
     session_id: String,
@@ -105,6 +106,7 @@ async fn finalize_turn_execution(
     match result {
         Ok(turn_result) => {
             persist_turn_events(
+                &finalize.event_store,
                 finalize.actor.state(),
                 &finalize.session_id,
                 &mut translator,
@@ -142,6 +144,7 @@ async fn finalize_turn_execution(
     persist_pending_manual_compact_if_any(
         finalize.kernel.gateway(),
         finalize.prompt_facts_provider.as_ref(),
+        &finalize.event_store,
         finalize.actor.working_dir(),
         finalize.actor.state(),
         &finalize.session_id,
@@ -160,20 +163,25 @@ fn terminal_phase_for_result(result: &Result<crate::TurnRunResult>) -> Phase {
 }
 
 async fn persist_turn_events(
+    event_store: &Arc<dyn EventStore>,
     session_state: &Arc<crate::SessionState>,
     session_id: &str,
     translator: &mut EventTranslator,
     turn_result: crate::TurnRunResult,
     persisted: &PersistedTurnContext,
 ) {
+    let mut persisted_events = Vec::<StoredEvent>::new();
     for event in &turn_result.events {
-        if let Err(error) = append_and_broadcast(session_state, event, translator).await {
-            log::error!(
-                "failed to persist turn event for session '{}': {}",
-                session_id,
-                error
-            );
-            break;
+        match append_and_broadcast(session_state, event, translator).await {
+            Ok(stored) => persisted_events.push(stored),
+            Err(error) => {
+                log::error!(
+                    "failed to persist turn event for session '{}': {}",
+                    session_id,
+                    error
+                );
+                break;
+            },
         }
     }
     if let Some(event) = subrun_finished_event(
@@ -190,6 +198,13 @@ async fn persist_turn_events(
             );
         }
     }
+    checkpoint_if_compacted(
+        event_store,
+        &SessionId::from(session_id.to_string()),
+        session_state,
+        &persisted_events,
+    )
+    .await;
 }
 
 async fn persist_turn_failure(
@@ -213,6 +228,7 @@ async fn persist_turn_failure(
 async fn persist_deferred_manual_compact(
     gateway: &astrcode_kernel::KernelGateway,
     prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
+    event_store: &Arc<dyn EventStore>,
     working_dir: &str,
     session_state: &Arc<crate::SessionState>,
     session_id: &str,
@@ -247,23 +263,33 @@ async fn persist_deferred_manual_compact(
     };
     let mut compact_translator =
         EventTranslator::new(session_state.current_phase().unwrap_or(Phase::Idle));
+    let mut persisted = Vec::<StoredEvent>::with_capacity(events.len());
     for event in &events {
-        if let Err(error) =
-            append_and_broadcast(session_state, event, &mut compact_translator).await
-        {
-            log::warn!(
-                "failed to persist deferred compact for session '{}': {}",
-                session_id,
-                error
-            );
-            break;
+        match append_and_broadcast(session_state, event, &mut compact_translator).await {
+            Ok(stored) => persisted.push(stored),
+            Err(error) => {
+                log::warn!(
+                    "failed to persist deferred compact for session '{}': {}",
+                    session_id,
+                    error
+                );
+                break;
+            },
         }
     }
+    checkpoint_if_compacted(
+        event_store,
+        &SessionId::from(session_id.to_string()),
+        session_state,
+        &persisted,
+    )
+    .await;
 }
 
 pub(crate) async fn persist_pending_manual_compact_if_any(
     gateway: &astrcode_kernel::KernelGateway,
     prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
+    event_store: &Arc<dyn EventStore>,
     working_dir: &str,
     session_state: &Arc<crate::SessionState>,
     session_id: &str,
@@ -273,6 +299,7 @@ pub(crate) async fn persist_pending_manual_compact_if_any(
         persist_deferred_manual_compact(
             gateway,
             prompt_facts_provider,
+            event_store,
             working_dir,
             session_state,
             session_id,
@@ -549,6 +576,7 @@ impl SessionRuntime {
             finalize: TurnFinalizeContext {
                 kernel: Arc::clone(&self.kernel),
                 prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
+                event_store: Arc::clone(&self.event_store),
                 metrics: Arc::clone(&self.metrics),
                 actor: Arc::clone(&submit_target.actor),
                 session_id: submit_target.session_id.to_string(),
@@ -740,6 +768,7 @@ mod tests {
             Ok(PromptBuildOutput {
                 system_prompt: "noop".to_string(),
                 system_prompt_blocks: Vec::new(),
+                prompt_cache_hints: Default::default(),
                 cache_metrics: Default::default(),
                 metadata: serde_json::Value::Null,
             })

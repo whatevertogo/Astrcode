@@ -8,7 +8,7 @@
 
 use astrcode_core::{
     ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionId,
-    SessionMeta, StoredEvent,
+    SessionMeta, StoredEvent, TaskSnapshot,
 };
 use astrcode_session_runtime::{
     ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint, ForkResult,
@@ -64,6 +64,11 @@ pub trait AppSessionPort: Send + Sync {
         &self,
         session_id: &str,
     ) -> astrcode_core::Result<SessionControlStateSnapshot>;
+    async fn active_task_snapshot(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> astrcode_core::Result<Option<TaskSnapshot>>;
     async fn session_mode_state(
         &self,
         session_id: &str,
@@ -175,6 +180,14 @@ impl AppSessionPort for SessionRuntime {
         session_id: &str,
     ) -> astrcode_core::Result<SessionControlStateSnapshot> {
         self.session_control_state(session_id).await
+    }
+
+    async fn active_task_snapshot(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> astrcode_core::Result<Option<TaskSnapshot>> {
+        self.active_task_snapshot(session_id, owner).await
     }
 
     async fn session_mode_state(

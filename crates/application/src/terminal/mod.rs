@@ -3,7 +3,9 @@
 //! 定义面向前端的事件流数据模型（`TerminalFacts`、`ConversationSlashCandidateFacts` 等）
 //! 以及从 session-runtime 快照到终端视图的投影辅助函数。
 
-use astrcode_core::{ChildAgentRef, ChildSessionNode, CompactAppliedMeta, CompactTrigger, Phase};
+use astrcode_core::{
+    ChildAgentRef, ChildSessionNode, CompactAppliedMeta, CompactTrigger, ExecutionTaskStatus, Phase,
+};
 use astrcode_session_runtime::{
     ConversationSnapshotFacts as RuntimeConversationSnapshotFacts,
     ConversationStreamReplayFacts as RuntimeConversationStreamReplayFacts,
@@ -36,6 +38,13 @@ pub struct PlanReferenceFacts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskItemFacts {
+    pub content: String,
+    pub status: ExecutionTaskStatus,
+    pub active_form: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationControlSummary {
     pub phase: Phase,
     pub can_submit_prompt: bool,
@@ -46,6 +55,7 @@ pub struct ConversationControlSummary {
     pub last_compact_meta: Option<TerminalLastCompactMetaFacts>,
     pub current_mode_id: String,
     pub active_plan: Option<PlanReferenceFacts>,
+    pub active_tasks: Option<Vec<TaskItemFacts>>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +67,7 @@ pub struct TerminalControlFacts {
     pub last_compact_meta: Option<TerminalLastCompactMetaFacts>,
     pub current_mode_id: String,
     pub active_plan: Option<PlanReferenceFacts>,
+    pub active_tasks: Option<Vec<TaskItemFacts>>,
 }
 
 pub type ConversationControlFacts = TerminalControlFacts;
@@ -224,6 +235,7 @@ pub fn summarize_conversation_control(
         last_compact_meta: control.last_compact_meta.clone(),
         current_mode_id: control.current_mode_id.clone(),
         active_plan: control.active_plan.clone(),
+        active_tasks: control.active_tasks.clone(),
     }
 }
 

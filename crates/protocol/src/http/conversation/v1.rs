@@ -384,6 +384,8 @@ pub struct ConversationControlStateDto {
     pub last_compact_meta: Option<ConversationLastCompactMetaDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_plan: Option<ConversationPlanReferenceDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_tasks: Option<Vec<ConversationTaskItemDto>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -401,6 +403,23 @@ pub struct ConversationPlanReferenceDto {
     pub path: String,
     pub status: String,
     pub title: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationTaskStatusDto {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTaskItemDto {
+    pub content: String,
+    pub status: ConversationTaskStatusDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_form: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

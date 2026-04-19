@@ -290,15 +290,31 @@ impl LlmProvider for AnthropicProvider {
         let cancel = request.cancel;
 
         // 检测缓存失效并记录原因
-        let system_prompt_text = request.system_prompt.as_deref().unwrap_or("");
+        let system_prompt_text = request
+            .prompt_cache_hints
+            .as_ref()
+            .map(cacheable_prefix_cache_key)
+            .unwrap_or_else(|| request.system_prompt.clone().unwrap_or_default());
         let tool_names: Vec<String> = request.tools.iter().map(|t| t.name.clone()).collect();
 
         if let Ok(mut tracker) = self.cache_tracker.lock() {
-            let break_reasons =
-                tracker.check_and_update(system_prompt_text, &tool_names, &self.model, "anthropic");
+            let break_reasons = tracker.check_and_update(
+                &system_prompt_text,
+                &tool_names,
+                &self.model,
+                "anthropic",
+            );
 
             if !break_reasons.is_empty() {
-                debug!("[CACHE] Cache break detected: {:?}", break_reasons);
+                debug!(
+                    "[CACHE] Cache break detected: {:?}, unchanged_layers={:?}",
+                    break_reasons,
+                    request
+                        .prompt_cache_hints
+                        .as_ref()
+                        .map(|hints| hints.unchanged_layers.as_slice())
+                        .unwrap_or(&[])
+                );
             }
         }
 
@@ -444,6 +460,18 @@ impl LlmProvider for AnthropicProvider {
     fn model_limits(&self) -> ModelLimits {
         self.limits
     }
+}
+
+fn cacheable_prefix_cache_key(hints: &astrcode_core::PromptCacheHints) -> String {
+    [
+        hints.layer_fingerprints.stable.as_deref(),
+        hints.layer_fingerprints.semi_stable.as_deref(),
+        hints.layer_fingerprints.inherited.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("|")
 }
 
 #[cfg(test)]

@@ -98,6 +98,24 @@ pub struct CapabilityExecutionResult {
 }
 
 impl CapabilityExecutionResult {
+    /// 用公共执行结果字段一次性构造能力结果，避免二段式覆盖。
+    pub fn from_common(
+        capability_name: impl Into<String>,
+        success: bool,
+        output: Value,
+        common: ExecutionResultCommon,
+    ) -> Self {
+        Self {
+            capability_name: capability_name.into(),
+            success,
+            output,
+            error: common.error,
+            metadata: common.metadata,
+            duration_ms: common.duration_ms,
+            truncated: common.truncated,
+        }
+    }
+
     /// 构造成功结果。
     pub fn ok(capability_name: impl Into<String>, output: Value) -> Self {
         Self {
@@ -166,14 +184,6 @@ impl CapabilityExecutionResult {
             truncated: self.truncated,
         }
     }
-
-    pub fn with_common(mut self, common: ExecutionResultCommon) -> Self {
-        self.error = common.error;
-        self.metadata = common.metadata;
-        self.duration_ms = common.duration_ms;
-        self.truncated = common.truncated;
-        self
-    }
 }
 
 /// 能力调用器 trait。
@@ -192,4 +202,33 @@ pub trait CapabilityInvoker: Send + Sync {
         payload: Value,
         ctx: &CapabilityContext,
     ) -> Result<CapabilityExecutionResult>;
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::CapabilityExecutionResult;
+    use crate::ExecutionResultCommon;
+
+    #[test]
+    fn from_common_preserves_failure_fields_without_placeholder_override() {
+        let result = CapabilityExecutionResult::from_common(
+            "plugin.read",
+            false,
+            json!(null),
+            ExecutionResultCommon::failure(
+                "transport failed",
+                Some(json!({ "streamEvents": [] })),
+                23,
+                false,
+            ),
+        );
+
+        assert!(!result.success);
+        assert_eq!(result.error.as_deref(), Some("transport failed"));
+        assert_eq!(result.metadata, Some(json!({ "streamEvents": [] })));
+        assert_eq!(result.duration_ms, 23);
+        assert!(!result.truncated);
+    }
 }

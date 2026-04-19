@@ -5,13 +5,15 @@
 
 use std::{cmp::Reverse, collections::HashSet, path::Path};
 
+use astrcode_session_runtime::ROOT_AGENT_ID;
+
 use crate::{
     App, ApplicationError, ComposerOptionKind, ComposerOptionsRequest, SessionMeta,
     session_plan::session_plan_control_summary,
     terminal::{
-        ConversationAuthoritativeSummary, ConversationFocus, TerminalChildSummaryFacts,
-        TerminalControlFacts, TerminalResumeCandidateFacts, TerminalSlashAction,
-        TerminalSlashCandidateFacts, summarize_conversation_authoritative,
+        ConversationAuthoritativeSummary, ConversationFocus, TaskItemFacts,
+        TerminalChildSummaryFacts, TerminalControlFacts, TerminalResumeCandidateFacts,
+        TerminalSlashAction, TerminalSlashCandidateFacts, summarize_conversation_authoritative,
     },
 };
 
@@ -162,6 +164,24 @@ impl App {
             .session_runtime
             .get_session_working_dir(session_id)
             .await?;
+        // TODO(task-panel): 当前 control read model 只读取 root owner 的 task snapshot。
+        // 后续若支持多 owner 并行展示，需要把这里扩成 owner 列表查询与聚合映射，
+        // 而不是继续把 conversation 面板固定到单一 ROOT_AGENT_ID。
+        facts.active_tasks = self
+            .session_runtime
+            .active_task_snapshot(session_id, ROOT_AGENT_ID)
+            .await?
+            .map(|snapshot| {
+                snapshot
+                    .items
+                    .into_iter()
+                    .map(|item| TaskItemFacts {
+                        content: item.content,
+                        status: item.status,
+                        active_form: item.active_form,
+                    })
+                    .collect()
+            });
         let plan_summary = session_plan_control_summary(session_id, Path::new(&working_dir))?;
         facts.active_plan =
             plan_summary

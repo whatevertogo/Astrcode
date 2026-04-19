@@ -372,6 +372,18 @@ mod tests {
                     .expect("writeFile should build"),
             )))
             .register_invoker(Arc::new(FakeCapabilityInvoker::new(
+                CapabilitySpec::builder("taskWrite", CapabilityKind::Tool)
+                    .description("task")
+                    .schema(
+                        serde_json::json!({"type":"object"}),
+                        serde_json::json!({"type":"object"}),
+                    )
+                    .tags(["task", "execution"])
+                    .side_effect(SideEffect::Local)
+                    .build()
+                    .expect("taskWrite should build"),
+            )))
+            .register_invoker(Arc::new(FakeCapabilityInvoker::new(
                 CapabilitySpec::builder("spawn", CapabilityKind::Tool)
                     .description("spawn")
                     .schema(
@@ -402,6 +414,7 @@ mod tests {
             vec![
                 "readFile".to_string(),
                 "spawn".to_string(),
+                "taskWrite".to_string(),
                 "writeFile".to_string()
             ]
         );

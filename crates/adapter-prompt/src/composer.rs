@@ -31,7 +31,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use astrcode_core::{LlmMessage, UserMessageOrigin};
+use astrcode_core::{LlmMessage, PromptCacheHints, UserMessageOrigin};
 
 use super::{
     BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock, PromptContext,
@@ -109,6 +109,7 @@ pub struct PromptComposer {
 pub struct PromptBuildOutput {
     pub plan: PromptPlan,
     pub diagnostics: PromptDiagnostics,
+    pub cache_hints: PromptCacheHints,
 }
 
 /// 贡献者缓存条目。
@@ -218,7 +219,11 @@ impl PromptComposer {
         let candidates = self.filter_duplicate_block_ids(candidates, &mut diagnostics)?;
         self.resolve_candidates(candidates, ctx, &mut plan, &mut diagnostics)?;
 
-        Ok(PromptBuildOutput { plan, diagnostics })
+        Ok(PromptBuildOutput {
+            plan,
+            diagnostics,
+            cache_hints: PromptCacheHints::default(),
+        })
     }
 
     /// 收集单个 contributor 的贡献，带缓存逻辑。

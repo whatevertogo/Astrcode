@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentId, AgentStateProjector, EventStore, EventTranslator, Phase, SessionId, StorageEvent,
-    StoredEvent, TurnId, normalize_recovered_phase, replay_records,
+    AgentId, AgentStateProjector, EventStore, EventTranslator, Phase, RecoveredSessionState,
+    SessionId, StorageEvent, StoredEvent, TurnId, normalize_recovered_phase, replay_records,
 };
 #[cfg(test)]
 use astrcode_core::{EventLogWriter, StoreResult};
@@ -128,6 +128,40 @@ impl SessionActor {
         let phase = normalize_recovered_phase(projector.snapshot().phase);
         let recent_records = replay_records(&stored_events, None);
         let state = SessionState::new(phase, writer, projector, recent_records, stored_events);
+
+        Ok(Self {
+            state: Arc::new(state),
+            session_id,
+            working_dir,
+        })
+    }
+
+    pub fn from_recovery(
+        session_id: SessionId,
+        working_dir: impl Into<String>,
+        root_agent_id: AgentId,
+        event_store: Arc<dyn EventStore>,
+        recovered: RecoveredSessionState,
+    ) -> astrcode_core::Result<Self> {
+        let RecoveredSessionState {
+            checkpoint,
+            tail_events,
+        } = recovered;
+        let working_dir = working_dir.into();
+        let Some(checkpoint) = checkpoint else {
+            return Self::from_replay(
+                session_id,
+                working_dir,
+                root_agent_id,
+                event_store,
+                tail_events,
+            );
+        };
+        let writer = Arc::new(SessionWriter::from_event_store(
+            event_store,
+            session_id.clone(),
+        ));
+        let state = SessionState::from_recovery(writer, &checkpoint, tail_events)?;
 
         Ok(Self {
             state: Arc::new(state),

@@ -158,6 +158,7 @@ pub(crate) fn prompt_metrics_event(
                 provider_cache_metrics_supported,
                 prompt_cache_reuse_hits: cache_metrics.reuse_hits,
                 prompt_cache_reuse_misses: cache_metrics.reuse_misses,
+                prompt_cache_unchanged_layers: cache_metrics.unchanged_layers,
             },
         },
     }
@@ -498,6 +499,7 @@ mod tests {
             PromptBuildCacheMetrics {
                 reuse_hits: 4,
                 reuse_misses: 1,
+                unchanged_layers: vec![astrcode_core::SystemPromptLayer::Stable],
             },
             true,
         );
@@ -513,6 +515,8 @@ mod tests {
                     && metrics.effective_window == 108_000
                     && metrics.threshold_tokens == 97_200
                     && metrics.truncated_tool_results == 3
+                    && metrics.prompt_cache_unchanged_layers
+                        == vec![astrcode_core::SystemPromptLayer::Stable]
                     && metrics.provider_input_tokens.is_none()
                     && metrics.provider_output_tokens.is_none()
                     && metrics.cache_creation_input_tokens.is_none()

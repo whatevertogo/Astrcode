@@ -5,6 +5,8 @@ import type {
   CompactMeta,
   ConversationControlState,
   ConversationPlanReference,
+  ConversationTaskItem,
+  ConversationTaskStatus,
   LastCompactMeta,
   Message,
   ParentDelivery,
@@ -194,21 +196,56 @@ function parseLastCompactMeta(value: unknown): LastCompactMeta | undefined {
   };
 }
 
+function parseTaskStatus(value: unknown): ConversationTaskStatus | undefined {
+  switch (value) {
+    case 'pending':
+    case 'in_progress':
+    case 'completed':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parsePlanReference(value: unknown): ConversationPlanReference | undefined {
+  const plan = asRecord(value);
+  const slug = pickString(plan ?? {}, 'slug');
+  const path = pickString(plan ?? {}, 'path');
+  const status = pickString(plan ?? {}, 'status');
+  const title = pickString(plan ?? {}, 'title');
+  if (!slug || !path || !status || !title) {
+    return undefined;
+  }
+  return { slug, path, status, title };
+}
+
+function parseActiveTasks(value: unknown): ConversationTaskItem[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const items = value
+    .map((entry): ConversationTaskItem | null => {
+      const task = asRecord(entry);
+      const content = pickString(task ?? {}, 'content');
+      const status = parseTaskStatus(task?.status);
+      if (!content || !status) {
+        return null;
+      }
+      const activeForm = pickOptionalString(task ?? {}, 'activeForm') ?? undefined;
+      return {
+        content,
+        status,
+        ...(activeForm ? { activeForm } : {}),
+      };
+    })
+    .filter((item): item is ConversationTaskItem => item !== null);
+  return items.length > 0 ? items : undefined;
+}
+
 function parseConversationControlState(record: ConversationRecord): ConversationControlState {
   const controlRecord = asRecord(record.control);
   const phase = parsePhase(controlRecord?.phase ?? record.phase);
   const lastCompactMeta = parseLastCompactMeta(controlRecord?.lastCompactMeta);
-  const parsePlanReference = (value: unknown): ConversationPlanReference | undefined => {
-    const plan = asRecord(value);
-    const slug = pickString(plan ?? {}, 'slug');
-    const path = pickString(plan ?? {}, 'path');
-    const status = pickString(plan ?? {}, 'status');
-    const title = pickString(plan ?? {}, 'title');
-    if (!slug || !path || !status || !title) {
-      return undefined;
-    }
-    return { slug, path, status, title };
-  };
   return {
     phase,
     canSubmitPrompt: controlRecord?.canSubmitPrompt !== false,
@@ -219,6 +256,7 @@ function parseConversationControlState(record: ConversationRecord): Conversation
     activeTurnId: pickOptionalString(controlRecord ?? {}, 'activeTurnId') ?? undefined,
     lastCompactMeta,
     activePlan: parsePlanReference(controlRecord?.activePlan),
+    activeTasks: parseActiveTasks(controlRecord?.activeTasks),
   };
 }
 
@@ -774,14 +812,8 @@ export function applyConversationEnvelope(
           currentModeId: pickString(control, 'currentModeId') ?? state.control.currentModeId,
           activeTurnId: pickOptionalString(control, 'activeTurnId') ?? undefined,
           lastCompactMeta: parseLastCompactMeta(control.lastCompactMeta),
-          activePlan: (() => {
-            const plan = asRecord(control.activePlan);
-            const slug = pickString(plan ?? {}, 'slug');
-            const path = pickString(plan ?? {}, 'path');
-            const status = pickString(plan ?? {}, 'status');
-            const title = pickString(plan ?? {}, 'title');
-            return slug && path && status && title ? { slug, path, status, title } : undefined;
-          })(),
+          activePlan: parsePlanReference(control.activePlan),
+          activeTasks: parseActiveTasks(control.activeTasks),
         };
         state.phase = state.control.phase;
       }

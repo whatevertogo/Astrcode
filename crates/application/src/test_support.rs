@@ -6,7 +6,8 @@
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, DeleteProjectResult,
     ExecutionAccepted, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,
-    InputQueuedPayload, ModeId, ResolvedRuntimeConfig, SessionId, SessionMeta, StoredEvent, TurnId,
+    InputQueuedPayload, ModeId, ResolvedRuntimeConfig, SessionId, SessionMeta, StoredEvent,
+    TaskSnapshot, TurnId,
 };
 use astrcode_kernel::PendingParentDelivery;
 use astrcode_session_runtime::{
@@ -25,7 +26,10 @@ fn unimplemented_for_test(area: &str) -> ! {
 
 #[derive(Debug, Default)]
 pub(crate) struct StubSessionPort {
-    stored_events: Vec<StoredEvent>,
+    pub(crate) stored_events: Vec<StoredEvent>,
+    pub(crate) working_dir: Option<String>,
+    pub(crate) control_state: Option<SessionControlStateSnapshot>,
+    pub(crate) active_task_snapshot: Option<TaskSnapshot>,
 }
 
 #[async_trait]
@@ -63,7 +67,7 @@ impl AppSessionPort for StubSessionPort {
     }
 
     async fn get_session_working_dir(&self, _session_id: &str) -> astrcode_core::Result<String> {
-        unimplemented_for_test("application test stub")
+        Ok(self.working_dir.clone().unwrap_or_else(|| ".".to_string()))
     }
 
     async fn submit_prompt_for_agent(
@@ -107,7 +111,26 @@ impl AppSessionPort for StubSessionPort {
         &self,
         _session_id: &str,
     ) -> astrcode_core::Result<SessionControlStateSnapshot> {
-        unimplemented_for_test("application test stub")
+        Ok(self
+            .control_state
+            .clone()
+            .unwrap_or(SessionControlStateSnapshot {
+                phase: astrcode_core::Phase::Idle,
+                active_turn_id: None,
+                manual_compact_pending: false,
+                compacting: false,
+                last_compact_meta: None,
+                current_mode_id: ModeId::code(),
+                last_mode_changed_at: None,
+            }))
+    }
+
+    async fn active_task_snapshot(
+        &self,
+        _session_id: &str,
+        _owner: &str,
+    ) -> astrcode_core::Result<Option<TaskSnapshot>> {
+        Ok(self.active_task_snapshot.clone())
     }
 
     async fn session_mode_state(

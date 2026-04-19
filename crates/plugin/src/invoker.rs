@@ -127,21 +127,17 @@ impl CapabilityInvoker for PluginCapabilityInvoker {
                     .unwrap_or_else(|| "plugin invocation failed".to_string());
                 (false, Some(error))
             };
-            Ok(CapabilityExecutionResult {
-                capability_name: self.capability_spec.name.to_string(),
+            Ok(CapabilityExecutionResult::from_common(
+                self.capability_spec.name.to_string(),
                 success,
-                output: result.output,
-                error: None,
-                metadata: None,
-                duration_ms: 0,
-                truncated: false,
-            }
-            .with_common(astrcode_core::ExecutionResultCommon {
-                error,
-                metadata: Some(result.metadata),
-                duration_ms: started_at.elapsed().as_millis() as u64,
-                truncated: false,
-            }))
+                result.output,
+                astrcode_core::ExecutionResultCommon {
+                    error,
+                    metadata: Some(result.metadata),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    truncated: false,
+                },
+            ))
         }
     }
 }
@@ -220,41 +216,33 @@ async fn finish_stream_invocation(
                 }));
             },
             EventPhase::Completed => {
-                return Ok(CapabilityExecutionResult {
+                return Ok(CapabilityExecutionResult::from_common(
                     capability_name,
-                    success: true,
-                    output: event.payload,
-                    error: None,
-                    metadata: None,
-                    duration_ms: 0,
-                    truncated: false,
-                }
-                .with_common(astrcode_core::ExecutionResultCommon::success(
-                    Some(json!({ "streamEvents": deltas })),
-                    started_at.elapsed().as_millis() as u64,
-                    false,
-                )));
+                    true,
+                    event.payload,
+                    astrcode_core::ExecutionResultCommon::success(
+                        Some(json!({ "streamEvents": deltas })),
+                        started_at.elapsed().as_millis() as u64,
+                        false,
+                    ),
+                ));
             },
             EventPhase::Failed => {
                 let error = event
                     .error
                     .map(|value| value.message)
                     .unwrap_or_else(|| "stream invocation failed".to_string());
-                return Ok(CapabilityExecutionResult {
+                return Ok(CapabilityExecutionResult::from_common(
                     capability_name,
-                    success: false,
-                    output: Value::Null,
-                    error: None,
-                    metadata: None,
-                    duration_ms: 0,
-                    truncated: false,
-                }
-                .with_common(astrcode_core::ExecutionResultCommon::failure(
-                    error,
-                    Some(json!({ "streamEvents": deltas })),
-                    started_at.elapsed().as_millis() as u64,
                     false,
-                )));
+                    Value::Null,
+                    astrcode_core::ExecutionResultCommon::failure(
+                        error,
+                        Some(json!({ "streamEvents": deltas })),
+                        started_at.elapsed().as_millis() as u64,
+                        false,
+                    ),
+                ));
             },
         }
     }

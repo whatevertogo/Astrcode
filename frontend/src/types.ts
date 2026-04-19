@@ -155,6 +155,14 @@ export interface ConversationPlanReference {
   title: string;
 }
 
+export type ConversationTaskStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface ConversationTaskItem {
+  content: string;
+  status: ConversationTaskStatus;
+  activeForm?: string;
+}
+
 export interface ConversationControlState {
   phase: Phase;
   canSubmitPrompt: boolean;
@@ -165,6 +173,7 @@ export interface ConversationControlState {
   activeTurnId?: string;
   lastCompactMeta?: LastCompactMeta;
   activePlan?: ConversationPlanReference;
+  activeTasks?: ConversationTaskItem[];
 }
 
 export type SubRunResult =

@@ -23,18 +23,14 @@ pub(crate) fn collaboration_error_result(
     tool_name: &str,
     message: String,
 ) -> ToolExecutionResult {
-    ToolExecutionResult {
+    ToolExecutionResult::from_common(
         tool_call_id,
-        tool_name: tool_name.to_string(),
-        ok: false,
-        output: String::new(),
-        error: None,
-        metadata: None,
-        child_ref: None,
-        duration_ms: 0,
-        truncated: false,
-    }
-    .with_common(ExecutionResultCommon::failure(message, None, 0, false))
+        tool_name,
+        false,
+        String::new(),
+        None,
+        ExecutionResultCommon::failure(message, None, 0, false),
+    )
 }
 
 /// 将 CollaborationResult 映射为 ToolExecutionResult。
@@ -59,23 +55,19 @@ pub(crate) fn map_collaboration_result(
         }),
     });
 
-    ToolExecutionResult {
+    ToolExecutionResult::from_common(
         tool_call_id,
-        tool_name: tool_name.to_string(),
-        ok: true,
+        tool_name,
+        true,
         output,
-        error: None,
-        metadata: None,
-        child_ref: result.agent_ref().cloned(),
-        duration_ms: 0,
-        truncated: false,
-    }
-    .with_common(ExecutionResultCommon {
-        error: None,
-        metadata,
-        duration_ms: 0,
-        truncated: false,
-    })
+        result.agent_ref().cloned(),
+        ExecutionResultCommon {
+            error: None,
+            metadata,
+            duration_ms: 0,
+            truncated: false,
+        },
+    )
 }
 
 fn result_kind_label(result: &CollaborationResult) -> &'static str {

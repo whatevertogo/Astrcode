@@ -53,8 +53,9 @@ pub use conversation::v1::{
     ConversationSlashActionKindDto, ConversationSlashCandidateDto,
     ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
     ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
-    ConversationThinkingBlockDto, ConversationToolCallBlockDto, ConversationToolStreamsDto,
-    ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
+    ConversationTaskItemDto, ConversationTaskStatusDto, ConversationThinkingBlockDto,
+    ConversationToolCallBlockDto, ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto,
+    ConversationUserBlockDto,
 };
 pub use event::{
     ArtifactRefDto, CloseRequestParentDeliveryPayloadDto, CompletedParentDeliveryPayloadDto,

@@ -22,7 +22,7 @@ use crate::{CapabilitySpec, LlmMessage, Result, ToolDefinition};
 /// 系统提示词块所属层级。
 ///
 /// provider 可以利用该层级决定缓存边界，从而在分层 prompt 下尽量保住稳定前缀。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemPromptLayer {
     Stable,

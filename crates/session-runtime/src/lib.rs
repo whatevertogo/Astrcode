@@ -57,7 +57,7 @@ pub use turn::{
 };
 pub(crate) use turn::{TurnOutcome, TurnRunResult, run_turn};
 
-const ROOT_AGENT_ID: &str = "root-agent";
+pub const ROOT_AGENT_ID: &str = "root-agent";
 
 #[derive(Debug)]
 struct LoadedSession {
@@ -298,6 +298,14 @@ impl SessionRuntime {
         self.query().session_mode_state(session_id).await
     }
 
+    pub async fn active_task_snapshot(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> Result<Option<astrcode_core::TaskSnapshot>> {
+        self.query().active_task_snapshot(session_id, owner).await
+    }
+
     /// 读取指定 session 的工作目录。
     pub async fn get_session_working_dir(&self, session_id: &str) -> Result<String> {
         self.query().session_working_dir(session_id).await
@@ -525,13 +533,13 @@ impl SessionRuntime {
             .into_iter()
             .find(|meta| normalize_session_id(&meta.session_id) == session_id.as_str())
             .ok_or_else(|| SessionRuntimeError::SessionNotFound(session_id.to_string()))?;
-        let stored = self.event_store.replay(session_id).await?;
-        let actor = Arc::new(SessionActor::from_replay(
+        let recovered = self.event_store.recover_session(session_id).await?;
+        let actor = Arc::new(SessionActor::from_recovery(
             session_id.clone(),
             meta.working_dir,
             AgentId::from(ROOT_AGENT_ID.to_string()),
             Arc::clone(&self.event_store),
-            stored,
+            recovered,
         )?);
         let loaded = Arc::new(LoadedSession {
             actor: Arc::clone(&actor),

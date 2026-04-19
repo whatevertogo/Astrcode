@@ -322,7 +322,9 @@ export default function App() {
       projectName: activeProject?.name ?? null,
       sessionId: activeSession?.id ?? null,
       sessionTitle: activeSession?.title ?? null,
-      currentModeId: activeConversationControl?.currentModeId ?? activeModeId,
+      // Why: mode 切换 API 会立即返回新 mode，但 conversation control 流可能稍后才追上。
+      // 这里优先使用本地已确认的 activeModeId，避免右上角 badge 被旧的流式快照短暂覆盖。
+      currentModeId: activeModeId ?? activeConversationControl?.currentModeId ?? null,
       isChildSession: activeSession?.parentSessionId !== undefined,
       workingDir: activeProject?.workingDir ?? '',
       phase: state.phase,

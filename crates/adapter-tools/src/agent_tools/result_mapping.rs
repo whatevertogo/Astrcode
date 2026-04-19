@@ -15,18 +15,14 @@ const SUBRUN_RESULT_SCHEMA: &str = "subRunResult";
 
 /// 参数校验失败的快捷构造。
 pub(crate) fn invalid_params_result(tool_call_id: String, message: String) -> ToolExecutionResult {
-    ToolExecutionResult {
+    ToolExecutionResult::from_common(
         tool_call_id,
-        tool_name: TOOL_NAME.to_string(),
-        ok: false,
-        output: String::new(),
-        error: None,
-        metadata: None,
-        child_ref: None,
-        duration_ms: 0,
-        truncated: false,
-    }
-    .with_common(ExecutionResultCommon::failure(message, None, 0, false))
+        TOOL_NAME,
+        false,
+        String::new(),
+        None,
+        ExecutionResultCommon::failure(message, None, 0, false),
+    )
 }
 
 /// 将 SubRunResult 映射为 LLM 可见的 ToolExecutionResult。
@@ -43,23 +39,19 @@ pub(crate) fn map_subrun_result(tool_call_id: String, result: SubRunResult) -> T
     let output = tool_output_for_result(&result);
     let metadata = subrun_metadata(&result);
 
-    ToolExecutionResult {
+    ToolExecutionResult::from_common(
         tool_call_id,
-        tool_name: TOOL_NAME.to_string(),
-        ok: !is_failed_outcome(&result),
+        TOOL_NAME,
+        !is_failed_outcome(&result),
         output,
-        error: None,
-        metadata: None,
         child_ref,
-        duration_ms: 0,
-        truncated: false,
-    }
-    .with_common(ExecutionResultCommon {
-        error,
-        metadata: Some(metadata),
-        duration_ms: 0,
-        truncated: false,
-    })
+        ExecutionResultCommon {
+            error,
+            metadata: Some(metadata),
+            duration_ms: 0,
+            truncated: false,
+        },
+    )
 }
 
 /// 判断子运行是否因失败结束。

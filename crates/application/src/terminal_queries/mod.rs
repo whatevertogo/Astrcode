@@ -31,5 +31,6 @@ fn map_control_facts(control: SessionControlStateSnapshot) -> TerminalControlFac
             }),
         current_mode_id: control.current_mode_id.to_string(),
         active_plan: None::<PlanReferenceFacts>,
+        active_tasks: None,
     }
 }

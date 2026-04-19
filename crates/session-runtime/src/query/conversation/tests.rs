@@ -288,6 +288,76 @@ fn snapshot_projects_plan_blocks_in_durable_event_order() {
 }
 
 #[test]
+fn snapshot_keeps_task_write_as_normal_tool_call_block() {
+    let records = vec![
+        record(
+            "1.1",
+            AgentEvent::ToolCallStart {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                tool_call_id: "call-task-write".to_string(),
+                tool_name: "taskWrite".to_string(),
+                input: json!({
+                    "items": [
+                        {
+                            "content": "实现 authoritative task panel",
+                            "status": "in_progress",
+                            "activeForm": "正在实现 authoritative task panel"
+                        }
+                    ]
+                }),
+            },
+        ),
+        record(
+            "1.2",
+            AgentEvent::ToolCallResult {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                result: ToolExecutionResult {
+                    tool_call_id: "call-task-write".to_string(),
+                    tool_name: "taskWrite".to_string(),
+                    ok: true,
+                    output: "updated execution tasks".to_string(),
+                    error: None,
+                    metadata: Some(json!({
+                        "schema": "executionTaskSnapshot",
+                        "owner": "root-agent",
+                        "cleared": false,
+                        "items": [
+                            {
+                                "content": "实现 authoritative task panel",
+                                "status": "in_progress",
+                                "activeForm": "正在实现 authoritative task panel"
+                            }
+                        ]
+                    })),
+                    child_ref: None,
+                    duration_ms: 5,
+                    truncated: false,
+                },
+            },
+        ),
+    ];
+
+    let snapshot = project_conversation_snapshot(&records, Phase::CallingTool);
+    assert_eq!(snapshot.blocks.len(), 1);
+    assert!(matches!(
+        &snapshot.blocks[0],
+        ConversationBlockFacts::ToolCall(block)
+            if block.tool_name == "taskWrite"
+                && block.tool_call_id == "call-task-write"
+                && block.summary.as_deref() == Some("updated execution tasks")
+    ));
+    assert!(
+        snapshot
+            .blocks
+            .iter()
+            .all(|block| !matches!(block, ConversationBlockFacts::Plan(_))),
+        "taskWrite must not be projected onto the canonical plan surface"
+    );
+}
+
+#[test]
 fn live_then_durable_tool_delta_dedupes_chunk_on_same_tool_block() {
     let facts = sample_stream_replay_facts(
         vec![record(

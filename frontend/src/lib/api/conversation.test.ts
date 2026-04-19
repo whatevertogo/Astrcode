@@ -11,6 +11,7 @@ const baseControl = {
   compacting: false,
   currentModeId: 'code',
   activePlan: undefined,
+  activeTasks: undefined,
 };
 
 describe('projectConversationState', () => {
@@ -610,5 +611,90 @@ describe('projectConversationState', () => {
         kind: 'final_review',
       },
     });
+  });
+
+  it('hydrates authoritative activeTasks without scanning tool history', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-task-1',
+      phase: 'callingTool',
+      blocks: [],
+      control: {
+        ...baseControl,
+        phase: 'callingTool',
+        activeTasks: [
+          {
+            content: '实现 authoritative task panel',
+            status: 'in_progress',
+            activeForm: '正在实现 authoritative task panel',
+          },
+          {
+            content: '补充前端 hydration 测试',
+            status: 'pending',
+          },
+        ],
+      },
+      childSummaries: [],
+    };
+
+    const projection = projectConversationState(state);
+
+    expect(projection.control.activeTasks).toEqual([
+      {
+        content: '实现 authoritative task panel',
+        status: 'in_progress',
+        activeForm: '正在实现 authoritative task panel',
+      },
+      {
+        content: '补充前端 hydration 测试',
+        status: 'pending',
+      },
+    ]);
+  });
+
+  it('updates task panel facts through update_control_state deltas', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-task-2',
+      phase: 'idle',
+      blocks: [],
+      control: baseControl,
+      childSummaries: [],
+    };
+
+    applyConversationEnvelope(state, {
+      cursor: 'cursor-task-3',
+      kind: 'update_control_state',
+      control: {
+        phase: 'callingTool',
+        canSubmitPrompt: false,
+        canRequestCompact: true,
+        compactPending: false,
+        compacting: false,
+        currentModeId: 'code',
+        activeTasks: [
+          {
+            content: '实现 authoritative task panel',
+            status: 'in_progress',
+            activeForm: '正在实现 authoritative task panel',
+          },
+          {
+            content: '补充前端 hydration 测试',
+            status: 'completed',
+          },
+        ],
+      },
+    });
+
+    expect(state.phase).toBe('callingTool');
+    expect(state.control.activeTasks).toEqual([
+      {
+        content: '实现 authoritative task panel',
+        status: 'in_progress',
+        activeForm: '正在实现 authoritative task panel',
+      },
+      {
+        content: '补充前端 hydration 测试',
+        status: 'completed',
+      },
+    ]);
   });
 });

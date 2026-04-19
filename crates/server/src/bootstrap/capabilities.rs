@@ -23,6 +23,7 @@ use astrcode_adapter_tools::{
         read_file::ReadFileTool,
         shell::ShellTool,
         skill_tool::SkillTool,
+        task_write::TaskWriteTool,
         tool_search::{ToolSearchIndex, ToolSearchTool},
         upsert_session_plan::UpsertSessionPlanTool,
         write_file::WriteFileTool,
@@ -55,6 +56,7 @@ pub(crate) fn build_core_tool_invokers(
         Arc::new(ShellTool),
         Arc::new(EnterPlanModeTool),
         Arc::new(ExitPlanModeTool),
+        Arc::new(TaskWriteTool),
         Arc::new(ToolSearchTool::new(tool_search_index)),
         Arc::new(SkillTool::new(skill_catalog)),
         Arc::new(UpsertSessionPlanTool),
@@ -209,7 +211,10 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
-    use super::{CapabilitySurfaceSync, build_stable_local_invokers};
+    use super::{
+        CapabilitySurfaceSync, build_core_tool_invokers, build_skill_catalog,
+        build_stable_local_invokers,
+    };
     use crate::bootstrap::{
         capabilities::sync_external_tool_search_index,
         deps::{
@@ -300,6 +305,7 @@ mod tests {
             Ok(PromptBuildOutput {
                 system_prompt: "noop".to_string(),
                 system_prompt_blocks: Vec::new(),
+                prompt_cache_hints: Default::default(),
                 cache_metrics: Default::default(),
                 metadata: Value::Null,
             })
@@ -426,5 +432,21 @@ mod tests {
         assert!(names.iter().any(|name| name == "read_file"));
         assert!(names.iter().any(|name| name == "spawn"));
         assert!(names.iter().any(|name| name == "mcp__demo__search"));
+    }
+
+    #[test]
+    fn build_core_tool_invokers_registers_task_write() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let tool_search_index = Arc::new(ToolSearchIndex::new());
+        let skill_catalog = build_skill_catalog(temp.path(), Vec::new());
+
+        let invokers = build_core_tool_invokers(tool_search_index, skill_catalog)
+            .expect("core tool invokers should build");
+        let names = invokers
+            .into_iter()
+            .map(|invoker| invoker.capability_spec().name.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(names.iter().any(|name| name == "taskWrite"));
     }
 }

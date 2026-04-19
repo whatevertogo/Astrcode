@@ -11,6 +11,7 @@ const baseControl = {
   compacting: false,
   currentModeId: 'code',
   activePlan: undefined,
+  activeTasks: undefined,
 };
 
 describe('resolveForkTurnIdFromMessage', () => {

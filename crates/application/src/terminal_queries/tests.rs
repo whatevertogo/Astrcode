@@ -8,8 +8,10 @@
 
 use std::{path::Path, sync::Arc, time::Duration};
 
-use astrcode_core::AgentEvent;
-use astrcode_session_runtime::{ConversationBlockFacts, SessionRuntime};
+use astrcode_core::{AgentEvent, ExecutionTaskItem, ExecutionTaskStatus, TaskSnapshot};
+use astrcode_session_runtime::{
+    ConversationBlockFacts, SessionControlStateSnapshot, SessionRuntime,
+};
 use async_trait::async_trait;
 use tokio::time::timeout;
 
@@ -24,6 +26,7 @@ use crate::{
     composer::ComposerSkillSummary,
     mcp::RegisterMcpServerInput,
     terminal::{ConversationFocus, TerminalRehydrateReason, TerminalStreamFacts},
+    test_support::StubSessionPort,
 };
 
 struct StaticComposerSkillPort {
@@ -115,17 +118,35 @@ fn build_terminal_app_harness_with_behavior(
     let kernel: Arc<dyn AppKernelPort> = harness.kernel.clone();
     let session_runtime = harness.session_runtime.clone();
     let session_port: Arc<dyn AppSessionPort> = session_runtime.clone();
-    let config: Arc<ConfigService> = harness.config_service.clone();
-    let profiles: Arc<ProfileResolutionService> = harness.profiles.clone();
-    let composer_skills: Arc<dyn ComposerSkillPort> = Arc::new(StaticComposerSkillPort {
-        summaries: skill_ids
-            .iter()
-            .map(|id| ComposerSkillSummary::new(*id, format!("{id} description")))
-            .collect(),
-    });
+    let app = build_terminal_app(
+        kernel,
+        session_port,
+        harness.config_service.clone(),
+        harness.profiles.clone(),
+        Arc::new(StaticComposerSkillPort {
+            summaries: skill_ids
+                .iter()
+                .map(|id| ComposerSkillSummary::new(*id, format!("{id} description")))
+                .collect(),
+        }),
+        Arc::new(harness.service.clone()),
+    );
+    TerminalAppHarness {
+        app,
+        session_runtime,
+    }
+}
+
+fn build_terminal_app(
+    kernel: Arc<dyn AppKernelPort>,
+    session_port: Arc<dyn AppSessionPort>,
+    config: Arc<ConfigService>,
+    profiles: Arc<ProfileResolutionService>,
+    composer_skills: Arc<dyn ComposerSkillPort>,
+    agent_service: Arc<AgentOrchestrationService>,
+) -> App {
     let mcp_service = Arc::new(McpService::new(Arc::new(NoopMcpPort)));
-    let agent_service: Arc<AgentOrchestrationService> = Arc::new(harness.service.clone());
-    let app = App::new(
+    App::new(
         kernel,
         session_port,
         profiles,
@@ -135,11 +156,7 @@ fn build_terminal_app_harness_with_behavior(
         Arc::new(crate::mode::builtin_mode_catalog().expect("builtin mode catalog should build")),
         mcp_service,
         agent_service,
-    );
-    TerminalAppHarness {
-        app,
-        session_runtime,
-    }
+    )
 }
 
 #[tokio::test]
@@ -612,5 +629,80 @@ fn cursor_is_after_head_treats_equal_cursor_as_caught_up() {
     assert!(
         !super::cursor::cursor_is_after_head("12.2", Some("12.3"))
             .expect("older cursor should parse")
+    );
+}
+
+#[tokio::test]
+async fn terminal_control_facts_include_authoritative_active_tasks() {
+    let harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+        content: "unused".to_string(),
+    })
+    .expect("agent test harness should build");
+    let project = tempfile::tempdir().expect("tempdir should be created");
+    let session_port: Arc<dyn AppSessionPort> = Arc::new(StubSessionPort {
+        working_dir: Some(project.path().display().to_string()),
+        control_state: Some(SessionControlStateSnapshot {
+            phase: astrcode_core::Phase::Idle,
+            active_turn_id: Some("turn-1".to_string()),
+            manual_compact_pending: false,
+            compacting: false,
+            last_compact_meta: None,
+            current_mode_id: astrcode_core::ModeId::code(),
+            last_mode_changed_at: None,
+        }),
+        active_task_snapshot: Some(TaskSnapshot {
+            owner: astrcode_session_runtime::ROOT_AGENT_ID.to_string(),
+            items: vec![
+                ExecutionTaskItem {
+                    content: "实现 authoritative task panel".to_string(),
+                    status: ExecutionTaskStatus::InProgress,
+                    active_form: Some("正在实现 authoritative task panel".to_string()),
+                },
+                ExecutionTaskItem {
+                    content: "补充前端 hydration 测试".to_string(),
+                    status: ExecutionTaskStatus::Pending,
+                    active_form: None,
+                },
+            ],
+        }),
+        ..StubSessionPort::default()
+    });
+    let app = build_terminal_app(
+        harness.kernel.clone(),
+        session_port,
+        harness.config_service.clone(),
+        harness.profiles.clone(),
+        Arc::new(StaticComposerSkillPort {
+            summaries: Vec::new(),
+        }),
+        Arc::new(harness.service.clone()),
+    );
+
+    let control = app
+        .terminal_control_facts("session-test")
+        .await
+        .expect("terminal control should build");
+
+    assert_eq!(control.current_mode_id, "code");
+    assert_eq!(control.active_turn_id.as_deref(), Some("turn-1"));
+    assert!(control.active_plan.is_none());
+    assert!(
+        !project.path().join(".astrcode").exists(),
+        "task facts query must not materialize canonical session plan artifacts"
+    );
+    assert_eq!(
+        control.active_tasks,
+        Some(vec![
+            crate::terminal::TaskItemFacts {
+                content: "实现 authoritative task panel".to_string(),
+                status: ExecutionTaskStatus::InProgress,
+                active_form: Some("正在实现 authoritative task panel".to_string()),
+            },
+            crate::terminal::TaskItemFacts {
+                content: "补充前端 hydration 测试".to_string(),
+                status: ExecutionTaskStatus::Pending,
+                active_form: None,
+            },
+        ])
     );
 }

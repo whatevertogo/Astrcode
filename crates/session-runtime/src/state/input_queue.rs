@@ -55,10 +55,6 @@ impl SessionState {
 
     /// 增量应用一条 input queue durable 事件到投影索引。
     pub(crate) fn apply_input_queue_event(&self, stored: &StoredEvent) {
-        let Some(target_agent_id) = input_queue_projection_target_agent_id(&stored.event.payload)
-        else {
-            return;
-        };
         let mut index = match support::lock_anyhow(
             &self.input_queue_projection_index,
             "input queue projection index",
@@ -66,11 +62,22 @@ impl SessionState {
             Ok(index) => index,
             Err(_) => return,
         };
-        let projection = index
-            .entry(target_agent_id.to_string())
-            .or_insert_with(InputQueueProjection::default);
-        InputQueueProjection::apply_event_for_agent(projection, stored, target_agent_id);
+        apply_input_queue_event_to_index(&mut index, stored);
     }
+}
+
+pub(crate) fn apply_input_queue_event_to_index(
+    index: &mut std::collections::HashMap<String, InputQueueProjection>,
+    stored: &StoredEvent,
+) {
+    let Some(target_agent_id) = input_queue_projection_target_agent_id(&stored.event.payload)
+    else {
+        return;
+    };
+    let projection = index
+        .entry(target_agent_id.to_string())
+        .or_insert_with(InputQueueProjection::default);
+    InputQueueProjection::apply_event_for_agent(projection, stored, target_agent_id);
 }
 
 /// 追加一条 input queue durable 事件。

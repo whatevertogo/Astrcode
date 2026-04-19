@@ -4,12 +4,14 @@
 //! `PromptPlan.system_blocks` 的层级元数据中，供 Anthropic prompt caching 使用。
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use anyhow::Result;
+use astrcode_core::{PromptCacheHints, PromptLayerFingerprints};
 
 use super::{
     PromptBuildOutput, PromptComposer, PromptComposerOptions, PromptContext, PromptContributor,
@@ -130,6 +132,7 @@ impl LayeredPromptBuilder {
     pub async fn build(&self, ctx: &PromptContext) -> Result<PromptBuildOutput> {
         let mut diagnostics = PromptDiagnostics::default();
         let mut plan = PromptPlan::default();
+        let mut cache_hints = PromptCacheHints::default();
 
         for (layer_type, contributors) in [
             (LayerType::Stable, &self.stable_contributors),
@@ -138,11 +141,16 @@ impl LayeredPromptBuilder {
             (LayerType::Dynamic, &self.dynamic_contributors),
         ] {
             let output = self.build_layer(contributors, ctx, layer_type).await?;
+            merge_layer_cache_hints(&mut cache_hints, layer_type, &output.cache_hints);
             diagnostics.items.extend(output.diagnostics.items);
             plan.extend_with_layer(output.plan, layer_type.prompt_layer());
         }
 
-        Ok(PromptBuildOutput { plan, diagnostics })
+        Ok(PromptBuildOutput {
+            plan,
+            diagnostics,
+            cache_hints,
+        })
     }
 
     async fn build_layer(
@@ -155,6 +163,7 @@ impl LayeredPromptBuilder {
             return Ok(PromptBuildOutput {
                 plan: PromptPlan::default(),
                 diagnostics: PromptDiagnostics::default(),
+                cache_hints: PromptCacheHints::default(),
             });
         }
 
@@ -165,7 +174,9 @@ impl LayeredPromptBuilder {
         let mut combined = PromptBuildOutput {
             plan: PromptPlan::default(),
             diagnostics: PromptDiagnostics::default(),
+            cache_hints: PromptCacheHints::default(),
         };
+        let mut layer_unchanged = layer_type != LayerType::Dynamic;
 
         for contributor in contributors {
             let contributor_id = contributor.contributor_id();
@@ -188,6 +199,7 @@ impl LayeredPromptBuilder {
                 CacheLookupResult::Miss {
                     invalidation_reason,
                 } => {
+                    layer_unchanged = false;
                     combined.diagnostics.push_cache_reuse_miss(
                         cache_key.clone(),
                         Some(fingerprint.clone()),
@@ -205,6 +217,18 @@ impl LayeredPromptBuilder {
                 },
             }
         }
+
+        if layer_unchanged {
+            combined
+                .cache_hints
+                .unchanged_layers
+                .push(layer_type.prompt_layer());
+        }
+        set_layer_fingerprint(
+            &mut combined.cache_hints.layer_fingerprints,
+            layer_type,
+            fingerprint_rendered_layer(layer_type, &combined.plan),
+        );
 
         Ok(combined)
     }
@@ -367,6 +391,62 @@ fn compute_layer_fingerprint(
         .join("|")
 }
 
+fn merge_layer_cache_hints(
+    target: &mut PromptCacheHints,
+    layer_type: LayerType,
+    source: &PromptCacheHints,
+) {
+    set_layer_fingerprint(
+        &mut target.layer_fingerprints,
+        layer_type,
+        layer_fingerprint(source, layer_type).cloned(),
+    );
+    if source
+        .unchanged_layers
+        .iter()
+        .any(|layer| *layer == layer_type.prompt_layer())
+    {
+        target.unchanged_layers.push(layer_type.prompt_layer());
+    }
+}
+
+fn set_layer_fingerprint(
+    fingerprints: &mut PromptLayerFingerprints,
+    layer_type: LayerType,
+    fingerprint: Option<String>,
+) {
+    match layer_type {
+        LayerType::Stable => fingerprints.stable = fingerprint,
+        LayerType::SemiStable => fingerprints.semi_stable = fingerprint,
+        LayerType::Inherited => fingerprints.inherited = fingerprint,
+        LayerType::Dynamic => fingerprints.dynamic = fingerprint,
+    }
+}
+
+fn layer_fingerprint<'a>(hints: &'a PromptCacheHints, layer_type: LayerType) -> Option<&'a String> {
+    match layer_type {
+        LayerType::Stable => hints.layer_fingerprints.stable.as_ref(),
+        LayerType::SemiStable => hints.layer_fingerprints.semi_stable.as_ref(),
+        LayerType::Inherited => hints.layer_fingerprints.inherited.as_ref(),
+        LayerType::Dynamic => hints.layer_fingerprints.dynamic.as_ref(),
+    }
+}
+
+fn fingerprint_rendered_layer(layer_type: LayerType, plan: &PromptPlan) -> Option<String> {
+    let mut hasher = DefaultHasher::new();
+    let mut matched = false;
+    for block in plan.ordered_system_blocks() {
+        if block.layer != layer_type.prompt_layer() {
+            continue;
+        }
+        matched = true;
+        block.id.hash(&mut hasher);
+        block.title.hash(&mut hasher);
+        block.content.hash(&mut hasher);
+    }
+    matched.then(|| format!("{:x}", hasher.finish()))
+}
+
 fn is_cache_expired(
     entry: &LayerCacheEntry,
     options: &LayeredBuilderOptions,
@@ -493,6 +573,7 @@ mod tests {
             output: PromptBuildOutput {
                 plan: PromptPlan::default(),
                 diagnostics: PromptDiagnostics::default(),
+                cache_hints: PromptCacheHints::default(),
             },
         };
         let options = LayeredBuilderOptions {

@@ -20,6 +20,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     InvocationKind, LlmMessage, ModeId, Phase, ReasoningContent, ToolCallRequest,
@@ -32,7 +33,7 @@ use crate::{
 ///
 /// 由事件流投影而来，包含完整的消息历史和当前阶段。
 /// 用于在 turn 之间保持上下文，以及断线重连后恢复状态。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentState {
     /// 会话 ID
     pub session_id: String,
@@ -92,6 +93,15 @@ pub struct AgentStateProjector {
 }
 
 impl AgentStateProjector {
+    pub fn from_snapshot(state: AgentState) -> Self {
+        Self {
+            state,
+            pending_content: None,
+            pending_reasoning: None,
+            pending_tool_calls: Vec::new(),
+        }
+    }
+
     pub fn from_events(events: &[StorageEvent]) -> Self {
         let mut projector = Self::default();
         for event in events {

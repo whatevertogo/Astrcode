@@ -10,6 +10,7 @@ mod compaction;
 mod execution;
 mod input_queue;
 mod paths;
+mod tasks;
 #[cfg(test)]
 mod test_support;
 mod writer;
@@ -22,17 +23,24 @@ use std::{
 use astrcode_core::{
     AgentEvent, AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventTranslator,
     InputQueueProjection, ModeId, Phase, ResolvedRuntimeConfig, Result, SessionEventRecord,
-    SessionTurnLease, StorageEventPayload, StoredEvent,
+    SessionRecoveryCheckpoint, SessionTurnLease, StorageEventPayload, StoredEvent, TaskSnapshot,
+    normalize_recovered_phase,
     support::{self},
 };
 use cache::{RecentSessionEvents, RecentStoredEvents};
 use child_sessions::{child_node_from_stored_event, rebuild_child_nodes};
 use chrono::{DateTime, Utc};
 pub(crate) use execution::SessionStateEventSink;
-pub use execution::{append_and_broadcast, complete_session_execution, prepare_session_execution};
-pub(crate) use input_queue::{InputQueueEventAppend, append_input_queue_event};
+pub use execution::{
+    append_and_broadcast, checkpoint_if_compacted, complete_session_execution,
+    prepare_session_execution,
+};
+pub(crate) use input_queue::{
+    InputQueueEventAppend, append_input_queue_event, apply_input_queue_event_to_index,
+};
 pub(crate) use paths::compact_history_event_log_path;
 pub use paths::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
+use tasks::{apply_snapshot_to_map, rebuild_active_tasks, task_snapshot_from_stored_event};
 use tokio::sync::broadcast;
 pub(crate) use writer::SessionWriter;
 
@@ -66,6 +74,7 @@ pub struct SessionState {
     recent_records: StdMutex<RecentSessionEvents>,
     recent_stored: StdMutex<RecentStoredEvents>,
     child_nodes: StdMutex<HashMap<String, ChildSessionNode>>,
+    active_tasks: StdMutex<HashMap<String, TaskSnapshot>>,
     input_queue_projection_index: StdMutex<HashMap<String, InputQueueProjection>>,
 }
 
@@ -101,14 +110,91 @@ impl SessionState {
         recent_records: Vec<SessionEventRecord>,
         recent_stored: Vec<StoredEvent>,
     ) -> Self {
+        let child_nodes = rebuild_child_nodes(&recent_stored);
+        let active_tasks = rebuild_active_tasks(&recent_stored);
+        let input_queue_projection_index = InputQueueProjection::replay_index(&recent_stored);
+        let last_mode_changed_at =
+            recent_stored
+                .iter()
+                .rev()
+                .find_map(|stored| match &stored.event.payload {
+                    StorageEventPayload::ModeChanged { timestamp, .. } => Some(*timestamp),
+                    _ => None,
+                });
+        Self::from_parts(
+            phase,
+            writer,
+            projector,
+            recent_records,
+            recent_stored,
+            child_nodes,
+            active_tasks,
+            input_queue_projection_index,
+            last_mode_changed_at,
+        )
+    }
+
+    pub fn from_recovery(
+        writer: Arc<SessionWriter>,
+        checkpoint: &SessionRecoveryCheckpoint,
+        tail_events: Vec<StoredEvent>,
+    ) -> Result<Self> {
+        let mut projector = AgentStateProjector::from_snapshot(checkpoint.agent_state.clone());
+        let mut child_nodes = checkpoint.child_nodes.clone();
+        let mut active_tasks = checkpoint.active_tasks.clone();
+        let mut input_queue_projection_index = checkpoint.input_queue_projection_index.clone();
+        let mut last_mode_changed_at = checkpoint.last_mode_changed_at;
+
+        for stored in &tail_events {
+            stored.event.validate().map_err(|error| {
+                astrcode_core::AstrError::Validation(format!(
+                    "session '{}' contains invalid stored event at storage_seq {}: {}",
+                    checkpoint.agent_state.session_id, stored.storage_seq, error
+                ))
+            })?;
+            projector.apply(&stored.event);
+            if let Some(node) = child_node_from_stored_event(stored) {
+                child_nodes.insert(node.sub_run_id().to_string(), node);
+            }
+            if let Some(snapshot) = task_snapshot_from_stored_event(stored) {
+                apply_snapshot_to_map(&mut active_tasks, snapshot);
+            }
+            apply_input_queue_event_to_index(&mut input_queue_projection_index, stored);
+            if let StorageEventPayload::ModeChanged { timestamp, .. } = &stored.event.payload {
+                last_mode_changed_at = Some(*timestamp);
+            }
+        }
+
+        Ok(Self::from_parts(
+            normalize_recovered_phase(projector.snapshot().phase),
+            writer,
+            projector,
+            astrcode_core::replay_records(&tail_events, None),
+            tail_events,
+            child_nodes,
+            active_tasks,
+            input_queue_projection_index,
+            last_mode_changed_at,
+        ))
+    }
+
+    fn from_parts(
+        phase: Phase,
+        writer: Arc<SessionWriter>,
+        projector: AgentStateProjector,
+        recent_records: Vec<SessionEventRecord>,
+        recent_stored: Vec<StoredEvent>,
+        child_nodes: HashMap<String, ChildSessionNode>,
+        active_tasks: HashMap<String, TaskSnapshot>,
+        input_queue_projection_index: HashMap<String, InputQueueProjection>,
+        last_mode_changed_at: Option<DateTime<Utc>>,
+    ) -> Self {
         let (broadcaster, _) = broadcast::channel(SESSION_BROADCAST_CAPACITY);
         let (live_broadcaster, _) = broadcast::channel(SESSION_LIVE_BROADCAST_CAPACITY);
         let mut cached_records = RecentSessionEvents::default();
         cached_records.replace(recent_records);
         let mut cached_stored = RecentStoredEvents::default();
         cached_stored.replace(recent_stored.clone());
-        let child_nodes = rebuild_child_nodes(&recent_stored);
-        let input_queue_projection_index = InputQueueProjection::replay_index(&recent_stored);
         Self {
             phase: StdMutex::new(phase),
             running: AtomicBool::new(false),
@@ -120,12 +206,7 @@ impl SessionState {
             pending_manual_compact_request: StdMutex::new(None),
             compact_failure_count: StdMutex::new(0),
             current_mode: StdMutex::new(projector.snapshot().mode_id.clone()),
-            last_mode_changed_at: StdMutex::new(recent_stored.iter().rev().find_map(|stored| {
-                match &stored.event.payload {
-                    StorageEventPayload::ModeChanged { timestamp, .. } => Some(*timestamp),
-                    _ => None,
-                }
-            })),
+            last_mode_changed_at: StdMutex::new(last_mode_changed_at),
             broadcaster,
             live_broadcaster,
             writer,
@@ -133,8 +214,28 @@ impl SessionState {
             recent_records: StdMutex::new(cached_records),
             recent_stored: StdMutex::new(cached_stored),
             child_nodes: StdMutex::new(child_nodes),
+            active_tasks: StdMutex::new(active_tasks),
             input_queue_projection_index: StdMutex::new(input_queue_projection_index),
         }
+    }
+
+    pub fn recovery_checkpoint(
+        &self,
+        checkpoint_storage_seq: u64,
+    ) -> Result<SessionRecoveryCheckpoint> {
+        Ok(SessionRecoveryCheckpoint {
+            agent_state: self.snapshot_projected_state()?,
+            phase: self.current_phase()?,
+            last_mode_changed_at: self.last_mode_changed_at()?,
+            child_nodes: support::lock_anyhow(&self.child_nodes, "session child nodes")?.clone(),
+            active_tasks: support::lock_anyhow(&self.active_tasks, "session active tasks")?.clone(),
+            input_queue_projection_index: support::lock_anyhow(
+                &self.input_queue_projection_index,
+                "input queue projection index",
+            )?
+            .clone(),
+            checkpoint_storage_seq,
+        })
     }
 
     pub fn snapshot_projected_state(&self) -> Result<AgentState> {
@@ -261,6 +362,7 @@ impl SessionState {
         if let Some(node) = child_node_from_stored_event(stored) {
             self.upsert_child_session_node(node)?;
         }
+        self.apply_task_snapshot_event(stored)?;
         self.apply_input_queue_event(stored);
         Ok(records)
     }

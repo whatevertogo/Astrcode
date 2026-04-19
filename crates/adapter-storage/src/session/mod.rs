@@ -20,6 +20,8 @@
 //!         └── active-turn.json             # 锁持有者元数据
 //! ```
 
+mod batch_appender;
+mod checkpoint;
 mod event_log;
 mod iterator;
 mod paths;
