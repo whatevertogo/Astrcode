@@ -6,22 +6,22 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, ForkMode, LlmMessage,
-    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
-    RuntimeMetricsRecorder, SessionId, SpawnCapabilityGrant, UserMessageOrigin,
-    normalize_non_empty_unique_string_list, project,
+    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, ModeId,
+    ResolvedRuntimeConfig, RuntimeMetricsRecorder, SpawnCapabilityGrant,
 };
 use astrcode_kernel::AgentControlError;
-use astrcode_session_runtime::AgentPromptSubmission;
 
 use crate::{
     AgentKernelPort, AgentSessionPort,
     agent::{
-        build_delegation_metadata, build_fresh_child_contract, persist_delegation_for_handle,
-        persist_resolved_limits_for_handle, subrun_event_context,
+        persist_delegation_for_handle, persist_resolved_limits_for_handle, subrun_event_context,
     },
     errors::ApplicationError,
     execution::{ensure_profile_mode, merge_task_with_context},
+    governance_surface::{
+        FreshChildGovernanceInput, GovernanceBusyPolicy, GovernanceSurfaceAssembler,
+        build_delegation_metadata,
+    },
 };
 
 /// 子代理执行请求。
@@ -30,6 +30,7 @@ pub struct SubagentExecutionRequest {
     pub parent_agent_id: String,
     pub parent_turn_id: String,
     pub working_dir: String,
+    pub mode_id: ModeId,
     pub profile: AgentProfile,
     pub description: String,
     pub task: String,
@@ -50,36 +51,37 @@ pub struct SubagentExecutionRequest {
 pub async fn launch_subagent(
     kernel: &dyn AgentKernelPort,
     session_runtime: &dyn AgentSessionPort,
+    governance: &GovernanceSurfaceAssembler,
     request: SubagentExecutionRequest,
     runtime_config: ResolvedRuntimeConfig,
     metrics: &Arc<dyn RuntimeMetricsRecorder>,
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_subagent_request(&request)?;
     ensure_subagent_profile_mode(&request.profile)?;
-    let resolved_limits = resolve_child_execution_limits(
-        &request.parent_allowed_tools,
-        request.capability_grant.as_ref(),
-        runtime_config.max_steps as u32,
-    )?;
-    let scoped_gateway = kernel
-        .gateway()
-        .subset_for_tools_checked(&resolved_limits.allowed_tools)
-        .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
-    let scoped_router = scoped_gateway.capabilities().clone();
-    let resolved_overrides = ResolvedSubagentContextOverrides::default();
-    let inherited_messages = resolve_inherited_parent_messages(
-        session_runtime,
-        &request.parent_session_id,
-        &resolved_overrides,
-    )
-    .await?;
+    let surface = governance
+        .fresh_child_surface(
+            kernel,
+            session_runtime,
+            FreshChildGovernanceInput {
+                session_id: request.parent_session_id.clone(),
+                turn_id: request.parent_turn_id.clone(),
+                working_dir: request.working_dir.clone(),
+                mode_id: request.mode_id.clone(),
+                runtime: runtime_config,
+                parent_allowed_tools: request.parent_allowed_tools.clone(),
+                capability_grant: request.capability_grant.clone(),
+                description: request.description.clone(),
+                task: request.task.clone(),
+                busy_policy: GovernanceBusyPolicy::BranchOnBusy,
+            },
+        )
+        .await?;
     let delegation = build_delegation_metadata(
         request.description.as_str(),
         request.task.as_str(),
-        &resolved_limits,
+        &surface.resolved_limits,
         request.capability_grant.is_some(),
     );
-    let contract = build_fresh_child_contract(&delegation);
 
     let child_session = session_runtime
         .create_child_session(&request.working_dir, &request.parent_session_id)
@@ -107,68 +109,30 @@ pub async fn launch_subagent(
             handle.agent_id
         )));
     }
-    let handle = persist_resolved_limits_for_handle(kernel, handle, resolved_limits.clone())
-        .await
-        .map_err(ApplicationError::Internal)?;
+    let handle =
+        persist_resolved_limits_for_handle(kernel, handle, surface.resolved_limits.clone())
+            .await
+            .map_err(ApplicationError::Internal)?;
     let handle = persist_delegation_for_handle(kernel, handle, delegation)
         .await
         .map_err(ApplicationError::Internal)?;
-
     let merged_task = merge_task_with_context(&request.task, request.context.as_deref());
 
     let mut accepted = session_runtime
         .submit_prompt_for_agent_with_submission(
             &child_session.session_id,
             merged_task,
-            runtime_config,
-            AgentPromptSubmission {
-                agent: subrun_event_context(&handle),
-                capability_router: Some(scoped_router),
-                prompt_declarations: vec![contract],
-                resolved_limits: Some(resolved_limits),
-                resolved_overrides: Some(resolved_overrides),
-                injected_messages: inherited_messages,
-                source_tool_call_id: request.source_tool_call_id,
-            },
+            surface.runtime.clone(),
+            surface.into_submission(
+                subrun_event_context(&handle),
+                request.source_tool_call_id.clone(),
+            ),
         )
         .await
         .map_err(ApplicationError::from)?;
     metrics.record_child_spawned();
     accepted.agent_id = Some(handle.agent_id);
     Ok(accepted)
-}
-
-fn resolve_child_execution_limits(
-    parent_allowed_tools: &[String],
-    capability_grant: Option<&SpawnCapabilityGrant>,
-    max_steps: u32,
-) -> Result<ResolvedExecutionLimitsSnapshot, ApplicationError> {
-    let parent_allowed_tools =
-        normalize_non_empty_unique_string_list(parent_allowed_tools, "parentAllowedTools")
-            .map_err(ApplicationError::from)?;
-    let allowed_tools = match capability_grant {
-        Some(grant) => {
-            let requested_tools = grant
-                .normalized_allowed_tools()
-                .map_err(ApplicationError::from)?;
-            let allowed_tools = requested_tools
-                .into_iter()
-                .filter(|tool| parent_allowed_tools.iter().any(|parent| parent == tool))
-                .collect::<Vec<_>>();
-            if allowed_tools.is_empty() {
-                return Err(ApplicationError::InvalidArgument(
-                    "capability grant 与父级当前可继承工具无交集".to_string(),
-                ));
-            }
-            allowed_tools
-        },
-        None => parent_allowed_tools,
-    };
-
-    Ok(ResolvedExecutionLimitsSnapshot {
-        allowed_tools,
-        max_steps: Some(max_steps),
-    })
 }
 
 fn validate_subagent_request(request: &SubagentExecutionRequest) -> Result<(), ApplicationError> {
@@ -193,107 +157,6 @@ fn validate_subagent_request(request: &SubagentExecutionRequest) -> Result<(), A
         ));
     }
     Ok(())
-}
-
-async fn resolve_inherited_parent_messages(
-    session_runtime: &dyn AgentSessionPort,
-    parent_session_id: &str,
-    overrides: &ResolvedSubagentContextOverrides,
-) -> Result<Vec<LlmMessage>, ApplicationError> {
-    let parent_events = session_runtime
-        .session_stored_events(&SessionId::from(parent_session_id.to_string()))
-        .await
-        .map_err(ApplicationError::from)?;
-    let projected = project(
-        &parent_events
-            .iter()
-            .map(|stored| stored.event.clone())
-            .collect::<Vec<_>>(),
-    );
-
-    Ok(build_inherited_messages(&projected.messages, overrides))
-}
-
-fn build_inherited_messages(
-    parent_messages: &[LlmMessage],
-    overrides: &ResolvedSubagentContextOverrides,
-) -> Vec<LlmMessage> {
-    let mut inherited = Vec::new();
-
-    if overrides.include_compact_summary {
-        if let Some(summary) = parent_messages.iter().find(|message| {
-            matches!(
-                message,
-                LlmMessage::User {
-                    origin: UserMessageOrigin::CompactSummary,
-                    ..
-                }
-            )
-        }) {
-            inherited.push(summary.clone());
-        }
-    }
-
-    if overrides.include_recent_tail {
-        inherited.extend(select_inherited_recent_tail(
-            parent_messages,
-            overrides.fork_mode.as_ref(),
-        ));
-    }
-
-    inherited
-}
-
-fn select_inherited_recent_tail(
-    parent_messages: &[LlmMessage],
-    fork_mode: Option<&ForkMode>,
-) -> Vec<LlmMessage> {
-    let non_summary_messages = parent_messages
-        .iter()
-        .filter(|message| {
-            !matches!(
-                message,
-                LlmMessage::User {
-                    origin: UserMessageOrigin::CompactSummary,
-                    ..
-                }
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-
-    match fork_mode {
-        Some(ForkMode::LastNTurns(turns)) => {
-            tail_messages_for_last_n_turns(&non_summary_messages, *turns)
-        },
-        Some(ForkMode::FullHistory) | None => non_summary_messages,
-    }
-}
-
-fn tail_messages_for_last_n_turns(messages: &[LlmMessage], turns: usize) -> Vec<LlmMessage> {
-    if turns == 0 || messages.is_empty() {
-        return Vec::new();
-    }
-
-    let mut remaining_turns = turns;
-    let mut start_index = 0usize;
-    for (index, message) in messages.iter().enumerate().rev() {
-        if matches!(
-            message,
-            LlmMessage::User {
-                origin: UserMessageOrigin::User,
-                ..
-            }
-        ) {
-            remaining_turns = remaining_turns.saturating_sub(1);
-            start_index = index;
-            if remaining_turns == 0 {
-                break;
-            }
-        }
-    }
-
-    messages[start_index..].to_vec()
 }
 
 fn ensure_subagent_profile_mode(profile: &AgentProfile) -> Result<(), ApplicationError> {
@@ -323,9 +186,10 @@ fn map_spawn_error(error: AgentControlError) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{AgentMode, AgentProfile, ForkMode, LlmMessage, UserMessageOrigin};
+    use astrcode_core::{AgentMode, AgentProfile};
 
     use super::*;
+    use crate::governance_surface::GovernanceSurfaceAssembler;
 
     fn test_profile() -> AgentProfile {
         AgentProfile {
@@ -346,6 +210,7 @@ mod tests {
             parent_agent_id: "root-agent".to_string(),
             parent_turn_id: "turn-1".to_string(),
             working_dir: "/tmp/project".to_string(),
+            mode_id: ModeId::default(),
             profile: test_profile(),
             description: "探索代码".to_string(),
             task: "explore the code".to_string(),
@@ -438,135 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_child_execution_limits_inherits_parent_tools_when_no_grant() {
-        let limits = resolve_child_execution_limits(
-            &["read_file".to_string(), "grep".to_string()],
-            None,
-            12,
-        )
-        .expect("limits should resolve");
-
-        assert_eq!(limits.allowed_tools, vec!["read_file", "grep"]);
-        assert_eq!(limits.max_steps, Some(12));
-    }
-
-    #[test]
-    fn resolve_child_execution_limits_intersects_parent_and_grant() {
-        let limits = resolve_child_execution_limits(
-            &["read_file".to_string(), "grep".to_string()],
-            Some(&SpawnCapabilityGrant {
-                allowed_tools: vec!["grep".to_string(), "write_file".to_string()],
-            }),
-            8,
-        )
-        .expect("limits should resolve");
-
-        assert_eq!(limits.allowed_tools, vec!["grep"]);
-        assert_eq!(limits.max_steps, Some(8));
-    }
-
-    #[test]
-    fn resolve_child_execution_limits_rejects_disjoint_grant() {
-        let error = resolve_child_execution_limits(
-            &["read_file".to_string(), "grep".to_string()],
-            Some(&SpawnCapabilityGrant {
-                allowed_tools: vec!["write_file".to_string()],
-            }),
-            8,
-        )
-        .expect_err("disjoint grants should fail fast");
-
-        assert!(error.to_string().contains("无交集"));
-    }
-
-    #[test]
-    fn build_inherited_messages_uses_compact_summary_and_last_n_turn_tail() {
-        let inherited = build_inherited_messages(
-            &[
-                LlmMessage::User {
-                    content: "<summary>older summary</summary>".to_string(),
-                    origin: UserMessageOrigin::CompactSummary,
-                },
-                LlmMessage::User {
-                    content: "turn-1".to_string(),
-                    origin: UserMessageOrigin::User,
-                },
-                LlmMessage::Assistant {
-                    content: "answer-1".to_string(),
-                    tool_calls: Vec::new(),
-                    reasoning: None,
-                },
-                LlmMessage::User {
-                    content: "turn-2".to_string(),
-                    origin: UserMessageOrigin::User,
-                },
-                LlmMessage::Assistant {
-                    content: "answer-2".to_string(),
-                    tool_calls: Vec::new(),
-                    reasoning: None,
-                },
-            ],
-            &ResolvedSubagentContextOverrides {
-                include_compact_summary: true,
-                include_recent_tail: true,
-                fork_mode: Some(ForkMode::LastNTurns(1)),
-                ..ResolvedSubagentContextOverrides::default()
-            },
-        );
-
-        assert_eq!(inherited.len(), 3);
-        assert!(matches!(
-            &inherited[0],
-            LlmMessage::User {
-                origin: UserMessageOrigin::CompactSummary,
-                ..
-            }
-        ));
-        assert!(matches!(
-            &inherited[1],
-            LlmMessage::User {
-                content,
-                origin: UserMessageOrigin::User,
-            } if content == "turn-2"
-        ));
-        assert!(matches!(
-            &inherited[2],
-            LlmMessage::Assistant { content, .. } if content == "answer-2"
-        ));
-    }
-
-    #[test]
-    fn select_inherited_recent_tail_uses_full_history_by_default() {
-        let inherited = select_inherited_recent_tail(
-            &[
-                LlmMessage::User {
-                    content: "<summary>older summary</summary>".to_string(),
-                    origin: UserMessageOrigin::CompactSummary,
-                },
-                LlmMessage::User {
-                    content: "turn-1".to_string(),
-                    origin: UserMessageOrigin::User,
-                },
-                LlmMessage::Assistant {
-                    content: "answer-1".to_string(),
-                    tool_calls: Vec::new(),
-                    reasoning: None,
-                },
-            ],
-            None,
-        );
-
-        assert_eq!(inherited.len(), 2);
-        assert!(matches!(
-            &inherited[0],
-            LlmMessage::User {
-                content,
-                origin: UserMessageOrigin::User,
-            } if content == "turn-1"
-        ));
-        assert!(matches!(
-            &inherited[1],
-            LlmMessage::Assistant { content, .. } if content == "answer-1"
-        ));
+    fn governance_surface_builder_exists_for_subagent_paths() {
+        let _assembler = GovernanceSurfaceAssembler::default();
     }
 }

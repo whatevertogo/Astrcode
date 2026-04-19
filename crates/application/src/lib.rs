@@ -3,10 +3,15 @@ use std::{path::Path, sync::Arc};
 use astrcode_core::AgentProfile;
 use tokio::sync::broadcast;
 
+use crate::config::ConfigService;
+
 mod agent_use_cases;
+mod governance_surface;
 mod ports;
 mod session_use_cases;
-mod terminal_use_cases;
+mod terminal_queries;
+#[cfg(test)]
+mod test_support;
 
 pub mod agent;
 pub mod composer;
@@ -15,6 +20,7 @@ pub mod errors;
 pub mod execution;
 pub mod lifecycle;
 pub mod mcp;
+pub mod mode;
 pub mod observability;
 pub mod terminal;
 pub mod watch;
@@ -37,84 +43,15 @@ pub use astrcode_session_runtime::{
     SessionTranscriptSnapshot, SubRunEventScope, TurnCollaborationSummary, TurnSummary,
 };
 pub use composer::{ComposerOptionsRequest, ComposerSkillSummary};
-pub use config::{
-    // 常量与解析函数
-    ALL_ASTRCODE_ENV_VARS,
-    ANTHROPIC_API_KEY_ENV,
-    ANTHROPIC_MESSAGES_API_URL,
-    ANTHROPIC_MODELS_API_URL,
-    ANTHROPIC_VERSION,
-    ASTRCODE_HOME_DIR_ENV,
-    ASTRCODE_MAX_TOOL_CONCURRENCY_ENV,
-    ASTRCODE_PLUGIN_DIRS_ENV,
-    ASTRCODE_TEST_HOME_ENV,
-    ASTRCODE_TOOL_INLINE_LIMIT_PREFIX,
-    ASTRCODE_TOOL_RESULT_INLINE_LIMIT_ENV,
-    BUILD_ENV_VARS,
-    CURRENT_CONFIG_VERSION,
-    ConfigService,
-    DEEPSEEK_API_KEY_ENV,
-    DEFAULT_API_SESSION_TTL_HOURS,
-    DEFAULT_AUTO_COMPACT_ENABLED,
-    DEFAULT_COMPACT_KEEP_RECENT_TURNS,
-    DEFAULT_COMPACT_THRESHOLD_PERCENT,
-    DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT,
-    DEFAULT_INBOX_CAPACITY,
-    DEFAULT_LLM_CONNECT_TIMEOUT_SECS,
-    DEFAULT_LLM_MAX_RETRIES,
-    DEFAULT_LLM_READ_TIMEOUT_SECS,
-    DEFAULT_LLM_RETRY_BASE_DELAY_MS,
-    DEFAULT_MAX_CONCURRENT_AGENTS,
-    DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH,
-    DEFAULT_MAX_CONSECUTIVE_FAILURES,
-    DEFAULT_MAX_GREP_LINES,
-    DEFAULT_MAX_IMAGE_SIZE,
-    DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
-    DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
-    DEFAULT_MAX_RECOVERED_FILES,
-    DEFAULT_MAX_STEPS,
-    DEFAULT_MAX_SUBRUN_DEPTH,
-    DEFAULT_MAX_TOOL_CONCURRENCY,
-    DEFAULT_MAX_TRACKED_FILES,
-    DEFAULT_OPENAI_CONTEXT_LIMIT,
-    DEFAULT_PARENT_DELIVERY_CAPACITY,
-    DEFAULT_RECOVERY_TOKEN_BUDGET,
-    DEFAULT_RECOVERY_TRUNCATE_BYTES,
-    DEFAULT_RESERVED_CONTEXT_SIZE,
-    DEFAULT_SESSION_BROADCAST_CAPACITY,
-    DEFAULT_SESSION_RECENT_RECORD_LIMIT,
-    DEFAULT_SUMMARY_RESERVE_TOKENS,
-    DEFAULT_TOOL_RESULT_INLINE_LIMIT,
-    DEFAULT_TOOL_RESULT_MAX_BYTES,
-    DEFAULT_TOOL_RESULT_PREVIEW_LIMIT,
-    ENV_REFERENCE_PREFIX,
-    HOME_ENV_VARS,
-    LITERAL_VALUE_PREFIX,
-    McpConfigFileScope,
-    PLUGIN_ENV_VARS,
-    PROVIDER_API_KEY_ENV_VARS,
-    PROVIDER_KIND_ANTHROPIC,
-    PROVIDER_KIND_OPENAI,
-    RUNTIME_ENV_VARS,
-    ResolvedAgentConfig,
-    ResolvedConfigSummary,
-    ResolvedRuntimeConfig,
-    TAURI_ENV_TARGET_TRIPLE_ENV,
-    api_key_preview,
-    is_env_var_name,
-    list_model_options,
-    max_tool_concurrency,
-    resolve_active_selection,
-    resolve_agent_config,
-    resolve_anthropic_messages_api_url,
-    resolve_anthropic_models_api_url,
-    resolve_config_summary,
-    resolve_current_model,
-    resolve_openai_chat_completions_api_url,
-    resolve_runtime_config,
-};
 pub use errors::ApplicationError;
 pub use execution::{ExecutionControl, ProfileResolutionService, RootExecutionRequest};
+pub use governance_surface::{
+    FreshChildGovernanceInput, GOVERNANCE_APPROVAL_MODE_INHERIT, GOVERNANCE_POLICY_REVISION,
+    GovernanceBusyPolicy, GovernanceSurfaceAssembler, ResolvedGovernanceSurface,
+    ResumedChildGovernanceInput, RootGovernanceInput, SessionGovernanceInput,
+    ToolCollaborationGovernanceContext, build_delegation_metadata, build_fresh_child_contract,
+    build_resumed_child_contract, collaboration_policy_context, effective_allowed_tools_for_limits,
+};
 pub use lifecycle::governance::{
     AppGovernance, ObservabilitySnapshotProvider, RuntimeGovernancePort, RuntimeGovernanceSnapshot,
     RuntimeReloader, SessionInfoProvider,
@@ -122,6 +59,11 @@ pub use lifecycle::governance::{
 pub use mcp::{
     McpActionSummary, McpConfigScope, McpPort, McpServerStatusSummary, McpServerStatusView,
     McpService, RegisterMcpServerInput,
+};
+pub use mode::{
+    BuiltinModeCatalog, CompiledModeEnvelope, ModeCatalog, ModeSummary, builtin_mode_catalog,
+    compile_capability_selector, compile_mode_envelope, compile_mode_envelope_for_child,
+    validate_mode_transition,
 };
 pub use observability::{
     AgentCollaborationScorecardSnapshot, ExecutionDiagnosticsSnapshot, GovernanceSnapshot,
@@ -135,19 +77,6 @@ pub use ports::{
     ComposerSkillPort,
 };
 pub use session_use_cases::summarize_session_meta;
-pub use terminal::{
-    ConversationAuthoritativeSummary, ConversationChildSummaryFacts,
-    ConversationChildSummarySummary, ConversationControlFacts, ConversationControlSummary,
-    ConversationFacts, ConversationFocus, ConversationRehydrateFacts, ConversationRehydrateReason,
-    ConversationResumeCandidateFacts, ConversationSlashAction, ConversationSlashActionSummary,
-    ConversationSlashCandidateFacts, ConversationSlashCandidateSummary, ConversationStreamFacts,
-    ConversationStreamReplayFacts, TerminalChildSummaryFacts, TerminalControlFacts, TerminalFacts,
-    TerminalRehydrateFacts, TerminalRehydrateReason, TerminalResumeCandidateFacts,
-    TerminalSlashAction, TerminalSlashCandidateFacts, TerminalStreamFacts,
-    TerminalStreamReplayFacts, summarize_conversation_authoritative,
-    summarize_conversation_child_ref, summarize_conversation_child_summary,
-    summarize_conversation_control, summarize_conversation_slash_candidate,
-};
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
 
 /// 唯一业务用例入口。
@@ -158,6 +87,8 @@ pub struct App {
     config_service: Arc<ConfigService>,
     composer_service: Arc<composer::ComposerService>,
     composer_skills: Arc<dyn ComposerSkillPort>,
+    governance_surface: Arc<GovernanceSurfaceAssembler>,
+    mode_catalog: Arc<ModeCatalog>,
     mcp_service: Arc<mcp::McpService>,
     agent_service: Arc<AgentOrchestrationService>,
 }
@@ -247,12 +178,15 @@ pub struct SubRunStatusSummary {
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         kernel: Arc<dyn AppKernelPort>,
         session_runtime: Arc<dyn AppSessionPort>,
         profiles: Arc<ProfileResolutionService>,
         config_service: Arc<ConfigService>,
         composer_skills: Arc<dyn ComposerSkillPort>,
+        governance_surface: Arc<GovernanceSurfaceAssembler>,
+        mode_catalog: Arc<ModeCatalog>,
         mcp_service: Arc<mcp::McpService>,
         agent_service: Arc<AgentOrchestrationService>,
     ) -> Self {
@@ -263,6 +197,8 @@ impl App {
             config_service,
             composer_service: Arc::new(composer::ComposerService::new()),
             composer_skills,
+            governance_surface,
+            mode_catalog,
             mcp_service,
             agent_service,
         }
@@ -296,6 +232,14 @@ impl App {
         &self.composer_skills
     }
 
+    pub fn governance_surface(&self) -> &Arc<GovernanceSurfaceAssembler> {
+        &self.governance_surface
+    }
+
+    pub fn mode_catalog(&self) -> &Arc<ModeCatalog> {
+        &self.mode_catalog
+    }
+
     pub fn agent(&self) -> &Arc<AgentOrchestrationService> {
         &self.agent_service
     }
@@ -315,6 +259,7 @@ impl App {
             self.kernel.as_ref(),
             self.session_runtime.as_ref(),
             &self.profiles,
+            self.governance_surface.as_ref(),
             request,
             runtime,
         )

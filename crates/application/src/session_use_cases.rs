@@ -2,19 +2,19 @@
 use std::path::Path;
 
 use astrcode_core::{
-    AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, PromptDeclaration,
-    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource, SessionMeta,
-    StoredEvent, SystemPromptLayer,
+    AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ModeId,
+    PromptDeclaration, SessionMeta, StoredEvent,
 };
 
 use crate::{
     App, ApplicationError, CompactSessionAccepted, CompactSessionSummary, ExecutionControl,
-    PromptAcceptedSummary, PromptSkillInvocation, SessionControlStateSnapshot, SessionListSummary,
-    SessionReplay, SessionTranscriptSnapshot,
+    ModeSummary, PromptAcceptedSummary, PromptSkillInvocation, SessionControlStateSnapshot,
+    SessionListSummary, SessionReplay, SessionTranscriptSnapshot,
     agent::{
         IMPLICIT_ROOT_PROFILE_ID, implicit_session_root_agent_id, root_execution_event_context,
     },
     format_local_rfc3339,
+    governance_surface::{GovernanceBusyPolicy, SessionGovernanceInput},
 };
 
 impl App {
@@ -119,19 +119,9 @@ impl App {
             .session_runtime
             .get_session_working_dir(session_id)
             .await?;
-        let mut runtime = self
+        let runtime = self
             .config_service
             .load_resolved_runtime_config(Some(Path::new(&working_dir)))?;
-        if let Some(control) = control {
-            if control.manual_compact.is_some() {
-                return Err(ApplicationError::InvalidArgument(
-                    "manualCompact is not valid for prompt submission".to_string(),
-                ));
-            }
-            if let Some(max_steps) = control.max_steps {
-                runtime.max_steps = max_steps as usize;
-            }
-        }
         let root_agent = self.ensure_session_root_agent_context(session_id).await?;
         let prompt_declarations =
             match skill_invocation {
@@ -141,16 +131,34 @@ impl App {
                 )?],
                 None => Vec::new(),
             };
+        let surface = self.governance_surface.session_surface(
+            self.kernel.as_ref(),
+            SessionGovernanceInput {
+                session_id: session_id.to_string(),
+                turn_id: astrcode_core::generate_turn_id(),
+                working_dir: working_dir.clone(),
+                profile: root_agent
+                    .agent_profile
+                    .clone()
+                    .unwrap_or_else(|| IMPLICIT_ROOT_PROFILE_ID.to_string()),
+                mode_id: self
+                    .session_runtime
+                    .session_mode_state(session_id)
+                    .await
+                    .map_err(ApplicationError::from)?
+                    .current_mode_id,
+                runtime,
+                control,
+                extra_prompt_declarations: prompt_declarations,
+                busy_policy: GovernanceBusyPolicy::BranchOnBusy,
+            },
+        )?;
         self.session_runtime
             .submit_prompt_for_agent(
                 session_id,
                 text,
-                runtime,
-                astrcode_session_runtime::AgentPromptSubmission {
-                    agent: root_agent,
-                    prompt_declarations,
-                    ..Default::default()
-                },
+                surface.runtime.clone(),
+                surface.into_submission(root_agent, None),
             )
             .await
             .map_err(ApplicationError::from)
@@ -282,6 +290,49 @@ impl App {
             .map_err(ApplicationError::from)
     }
 
+    pub async fn list_modes(&self) -> Result<Vec<ModeSummary>, ApplicationError> {
+        Ok(self.mode_catalog.list())
+    }
+
+    pub async fn session_mode_state(
+        &self,
+        session_id: &str,
+    ) -> Result<astrcode_session_runtime::SessionModeSnapshot, ApplicationError> {
+        self.session_runtime
+            .session_mode_state(session_id)
+            .await
+            .map_err(ApplicationError::from)
+    }
+
+    pub async fn switch_mode(
+        &self,
+        session_id: &str,
+        target_mode_id: ModeId,
+    ) -> Result<astrcode_session_runtime::SessionModeSnapshot, ApplicationError> {
+        let current = self
+            .session_runtime
+            .session_mode_state(session_id)
+            .await
+            .map_err(ApplicationError::from)?;
+        if current.current_mode_id == target_mode_id {
+            return Ok(current);
+        }
+        crate::validate_mode_transition(
+            self.mode_catalog.as_ref(),
+            &current.current_mode_id,
+            &target_mode_id,
+        )
+        .map_err(ApplicationError::from)?;
+        self.session_runtime
+            .switch_mode(session_id, current.current_mode_id, target_mode_id)
+            .await
+            .map_err(ApplicationError::from)?;
+        self.session_runtime
+            .session_mode_state(session_id)
+            .await
+            .map_err(ApplicationError::from)
+    }
+
     /// 返回指定 session 的 durable 存储事件。
     ///
     /// Debug Workbench 需要基于服务端真相构造 trace，
@@ -374,41 +425,9 @@ impl App {
                     skill_invocation.skill_id
                 ))
             })?;
-        let mut content = format!(
-            "The user explicitly selected the `{}` skill for this turn.\n\nSelected skill:\n- id: \
-             {}\n- description: {}\n\nTurn contract:\n- Call the `Skill` tool for `{}` before \
-             continuing.\n- Treat the user's message as the task-specific instruction for this \
-             skill.\n- If the user message is empty, follow the skill's default workflow and ask \
-             only if blocked.\n- Do not silently substitute a different skill unless `{}` is \
-             unavailable.",
-            skill.id,
-            skill.id,
-            skill.description.trim(),
-            skill.id,
-            skill.id
-        );
-        if let Some(user_prompt) = skill_invocation
-            .user_prompt
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            content.push_str(&format!("\n- User prompt focus: {}", user_prompt));
-        }
-
-        Ok(PromptDeclaration {
-            block_id: format!("submission.skill.{}", skill.id),
-            title: format!("Selected Skill: {}", skill.id),
-            content,
-            render_target: PromptDeclarationRenderTarget::System,
-            layer: SystemPromptLayer::Dynamic,
-            kind: PromptDeclarationKind::ExtensionInstruction,
-            priority_hint: Some(590),
-            always_include: true,
-            source: PromptDeclarationSource::Builtin,
-            capability_name: None,
-            origin: Some(format!("skill-slash:{}", skill.id)),
-        })
+        Ok(self
+            .governance_surface
+            .build_submission_skill_declaration(&skill, skill_invocation.user_prompt.as_deref()))
     }
 }
 

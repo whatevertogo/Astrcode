@@ -16,8 +16,8 @@ use astrcode_adapter_mcp::{
 };
 use astrcode_adapter_storage::mcp_settings_store::FileMcpSettingsStore;
 use astrcode_application::{
-    ApplicationError, ConfigService, McpConfigFileScope, McpPort, McpServerStatusView,
-    RegisterMcpServerInput,
+    ApplicationError, McpPort, McpServerStatusView, RegisterMcpServerInput,
+    config::{ConfigService, McpConfigFileScope},
 };
 use async_trait::async_trait;
 

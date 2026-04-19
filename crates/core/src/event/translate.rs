@@ -250,6 +250,7 @@ impl EventTranslator {
                 });
             },
             StorageEventPayload::AgentCollaborationFact { .. } => {},
+            StorageEventPayload::ModeChanged { .. } => {},
             StorageEventPayload::AssistantDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {

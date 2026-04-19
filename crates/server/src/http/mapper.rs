@@ -20,11 +20,13 @@
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
 use astrcode_application::{
-    AgentExecuteSummary, ApplicationError, ComposerOption, Config, ResolvedConfigSummary,
-    ResolvedRuntimeStatusSummary, SessionCatalogEvent, SessionListSummary,
-    SubRunStatusSourceSummary, SubRunStatusSummary, SubagentContextOverrides,
-    list_model_options as resolve_model_options,
-    resolve_current_model as resolve_runtime_current_model,
+    AgentExecuteSummary, ApplicationError, ComposerOption, Config, ResolvedRuntimeStatusSummary,
+    SessionCatalogEvent, SessionListSummary, SubRunStatusSourceSummary, SubRunStatusSummary,
+    SubagentContextOverrides,
+    config::{
+        ResolvedConfigSummary, list_model_options as resolve_model_options,
+        resolve_current_model as resolve_runtime_current_model,
+    },
 };
 use astrcode_protocol::http::{
     AgentExecuteResponseDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,

@@ -49,11 +49,14 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// ### 会话
 /// - `POST /api/sessions` — 创建新会话
 /// - `GET /api/sessions` — 列出所有会话
+/// - `GET /api/modes` — 列出所有可用治理 mode
 /// - `GET /api/session-events` — 订阅会话目录事件（SSE）
 /// - `GET /api/sessions/:id/composer/options` — 获取输入框候选列表
 /// - `POST /api/sessions/:id/prompts` — 提交用户提示
 /// - `POST /api/sessions/:id/compact` — 压缩会话上下文
 /// - `POST /api/sessions/:id/interrupt` — 中断会话执行
+/// - `GET /api/sessions/:id/mode` — 查询当前 session mode
+/// - `POST /api/sessions/:id/mode` — 切换当前 session mode（下一 turn 生效）
 /// - `DELETE /api/sessions/:id` — 删除单个会话
 /// - `DELETE /api/projects` — 删除整个项目（级联删除所有会话）
 ///
@@ -88,6 +91,7 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             "/api/sessions",
             post(sessions::create_session).get(sessions::list_sessions),
         )
+        .route("/api/modes", get(sessions::list_modes))
         .route("/api/session-events", get(sessions::session_catalog_events))
         .route(
             "/api/sessions/{id}/composer/options",
@@ -102,6 +106,10 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         .route(
             "/api/sessions/{id}/interrupt",
             post(sessions::interrupt_session),
+        )
+        .route(
+            "/api/sessions/{id}/mode",
+            get(sessions::get_session_mode).post(sessions::switch_mode),
         )
         .route("/api/sessions/{id}", delete(sessions::delete_session))
         .route("/api/projects", delete(sessions::delete_project))

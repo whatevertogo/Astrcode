@@ -56,11 +56,10 @@ fn active_task_summary(
             .iter()
             .rev()
             .find_map(|message| match message {
-                LlmMessage::User { content, origin }
-                    if matches!(origin, astrcode_core::UserMessageOrigin::User) =>
-                {
-                    summarize_inline_text(content, 120)
-                },
+                LlmMessage::User {
+                    content,
+                    origin: astrcode_core::UserMessageOrigin::User,
+                } => summarize_inline_text(content, 120),
                 _ => None,
             });
     }
@@ -88,7 +87,7 @@ fn extract_last_turn_tail(messages: &[LlmMessage]) -> Vec<String> {
 mod tests {
     use std::path::PathBuf;
 
-    use astrcode_core::{AgentState, LlmMessage, Phase, UserMessageOrigin};
+    use astrcode_core::{AgentState, LlmMessage, ModeId, Phase, UserMessageOrigin};
 
     use super::{build_agent_observe_snapshot, extract_last_turn_tail};
 
@@ -98,6 +97,7 @@ mod tests {
             working_dir: PathBuf::from("/tmp"),
             phase,
             turn_count: 2,
+            mode_id: ModeId::code(),
             messages,
             last_assistant_at: None,
         }
@@ -159,8 +159,10 @@ mod tests {
 
     #[test]
     fn build_agent_observe_snapshot_uses_turn_tail_when_active_delivery_exists() {
-        let mut input_queue_projection = astrcode_core::InputQueueProjection::default();
-        input_queue_projection.active_delivery_ids = vec!["delivery-1".into()];
+        let input_queue_projection = astrcode_core::InputQueueProjection {
+            active_delivery_ids: vec!["delivery-1".into()],
+            ..Default::default()
+        };
 
         let snapshot = build_agent_observe_snapshot(
             astrcode_core::AgentLifecycleStatus::Idle,

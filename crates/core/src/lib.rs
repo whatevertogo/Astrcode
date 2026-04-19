@@ -30,6 +30,7 @@ pub mod home;
 pub mod hook;
 pub mod ids;
 pub mod local_server;
+pub mod mode;
 pub mod observability;
 pub mod plugin;
 pub mod policy;
@@ -111,6 +112,12 @@ pub use hook::{
 };
 pub use ids::{AgentId, CapabilityName, SessionId, SubRunId, TurnId};
 pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
+pub use mode::{
+    ActionPolicies, ActionPolicyEffect, ActionPolicyRule, BUILTIN_MODE_CODE_ID,
+    BUILTIN_MODE_PLAN_ID, BUILTIN_MODE_REVIEW_ID, CapabilitySelector, ChildPolicySpec,
+    GovernanceModeSpec, ModeExecutionPolicySpec, ModeId, PromptProgramEntry, ResolvedChildPolicy,
+    ResolvedTurnEnvelope, SubmitBusyPolicy, TransitionPolicySpec,
+};
 pub use observability::{
     AgentCollaborationScorecardSnapshot, ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot,
     ReplayMetricsSnapshot, ReplayPath, RuntimeMetricsRecorder, RuntimeObservabilitySnapshot,
@@ -127,8 +134,8 @@ pub use ports::{
     LlmUsage, ModelLimits, PromptAgentProfileSummary, PromptBuildCacheMetrics, PromptBuildOutput,
     PromptBuildRequest, PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
     PromptDeclarationSource, PromptEntrySummary, PromptFacts, PromptFactsProvider,
-    PromptFactsRequest, PromptProvider, PromptSkillSummary, ResourceProvider, ResourceReadResult,
-    ResourceRequestContext,
+    PromptFactsRequest, PromptGovernanceContext, PromptProvider, PromptSkillSummary,
+    ResourceProvider, ResourceReadResult, ResourceRequestContext,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};

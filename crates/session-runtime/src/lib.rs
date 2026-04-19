@@ -40,8 +40,8 @@ pub use query::{
     ConversationStreamProjector, ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts,
     ConversationSystemNoteKind, ConversationThinkingBlockFacts, ConversationTranscriptErrorKind,
     ConversationUserBlockFacts, LastCompactMetaSnapshot, ProjectedTurnOutcome,
-    SessionControlStateSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
-    ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
+    SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot,
+    ToolCallBlockFacts, ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
 };
 pub(crate) use state::{InputQueueEventAppend, SessionStateEventSink, append_input_queue_event};
 pub use state::{
@@ -292,6 +292,10 @@ impl SessionRuntime {
         self.query().session_child_nodes(session_id).await
     }
 
+    pub async fn session_mode_state(&self, session_id: &str) -> Result<SessionModeSnapshot> {
+        self.query().session_mode_state(session_id).await
+    }
+
     /// 读取指定 session 的工作目录。
     pub async fn get_session_working_dir(&self, session_id: &str) -> Result<String> {
         self.query().session_working_dir(session_id).await
@@ -480,6 +484,15 @@ impl SessionRuntime {
         self.command()
             .compact_session(session_id, &runtime, instructions.as_deref())
             .await
+    }
+
+    pub async fn switch_mode(
+        &self,
+        session_id: &str,
+        from: astrcode_core::ModeId,
+        to: astrcode_core::ModeId,
+    ) -> Result<StoredEvent> {
+        self.command().switch_mode(session_id, from, to).await
     }
 
     async fn session_phase(&self, session_id: &SessionId) -> Result<Phase> {

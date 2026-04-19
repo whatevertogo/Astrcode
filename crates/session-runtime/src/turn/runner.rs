@@ -28,7 +28,8 @@ use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 
 use astrcode_core::{
     AgentEventContext, CancelToken, LlmMessage, PromptDeclaration, PromptFactsProvider,
-    ResolvedRuntimeConfig, Result, StorageEvent, StorageEventPayload, ToolDefinition,
+    PromptGovernanceContext, ResolvedRuntimeConfig, Result, StorageEvent, StorageEventPayload,
+    ToolDefinition,
 };
 use astrcode_kernel::{CapabilityRouter, Kernel, KernelGateway};
 use chrono::{DateTime, Utc};
@@ -67,6 +68,7 @@ pub(crate) struct TurnRunRequest {
     pub prompt_facts_provider: Arc<dyn PromptFactsProvider>,
     pub capability_router: Option<CapabilityRouter>,
     pub prompt_declarations: Vec<PromptDeclaration>,
+    pub prompt_governance: Option<PromptGovernanceContext>,
 }
 
 /// Turn 执行结果。
@@ -91,6 +93,7 @@ struct TurnExecutionResources<'a> {
     cancel: &'a CancelToken,
     agent: &'a AgentEventContext,
     prompt_declarations: &'a [PromptDeclaration],
+    prompt_governance: Option<&'a PromptGovernanceContext>,
     tools: Arc<[ToolDefinition]>,
     settings: ContextWindowSettings,
     clearable_tools: HashSet<String>,
@@ -107,6 +110,7 @@ struct TurnExecutionRequestView<'a> {
     cancel: &'a CancelToken,
     agent: &'a AgentEventContext,
     prompt_declarations: &'a [PromptDeclaration],
+    prompt_governance: Option<&'a PromptGovernanceContext>,
 }
 
 struct TurnExecutionContext {
@@ -154,6 +158,7 @@ impl<'a> TurnExecutionResources<'a> {
             cancel: request.cancel,
             agent: request.agent,
             prompt_declarations: request.prompt_declarations,
+            prompt_governance: request.prompt_governance,
             tools: Arc::from(gateway.capabilities().tool_definitions()),
             settings,
             clearable_tools: CLEARABLE_TOOLS
@@ -285,6 +290,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         prompt_facts_provider,
         capability_router,
         prompt_declarations,
+        prompt_governance,
     } = request;
     let gateway = scoped_gateway(kernel.gateway(), capability_router)?;
     let resources = TurnExecutionResources::new(
@@ -299,6 +305,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
             cancel: &cancel,
             agent: &agent,
             prompt_declarations: &prompt_declarations,
+            prompt_governance: prompt_governance.as_ref(),
         },
     );
     let mut execution = TurnExecutionContext::new(&resources, messages, last_assistant_at);

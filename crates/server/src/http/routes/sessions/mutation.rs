@@ -1,6 +1,7 @@
 use astrcode_protocol::http::{
     CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
     ForkSessionRequest, PromptAcceptedResponse, PromptRequest, SessionListItem,
+    SessionModeStateDto, SwitchModeRequest,
 };
 use axum::{
     Json,
@@ -146,6 +147,30 @@ pub(crate) async fn fork_session(
     Ok(Json(to_session_list_item(
         astrcode_application::summarize_session_meta(meta),
     )))
+}
+
+pub(crate) async fn switch_mode(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<SwitchModeRequest>,
+) -> Result<(StatusCode, Json<SessionModeStateDto>), ApiError> {
+    require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
+    let mode = state
+        .app
+        .switch_mode(&session_id, request.mode_id.into())
+        .await
+        .map_err(ApiError::from)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SessionModeStateDto {
+            current_mode_id: mode.current_mode_id.to_string(),
+            last_mode_changed_at: mode
+                .last_mode_changed_at
+                .map(astrcode_application::format_local_rfc3339),
+        }),
+    ))
 }
 
 pub(crate) async fn delete_session(

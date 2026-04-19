@@ -20,9 +20,10 @@ use astrcode_adapter_prompt::{
 };
 use astrcode_adapter_storage::config_store::FileConfigStore;
 use astrcode_application::{
-    ApplicationError, ConfigService, ProfileResolutionService,
+    ApplicationError, ProfileResolutionService,
     config::{
-        api_key, resolve_anthropic_messages_api_url, resolve_openai_chat_completions_api_url,
+        ConfigService, api_key, resolve_anthropic_messages_api_url, resolve_current_model,
+        resolve_openai_chat_completions_api_url,
     },
     execution::ProfileProvider,
 };
@@ -114,7 +115,7 @@ impl ConfigBackedLlmProvider {
         let config = self
             .config_service
             .load_overlayed_config(Some(self.working_dir.as_path()))?;
-        let selection = astrcode_application::resolve_current_model(&config)?;
+        let selection = resolve_current_model(&config)?;
         let profile = config
             .profiles
             .iter()

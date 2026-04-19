@@ -20,6 +20,9 @@ pub enum Command {
     Model {
         query: Option<String>,
     },
+    Mode {
+        query: Option<String>,
+    },
     Compact,
     SkillInvoke {
         skill_id: String,
@@ -101,6 +104,7 @@ pub fn parse_command(
         "/new" => Command::New,
         "/resume" => Command::Resume { query: tail },
         "/model" => Command::Model { query: tail },
+        "/mode" => Command::Mode { query: tail },
         "/compact" => Command::Compact,
         _ if head.starts_with('/') => {
             let skill_id = head.trim_start_matches('/');
@@ -160,6 +164,12 @@ mod tests {
             parse_command("/model claude", &[]),
             Command::Model {
                 query: Some("claude".to_string())
+            }
+        );
+        assert_eq!(
+            parse_command("/mode review", &[]),
+            Command::Mode {
+                query: Some("review".to_string())
             }
         );
         assert_eq!(

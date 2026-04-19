@@ -5,7 +5,7 @@
 //! - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
 
 use astrcode_application::{
-    format_local_rfc3339, resolve_config_summary, resolve_runtime_status_summary,
+    config::resolve_config_summary, format_local_rfc3339, resolve_runtime_status_summary,
 };
 use astrcode_protocol::http::{ConfigReloadResponse, ConfigView, SaveActiveSelectionRequest};
 use axum::{

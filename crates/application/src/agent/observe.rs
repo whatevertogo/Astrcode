@@ -17,7 +17,7 @@ impl AgentOrchestrationService {
         params: ObserveParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
-        let collaboration = self.tool_collaboration_context(ctx)?;
+        let collaboration = self.tool_collaboration_context(ctx).await?;
         params
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;

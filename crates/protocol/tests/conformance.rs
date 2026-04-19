@@ -193,6 +193,7 @@ fn result_initialize_fixture_freezes_handshake_response_shape() {
             handlers: vec![],
             profiles: vec![sample_profile()],
             skills: vec![],
+            modes: vec![],
             metadata: json!({ "transport": "stdio" }),
         })
         .expect("initialize result should serialize"),

@@ -4,8 +4,8 @@ use astrcode_core::{
 };
 use astrcode_session_runtime::{
     AgentPromptSubmission, ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint,
-    ForkResult, SessionCatalogEvent, SessionControlStateSnapshot, SessionReplay, SessionRuntime,
-    SessionTranscriptSnapshot,
+    ForkResult, SessionCatalogEvent, SessionControlStateSnapshot, SessionModeSnapshot,
+    SessionReplay, SessionRuntime, SessionTranscriptSnapshot,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -54,6 +54,16 @@ pub trait AppSessionPort: Send + Sync {
         &self,
         session_id: &str,
     ) -> astrcode_core::Result<SessionControlStateSnapshot>;
+    async fn session_mode_state(
+        &self,
+        session_id: &str,
+    ) -> astrcode_core::Result<SessionModeSnapshot>;
+    async fn switch_mode(
+        &self,
+        session_id: &str,
+        from: astrcode_core::ModeId,
+        to: astrcode_core::ModeId,
+    ) -> astrcode_core::Result<StoredEvent>;
     async fn session_child_nodes(
         &self,
         session_id: &str,
@@ -155,6 +165,22 @@ impl AppSessionPort for SessionRuntime {
         session_id: &str,
     ) -> astrcode_core::Result<SessionControlStateSnapshot> {
         self.session_control_state(session_id).await
+    }
+
+    async fn session_mode_state(
+        &self,
+        session_id: &str,
+    ) -> astrcode_core::Result<SessionModeSnapshot> {
+        self.session_mode_state(session_id).await
+    }
+
+    async fn switch_mode(
+        &self,
+        session_id: &str,
+        from: astrcode_core::ModeId,
+        to: astrcode_core::ModeId,
+    ) -> astrcode_core::Result<StoredEvent> {
+        self.switch_mode(session_id, from, to).await
     }
 
     async fn session_child_nodes(

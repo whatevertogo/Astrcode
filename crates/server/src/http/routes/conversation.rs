@@ -1,9 +1,12 @@
 use std::{convert::Infallible, pin::Pin, time::Duration};
 
 use astrcode_application::{
-    ApplicationError, ConversationAuthoritativeSummary, ConversationChildSummarySummary,
-    ConversationControlSummary, ConversationFocus, ConversationSlashCandidateSummary,
-    TerminalStreamFacts, TerminalStreamReplayFacts,
+    ApplicationError,
+    terminal::{
+        ConversationAuthoritativeSummary, ConversationChildSummarySummary,
+        ConversationControlSummary, ConversationFocus, ConversationSlashCandidateSummary,
+        TerminalStreamFacts, TerminalStreamReplayFacts, summarize_conversation_authoritative,
+    },
 };
 use astrcode_core::AgentEvent;
 use astrcode_protocol::http::conversation::v1::{
@@ -348,7 +351,7 @@ struct ConversationAuthoritativeFacts {
 
 impl ConversationAuthoritativeFacts {
     fn from_replay(facts: &TerminalStreamReplayFacts) -> Self {
-        Self::from_summary(astrcode_application::summarize_conversation_authoritative(
+        Self::from_summary(summarize_conversation_authoritative(
             &facts.control,
             &facts.child_summaries,
             &facts.slash_candidates,
@@ -581,7 +584,7 @@ type ConversationSse = Sse<axum::response::sse::KeepAliveStream<ConversationEven
 
 #[cfg(test)]
 mod tests {
-    use astrcode_application::{
+    use astrcode_application::terminal::{
         TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
         summarize_conversation_authoritative,
     };

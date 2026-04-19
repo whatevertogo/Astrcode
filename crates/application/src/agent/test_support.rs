@@ -21,8 +21,8 @@ use serde_json::Value;
 
 use crate::{
     AgentKernelPort, AgentOrchestrationService, AgentSessionPort, ApplicationError, ConfigService,
-    ProfileResolutionService, RuntimeObservabilityCollector, execution::ProfileProvider,
-    lifecycle::TaskRegistry,
+    GovernanceSurfaceAssembler, ProfileResolutionService, RuntimeObservabilityCollector,
+    execution::ProfileProvider, lifecycle::TaskRegistry,
 };
 
 pub(crate) struct AgentTestHarness {
@@ -83,6 +83,7 @@ pub(crate) fn build_agent_test_harness_with_agent_config(
         session_port,
         config_service.clone(),
         profiles.clone(),
+        Arc::new(GovernanceSurfaceAssembler::default()),
         task_registry,
         metrics.clone(),
     );

@@ -660,7 +660,7 @@ mod tests {
     fn collector_snapshot_derives_collaboration_scorecard() {
         let collector = RuntimeObservabilityCollector::new();
         let policy = AgentCollaborationPolicyContext {
-            policy_revision: "agent-collaboration-v1".to_string(),
+            policy_revision: "governance-surface-v1".to_string(),
             max_subrun_depth: 3,
             max_spawn_per_turn: 3,
         };
@@ -682,6 +682,8 @@ mod tests {
             summary: Some("spawned".to_string()),
             latency_ms: None,
             source_tool_call_id: Some("call-1".to_string().into()),
+            governance_revision: Some("governance-surface-v1".to_string()),
+            mode_id: Some(astrcode_core::ModeId::code()),
             policy: policy.clone(),
         });
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
@@ -701,6 +703,8 @@ mod tests {
             summary: Some("observe".to_string()),
             latency_ms: None,
             source_tool_call_id: Some("call-2".to_string().into()),
+            governance_revision: Some("governance-surface-v1".to_string()),
+            mode_id: Some(astrcode_core::ModeId::code()),
             policy: policy.clone(),
         });
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
@@ -720,6 +724,8 @@ mod tests {
             summary: Some("reused".to_string()),
             latency_ms: None,
             source_tool_call_id: Some("call-3".to_string().into()),
+            governance_revision: Some("governance-surface-v1".to_string()),
+            mode_id: Some(astrcode_core::ModeId::code()),
             policy: policy.clone(),
         });
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
@@ -739,6 +745,8 @@ mod tests {
             summary: Some("consumed".to_string()),
             latency_ms: Some(250),
             source_tool_call_id: None,
+            governance_revision: Some("governance-surface-v1".to_string()),
+            mode_id: Some(astrcode_core::ModeId::code()),
             policy,
         });
 

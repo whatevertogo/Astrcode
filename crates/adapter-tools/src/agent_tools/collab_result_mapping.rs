@@ -98,10 +98,7 @@ fn inject_advisory_projection(metadata: &mut serde_json::Value, result: &Collabo
 fn build_advisory_projection(result: &CollaborationResult) -> Option<serde_json::Value> {
     let delegation = result.delegation();
     let branch = delegation.map(branch_advisory);
-
-    if branch.is_none() {
-        return None;
-    }
+    branch.as_ref()?;
 
     Some(json!({
         "branch": branch,

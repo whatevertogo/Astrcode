@@ -33,6 +33,7 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
         | StorageEventPayload::SubRunFinished { .. }
         | StorageEventPayload::ChildSessionNotification { .. }
         | StorageEventPayload::AgentCollaborationFact { .. }
+        | StorageEventPayload::ModeChanged { .. }
         | StorageEventPayload::AgentInputQueued { .. }
         | StorageEventPayload::AgentInputBatchStarted { .. }
         | StorageEventPayload::AgentInputBatchAcked { .. }
@@ -108,6 +109,7 @@ impl PhaseTracker {
                 | StorageEventPayload::SubRunFinished { .. }
                 | StorageEventPayload::ChildSessionNotification { .. }
                 | StorageEventPayload::AgentCollaborationFact { .. }
+                | StorageEventPayload::ModeChanged { .. }
                 | StorageEventPayload::AgentInputQueued { .. }
                 | StorageEventPayload::AgentInputBatchStarted { .. }
                 | StorageEventPayload::AgentInputBatchAcked { .. }

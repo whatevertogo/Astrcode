@@ -16,8 +16,9 @@ use anyhow::{Context, Result};
 use astrcode_client::{
     AstrcodeClient, AstrcodeClientError, AstrcodeClientTransport,
     AstrcodeConversationSlashCandidatesResponseDto, AstrcodeConversationSnapshotResponseDto,
-    AstrcodeCurrentModelInfoDto, AstrcodeModelOptionDto, AstrcodePromptAcceptedResponse,
-    AstrcodeReqwestTransport, AstrcodeSessionListItem, ClientConfig, ConversationStreamItem,
+    AstrcodeCurrentModelInfoDto, AstrcodeModeSummaryDto, AstrcodeModelOptionDto,
+    AstrcodePromptAcceptedResponse, AstrcodeReqwestTransport, AstrcodeSessionListItem,
+    AstrcodeSessionModeStateDto, ClientConfig, ConversationStreamItem,
 };
 use clap::Parser;
 use crossterm::{
@@ -89,6 +90,7 @@ enum Action {
         result: Result<AstrcodeConversationSlashCandidatesResponseDto, AstrcodeClientError>,
     },
     CurrentModelLoaded(Result<AstrcodeCurrentModelInfoDto, AstrcodeClientError>),
+    ModesLoaded(Result<Vec<AstrcodeModeSummaryDto>, AstrcodeClientError>),
     ModelOptionsLoaded {
         query: String,
         result: Result<Vec<AstrcodeModelOptionDto>, AstrcodeClientError>,
@@ -105,6 +107,15 @@ enum Action {
     CompactRequested {
         session_id: String,
         result: Result<astrcode_client::AstrcodeCompactSessionResponse, AstrcodeClientError>,
+    },
+    SessionModeLoaded {
+        session_id: String,
+        result: Result<AstrcodeSessionModeStateDto, AstrcodeClientError>,
+    },
+    ModeSwitched {
+        session_id: String,
+        requested_mode_id: String,
+        result: Result<AstrcodeSessionModeStateDto, AstrcodeClientError>,
     },
 }
 
@@ -150,6 +161,7 @@ async fn run_app(launcher_session: LauncherSession<SystemManagedServer>) -> Resu
     );
 
     controller.refresh_current_model().await;
+    controller.refresh_modes().await;
     controller.refresh_model_options(String::new()).await;
     controller.bootstrap().await?;
 
@@ -476,8 +488,11 @@ where
 
                 match result {
                     Ok(candidates) => {
-                        let items =
-                            slash_candidates_with_local_commands(&candidates.items, query.as_str());
+                        let items = slash_candidates_with_local_commands(
+                            &candidates.items,
+                            &self.state.shell.available_modes,
+                            query.as_str(),
+                        );
                         self.state.set_slash_query(query, items);
                     },
                     Err(error) => self.apply_status_error(error),
@@ -485,6 +500,10 @@ where
             },
             Action::CurrentModelLoaded(result) => match result {
                 Ok(current_model) => self.state.update_current_model(current_model),
+                Err(error) => self.apply_status_error(error),
+            },
+            Action::ModesLoaded(result) => match result {
+                Ok(modes) => self.state.update_modes(modes),
                 Err(error) => self.apply_status_error(error),
             },
             Action::ModelOptionsLoaded { query, result } => match result {
@@ -542,6 +561,52 @@ where
                 match result {
                     Ok(response) => {
                         self.state.set_status(response.message);
+                    },
+                    Err(error) => self.apply_status_error(error),
+                }
+            },
+            Action::SessionModeLoaded { session_id, result } => {
+                if !self.active_session_matches(session_id.as_str()) {
+                    return Ok(());
+                }
+                match result {
+                    Ok(mode) => {
+                        let available = self
+                            .state
+                            .shell
+                            .available_modes
+                            .iter()
+                            .map(|summary| summary.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if available.is_empty() {
+                            self.state
+                                .set_status(format!("mode {}", mode.current_mode_id));
+                        } else {
+                            self.state.set_status(format!(
+                                "mode {} · available: {}",
+                                mode.current_mode_id, available
+                            ));
+                        }
+                    },
+                    Err(error) => self.apply_status_error(error),
+                }
+            },
+            Action::ModeSwitched {
+                session_id,
+                requested_mode_id,
+                result,
+            } => {
+                if !self.active_session_matches(session_id.as_str()) {
+                    return Ok(());
+                }
+                match result {
+                    Ok(mode) => {
+                        self.state.set_status(format!(
+                            "mode {} · next turn will use {}",
+                            mode.current_mode_id, requested_mode_id
+                        ));
+                        self.refresh_modes().await;
                     },
                     Err(error) => self.apply_status_error(error),
                 }
@@ -843,6 +908,7 @@ fn filter_resume_sessions(
 
 fn slash_candidates_with_local_commands(
     candidates: &[astrcode_client::AstrcodeConversationSlashCandidateDto],
+    modes: &[astrcode_client::AstrcodeModeSummaryDto],
     query: &str,
 ) -> Vec<astrcode_client::AstrcodeConversationSlashCandidateDto> {
     let mut merged = candidates.to_vec();
@@ -868,6 +934,63 @@ fn slash_candidates_with_local_commands(
         )
     {
         merged.push(model_candidate);
+    }
+
+    let mode_candidate = astrcode_client::AstrcodeConversationSlashCandidateDto {
+        id: "mode".to_string(),
+        title: "/mode".to_string(),
+        description: "查看或切换当前 session 的治理 mode".to_string(),
+        keywords: vec![
+            "mode".to_string(),
+            "governance".to_string(),
+            "plan".to_string(),
+            "review".to_string(),
+            "code".to_string(),
+        ],
+        action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::ExecuteCommand,
+        action_value: "/mode".to_string(),
+    };
+    if !merged
+        .iter()
+        .any(|candidate| candidate.id == mode_candidate.id)
+        && fuzzy_contains(
+            query,
+            [
+                mode_candidate.id.clone(),
+                mode_candidate.title.clone(),
+                mode_candidate.description.clone(),
+            ],
+        )
+    {
+        merged.push(mode_candidate);
+    }
+
+    for mode in modes {
+        let candidate = astrcode_client::AstrcodeConversationSlashCandidateDto {
+            id: format!("mode:{}", mode.id),
+            title: format!("/mode {}", mode.id),
+            description: format!("切换到 {} · {}", mode.name, mode.description),
+            keywords: vec![
+                "mode".to_string(),
+                "governance".to_string(),
+                mode.id.clone(),
+                mode.name.clone(),
+            ],
+            action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::ExecuteCommand,
+            action_value: format!("/mode {}", mode.id),
+        };
+        if !merged.iter().any(|existing| existing.id == candidate.id)
+            && fuzzy_contains(
+                query,
+                [
+                    candidate.id.clone(),
+                    candidate.title.clone(),
+                    candidate.description.clone(),
+                ],
+            )
+        {
+            merged.push(candidate);
+        }
     }
 
     merged
@@ -981,7 +1104,7 @@ mod tests {
 
     #[test]
     fn slash_candidates_with_local_commands_includes_model_entry() {
-        let items = super::slash_candidates_with_local_commands(&[], "model");
+        let items = super::slash_candidates_with_local_commands(&[], &[], "model");
         assert!(items.iter().any(|item| item.id == "model"));
     }
 

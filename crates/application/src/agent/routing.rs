@@ -12,9 +12,10 @@ use astrcode_core::{
     SubRunHandle,
 };
 
-use super::{
-    AgentOrchestrationService, build_delegation_metadata, build_resumed_child_contract,
-    subrun_event_context,
+use super::{AgentOrchestrationService, build_delegation_metadata, subrun_event_context};
+use crate::governance_surface::{
+    GovernanceBusyPolicy, ResumedChildGovernanceInput, collaboration_policy_context,
+    effective_allowed_tools_for_limits,
 };
 
 impl AgentOrchestrationService {
@@ -126,7 +127,7 @@ impl AgentOrchestrationService {
         params: SendToChildParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
-        let collaboration = self.tool_collaboration_context(ctx)?;
+        let collaboration = self.tool_collaboration_context(ctx).await?;
 
         let child = self
             .require_direct_child_handle(
@@ -170,7 +171,7 @@ impl AgentOrchestrationService {
         params: SendToParentParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
-        let fallback_collaboration = self.tool_collaboration_context(ctx)?;
+        let fallback_collaboration = self.tool_collaboration_context(ctx).await?;
         let Some(child_agent_id) = ctx.agent_context().agent_id.as_deref() else {
             let error = super::AgentOrchestrationError::InvalidInput(
                 "upstream send requires a child agent execution context".to_string(),
@@ -411,13 +412,27 @@ impl AgentOrchestrationService {
             },
         };
 
+        let runtime = self
+            .resolve_runtime_config_for_session(child.session_id.as_str())
+            .await?;
+        let mode_id = self
+            .session_runtime
+            .session_mode_state(child.session_id.as_str())
+            .await
+            .map_err(super::AgentOrchestrationError::from)?
+            .current_mode_id;
+
         Ok(super::ToolCollaborationContext::new(
-            self.resolve_runtime_config_for_session(child.session_id.as_str())
-                .await?,
-            child.session_id.to_string(),
-            parent_turn_id.to_string(),
-            child.parent_agent_id.clone().map(Into::into),
-            ctx.tool_call_id().map(ToString::to_string),
+            super::ToolCollaborationContextInput {
+                runtime: runtime.clone(),
+                session_id: child.session_id.to_string(),
+                turn_id: parent_turn_id.to_string(),
+                parent_agent_id: child.parent_agent_id.clone().map(Into::into),
+                source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
+                policy: collaboration_policy_context(&runtime),
+                governance_revision: super::AGENT_COLLABORATION_POLICY_REVISION.to_string(),
+                mode_id,
+            },
         ))
     }
 
@@ -461,7 +476,7 @@ impl AgentOrchestrationService {
         params: CloseAgentParams,
         ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
-        let collaboration = self.tool_collaboration_context(ctx)?;
+        let collaboration = self.tool_collaboration_context(ctx).await?;
         params
             .validate()
             .map_err(super::AgentOrchestrationError::from)?;
@@ -621,29 +636,6 @@ impl AgentOrchestrationService {
                 .await;
         };
 
-        let allowed_tools =
-            super::effective_tool_names_for_handle(&reused_handle, &self.kernel.gateway());
-        let scoped_router = match self
-            .kernel
-            .gateway()
-            .capabilities()
-            .subset_for_tools_checked(&allowed_tools)
-        {
-            Ok(router) => router,
-            Err(error) => {
-                return self
-                    .restore_pending_inbox_and_fail(
-                        &child.agent_id,
-                        pending,
-                        format!(
-                            "agent '{}' resume capability resolution failed: {error}",
-                            params.agent_id
-                        ),
-                    )
-                    .await;
-            },
-        };
-
         let fallback_delegation = build_delegation_metadata(
             "",
             params.message.as_str(),
@@ -654,27 +646,87 @@ impl AgentOrchestrationService {
             .delegation
             .clone()
             .unwrap_or(fallback_delegation);
+        let runtime = match self
+            .resolve_runtime_config_for_session(child_session_id)
+            .await
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return self
+                    .restore_pending_inbox_and_fail(
+                        &child.agent_id,
+                        pending,
+                        format!(
+                            "agent '{}' resume runtime resolution failed: {error}",
+                            params.agent_id
+                        ),
+                    )
+                    .await;
+            },
+        };
+        let working_dir = match self
+            .session_runtime
+            .get_session_working_dir(child_session_id)
+            .await
+        {
+            Ok(working_dir) => working_dir,
+            Err(error) => {
+                return self
+                    .restore_pending_inbox_and_fail(
+                        &child.agent_id,
+                        pending,
+                        format!(
+                            "agent '{}' resume working directory resolution failed: {error}",
+                            params.agent_id
+                        ),
+                    )
+                    .await;
+            },
+        };
+        let surface = match self.governance_surface.resumed_child_surface(
+            self.kernel.as_ref(),
+            ResumedChildGovernanceInput {
+                session_id: child.session_id.to_string(),
+                turn_id: current_parent_turn_id.clone(),
+                working_dir,
+                mode_id: collaboration.mode_id().clone(),
+                runtime,
+                allowed_tools: effective_allowed_tools_for_limits(
+                    &self.kernel.gateway(),
+                    &reused_handle.resolved_limits,
+                ),
+                resolved_limits: reused_handle.resolved_limits.clone(),
+                delegation: Some(resume_delegation.clone()),
+                message: params.message.clone(),
+                context: params.context.clone(),
+                busy_policy: GovernanceBusyPolicy::BranchOnBusy,
+            },
+        ) {
+            Ok(surface) => surface,
+            Err(error) => {
+                return self
+                    .restore_pending_inbox_and_fail(
+                        &child.agent_id,
+                        pending,
+                        format!(
+                            "agent '{}' resume governance surface failed: {error}",
+                            params.agent_id
+                        ),
+                    )
+                    .await;
+            },
+        };
 
         let accepted = match self
             .session_runtime
             .submit_prompt_for_agent_with_submission(
                 child_session_id,
                 resume_message,
-                self.resolve_runtime_config_for_session(child_session_id)
-                    .await?,
-                astrcode_session_runtime::AgentPromptSubmission {
-                    agent: astrcode_core::AgentEventContext::from(&reused_handle),
-                    capability_router: Some(scoped_router),
-                    prompt_declarations: vec![build_resumed_child_contract(
-                        &resume_delegation,
-                        params.message.as_str(),
-                        params.context.as_deref(),
-                    )],
-                    resolved_limits: Some(reused_handle.resolved_limits.clone()),
-                    resolved_overrides: None,
-                    injected_messages: Vec::new(),
-                    source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
-                },
+                surface.runtime.clone(),
+                surface.into_submission(
+                    astrcode_core::AgentEventContext::from(&reused_handle),
+                    ctx.tool_call_id().map(ToString::to_string),
+                ),
             )
             .await
         {

@@ -15,8 +15,8 @@ use serde_json::Value;
 use crate::{
     AgentCollaborationFact, AgentEventContext, AstrError, ChildAgentRef, ChildSessionNotification,
     InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
-    PersistedToolOutput, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, Result,
-    SubRunResult, ToolOutputStream, UserMessageOrigin,
+    ModeId, PersistedToolOutput, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    Result, SubRunResult, ToolOutputStream, UserMessageOrigin,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -244,6 +244,13 @@ pub enum StorageEventPayload {
             with = "crate::local_rfc3339_option"
         )]
         timestamp: Option<DateTime<Utc>>,
+    },
+    /// 会话治理模式变更。
+    ModeChanged {
+        from: ModeId,
+        to: ModeId,
+        #[serde(with = "crate::local_rfc3339")]
+        timestamp: DateTime<Utc>,
     },
     /// Turn 完成（一轮 Agent 循环结束）。
     TurnDone {

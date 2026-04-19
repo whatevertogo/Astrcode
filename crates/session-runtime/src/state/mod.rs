@@ -21,12 +21,13 @@ use std::{
 
 use astrcode_core::{
     AgentEvent, AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventTranslator,
-    InputQueueProjection, Phase, ResolvedRuntimeConfig, Result, SessionEventRecord,
-    SessionTurnLease, StoredEvent,
+    InputQueueProjection, ModeId, Phase, ResolvedRuntimeConfig, Result, SessionEventRecord,
+    SessionTurnLease, StorageEventPayload, StoredEvent,
     support::{self},
 };
 use cache::{RecentSessionEvents, RecentStoredEvents};
 use child_sessions::{child_node_from_stored_event, rebuild_child_nodes};
+use chrono::{DateTime, Utc};
 pub(crate) use execution::SessionStateEventSink;
 pub use execution::{append_and_broadcast, complete_session_execution, prepare_session_execution};
 pub(crate) use input_queue::{InputQueueEventAppend, append_input_queue_event};
@@ -55,6 +56,8 @@ pub struct SessionState {
     pub pending_manual_compact: StdMutex<bool>,
     pub pending_manual_compact_request: StdMutex<Option<PendingManualCompactRequest>>,
     pub compact_failure_count: StdMutex<u32>,
+    pub current_mode: StdMutex<ModeId>,
+    pub last_mode_changed_at: StdMutex<Option<DateTime<Utc>>>,
     pub broadcaster: broadcast::Sender<SessionEventRecord>,
     live_broadcaster: broadcast::Sender<AgentEvent>,
     pub writer: Arc<SessionWriter>,
@@ -115,6 +118,13 @@ impl SessionState {
             pending_manual_compact: StdMutex::new(false),
             pending_manual_compact_request: StdMutex::new(None),
             compact_failure_count: StdMutex::new(0),
+            current_mode: StdMutex::new(projector.snapshot().mode_id.clone()),
+            last_mode_changed_at: StdMutex::new(recent_stored.iter().rev().find_map(|stored| {
+                match &stored.event.payload {
+                    StorageEventPayload::ModeChanged { timestamp, .. } => Some(*timestamp),
+                    _ => None,
+                }
+            })),
             broadcaster,
             live_broadcaster,
             writer,
@@ -152,6 +162,17 @@ impl SessionState {
         Ok(*support::lock_anyhow(
             &self.pending_manual_compact,
             "session pending manual compact",
+        )?)
+    }
+
+    pub fn current_mode_id(&self) -> Result<ModeId> {
+        Ok(support::lock_anyhow(&self.current_mode, "session current mode")?.clone())
+    }
+
+    pub fn last_mode_changed_at(&self) -> Result<Option<DateTime<Utc>>> {
+        Ok(*support::lock_anyhow(
+            &self.last_mode_changed_at,
+            "session last mode changed at",
         )?)
     }
 
@@ -225,6 +246,12 @@ impl SessionState {
         {
             let mut projector = support::lock_anyhow(&self.projector, "session projector")?;
             projector.apply(&stored.event);
+            *support::lock_anyhow(&self.current_mode, "session current mode")? =
+                projector.snapshot().mode_id.clone();
+        }
+        if let StorageEventPayload::ModeChanged { timestamp, .. } = &stored.event.payload {
+            *support::lock_anyhow(&self.last_mode_changed_at, "session last mode changed at")? =
+                Some(*timestamp);
         }
         let records = translator.translate(stored);
         support::lock_anyhow(&self.recent_records, "session recent records")?.push_batch(&records);

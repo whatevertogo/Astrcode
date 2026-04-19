@@ -9,7 +9,7 @@ use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 use astrcode_core::{
     AgentEventContext, CompactTrigger, LlmMessage, LlmRequest, PromptBuildOutput,
     PromptBuildRequest, PromptDeclaration, PromptFacts, PromptFactsProvider, PromptFactsRequest,
-    Result, StorageEvent, UserMessageOrigin,
+    PromptGovernanceContext, Result, StorageEvent, UserMessageOrigin,
 };
 use astrcode_kernel::KernelGateway;
 
@@ -49,6 +49,7 @@ pub struct AssemblePromptRequest<'a> {
     pub session_state: &'a crate::SessionState,
     pub tool_result_replacement_state: &'a mut ToolResultReplacementState,
     pub prompt_declarations: &'a [PromptDeclaration],
+    pub prompt_governance: Option<&'a PromptGovernanceContext>,
 }
 
 pub struct AssemblePromptResult {
@@ -70,6 +71,7 @@ pub(crate) struct PromptOutputRequest<'a> {
     pub session_state: Option<&'a crate::SessionState>,
     pub current_agent_id: Option<&'a str>,
     pub submission_prompt_declarations: &'a [PromptDeclaration],
+    pub prompt_governance: Option<&'a PromptGovernanceContext>,
 }
 
 /// Why: request assembly 要回答“最终如何形成一次 LLM 请求”，
@@ -124,6 +126,7 @@ pub async fn assemble_prompt_request(
         session_state: Some(request.session_state),
         current_agent_id: request.agent.agent_id.as_ref().map(|id| id.as_str()),
         submission_prompt_declarations: request.prompt_declarations,
+        prompt_governance: request.prompt_governance,
     })
     .await?;
     let mut snapshot = build_prompt_snapshot(
@@ -190,6 +193,7 @@ pub async fn assemble_prompt_request(
                     session_state: Some(request.session_state),
                     current_agent_id: request.agent.agent_id.as_ref().map(|id| id.as_str()),
                     submission_prompt_declarations: request.prompt_declarations,
+                    prompt_governance: request.prompt_governance,
                 })
                 .await?;
                 snapshot = build_prompt_snapshot(
@@ -251,6 +255,7 @@ pub(crate) async fn build_prompt_output(
         session_state,
         current_agent_id,
         submission_prompt_declarations,
+        prompt_governance,
     } = request;
     let facts = prompt_facts_provider
         .resolve_prompt_facts(&PromptFactsRequest {
@@ -263,6 +268,7 @@ pub(crate) async fn build_prompt_output(
                 .into_iter()
                 .map(|spec| spec.name.to_string())
                 .collect(),
+            governance: prompt_governance.cloned(),
         })
         .await?;
     let turn_index = count_user_turns(messages);
@@ -479,6 +485,7 @@ mod tests {
             session_state: &session_state,
             tool_result_replacement_state: &mut replacement_state,
             prompt_declarations: &[],
+            prompt_governance: None,
         })
         .await
         .expect("assembly should succeed");
@@ -535,6 +542,7 @@ mod tests {
             session_state: &session_state,
             tool_result_replacement_state: &mut replacement_state,
             prompt_declarations: &[],
+            prompt_governance: None,
         })
         .await
         .expect("assembly should succeed");
@@ -678,6 +686,7 @@ mod tests {
             session_state: None,
             current_agent_id: None,
             submission_prompt_declarations: &submission_declarations,
+            prompt_governance: None,
         })
         .await
         .expect("prompt output should build");

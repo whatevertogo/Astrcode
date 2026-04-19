@@ -3,7 +3,7 @@ use std::path::Path;
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, ChildSessionNotification, EventTranslator,
     InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
-    Result, StorageEvent, StorageEventPayload, StoredEvent,
+    ModeId, Result, StorageEvent, StorageEventPayload, StoredEvent,
 };
 use chrono::Utc;
 
@@ -177,6 +177,31 @@ impl<'a> SessionCommands<'a> {
             }
         }
         Ok(false)
+    }
+
+    pub async fn switch_mode(
+        &self,
+        session_id: &str,
+        from: ModeId,
+        to: ModeId,
+    ) -> Result<StoredEvent> {
+        let session_id = astrcode_core::SessionId::from(crate::normalize_session_id(session_id));
+        let session_state = self.runtime.query().session_state(&session_id).await?;
+        let mut translator = EventTranslator::new(session_state.current_phase()?);
+        append_and_broadcast(
+            &session_state,
+            &StorageEvent {
+                turn_id: None,
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::ModeChanged {
+                    from,
+                    to,
+                    timestamp: Utc::now(),
+                },
+            },
+            &mut translator,
+        )
+        .await
     }
 
     async fn append_agent_input_event(

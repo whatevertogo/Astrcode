@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use astrcode_protocol::http::{
     AuthExchangeRequest, AuthExchangeResponse, CompactSessionRequest, CompactSessionResponse,
-    CreateSessionRequest, CurrentModelInfoDto, ExecutionControlDto, ModelOptionDto,
+    CreateSessionRequest, CurrentModelInfoDto, ExecutionControlDto, ModeSummaryDto, ModelOptionDto,
     PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest, SessionListItem,
+    SessionModeStateDto, SwitchModeRequest,
     conversation::v1::{
         ConversationCursorDto, ConversationDeltaDto, ConversationErrorEnvelopeDto,
         ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
@@ -36,11 +37,13 @@ pub use astrcode_protocol::http::{
     CompactSessionResponse as AstrcodeCompactSessionResponse,
     CreateSessionRequest as AstrcodeCreateSessionRequest,
     CurrentModelInfoDto as AstrcodeCurrentModelInfoDto,
-    ExecutionControlDto as AstrcodeExecutionControlDto, ModelOptionDto as AstrcodeModelOptionDto,
-    PhaseDto as AstrcodePhaseDto, PromptAcceptedResponse as AstrcodePromptAcceptedResponse,
+    ExecutionControlDto as AstrcodeExecutionControlDto, ModeSummaryDto as AstrcodeModeSummaryDto,
+    ModelOptionDto as AstrcodeModelOptionDto, PhaseDto as AstrcodePhaseDto,
+    PromptAcceptedResponse as AstrcodePromptAcceptedResponse,
     PromptRequest as AstrcodePromptRequest, PromptSkillInvocation as AstrcodePromptSkillInvocation,
     SaveActiveSelectionRequest as AstrcodeSaveActiveSelectionRequest,
-    SessionListItem as AstrcodeSessionListItem,
+    SessionListItem as AstrcodeSessionListItem, SessionModeStateDto as AstrcodeSessionModeStateDto,
+    SwitchModeRequest as AstrcodeSwitchModeRequest,
     conversation::v1::{
         ConversationAssistantBlockDto as AstrcodeConversationAssistantBlockDto,
         ConversationBannerDto as AstrcodeConversationBannerDto,
@@ -230,6 +233,46 @@ where
         self.send_json(
             TransportMethod::Post,
             "/api/sessions",
+            Vec::new(),
+            Some(request),
+            true,
+        )
+        .await
+    }
+
+    pub async fn list_modes(&self) -> Result<Vec<ModeSummaryDto>, ClientError> {
+        self.send_json::<Vec<ModeSummaryDto>, Value>(
+            TransportMethod::Get,
+            "/api/modes",
+            Vec::new(),
+            None,
+            true,
+        )
+        .await
+    }
+
+    pub async fn get_session_mode(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionModeStateDto, ClientError> {
+        self.send_json::<SessionModeStateDto, Value>(
+            TransportMethod::Get,
+            &format!("/api/sessions/{session_id}/mode"),
+            Vec::new(),
+            None,
+            true,
+        )
+        .await
+    }
+
+    pub async fn switch_mode(
+        &self,
+        session_id: &str,
+        request: SwitchModeRequest,
+    ) -> Result<SessionModeStateDto, ClientError> {
+        self.send_json(
+            TransportMethod::Post,
+            &format!("/api/sessions/{session_id}/mode"),
             Vec::new(),
             Some(request),
             true,

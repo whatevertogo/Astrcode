@@ -200,8 +200,10 @@ mod tests {
             summary: None,
             latency_ms,
             source_tool_call_id: None,
+            governance_revision: Some("governance-surface-v1".to_string()),
+            mode_id: Some(astrcode_core::ModeId::code()),
             policy: AgentCollaborationPolicyContext {
-                policy_revision: "agent-collaboration-v1".to_string(),
+                policy_revision: "governance-surface-v1".to_string(),
                 max_subrun_depth: 3,
                 max_spawn_per_turn: 3,
             },

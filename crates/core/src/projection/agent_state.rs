@@ -22,7 +22,8 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 
 use crate::{
-    InvocationKind, LlmMessage, Phase, ReasoningContent, ToolCallRequest, UserMessageOrigin,
+    InvocationKind, LlmMessage, ModeId, Phase, ReasoningContent, ToolCallRequest,
+    UserMessageOrigin,
     event::{StorageEvent, StorageEventPayload},
     format_compact_summary, split_assistant_content,
 };
@@ -41,6 +42,8 @@ pub struct AgentState {
     pub messages: Vec<LlmMessage>,
     /// 当前执行阶段
     pub phase: Phase,
+    /// 当前治理模式 ID。
+    pub mode_id: ModeId,
     /// 已完成的 turn 数量
     pub turn_count: usize,
     /// 最后一条 assistant 消息的时间戳。
@@ -56,6 +59,7 @@ impl Default for AgentState {
             working_dir: PathBuf::new(),
             messages: Vec::new(),
             phase: Phase::Idle,
+            mode_id: ModeId::default(),
             turn_count: 0,
             last_assistant_at: None,
         }
@@ -219,6 +223,10 @@ impl AgentStateProjector {
                     *preserved_recent_turns as usize,
                     *messages_removed as usize,
                 );
+            },
+
+            StorageEventPayload::ModeChanged { to, .. } => {
+                self.state.mode_id = to.clone();
             },
 
             StorageEventPayload::TurnDone { .. } => {

@@ -5,7 +5,7 @@ use astrcode_client::{
     AstrcodeClientTransport, AstrcodeCompactSessionRequest, AstrcodeConversationBannerErrorCodeDto,
     AstrcodeConversationErrorEnvelopeDto, AstrcodeCreateSessionRequest,
     AstrcodeExecutionControlDto, AstrcodePromptRequest, AstrcodePromptSkillInvocation,
-    AstrcodeSaveActiveSelectionRequest, ConversationStreamItem,
+    AstrcodeSaveActiveSelectionRequest, AstrcodeSwitchModeRequest, ConversationStreamItem,
 };
 
 use super::{
@@ -113,6 +113,60 @@ where
                 });
                 self.state.set_model_query(query.clone(), items);
                 self.refresh_model_options(query).await;
+            },
+            Command::Mode { query } => {
+                let query = query.unwrap_or_default();
+                if query.is_empty() {
+                    let Some(session_id) = self.state.conversation.active_session_id.clone() else {
+                        let available = self
+                            .state
+                            .shell
+                            .available_modes
+                            .iter()
+                            .map(|mode| mode.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if available.is_empty() {
+                            self.state.set_error_status("no active session");
+                        } else {
+                            self.state.set_error_status(format!(
+                                "no active session · available modes: {available}"
+                            ));
+                        }
+                        return;
+                    };
+                    let client = self.client.clone();
+                    self.state.set_status("loading mode state");
+                    self.dispatch_async(async move {
+                        let result = client.get_session_mode(&session_id).await;
+                        Some(Action::SessionModeLoaded { session_id, result })
+                    });
+                    return;
+                }
+
+                let Some(session_id) = self.state.conversation.active_session_id.clone() else {
+                    self.state.set_error_status("no active session");
+                    return;
+                };
+                let requested_mode_id = query;
+                let client = self.client.clone();
+                self.state
+                    .set_status(format!("switching mode to {requested_mode_id}"));
+                self.dispatch_async(async move {
+                    let result = client
+                        .switch_mode(
+                            &session_id,
+                            AstrcodeSwitchModeRequest {
+                                mode_id: requested_mode_id.clone(),
+                            },
+                        )
+                        .await;
+                    Some(Action::ModeSwitched {
+                        session_id,
+                        requested_mode_id,
+                        result,
+                    })
+                });
             },
             Command::Compact => {
                 let Some(session_id) = self.state.conversation.active_session_id.clone() else {
@@ -244,6 +298,14 @@ where
         });
     }
 
+    pub(super) async fn refresh_modes(&self) {
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client.list_modes().await;
+            Some(Action::ModesLoaded(result))
+        });
+    }
+
     pub(super) async fn refresh_model_options(&self, query: String) {
         let client = self.client.clone();
         self.dispatch_async(async move {
@@ -265,6 +327,7 @@ where
         }
         let candidates = slash_candidates_with_local_commands(
             &self.state.conversation.slash_candidates,
+            &self.state.shell.available_modes,
             query.as_str(),
         );
         let items = if query.trim().is_empty() {
@@ -323,6 +386,7 @@ where
                 let query = self.slash_query_for_current_input();
                 let candidates = slash_candidates_with_local_commands(
                     &self.state.conversation.slash_candidates,
+                    &self.state.shell.available_modes,
                     query.as_str(),
                 );
                 self.state

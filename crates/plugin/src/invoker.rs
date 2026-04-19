@@ -183,6 +183,14 @@ impl Supervisor {
     pub fn declared_skills(&self) -> Vec<astrcode_protocol::plugin::SkillDescriptor> {
         self.remote_initialize().skills.clone()
     }
+
+    /// 获取此插件声明的治理 mode 列表。
+    ///
+    /// 返回插件在握手阶段通过 `InitializeResultData.modes` 声明的 mode。
+    /// 调用方负责决定如何校验并注册这些 mode。
+    pub fn declared_modes(&self) -> Vec<astrcode_core::GovernanceModeSpec> {
+        self.remote_initialize().modes.clone()
+    }
 }
 
 /// 完成流式调用并收集结果。

@@ -1,11 +1,12 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, CompletedParentDeliveryPayload, EventTranslator,
-    ExecutionAccepted, LlmMessage, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
-    ParentDeliveryTerminalSemantics, Phase, PromptDeclaration, ResolvedExecutionLimitsSnapshot,
-    ResolvedRuntimeConfig, ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder,
-    SessionId, StorageEvent, StorageEventPayload, TurnId, UserMessageOrigin,
+    AgentEventContext, ApprovalPending, CancelToken, CapabilityCall,
+    CompletedParentDeliveryPayload, EventTranslator, ExecutionAccepted, LlmMessage, ParentDelivery,
+    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics, Phase,
+    PolicyContext, PromptDeclaration, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
+    ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder, SessionId, StorageEvent,
+    StorageEventPayload, TurnId, UserMessageOrigin,
 };
 use astrcode_kernel::CapabilityRouter;
 use chrono::Utc;
@@ -26,6 +27,16 @@ enum SubmitBusyPolicy {
     RejectOnBusy,
 }
 
+struct SubmitPromptRequest {
+    session_id: String,
+    turn_id: Option<TurnId>,
+    live_user_input: Option<String>,
+    queued_inputs: Vec<String>,
+    runtime: ResolvedRuntimeConfig,
+    busy_policy: SubmitBusyPolicy,
+    submission: AgentPromptSubmission,
+}
+
 struct TurnExecutionTask {
     kernel: Arc<astrcode_kernel::Kernel>,
     request: crate::turn::RunnerRequest,
@@ -41,6 +52,10 @@ pub struct AgentPromptSubmission {
     pub resolved_overrides: Option<ResolvedSubagentContextOverrides>,
     pub injected_messages: Vec<LlmMessage>,
     pub source_tool_call_id: Option<String>,
+    pub policy_context: Option<PolicyContext>,
+    pub governance_revision: Option<String>,
+    pub approval: Option<Box<ApprovalPending<CapabilityCall>>>,
+    pub prompt_governance: Option<astrcode_core::PromptGovernanceContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -285,15 +300,15 @@ impl SessionRuntime {
         runtime: ResolvedRuntimeConfig,
         submission: AgentPromptSubmission,
     ) -> Result<ExecutionAccepted> {
-        self.submit_prompt_inner(
-            session_id,
-            None,
-            Some(text),
-            Vec::new(),
+        self.submit_prompt_inner(SubmitPromptRequest {
+            session_id: session_id.to_string(),
+            turn_id: None,
+            live_user_input: Some(text),
+            queued_inputs: Vec::new(),
             runtime,
-            SubmitBusyPolicy::BranchOnBusy,
+            busy_policy: SubmitBusyPolicy::BranchOnBusy,
             submission,
-        )
+        })
         .await
         .and_then(|accepted| {
             accepted.ok_or_else(|| {
@@ -312,15 +327,15 @@ impl SessionRuntime {
         runtime: ResolvedRuntimeConfig,
         submission: AgentPromptSubmission,
     ) -> Result<Option<ExecutionAccepted>> {
-        self.submit_prompt_inner(
-            session_id,
-            None,
-            Some(text),
-            Vec::new(),
+        self.submit_prompt_inner(SubmitPromptRequest {
+            session_id: session_id.to_string(),
+            turn_id: None,
+            live_user_input: Some(text),
+            queued_inputs: Vec::new(),
             runtime,
-            SubmitBusyPolicy::RejectOnBusy,
+            busy_policy: SubmitBusyPolicy::RejectOnBusy,
             submission,
-        )
+        })
         .await
     }
 
@@ -332,15 +347,15 @@ impl SessionRuntime {
         runtime: ResolvedRuntimeConfig,
         submission: AgentPromptSubmission,
     ) -> Result<Option<ExecutionAccepted>> {
-        self.submit_prompt_inner(
-            session_id,
-            Some(turn_id),
-            Some(text),
-            Vec::new(),
+        self.submit_prompt_inner(SubmitPromptRequest {
+            session_id: session_id.to_string(),
+            turn_id: Some(turn_id),
+            live_user_input: Some(text),
+            queued_inputs: Vec::new(),
             runtime,
-            SubmitBusyPolicy::RejectOnBusy,
+            busy_policy: SubmitBusyPolicy::RejectOnBusy,
             submission,
-        )
+        })
         .await
     }
 
@@ -351,15 +366,15 @@ impl SessionRuntime {
         runtime: ResolvedRuntimeConfig,
         submission: AgentPromptSubmission,
     ) -> Result<ExecutionAccepted> {
-        self.submit_prompt_inner(
-            session_id,
-            None,
-            Some(text),
-            Vec::new(),
+        self.submit_prompt_inner(SubmitPromptRequest {
+            session_id: session_id.to_string(),
+            turn_id: None,
+            live_user_input: Some(text),
+            queued_inputs: Vec::new(),
             runtime,
-            SubmitBusyPolicy::BranchOnBusy,
+            busy_policy: SubmitBusyPolicy::BranchOnBusy,
             submission,
-        )
+        })
         .await?
         .ok_or_else(|| {
             astrcode_core::AstrError::Validation(
@@ -376,28 +391,31 @@ impl SessionRuntime {
         runtime: ResolvedRuntimeConfig,
         submission: AgentPromptSubmission,
     ) -> Result<Option<ExecutionAccepted>> {
-        self.submit_prompt_inner(
-            session_id,
-            Some(turn_id),
-            None,
+        self.submit_prompt_inner(SubmitPromptRequest {
+            session_id: session_id.to_string(),
+            turn_id: Some(turn_id),
+            live_user_input: None,
             queued_inputs,
             runtime,
-            SubmitBusyPolicy::RejectOnBusy,
+            busy_policy: SubmitBusyPolicy::RejectOnBusy,
             submission,
-        )
+        })
         .await
     }
 
     async fn submit_prompt_inner(
         &self,
-        session_id: &str,
-        turn_id: Option<TurnId>,
-        live_user_input: Option<String>,
-        queued_inputs: Vec<String>,
-        runtime: ResolvedRuntimeConfig,
-        busy_policy: SubmitBusyPolicy,
-        submission: AgentPromptSubmission,
+        request: SubmitPromptRequest,
     ) -> Result<Option<ExecutionAccepted>> {
+        let SubmitPromptRequest {
+            session_id,
+            turn_id,
+            live_user_input,
+            queued_inputs,
+            runtime,
+            busy_policy,
+            submission,
+        } = request;
         let live_user_input = live_user_input
             .map(|text| text.trim().to_string())
             .filter(|text| !text.is_empty());
@@ -412,7 +430,7 @@ impl SessionRuntime {
             ));
         }
 
-        let requested_session_id = SessionId::from(crate::state::normalize_session_id(session_id));
+        let requested_session_id = SessionId::from(crate::state::normalize_session_id(&session_id));
         let turn_id = turn_id.unwrap_or_else(|| TurnId::from(astrcode_core::generate_turn_id()));
         let cancel = CancelToken::new();
         let submit_target = match busy_policy {
@@ -444,6 +462,10 @@ impl SessionRuntime {
             resolved_overrides,
             injected_messages,
             source_tool_call_id,
+            policy_context: _,
+            governance_revision: _,
+            approval: _,
+            prompt_governance,
         } = submission;
 
         prepare_session_execution(
@@ -522,6 +544,7 @@ impl SessionRuntime {
                 prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
                 capability_router,
                 prompt_declarations,
+                prompt_governance,
             },
             finalize: TurnFinalizeContext {
                 kernel: Arc::clone(&self.kernel),
@@ -969,15 +992,15 @@ mod tests {
         event_store.push_busy("turn-busy");
 
         let result = runtime
-            .submit_prompt_inner(
-                &session.session_id,
-                None,
-                Some("hello".to_string()),
-                Vec::new(),
-                ResolvedRuntimeConfig::default(),
-                SubmitBusyPolicy::RejectOnBusy,
-                AgentPromptSubmission::default(),
-            )
+            .submit_prompt_inner(SubmitPromptRequest {
+                session_id: session.session_id.clone(),
+                turn_id: None,
+                live_user_input: Some("hello".to_string()),
+                queued_inputs: Vec::new(),
+                runtime: ResolvedRuntimeConfig::default(),
+                busy_policy: SubmitBusyPolicy::RejectOnBusy,
+                submission: AgentPromptSubmission::default(),
+            })
             .await
             .expect("submit should not error");
 
@@ -999,18 +1022,18 @@ mod tests {
         event_store.push_busy("turn-busy");
 
         let accepted = runtime
-            .submit_prompt_inner(
-                &session.session_id,
-                None,
-                Some("hello".to_string()),
-                Vec::new(),
-                ResolvedRuntimeConfig {
+            .submit_prompt_inner(SubmitPromptRequest {
+                session_id: session.session_id.clone(),
+                turn_id: None,
+                live_user_input: Some("hello".to_string()),
+                queued_inputs: Vec::new(),
+                runtime: ResolvedRuntimeConfig {
                     max_concurrent_branch_depth: 2,
                     ..ResolvedRuntimeConfig::default()
                 },
-                SubmitBusyPolicy::BranchOnBusy,
-                AgentPromptSubmission::default(),
-            )
+                busy_policy: SubmitBusyPolicy::BranchOnBusy,
+                submission: AgentPromptSubmission::default(),
+            })
             .await
             .expect("submit should not error")
             .expect("branch-on-busy should always accept");
@@ -1080,18 +1103,18 @@ mod tests {
             .expect("test session should be created");
 
         let accepted = runtime
-            .submit_prompt_inner(
-                &session.session_id,
-                None,
-                Some("live user input".to_string()),
-                vec![
+            .submit_prompt_inner(SubmitPromptRequest {
+                session_id: session.session_id.clone(),
+                turn_id: None,
+                live_user_input: Some("live user input".to_string()),
+                queued_inputs: vec![
                     "queued child result".to_string(),
                     "queued reactivation context".to_string(),
                 ],
-                ResolvedRuntimeConfig::default(),
-                SubmitBusyPolicy::RejectOnBusy,
-                AgentPromptSubmission::default(),
-            )
+                runtime: ResolvedRuntimeConfig::default(),
+                busy_policy: SubmitBusyPolicy::RejectOnBusy,
+                submission: AgentPromptSubmission::default(),
+            })
             .await
             .expect("submit should not error")
             .expect("submit should be accepted");
@@ -1154,14 +1177,14 @@ mod tests {
             .expect("test session should be created");
 
         let accepted = runtime
-            .submit_prompt_inner(
-                &session.session_id,
-                None,
-                Some("child task".to_string()),
-                Vec::new(),
-                ResolvedRuntimeConfig::default(),
-                SubmitBusyPolicy::RejectOnBusy,
-                AgentPromptSubmission {
+            .submit_prompt_inner(SubmitPromptRequest {
+                session_id: session.session_id.clone(),
+                turn_id: None,
+                live_user_input: Some("child task".to_string()),
+                queued_inputs: Vec::new(),
+                runtime: ResolvedRuntimeConfig::default(),
+                busy_policy: SubmitBusyPolicy::RejectOnBusy,
+                submission: AgentPromptSubmission {
                     injected_messages: vec![
                         LlmMessage::User {
                             content: "parent turn".to_string(),
@@ -1175,7 +1198,7 @@ mod tests {
                     ],
                     ..AgentPromptSubmission::default()
                 },
-            )
+            })
             .await
             .expect("submit should not error")
             .expect("submit should be accepted");

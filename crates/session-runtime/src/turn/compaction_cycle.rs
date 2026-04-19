@@ -101,6 +101,7 @@ pub async fn try_reactive_compact(
         session_state: None,
         current_agent_id: ctx.agent.agent_id.as_ref().map(|id| id.as_str()),
         submission_prompt_declarations: &[],
+        prompt_governance: None,
     })
     .await?;
 

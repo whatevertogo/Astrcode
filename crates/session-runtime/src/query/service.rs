@@ -8,8 +8,8 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     AgentObserveSnapshot, ConversationSnapshotFacts, ConversationStreamReplayFacts,
-    LastCompactMetaSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot, SessionReplay,
-    SessionRuntime, SessionState, TurnTerminalSnapshot,
+    LastCompactMetaSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot,
+    SessionModeSnapshot, SessionReplay, SessionRuntime, SessionState, TurnTerminalSnapshot,
     query::{
         agent::build_agent_observe_snapshot,
         conversation::{build_conversation_replay_frames, project_conversation_snapshot},
@@ -65,6 +65,8 @@ impl<'a> SessionQueries<'a> {
             manual_compact_pending: actor.state().manual_compact_pending()?,
             compacting: actor.state().compacting(),
             last_compact_meta,
+            current_mode_id: actor.state().current_mode_id()?,
+            last_mode_changed_at: actor.state().last_mode_changed_at()?,
         })
     }
 
@@ -72,6 +74,15 @@ impl<'a> SessionQueries<'a> {
         let session_id = SessionId::from(crate::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
         actor.state().list_child_session_nodes()
+    }
+
+    pub async fn session_mode_state(&self, session_id: &str) -> Result<SessionModeSnapshot> {
+        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let actor = self.runtime.ensure_loaded_session(&session_id).await?;
+        Ok(SessionModeSnapshot {
+            current_mode_id: actor.state().current_mode_id()?,
+            last_mode_changed_at: actor.state().last_mode_changed_at()?,
+        })
     }
 
     pub async fn session_working_dir(&self, session_id: &str) -> Result<String> {

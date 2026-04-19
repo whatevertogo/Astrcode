@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
-use astrcode_application::{
+use astrcode_application::terminal::{
     ConversationChildSummarySummary, ConversationControlSummary, ConversationSlashActionSummary,
     ConversationSlashCandidateSummary, TerminalChildSummaryFacts, TerminalFacts,
-    TerminalRehydrateFacts, summarize_conversation_child_ref, summarize_conversation_child_summary,
-    summarize_conversation_control, summarize_conversation_slash_candidate,
+    TerminalRehydrateFacts, TerminalSlashCandidateFacts, summarize_conversation_child_ref,
+    summarize_conversation_child_summary, summarize_conversation_control,
+    summarize_conversation_slash_candidate,
 };
 use astrcode_core::ChildAgentRef;
 use astrcode_protocol::http::{
@@ -115,7 +116,7 @@ pub(crate) fn project_conversation_rehydrate_envelope(
 }
 
 pub(crate) fn project_conversation_slash_candidates(
-    candidates: &[astrcode_application::TerminalSlashCandidateFacts],
+    candidates: &[TerminalSlashCandidateFacts],
 ) -> ConversationSlashCandidatesResponseDto {
     ConversationSlashCandidatesResponseDto {
         items: candidates

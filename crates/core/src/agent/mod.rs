@@ -1151,6 +1151,10 @@ pub struct AgentCollaborationFact {
     pub latency_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_tool_call_id: Option<DeliveryId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<crate::ModeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance_revision: Option<String>,
     pub policy: AgentCollaborationPolicyContext,
 }
 

@@ -57,6 +57,31 @@ pub struct SessionListItem {
     pub phase: PhaseDto,
 }
 
+/// 可供 session 使用的 mode 摘要。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeSummaryDto {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+/// session 当前治理 mode 状态。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModeStateDto {
+    pub current_mode_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_mode_changed_at: Option<String>,
+}
+
+/// `POST /api/sessions/:id/mode` 请求体。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchModeRequest {
+    pub mode_id: String,
+}
+
 /// `POST /api/sessions/:id/prompt` 请求体——向会话提交用户提示词。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

@@ -176,6 +176,7 @@ fn test_resources<'a>(
             cancel,
             agent,
             prompt_declarations: &[],
+            prompt_governance: None,
         },
     )
 }

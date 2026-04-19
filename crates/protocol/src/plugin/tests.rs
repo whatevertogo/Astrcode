@@ -3,6 +3,10 @@
 //! 验证各类消息（初始化、调用、事件、结果等）的序列化/反序列化
 //! 是否正确，确保 JSON 格式与协议版本兼容。
 
+use astrcode_core::{
+    ActionPolicies, CapabilitySelector, ChildPolicySpec, GovernanceModeSpec,
+    ModeExecutionPolicySpec, ModeId, TransitionPolicySpec,
+};
 use serde_json::json;
 
 use super::{
@@ -117,6 +121,7 @@ fn plugin_messages_roundtrip_as_v5_json() {
             handlers: vec![],
             profiles: vec![],
             skills: vec![],
+            modes: vec![],
             metadata: json!({}),
         })
         .expect("serialize initialize result"),
@@ -158,6 +163,7 @@ fn initialize_result_uses_result_kind_payload() {
             handlers: vec![],
             profiles: vec![],
             skills: vec![],
+            modes: vec![],
             metadata: json!({ "mode": "stdio" }),
         })
         .expect("serialize initialize result"),
@@ -169,6 +175,40 @@ fn initialize_result_uses_result_kind_payload() {
     assert_eq!(decoded.protocol_version, PROTOCOL_VERSION);
     assert_eq!(decoded.peer.role, PeerRole::Worker);
     assert_eq!(decoded.capabilities[0].name.as_str(), "tool.echo");
+}
+
+#[test]
+fn initialize_result_serializes_declared_modes() {
+    let mode = GovernanceModeSpec {
+        id: ModeId::from("plugin.plan-lite"),
+        name: "Plan Lite".to_string(),
+        description: "Plugin-provided planning mode.".to_string(),
+        capability_selector: CapabilitySelector::Tag("read-only".to_string()),
+        action_policies: ActionPolicies::default(),
+        child_policy: ChildPolicySpec::default(),
+        execution_policy: ModeExecutionPolicySpec::default(),
+        prompt_program: vec![],
+        transition_policy: TransitionPolicySpec {
+            allowed_targets: vec![ModeId::code()],
+        },
+    };
+    let result = InitializeResultData {
+        protocol_version: PROTOCOL_VERSION.to_string(),
+        peer: sample_peer(),
+        capabilities: vec![],
+        handlers: vec![],
+        profiles: vec![],
+        skills: vec![],
+        modes: vec![mode.clone()],
+        metadata: json!({}),
+    };
+
+    let encoded = serde_json::to_value(&result).expect("initialize result should serialize");
+    assert_eq!(encoded["modes"][0]["id"], "plugin.plan-lite");
+
+    let decoded: InitializeResultData =
+        serde_json::from_value(encoded).expect("initialize result should deserialize");
+    assert_eq!(decoded.modes, vec![mode]);
 }
 
 #[test]

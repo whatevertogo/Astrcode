@@ -11,7 +11,8 @@ use std::{path::PathBuf, time::Duration};
 use astrcode_client::{
     AstrcodeConversationErrorEnvelopeDto, AstrcodeConversationSlashCandidateDto,
     AstrcodeConversationSnapshotResponseDto, AstrcodeConversationStreamEnvelopeDto,
-    AstrcodeCurrentModelInfoDto, AstrcodeModelOptionDto, AstrcodePhaseDto, AstrcodeSessionListItem,
+    AstrcodeCurrentModelInfoDto, AstrcodeModeSummaryDto, AstrcodeModelOptionDto, AstrcodePhaseDto,
+    AstrcodeSessionListItem,
 };
 pub use conversation::ConversationState;
 pub use debug::DebugChannelState;
@@ -235,6 +236,13 @@ impl CliState {
         if self.shell.model_options != model_options {
             self.shell.model_options = model_options.clone();
             self.interaction.sync_model_items(model_options);
+            self.render.mark_dirty();
+        }
+    }
+
+    pub fn update_modes(&mut self, modes: Vec<AstrcodeModeSummaryDto>) {
+        if self.shell.available_modes != modes {
+            self.shell.available_modes = modes;
             self.render.mark_dirty();
         }
     }

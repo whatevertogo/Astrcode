@@ -11,8 +11,8 @@ use std::{
 use astrcode_adapter_storage::core_port::FsEventStore;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
 use astrcode_application::{
-    AgentOrchestrationService, App, AppGovernance, RuntimeObservabilityCollector, WatchService,
-    lifecycle::TaskRegistry,
+    AgentOrchestrationService, App, AppGovernance, GovernanceSurfaceAssembler,
+    RuntimeObservabilityCollector, WatchService, builtin_mode_catalog, lifecycle::TaskRegistry,
 };
 
 use super::{
@@ -157,6 +157,7 @@ pub async fn bootstrap_server_runtime_with_options(
     let PluginBootstrapResult {
         invokers: plugin_invokers,
         skills: plugin_skills,
+        modes: plugin_modes,
         registry: plugin_registry,
         supervisors: plugin_supervisors,
         search_paths: plugin_search_paths,
@@ -193,6 +194,11 @@ pub async fn bootstrap_server_runtime_with_options(
     )?);
     let observability = Arc::new(RuntimeObservabilityCollector::new());
     let task_registry = Arc::new(TaskRegistry::new());
+    let mode_catalog = Arc::new(builtin_mode_catalog()?);
+    mode_catalog.replace_plugin_modes(plugin_modes.clone())?;
+    let governance_surface = Arc::new(GovernanceSurfaceAssembler::new(
+        mode_catalog.as_ref().clone(),
+    ));
 
     let event_store: Arc<dyn EventStore> = Arc::new(FsEventStore::new_with_projects_root(
         paths.projects_root.clone(),
@@ -220,6 +226,7 @@ pub async fn bootstrap_server_runtime_with_options(
         session_runtime.clone(),
         config_service.clone(),
         profiles.clone(),
+        Arc::clone(&governance_surface),
         task_registry.clone(),
         observability.clone(),
     ));
@@ -253,6 +260,8 @@ pub async fn bootstrap_server_runtime_with_options(
         profiles,
         config_service.clone(),
         Arc::new(RuntimeComposerSkillPort::new(skill_catalog.clone())),
+        Arc::clone(&governance_surface),
+        Arc::clone(&mode_catalog),
         mcp_service,
         agent_service,
     ));
@@ -270,6 +279,7 @@ pub async fn bootstrap_server_runtime_with_options(
         plugin_skill_root: paths.plugin_skill_root.clone(),
         plugin_supervisors,
         working_dir: working_dir.clone(),
+        mode_catalog: Some(mode_catalog),
     });
     let profile_watch_runtime = if options.enable_profile_watch {
         Some(
