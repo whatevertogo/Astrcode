@@ -1,3 +1,7 @@
+//! Agent 控制用例（`App` 的 agent 相关方法）。
+//!
+//! 通过 kernel 的稳定控制合同实现 agent 状态查询、子运行生命周期管理等用例。
+
 use astrcode_core::{
     AgentEventContext, AgentLifecycleStatus, AgentTurnOutcome, InvocationKind,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, StorageEventPayload,
@@ -5,7 +9,6 @@ use astrcode_core::{
 };
 use astrcode_kernel::SubRunStatusView;
 
-/// ! 这是 App 的用例实现，不是 ports
 use crate::{
     AgentExecuteSummary, App, ApplicationError, RootExecutionRequest, SubRunStatusSourceSummary,
     SubRunStatusSummary, summarize_session_meta,

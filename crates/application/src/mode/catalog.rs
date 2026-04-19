@@ -1,3 +1,15 @@
+//! 治理模式注册目录。
+//!
+//! `ModeCatalog` 管理所有可用的治理模式（内置 + 插件扩展），提供：
+//! - 按 ModeId 查找 mode spec
+//! - 列出所有可用 mode 的摘要（供 API 返回）
+//! - 热替换插件 mode（bootstrap / reload 时调用 `replace_plugin_modes`）
+//!
+//! 内置三种 mode：
+//! - **Code**：默认执行模式，保留完整能力面与委派能力
+//! - **Plan**：规划模式，只暴露只读工具，禁止委派
+//! - **Review**：审查模式，严格只读，禁止委派，收紧步数
+
 use std::{
     collections::BTreeMap,
     sync::{Arc, RwLock},
@@ -169,7 +181,6 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
                     selector: CapabilitySelector::Tag("agent".to_string()),
                     effect: ActionPolicyEffect::Deny,
                 }],
-                context_strategy: Some(astrcode_core::ContextStrategy::Summarize),
             },
             child_policy: ChildPolicySpec {
                 allow_delegation: false,
@@ -216,7 +227,6 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
                     selector: CapabilitySelector::Tag("agent".to_string()),
                     effect: ActionPolicyEffect::Deny,
                 }],
-                context_strategy: Some(astrcode_core::ContextStrategy::Summarize),
             },
             child_policy: ChildPolicySpec {
                 allow_delegation: false,

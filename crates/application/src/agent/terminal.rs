@@ -1,3 +1,8 @@
+//! Child turn 终态投递与父侧通知投影。
+//!
+//! 当子代理 turn 结束时，将终态结果（completed/failed/close_request）投影为
+//! `ChildSessionNotification`，通过 wake 机制投递到父侧 input queue 驱动父级决策。
+
 use std::time::Instant;
 
 use astrcode_core::{

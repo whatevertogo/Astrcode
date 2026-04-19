@@ -1,3 +1,8 @@
+//! 应用层错误类型。
+//!
+//! `ApplicationError` 是 application 层唯一的错误枚举，
+//! 通过 `From` 转换桥接 core / session-runtime 的底层错误。
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

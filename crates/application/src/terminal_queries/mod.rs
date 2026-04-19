@@ -1,3 +1,11 @@
+//! # 终端查询子域
+//!
+//! 从旧 `terminal_use_cases.rs` 拆分而来，按职责分为四个查询模块：
+//! - `cursor`：游标格式校验与比较
+//! - `resume`：会话恢复候选列表
+//! - `snapshot`：会话快照查询（conversation + transcript）
+//! - `summary`：会话摘要提取
+
 mod cursor;
 mod resume;
 mod snapshot;

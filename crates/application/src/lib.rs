@@ -1,3 +1,12 @@
+//! # Astrcode 应用层
+//!
+//! 纯业务编排层，不依赖任何 adapter-* crate，只依赖 core / kernel / session-runtime。
+//!
+//! 核心职责：
+//! - 通过 `App` 结构体暴露所有业务用例入口
+//! - 持有并编排 governance surface（治理面）、mode catalog（模式目录）等基础设施
+//! - 通过 port trait 与 adapter 层解耦（AppKernelPort / AppSessionPort / ComposerSkillPort）
+
 use std::{path::Path, sync::Arc};
 
 use astrcode_core::AgentProfile;

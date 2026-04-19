@@ -1,3 +1,9 @@
+//! 终端摘要提取。
+//!
+//! 从 conversation snapshot 中提取最新一条有意义的摘要文本，
+//! 按 block 类型降级选择：assistant markdown → tool call summary/error → child handoff → error →
+//! system note。 所有候选项都为空时回退到游标位置。
+
 use astrcode_session_runtime::{
     ConversationBlockFacts, ConversationChildHandoffBlockFacts, ConversationErrorBlockFacts,
     ConversationSnapshotFacts, ConversationSystemNoteBlockFacts, ToolCallBlockFacts,

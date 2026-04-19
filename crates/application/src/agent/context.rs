@@ -1,3 +1,9 @@
+//! Agent 协作事实记录与上下文构建。
+//!
+//! 从 agent/mod.rs 提取出的两个关注点：
+//! - `CollaborationFactRecord`：记录一次协作动作（spawn/send/observe/close）的结构化事实
+//! - `AgentOrchestrationService` 的上下文构建方法（root/child 的 event context）
+
 use std::path::Path;
 
 use astrcode_core::{

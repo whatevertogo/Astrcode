@@ -1,3 +1,11 @@
+//! 治理 prompt 声明构建。
+//!
+//! 生成子代理委派相关的 prompt declarations：
+//! - `build_delegation_metadata`：构建委派元数据（责任摘要、复用边界、能力限制）
+//! - `build_fresh_child_contract`：新子代理的系统 prompt 契约
+//! - `build_resumed_child_contract`：继续委派的增量指令 prompt
+//! - `collaboration_prompt_declarations`：四工具协作指导 prompt
+
 use astrcode_core::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
     PromptDeclarationSource, ResolvedExecutionLimitsSnapshot, SystemPromptLayer,

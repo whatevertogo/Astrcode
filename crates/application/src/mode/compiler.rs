@@ -1,3 +1,11 @@
+//! 治理模式编译器。
+//!
+//! 将声明式的 `GovernanceModeSpec` 编译为运行时可消费的 `CompiledModeEnvelope`：
+//! - 通过 `CapabilitySelector` 从全量 capability 中筛选出允许的工具名列表
+//! - 递归处理组合选择器（Union / Intersection / Difference）
+//! - 为子代理额外计算继承后的工具白名单（parent ∩ mode ∩ grant）
+//! - 生成 mode prompt declarations 和子代理策略
+
 use std::collections::BTreeSet;
 
 use astrcode_core::{
@@ -85,6 +93,7 @@ pub fn compile_mode_envelope_for_child(
 ) -> Result<CompiledModeEnvelope> {
     let mode_allowed_tools =
         compile_capability_selector(&base_router.capability_specs(), &spec.capability_selector)?;
+    // 子代理工具 = parent ∩ mode；parent 为空时直接取 mode 全量
     let effective_parent_allowed_tools = if parent_allowed_tools.is_empty() {
         mode_allowed_tools
     } else {

@@ -1,3 +1,9 @@
+//! 父级上下文继承：子代理启动时从父 session 继承消息。
+//!
+//! 支持两种继承策略：
+//! - **Compact summary**：从父消息中提取压缩摘要，给子代理一个精简的上下文概览
+//! - **Recent tail**：按 fork mode 截取父消息尾部（LastNTurns 或 FullHistory）
+
 use astrcode_core::{
     ForkMode, LlmMessage, ResolvedSubagentContextOverrides, UserMessageOrigin, project,
 };
@@ -54,6 +60,8 @@ pub(crate) fn build_inherited_messages(
     inherited
 }
 
+/// 从父消息中选择要继承的最近尾部。
+/// 先排除 CompactSummary 消息（已单独处理），再按 fork_mode 截取。
 pub(crate) fn select_inherited_recent_tail(
     parent_messages: &[LlmMessage],
     fork_mode: Option<&ForkMode>,
@@ -80,6 +88,7 @@ pub(crate) fn select_inherited_recent_tail(
     }
 }
 
+/// 从尾部倒数 `turns` 个 User 消息作为 turn 边界，截取最近的 N 个 turn。
 fn tail_messages_for_last_n_turns(messages: &[LlmMessage], turns: usize) -> Vec<LlmMessage> {
     if turns == 0 || messages.is_empty() {
         return Vec::new();

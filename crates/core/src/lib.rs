@@ -126,8 +126,8 @@ pub use observability::{
 pub use plugin::{PluginHealth, PluginManifest, PluginRegistry, PluginState, PluginType};
 pub use policy::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
-    CapabilityCall, ContextDecisionInput, ContextStrategy, ModelRequest, PolicyContext,
-    PolicyEngine, PolicyVerdict, SystemPromptBlock, SystemPromptLayer,
+    CapabilityCall, ModelRequest, PolicyContext, PolicyEngine, PolicyVerdict, SystemPromptBlock,
+    SystemPromptLayer,
 };
 pub use ports::{
     EventStore, LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,

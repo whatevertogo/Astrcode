@@ -1,3 +1,8 @@
+//! 会话快照查询。
+//!
+//! 从 session-runtime 获取 conversation/transcript 快照并映射为
+//! terminal 层的事实模型（`TerminalFacts` / `ConversationStreamReplayFacts`）。
+
 use crate::{
     App, ApplicationError,
     terminal::{

@@ -1,3 +1,8 @@
+//! 应用层测试桩。
+//!
+//! 提供 `StubSessionPort`，实现 `AppSessionPort` + `AgentSessionPort` 两个 trait，
+//! 用于 `application` 内部单元测试，避免依赖真实 `SessionRuntime`。
+
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, DeleteProjectResult,
     ExecutionAccepted, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,

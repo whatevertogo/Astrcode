@@ -1,3 +1,8 @@
+//! 治理模式转换校验。
+//!
+//! 校验 session 从一个 mode 切换到另一个 mode 是否合法：
+//! 检查当前 mode 的 `transition_policy.allowed_targets` 是否包含目标 mode。
+
 use astrcode_core::{AstrError, GovernanceModeSpec, ModeId, Result};
 
 use super::ModeCatalog;

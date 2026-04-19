@@ -1,3 +1,14 @@
+//! 治理面装配器。
+//!
+//! `GovernanceSurfaceAssembler` 是治理面子域的核心：将 mode spec、runtime 配置、
+//! 执行控制等输入编译成 `ResolvedGovernanceSurface`，供 turn 提交时一次性消费。
+//!
+//! 装配过程：
+//! 1. 从 `ModeCatalog` 查找 mode spec → 编译 `CapabilitySelector` 得到工具白名单
+//! 2. 构建 `PolicyContext` 和 `AgentCollaborationPolicyContext`
+//! 3. 注入 prompt declarations（mode prompt + 协作指导 + skill 声明）
+//! 4. 解析 busy policy（是否在 session busy 时分支或拒绝）
+
 use astrcode_core::{
     ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
     ResolvedTurnEnvelope,
@@ -269,11 +280,13 @@ impl GovernanceSurfaceAssembler {
         kernel: &dyn AppKernelPort,
         input: ResumedChildGovernanceInput,
     ) -> Result<ResolvedGovernanceSurface, ApplicationError> {
+        // resumed child 复用首次 spawn 时解析的 limits，因此用 resolved_limits 覆盖 runtime 默认值
         let mut runtime = input.runtime;
         if let Some(max_steps) = input.resolved_limits.max_steps {
             runtime.max_steps = max_steps as usize;
         }
         let compiled = self.compile_mode_surface(kernel, &input.mode_id, Vec::new())?;
+        // 工具白名单优先级：input.allowed_tools > resolved_limits > mode 编译结果
         let allowed_tools = if input.allowed_tools.is_empty() {
             if input.resolved_limits.allowed_tools.is_empty() {
                 compiled.envelope.allowed_tools.clone()
@@ -291,6 +304,7 @@ impl GovernanceSurfaceAssembler {
                 false,
             )
         });
+        // 当 allowed_tools 与 mode 编译结果一致时复用 router，否则重建子集 router
         let compiled = CompiledModeEnvelope {
             capability_router: if allowed_tools == compiled.envelope.allowed_tools {
                 compiled.capability_router

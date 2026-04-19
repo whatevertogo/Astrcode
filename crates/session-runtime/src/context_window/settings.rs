@@ -38,6 +38,8 @@ impl ContextWindowSettings {
 
 impl From<&ResolvedRuntimeConfig> for ContextWindowSettings {
     fn from(config: &ResolvedRuntimeConfig) -> Self {
+        // TODO: 如果未来需要 mode 感知的上下文压缩，请在 compact 参数模型上做显式覆盖，
+        // 而不是重新引入 summarize/truncate/ignore 这类未落地的策略枚举。
         Self {
             auto_compact_enabled: config.auto_compact_enabled,
             compact_threshold_percent: config.compact_threshold_percent,

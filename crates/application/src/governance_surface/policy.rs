@@ -1,3 +1,10 @@
+//! 治理策略上下文与审批管线构建。
+//!
+//! 提供三个核心功能：
+//! - 构建协作策略上下文（`collaboration_policy_context`），包含 depth/spawn 限制
+//! - 构建审批管线（`default_approval_pipeline`），当 mode 要求审批时安装占位骨架
+//! - 计算有效工具列表（`effective_allowed_tools_for_limits`），空列表回退到全量
+
 use astrcode_core::{
     AgentCollaborationPolicyContext, ApprovalPending, ApprovalRequest, CapabilityCall, ModeId,
     PolicyContext, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedTurnEnvelope,
@@ -131,6 +138,7 @@ pub(super) fn default_approval_pipeline(
     if !envelope.action_policies.requires_approval() {
         return GovernanceApprovalPipeline { pending: None };
     }
+    // 安装占位审批骨架：当前 disabled，后续会接入真实审批引擎
     GovernanceApprovalPipeline {
         pending: Some(ApprovalPending {
             request: ApprovalRequest {
@@ -178,6 +186,7 @@ pub(super) fn default_approval_pipeline(
     }
 }
 
+/// 解析 busy policy：mode 级别 RejectOnBusy 强制覆盖，否则使用请求方指定的策略。
 pub(super) fn resolve_busy_policy(
     submit_busy_policy: astrcode_core::SubmitBusyPolicy,
     requested_busy_policy: GovernanceBusyPolicy,

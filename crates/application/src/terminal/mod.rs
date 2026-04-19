@@ -1,3 +1,8 @@
+//! 终端层数据模型与投影辅助。
+//!
+//! 定义面向前端的事件流数据模型（`TerminalFacts`、`ConversationSlashCandidateFacts` 等）
+//! 以及从 session-runtime 快照到终端视图的投影辅助函数。
+
 use astrcode_core::{ChildAgentRef, ChildSessionNode, CompactAppliedMeta, CompactTrigger, Phase};
 use astrcode_session_runtime::{
     ConversationSnapshotFacts as RuntimeConversationSnapshotFacts,

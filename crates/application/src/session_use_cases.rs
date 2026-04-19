@@ -1,4 +1,8 @@
-/// ! 这是 App 的用例实现，不是 ports
+//! Session 用例（`App` 的 session 相关方法）。
+//!
+//! 用户直接发起的 session 操作：prompt 提交、compact、mode 切换、
+//! session 列表查询、快照查询等。这些方法组装治理面并委托到 session-runtime。
+
 use std::path::Path;
 
 use astrcode_core::{

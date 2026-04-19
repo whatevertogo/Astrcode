@@ -1,3 +1,8 @@
+//! Agent 编排子域的测试基础设施。
+//!
+//! 提供 `AgentTestHarness` 和 `AgentTestEnvGuard`，用于在隔离环境中测试
+//! `AgentOrchestrationService` 的协作编排逻辑，无需启动真实 session-runtime。
+
 use std::{
     collections::HashMap,
     path::Path,

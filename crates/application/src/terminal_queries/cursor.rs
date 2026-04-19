@@ -1,3 +1,8 @@
+//! 游标格式校验与比较工具。
+//!
+//! 游标格式为 `{storage_seq}.{subindex}`，用于分页查询时标记位置。
+//! `cursor_is_after_head` 判断请求的游标是否已超过最新位置（即客户端是否有未读数据）。
+
 use crate::ApplicationError;
 
 pub(super) fn validate_cursor_format(cursor: &str) -> Result<(), ApplicationError> {

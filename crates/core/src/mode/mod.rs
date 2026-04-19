@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AstrError, CapabilityKind, ContextStrategy, ForkMode, PromptDeclaration, Result, SideEffect,
+    AstrError, CapabilityKind, ForkMode, PromptDeclaration, Result, SideEffect,
     normalize_non_empty_unique_string_list,
 };
 
@@ -144,8 +144,6 @@ pub struct ActionPolicies {
     pub default_effect: ActionPolicyEffect,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<ActionPolicyRule>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_strategy: Option<ContextStrategy>,
 }
 
 impl ActionPolicies {
@@ -429,7 +427,6 @@ mod tests {
             action_policies: ActionPolicies {
                 default_effect: crate::ActionPolicyEffect::Ask,
                 rules: Vec::new(),
-                context_strategy: None,
             },
             child_policy: Default::default(),
             submit_busy_policy: SubmitBusyPolicy::RejectOnBusy,

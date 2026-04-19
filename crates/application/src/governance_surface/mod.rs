@@ -1,3 +1,16 @@
+//! # 治理面子域（Governance Surface）
+//!
+//! 统一管理每次 turn 的治理决策：工具白名单、审批策略、子代理委派策略、协作指导 prompt。
+//!
+//! 核心流程：`*GovernanceInput` → `GovernanceSurfaceAssembler` → `ResolvedGovernanceSurface` →
+//! `AgentPromptSubmission`
+//!
+//! 入口场景：
+//! - **Session turn**：`session_surface()` — 用户直接发起的 turn
+//! - **Root execution**：`root_surface()` — 根代理首次执行（委托到 session_surface）
+//! - **Fresh child**：`fresh_child_surface()` — spawn 新子代理，需要继承父级上下文
+//! - **Resumed child**：`resumed_child_surface()` — 向已有子代理 send 消息，复用已有策略
+
 mod assembler;
 mod inherited;
 mod policy;

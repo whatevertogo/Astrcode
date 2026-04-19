@@ -1,3 +1,8 @@
+//! 会话恢复候选列表查询。
+//!
+//! 根据搜索关键词和限制数量，从 session 列表中筛选出可恢复的会话候选项，
+//! 按更新时间倒序排列。支持按标题、工作目录、会话 ID 模糊匹配。
+
 use std::{cmp::Reverse, collections::HashSet, path::Path};
 
 use crate::{

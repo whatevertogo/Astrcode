@@ -117,6 +117,9 @@ struct PreparedCompactInput {
 ///
 /// 通过 `gateway` 调用 LLM 对历史前缀生成摘要，替换为压缩后的消息。
 /// 返回 `None` 表示没有可压缩的内容。
+///
+/// 当前系统只有这一套真实 compact 流程。若未来需要按 mode 调整行为，应扩展
+/// `CompactConfig` / `ContextWindowSettings` 这类显式参数，而不是恢复未消费的粗粒度策略枚举。
 pub async fn auto_compact(
     gateway: &KernelGateway,
     messages: &[LlmMessage],
