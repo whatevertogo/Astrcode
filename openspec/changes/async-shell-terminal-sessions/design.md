@@ -4,7 +4,7 @@
 
 与此同时，仓库已有两个重要基础：
 
-- `session-runtime` 已经是单会话真相面，适合承接 waitpoint、恢复和 authoritative read model。
+- `session-runtime` 已经是单会话真相面，适合承接 durable 事件、通知与 authoritative read model。
 - `ToolContext` 已提供 stdout / stderr 增量输出发射能力，说明长任务与终端输出的 live/durable 双写链路已经具备雏形。
 
 本次设计是一个跨 `core / session-runtime / application / adapter-tools / frontend` 的架构演进。它不与 `PROJECT_ARCHITECTURE.md` 的现有原则冲突，反而落实了其中关于事件日志优先、query/command 分离的方向；但实现完成后仍应补充文档，显式记录后台进程监管与终端会话的长期归属。
@@ -15,7 +15,7 @@
 
 - 让长耗时工具不再阻塞当前 turn，而是立即转为后台任务并在完成时发送正式通知。
 - 让 `shell` 与持久终端会话共享同一套进程监管基础设施，而不是各自维护私有生命周期。
-- 为终端会话建立正式工具合同：启动、写入 stdin、显式读取 stdout/stderr、关闭、失败/丢失反馈。
+- 为终端会话建立正式工具合同：启动、写入 stdin、在有限等待窗口内返回输出、关闭、失败/丢失反馈。
 - 为 conversation authoritative read model 增加后台任务通知与 terminal session 的稳定 block 语义。
 - 保证恢复与失败语义明确：Astrcode 进程重启、会话中断、任务取消都必须可观测、可回放、可投影。
 
@@ -67,27 +67,29 @@
 - 方案 A：把后台任务 registry 放进 `session-runtime`。否决，因为这会让 `session-runtime` 直接承担跨平台进程实现和全局 live handle 管理。
 - 方案 B：把进程真相放到前端或 server handler。否决，因为这违反“Server is the truth”和组合根边界。
 
-### 3. 保留 `shell` 为一次性命令工具，新增显式读写式终端会话工具族
+### 3. 保留 `shell` 为一次性命令工具，新增 Codex 风格的持久执行工具族
 
 决策：
 
 - 现有 `shell` 保持“一次性命令”语义，只增加 `executionMode: auto|foreground|background`。
 - 新增工具族：
-  - `terminal_start`
-  - `terminal_write`
-  - `terminal_read`
-  - `terminal_close`
-  - `terminal_resize`（可选但建议一期包含）
+  - `exec_command`
+  - `write_stdin`
+  - `resize_terminal`
+  - `terminate_terminal`
+  - `close_stdin`（可选但建议一期包含）
 
 原因：
 
 - 一次性命令与持久终端会话的生命周期不同。
-- 终端会话如果不采用显式 `read/write`，最终还是会回到“等待某段输出何时结束”的隐藏状态机。
-- 用 `terminal_write + terminal_read(cursor)` 更接近 Codex 的 session handle，也更符合“不引入 WaitingTool”的约束。
+- Codex 的成熟方案不是 `terminal_read(cursor)`，而是 `exec_command + process_id + write_stdin + 流式事件`。
+- 输出主通道应由 durable/live 事件流持续推送，工具返回只负责本次等待窗口内的输出快照与 `process_id`。
+- 这样可以避免额外造一套 cursor 读取协议，同时保留持久 session 和 stdin 控制能力。
 
 备选方案与否决：
 
 - 方案 A：扩展 `shell`，让同一工具同时承担一次性命令和终端会话。否决，因为 tool call 级语义无法干净表达跨多次交互的终端 session。
+- 方案 B：采用 `terminal_start / terminal_write / terminal_read`。否决，因为这会复制一套读取协议，而 Codex 已证明 `write_stdin + 输出事件 + process_id` 更自然。
 
 ### 4. 后台任务与终端会话都使用独立 durable 事件，而不是复用单个 ToolCallDelta
 
@@ -99,12 +101,12 @@
   - `BackgroundTaskProgressed`
   - `BackgroundTaskCompleted`
   - `BackgroundTaskFailed`
-- 终端会话新增独立 durable 事件：
-  - `TerminalSessionStarted`
-  - `TerminalSessionInputAccepted`
-  - `TerminalSessionOutputDelta`
-  - `TerminalSessionStateChanged`
-  - `TerminalSessionClosed`
+- 持久执行会话新增独立 durable 事件：
+  - `ExecSessionStarted`
+  - `ExecSessionOutputDelta`
+  - `TerminalInteractionRecorded`
+  - `ExecSessionStateChanged`
+  - `ExecSessionEnded`
 - conversation read model 增加 `BackgroundTaskNotificationBlockFacts`、`TerminalSessionBlockFacts` 与对应 patch。
 
 原因：
@@ -114,7 +116,7 @@
 
 备选方案与否决：
 
-- 方案 A：所有终端输出都继续挂在 `terminal_start` 那个 tool call 上。否决，因为后续 `terminal_input`、close、lost 等更新无法自然归并。
+- 方案 A：所有终端输出都继续挂在 `exec_command` 首次启动那个 tool call 的 result 里。否决，因为后续 `write_stdin`、terminate、close、lost 等更新无法自然归并。
 
 ### 5. 后台任务与终端会话采用“事件日志 + live handle + 通知输入”模型
 
@@ -158,7 +160,7 @@
 ## Risks / Trade-offs
 
 - [风险] 后台任务 live handle 与 durable 状态不一致 → 缓解：durable 事件定义 started/completed/failed/lost 真相，live handle 只补充可操作运行态。
-- [风险] 终端 prompt 检测在不同 shell 上不稳定 → 缓解：一期不依赖 prompt 检测，只支持 `wait_until = none|silence|exit`；后续再加 shell-specific prompt heuristic。
+- [风险] 交互式终端如果没有明确等待窗口，容易让模型误用成长期阻塞读取 → 缓解：沿用 Codex 风格 `yield_time_ms`，让每次 `exec_command` / `write_stdin` 只等待有限窗口并返回当前输出快照。
 - [风险] 新增 PTY 依赖带来跨平台复杂度 → 缓解：将 PTY 封装限制在 adapter/application 交界，核心与协议只看纯数据结构。
 - [风险] 工具事件、后台任务事件与终端事件并存导致 read model 更复杂 → 缓解：明确“一次性工具”“后台任务通知”“持久终端会话”是三类 block，不混用主键和状态机。
 - [风险] 重启后无法继续控制旧终端进程会让用户预期落差 → 缓解：在 spec 中明确该场景为 lost / failed，而不是承诺透明恢复。
@@ -168,19 +170,19 @@
 1. 在 `core`、`protocol`、`session-runtime` 中增加后台任务通知 / terminal session 纯数据结构。
 2. 在 `application` 组装 `ProcessSupervisor`，先接入一次性后台 shell。
 3. 改造 `shell` 为可选择 foreground/background，并打通任务输出落盘与完成通知。
-4. 新增终端会话工具族与 PTY/pipe 实现，接入 supervisor。
+4. 新增 `exec_command` / `write_stdin` 工具族与 PTY/pipe 实现，接入 supervisor。
 5. 扩展 conversation/query/frontend 渲染 background task 与 terminal session。
 6. 同步更新 `PROJECT_ARCHITECTURE.md`，记录新的职责边界。
 
 回滚策略：
 
 - 若后台 shell 路径不稳定，可暂时关闭 `executionMode=background/auto`，保留 foreground shell。
-- 若终端会话实现不稳定，可整体关闭 `terminal_*` 工具暴露，不影响一次性 shell 与既有聊天流程。
+- 若终端会话实现不稳定，可整体关闭 `exec_command` / `write_stdin` 等持久执行工具暴露，不影响一次性 shell 与既有聊天流程。
 - 新事件类型保持前后端同批发布；若回滚，先停止暴露新工具，再回滚前端块渲染。
 
 ## Open Questions
 
-- 一期是否需要 `terminal_resize` 正式对外暴露，还是先内部保留？
+- 一期是否需要同时暴露 `resize_terminal` 与 `close_stdin`，还是先只开放 `write_stdin` / `terminate_terminal`？
 - 后台 shell 的 `auto` 判定阈值应基于超时、命令类型，还是工具显式标记？
 - 后台任务完成后默认只通知用户，还是同时生成一条内部输入唤醒模型继续决策？
 - `ProcessSupervisor` 的可观测性指标是否需要单独纳入 `runtime-observability-pipeline` 的 spec 更新？

@@ -12,9 +12,9 @@
 
 ## 3. 持久终端会话工具族
 
-- [ ] 3.1 新增终端会话工具模块，例如 `crates/adapter-tools/src/builtin_tools/terminal_start.rs`、`terminal_write.rs`、`terminal_read.rs`、`terminal_close.rs`、`terminal_resize.rs`，定义参数与返回合同；验证：`cargo test -p astrcode-adapter-tools terminal_`
-- [ ] 3.2 在 `crates/application` 与对应 adapter 层实现 PTY/pipe 驱动的 `TerminalSessionRegistry`，支持 stdin 写入、stdout/stderr 流、退出码、关闭与 lost 语义；验证：新增跨平台可运行的单元/集成测试，至少覆盖启动、输入、退出、关闭
-- [ ] 3.3 在 `crates/session-runtime` 接入 terminal session durable 事件、hydration 投影与 `cursor` 读取语义；验证：新增 query/replay 测试覆盖 terminal session block 和增量读取主路径
+- [ ] 3.1 新增持久执行工具模块，例如 `crates/adapter-tools/src/builtin_tools/exec_command.rs`、`write_stdin.rs`、`resize_terminal.rs`、`terminate_terminal.rs`、`close_stdin.rs`，定义参数与返回合同；验证：`cargo test -p astrcode-adapter-tools exec_command`
+- [ ] 3.2 在 `crates/application` 与对应 adapter 层实现 PTY/pipe 驱动的 `TerminalSessionRegistry`，采用 `process_id` 持有活跃会话，支持 stdin 写入、stdout/stderr 流、退出码、关闭与 lost 语义；验证：新增跨平台可运行的单元/集成测试，至少覆盖启动、输入、退出、关闭
+- [ ] 3.3 在 `crates/session-runtime` 接入 terminal session durable 事件、hydration 投影与 `process_id` 关联语义，输出主路径走 begin/delta/end 事件与 terminal interaction 记录；验证：新增 query/replay 测试覆盖 terminal session block、交互记录和长期运行会话主路径
 
 ## 4. 前端展示与验收
 

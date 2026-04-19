@@ -39,4 +39,4 @@
 #### Scenario: 持久终端会话拥有独立 block
 - **WHEN** 模型创建一个持久终端会话并多次向其输入
 - **THEN** `session-runtime` MUST 为该会话维护独立 terminal session block
-- **AND** 后续输出与状态变化 MUST 持续 patch 该 block
+- **AND** 后续输出、stdin 交互记录与状态变化 MUST 持续 patch 该 block
