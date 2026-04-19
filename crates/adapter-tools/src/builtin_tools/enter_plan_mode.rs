@@ -91,7 +91,7 @@ impl Tool for EnterPlanModeTool {
                     false,
                     args.reason.as_deref(),
                 )),
-                child_ref: None,
+                continuation: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -120,7 +120,7 @@ impl Tool for EnterPlanModeTool {
                 true,
                 args.reason.as_deref(),
             )),
-            child_ref: None,
+            continuation: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })

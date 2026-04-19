@@ -417,15 +417,15 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
     assert_eq!(artifact_kind, Some("subRun"));
     assert_eq!(
         result
-            .child_ref
-            .as_ref()
+            .continuation()
+            .and_then(astrcode_core::ExecutionContinuation::child_agent_ref)
             .map(|child_ref| child_ref.open_session_id.as_str()),
         Some("session-child-42")
     );
     assert_eq!(
         result
-            .child_ref
-            .as_ref()
+            .continuation()
+            .and_then(astrcode_core::ExecutionContinuation::child_agent_ref)
             .map(|child_ref| child_ref.agent_id().as_str()),
         Some("agent-42")
     );
@@ -510,8 +510,8 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
         .await
         .expect("spawn should succeed");
     let spawned_agent_id = spawned
-        .child_ref
-        .as_ref()
+        .continuation()
+        .and_then(astrcode_core::ExecutionContinuation::child_agent_ref)
         .map(|child_ref| child_ref.agent_id().as_str())
         .expect("spawn should expose a stable agentId")
         .to_string();
@@ -618,7 +618,9 @@ impl CollaborationExecutor for RecordingCollabExecutor {
     ) -> astrcode_core::Result<CollaborationResult> {
         self.send_calls.lock().expect("lock").push(params);
         Ok(CollaborationResult::Sent {
-            agent_ref: Some(sample_child_ref()),
+            continuation: Some(astrcode_core::ExecutionContinuation::child_agent(
+                sample_child_ref(),
+            )),
             delivery_id: Some("delivery-1".into()),
             summary: Some("消息已发送".to_string()),
             delegation: Some(sample_delegation(false)),
@@ -632,6 +634,9 @@ impl CollaborationExecutor for RecordingCollabExecutor {
     ) -> astrcode_core::Result<CollaborationResult> {
         self.close_calls.lock().expect("lock").push(params);
         Ok(CollaborationResult::Closed {
+            continuation: Some(astrcode_core::ExecutionContinuation::child_agent(
+                sample_child_ref(),
+            )),
             summary: Some("子 Agent 已关闭".to_string()),
             cascade: true,
             closed_root_agent_id: "agent-42".into(),
@@ -646,7 +651,7 @@ impl CollaborationExecutor for RecordingCollabExecutor {
         let agent_id = params.agent_id.clone();
         self.observe_calls.lock().expect("lock").push(params);
         Ok(CollaborationResult::Observed {
-            agent_ref: sample_child_ref(),
+            continuation: astrcode_core::ExecutionContinuation::child_agent(sample_child_ref()),
             summary: format!("子 Agent {} 当前为 Idle；最近输出：done。", agent_id),
             observe_result: Box::new(astrcode_core::ObserveSnapshot {
                 agent_id: agent_id.to_string(),
@@ -929,7 +934,7 @@ fn collaboration_result_metadata_projects_idle_reuse_and_branch_mismatch_hints()
         "call-observe-advisory".to_string(),
         "observe",
         CollaborationResult::Observed {
-            agent_ref: sample_child_ref(),
+            continuation: astrcode_core::ExecutionContinuation::child_agent(sample_child_ref()),
             summary: "子 Agent agent-42 当前为 Idle。".to_string(),
             observe_result: Box::new(astrcode_core::ObserveSnapshot {
                 agent_id: "agent-42".to_string(),
@@ -974,7 +979,7 @@ fn collaboration_result_metadata_projects_restricted_child_broader_tool_hint() {
         "call-observe-restricted".to_string(),
         "observe",
         CollaborationResult::Observed {
-            agent_ref: sample_child_ref(),
+            continuation: astrcode_core::ExecutionContinuation::child_agent(sample_child_ref()),
             summary: "restricted child idle".to_string(),
             observe_result: Box::new(astrcode_core::ObserveSnapshot {
                 agent_id: "agent-42".to_string(),

@@ -831,7 +831,7 @@ impl Tool for ApplyPatchTool {
             output,
             error,
             metadata: Some(metadata),
-            child_ref: None,
+            continuation: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
@@ -854,7 +854,7 @@ fn make_error_result(
             "filesApplied": 0,
             "filesFailed": 0,
         })),
-        child_ref: None,
+        continuation: None,
         duration_ms: started_at.elapsed().as_millis() as u64,
         truncated: false,
     })

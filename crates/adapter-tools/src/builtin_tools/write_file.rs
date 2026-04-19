@@ -128,7 +128,7 @@ impl Tool for WriteFileTool {
                     "path": path.to_string_lossy(),
                     "uncPath": true,
                 })),
-                child_ref: None,
+                continuation: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -150,7 +150,7 @@ impl Tool for WriteFileTool {
                     "path": path.to_string_lossy(),
                     "isSymlink": true,
                 })),
-                child_ref: None,
+                continuation: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -203,7 +203,7 @@ impl Tool for WriteFileTool {
             output: report.summary,
             error: None,
             metadata: Some(metadata),
-            child_ref: None,
+            continuation: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })

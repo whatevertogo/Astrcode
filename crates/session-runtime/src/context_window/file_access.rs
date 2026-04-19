@@ -329,7 +329,7 @@ mod tests {
             output: "fn nested() {}".to_string(),
             error: None,
             metadata: Some(json!({"path": absolute.to_string_lossy()})),
-            child_ref: None,
+            continuation: None,
             duration_ms: 1,
             truncated: false,
         };

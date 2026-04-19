@@ -535,7 +535,7 @@ impl Tool for ShellTool {
                     output: output.output,
                     error: Some(format!("shell command timed out after {timeout_secs}s")),
                     metadata: Some(serde_json::Value::Object(metadata)),
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 });
@@ -628,7 +628,7 @@ impl Tool for ShellTool {
                 Some(format!("shell command exited with code {}", exit_code))
             },
             metadata: Some(serde_json::Value::Object(metadata)),
-            child_ref: None,
+            continuation: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })

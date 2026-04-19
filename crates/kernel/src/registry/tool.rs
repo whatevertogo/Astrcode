@@ -79,7 +79,7 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
                     result.tool_name,
                     result.ok,
                     Value::String(result.output),
-                    result.child_ref,
+                    result.continuation,
                     common,
                 ))
             },
@@ -336,20 +336,22 @@ mod tests {
                 output: "spawn accepted".to_string(),
                 error: None,
                 metadata: Some(json!({ "schema": "subRunResult" })),
-                child_ref: Some(astrcode_core::ChildAgentRef {
-                    identity: ChildExecutionIdentity {
-                        agent_id: "agent-child".into(),
-                        session_id: "session-parent".into(),
-                        sub_run_id: "subrun-1".into(),
+                continuation: Some(astrcode_core::ExecutionContinuation::child_agent(
+                    astrcode_core::ChildAgentRef {
+                        identity: ChildExecutionIdentity {
+                            agent_id: "agent-child".into(),
+                            session_id: "session-parent".into(),
+                            sub_run_id: "subrun-1".into(),
+                        },
+                        parent: ParentExecutionRef {
+                            parent_agent_id: Some("agent-parent".into()),
+                            parent_sub_run_id: Some("subrun-parent".into()),
+                        },
+                        lineage_kind: ChildSessionLineageKind::Spawn,
+                        status: AgentLifecycleStatus::Running,
+                        open_session_id: "session-child".into(),
                     },
-                    parent: ParentExecutionRef {
-                        parent_agent_id: Some("agent-parent".into()),
-                        parent_sub_run_id: Some("subrun-parent".into()),
-                    },
-                    lineage_kind: ChildSessionLineageKind::Spawn,
-                    status: AgentLifecycleStatus::Running,
-                    open_session_id: "session-child".into(),
-                }),
+                )),
                 duration_ms: 0,
                 truncated: false,
             })
@@ -357,7 +359,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_capability_invoker_preserves_child_ref_in_capability_result() {
+    async fn tool_capability_invoker_preserves_child_continuation_in_capability_result() {
         let invoker =
             ToolCapabilityInvoker::new(Arc::new(ChildRefTool)).expect("tool invoker should build");
         let tool_ctx = ToolContext::new(
@@ -376,15 +378,17 @@ mod tests {
 
         assert_eq!(
             result
-                .child_ref
+                .continuation
                 .as_ref()
+                .and_then(|continuation| continuation.child_agent_ref())
                 .map(|child_ref| child_ref.agent_id().as_str()),
             Some("agent-child")
         );
         assert_eq!(
             result
-                .child_ref
+                .continuation
                 .as_ref()
+                .and_then(|continuation| continuation.child_agent_ref())
                 .map(|child_ref| child_ref.open_session_id.as_str()),
             Some("session-child")
         );

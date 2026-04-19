@@ -294,7 +294,7 @@ impl Tool for EditFileTool {
                     "path": path.to_string_lossy(),
                     "uncPath": true,
                 })),
-                child_ref: None,
+                continuation: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -316,7 +316,7 @@ impl Tool for EditFileTool {
                     "path": path.to_string_lossy(),
                     "isSymlink": true,
                 })),
-                child_ref: None,
+                continuation: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -351,7 +351,7 @@ impl Tool for EditFileTool {
                         "bytes": metadata.len(),
                         "tooLarge": true,
                     })),
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 });
@@ -458,7 +458,7 @@ impl Tool for EditFileTool {
             },
             error: None,
             metadata: Some(metadata),
-            child_ref: None,
+            continuation: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
@@ -513,7 +513,7 @@ fn make_edit_error_result(
         metadata: Some(json!({
             "path": path.to_string_lossy(),
         })),
-        child_ref: None,
+        continuation: None,
         duration_ms: started_at.elapsed().as_millis() as u64,
         truncated: false,
     })

@@ -13,10 +13,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentCollaborationFact, AgentEventContext, AstrError, ChildAgentRef, ChildSessionNotification,
-    InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
-    ModeId, PersistedToolOutput, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    Result, SubRunResult, SystemPromptLayer, ToolOutputStream, UserMessageOrigin,
+    AgentCollaborationFact, AgentEventContext, AstrError, ChildSessionNotification,
+    ExecutionContinuation, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,
+    InputQueuedPayload, ModeId, PersistedToolOutput, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, Result, SubRunResult, SystemPromptLayer, ToolOutputStream,
+    UserMessageOrigin,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -168,7 +169,7 @@ pub enum StorageEventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        child_ref: Option<ChildAgentRef>,
+        continuation: Option<ExecutionContinuation>,
         duration_ms: u64,
     },
     /// 将大型工具结果替换为 `<persisted-output>` 引用后的 durable 决策。

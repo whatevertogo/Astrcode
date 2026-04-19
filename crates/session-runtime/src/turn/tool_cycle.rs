@@ -624,7 +624,7 @@ mod tests {
                 output: "ok".to_string(),
                 error: None,
                 metadata: None,
-                child_ref: None,
+                continuation: None,
                 duration_ms: 0,
                 truncated: false,
             })
@@ -689,7 +689,7 @@ mod tests {
                 output: "done".to_string(),
                 error: None,
                 metadata: None,
-                child_ref: None,
+                continuation: None,
                 duration_ms: 0,
                 truncated: false,
             })
@@ -758,7 +758,7 @@ mod tests {
                 output: String::new(),
                 error: Some("stderr failure".to_string()),
                 metadata: None,
-                child_ref: None,
+                continuation: None,
                 duration_ms: 0,
                 truncated: false,
             })
@@ -803,7 +803,9 @@ mod tests {
                 output: "spawn accepted".to_string(),
                 error: None,
                 metadata: Some(json!({ "schema": "subRunResult" })),
-                child_ref: Some(sample_child_ref()),
+                continuation: Some(astrcode_core::ExecutionContinuation::child_agent(
+                    sample_child_ref(),
+                )),
                 duration_ms: 0,
                 truncated: false,
             })
@@ -1108,7 +1110,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invoke_single_tool_persists_typed_child_ref_in_tool_result() {
+    async fn invoke_single_tool_persists_child_continuation_in_tool_result() {
         let kernel = test_kernel_with_tool(Arc::new(ChildRefProbeTool), 8192);
         let tool_call = ToolCallRequest {
             id: "call-child-ref".to_string(),
@@ -1138,7 +1140,12 @@ mod tests {
             fallback_events.is_empty(),
             "immediate mode should not fall back to buffered events"
         );
-        assert_eq!(result.child_ref.as_ref(), Some(&sample_child_ref()));
+        assert_eq!(
+            result
+                .continuation()
+                .and_then(astrcode_core::ExecutionContinuation::child_agent_ref),
+            Some(&sample_child_ref())
+        );
 
         let stored = session_state
             .snapshot_recent_stored_events()
@@ -1148,7 +1155,7 @@ mod tests {
             StorageEventPayload::ToolResult {
                 tool_call_id,
                 tool_name,
-                child_ref: Some(child_ref),
+                continuation: Some(astrcode_core::ExecutionContinuation::ChildAgent { child_ref }),
                 ..
             } if tool_call_id == "call-child-ref"
                 && tool_name == "child_ref_probe"

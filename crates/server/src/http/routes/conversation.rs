@@ -695,7 +695,7 @@ mod tests {
                 tool_name: "shell_command".to_string(),
                 ok: true,
                 output: "D:/GitObjectsOwn/Astrcode\n".to_string(),
-                child_ref: None,
+                continuation: None,
                 error: None,
                 metadata: None,
                 duration_ms: 8,

@@ -196,7 +196,7 @@ impl Tool for ExitPlanModeTool {
                     "updatedAt": state.updated_at.to_rfc3339(),
                 }
             })),
-            child_ref: None,
+            continuation: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
@@ -332,7 +332,7 @@ fn review_pending_result(
                 "invalidSections": blockers.invalid_sections,
             }
         })),
-        child_ref: None,
+        continuation: None,
         duration_ms: started_at.elapsed().as_millis() as u64,
         truncated: false,
     }

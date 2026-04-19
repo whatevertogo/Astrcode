@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ChildAgentRef, ExecutionResultCommon};
+use crate::{ExecutionContinuation, ExecutionResultCommon};
 
 /// LLM 推理/思考内容。
 ///
@@ -75,9 +75,9 @@ pub struct ToolExecutionResult {
     /// 额外元数据（如 diff 信息、终端显示提示等）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    /// 工具结果关联的稳定 child reference。
+    /// 工具结果产生的 typed 续接目标。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_ref: Option<ChildAgentRef>,
+    pub continuation: Option<ExecutionContinuation>,
     /// 执行耗时（毫秒）
     pub duration_ms: u64,
     /// 输出是否因大小限制被截断
@@ -121,7 +121,7 @@ impl ToolExecutionResult {
         tool_name: impl Into<String>,
         ok: bool,
         output: impl Into<String>,
-        child_ref: Option<ChildAgentRef>,
+        continuation: Option<ExecutionContinuation>,
         common: ExecutionResultCommon,
     ) -> Self {
         Self {
@@ -131,7 +131,7 @@ impl ToolExecutionResult {
             output: output.into(),
             error: common.error,
             metadata: common.metadata,
-            child_ref,
+            continuation,
             duration_ms: common.duration_ms,
             truncated: common.truncated,
         }
@@ -141,7 +141,7 @@ impl ToolExecutionResult {
     ///
     /// 成功时直接返回输出；失败时拼接错误信息和输出，
     /// 确保 LLM 能理解工具执行的结果。
-    /// 如果关联了子 agent（child_ref），追加精确引用提示，
+    /// 如果产生了 child agent continuation，追加精确引用提示，
     /// 防止 LLM 自作主张改写 agentId。
     pub fn model_content(&self) -> String {
         let base = if self.ok {
@@ -165,8 +165,12 @@ impl ToolExecutionResult {
         }
     }
 
+    pub fn continuation(&self) -> Option<&ExecutionContinuation> {
+        self.continuation.as_ref()
+    }
+
     fn child_agent_reference_hint(&self) -> Option<String> {
-        let child_ref = self.child_ref.as_ref()?;
+        let child_ref = self.continuation()?.child_agent_ref()?;
 
         let mut lines = vec![
             "Child agent reference:".to_string(),
@@ -411,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn model_content_appends_exact_child_agent_reference_from_child_ref() {
+    fn model_content_appends_exact_child_agent_reference_from_continuation() {
         let result = ToolExecutionResult {
             tool_call_id: "call-1".to_string(),
             tool_name: "spawn".to_string(),
@@ -419,17 +423,19 @@ mod tests {
             output: "spawn 已在后台启动。".to_string(),
             error: None,
             metadata: Some(json!({ "schema": "subRunResult" })),
-            child_ref: Some(crate::ChildAgentRef {
-                identity: crate::ChildExecutionIdentity {
-                    agent_id: AgentId::from("agent-1"),
-                    session_id: SessionId::from("session-parent"),
-                    sub_run_id: SubRunId::from("subrun-1"),
+            continuation: Some(crate::ExecutionContinuation::child_agent(
+                crate::ChildAgentRef {
+                    identity: crate::ChildExecutionIdentity {
+                        agent_id: AgentId::from("agent-1"),
+                        session_id: SessionId::from("session-parent"),
+                        sub_run_id: SubRunId::from("subrun-1"),
+                    },
+                    parent: crate::ParentExecutionRef::default(),
+                    lineage_kind: crate::ChildSessionLineageKind::Spawn,
+                    status: crate::AgentLifecycleStatus::Running,
+                    open_session_id: SessionId::from("session-parent"),
                 },
-                parent: crate::ParentExecutionRef::default(),
-                lineage_kind: crate::ChildSessionLineageKind::Spawn,
-                status: crate::AgentLifecycleStatus::Running,
-                open_session_id: SessionId::from("session-parent"),
-            }),
+            )),
             duration_ms: 0,
             truncated: false,
         };

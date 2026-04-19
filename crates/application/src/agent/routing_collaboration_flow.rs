@@ -74,6 +74,9 @@ impl AgentOrchestrationService {
         .await;
 
         Ok(CollaborationResult::Closed {
+            continuation: Some(astrcode_core::ExecutionContinuation::child_agent(
+                self.build_child_ref_from_handle(&target).await,
+            )),
             summary: Some(summary),
             cascade: true,
             closed_root_agent_id: cancelled.agent_id.clone(),

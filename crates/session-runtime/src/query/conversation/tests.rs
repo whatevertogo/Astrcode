@@ -71,7 +71,7 @@ fn snapshot_projects_tool_call_block_with_streams_and_terminal_fields() {
                     output: "line-1\n".to_string(),
                     error: Some("permission denied".to_string()),
                     metadata: Some(json!({ "path": "/tmp", "truncated": true })),
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: 42,
                     truncated: true,
                 },
@@ -123,7 +123,7 @@ fn snapshot_preserves_failed_tool_status_after_turn_done() {
                     output: String::new(),
                     error: Some("command not found".to_string()),
                     metadata: None,
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: 127,
                     truncated: false,
                 },
@@ -187,7 +187,7 @@ fn snapshot_projects_plan_blocks_in_durable_event_order() {
                         "title": "Cleanup crates",
                         "updatedAt": "2026-04-19T09:00:00Z"
                     })),
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: 7,
                     truncated: false,
                 },
@@ -215,7 +215,7 @@ fn snapshot_projects_plan_blocks_in_durable_event_order() {
                     output: "D:/GitObjectsOwn/Astrcode".to_string(),
                     error: None,
                     metadata: None,
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: 9,
                     truncated: false,
                 },
@@ -259,7 +259,7 @@ fn snapshot_projects_plan_blocks_in_durable_event_order() {
                             "invalidSections": []
                         }
                     })),
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: 5,
                     truncated: false,
                 },
@@ -331,7 +331,7 @@ fn snapshot_keeps_task_write_as_normal_tool_call_block() {
                             }
                         ]
                     })),
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: 5,
                     truncated: false,
                 },
@@ -444,7 +444,7 @@ fn child_notification_patches_tool_block_and_appends_handoff_block() {
 }
 
 #[test]
-fn tool_result_child_ref_alone_patches_tool_block() {
+fn tool_result_continuation_alone_patches_tool_block() {
     let child_ref = sample_child_ref();
     let records = vec![
         record(
@@ -469,7 +469,9 @@ fn tool_result_child_ref_alone_patches_tool_block() {
                     output: "子 Agent 已启动：inspect".to_string(),
                     error: None,
                     metadata: Some(json!({ "schema": "subRunResult" })),
-                    child_ref: Some(child_ref.clone()),
+                    continuation: Some(astrcode_core::ExecutionContinuation::child_agent(
+                        child_ref.clone(),
+                    )),
                     duration_ms: 12,
                     truncated: false,
                 },
@@ -539,7 +541,7 @@ async fn runtime_query_builds_snapshot_and_stream_replay_facts() {
                     success: true,
                     error: None,
                     metadata: None,
-                    child_ref: None,
+                    continuation: None,
                     duration_ms: 7,
                 },
             ),

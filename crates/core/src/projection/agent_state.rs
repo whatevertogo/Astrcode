@@ -184,7 +184,7 @@ impl AgentStateProjector {
                 success,
                 error,
                 metadata,
-                child_ref,
+                continuation,
                 duration_ms,
                 ..
             } => {
@@ -196,7 +196,7 @@ impl AgentStateProjector {
                     output: output.clone(),
                     error: error.clone(),
                     metadata: metadata.clone(),
-                    child_ref: child_ref.clone(),
+                    continuation: continuation.clone(),
                     duration_ms: *duration_ms,
                     truncated: false,
                 };
@@ -498,7 +498,7 @@ mod tests {
                 success: true,
                 error: None,
                 metadata: None,
-                child_ref: None,
+                continuation: None,
                 duration_ms,
             },
         )

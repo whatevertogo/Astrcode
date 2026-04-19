@@ -400,7 +400,9 @@ impl AgentOrchestrationService {
 
         let child_ref = self.build_child_ref_from_handle(&child).await;
         Ok(CollaborationResult::Sent {
-            agent_ref: Some(self.project_child_ref_status(child_ref).await),
+            continuation: Some(astrcode_core::ExecutionContinuation::child_agent(
+                self.project_child_ref_status(child_ref).await,
+            )),
             delivery_id: Some(notification.notification_id.clone()),
             summary: Some(format!(
                 "已向 direct parent 发送 {} 消息。",

@@ -246,7 +246,7 @@ pub(crate) fn tool_result_event(
             success: result.ok,
             error: result.error.clone(),
             metadata: result.metadata.clone(),
-            child_ref: result.child_ref.clone(),
+            continuation: result.continuation.clone(),
             duration_ms: result.duration_ms,
         },
     }
@@ -640,7 +640,7 @@ mod tests {
                 "path": "/workspace/src/lib.rs",
                 "truncated": true
             })),
-            child_ref: None,
+            continuation: None,
             duration_ms: 88,
             truncated: true,
         };
@@ -657,7 +657,7 @@ mod tests {
                 success,
                 error,
                 metadata,
-                child_ref: _,
+                continuation: _,
                 duration_ms,
             } if tool_call_id == "call-7"
                 && tool_name == "readFile"
