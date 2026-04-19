@@ -12,7 +12,7 @@ use astrcode_core::{AgentMode, AgentProfile};
 pub use control::ExecutionControl;
 pub use profiles::{ProfileProvider, ProfileResolutionService};
 pub use root::{RootExecutionRequest, execute_root_agent};
-pub use subagent::{SubagentExecutionRequest, launch_subagent};
+pub use subagent::{LaunchedSubagent, SubagentExecutionRequest, launch_subagent};
 
 use crate::ApplicationError;
 

@@ -43,7 +43,9 @@ use thiserror::Error;
 use crate::{
     AgentKernelPort, AgentSessionPort,
     config::ConfigService,
-    execution::{ProfileResolutionService, SubagentExecutionRequest, launch_subagent},
+    execution::{
+        LaunchedSubagent, ProfileResolutionService, SubagentExecutionRequest, launch_subagent,
+    },
     governance_surface::{
         GOVERNANCE_POLICY_REVISION, GovernanceSurfaceAssembler, build_delegation_metadata,
         effective_allowed_tools_for_limits,
@@ -300,60 +302,21 @@ pub(crate) fn child_reference_artifacts(
 }
 
 pub(crate) fn spawn_handoff_artifacts(
-    child_handle: Option<&SubRunHandle>,
-    sub_run_id: &str,
-    child_agent_id: Option<&str>,
-    child_session_id: &str,
+    child_handle: &SubRunHandle,
     parent_session_id: &str,
-    parent_agent_id: &str,
 ) -> Vec<ArtifactRef> {
-    if let Some(child_handle) = child_handle {
-        let mut artifacts = vec![artifact_ref(
-            "subRun",
-            sub_run_id.to_string(),
-            "Sub Run",
-            Some(parent_session_id.to_string()),
-        )];
-        artifacts.extend(child_reference_artifacts(
-            child_handle,
-            parent_session_id,
-            false,
-        ));
-        return artifacts;
-    }
-
-    vec![
-        artifact_ref(
-            "subRun",
-            sub_run_id.to_string(),
-            "Sub Run",
-            Some(parent_session_id.to_string()),
-        ),
-        artifact_ref(
-            "agent",
-            child_agent_id.unwrap_or_default().to_string(),
-            "Agent",
-            Some(child_session_id.to_string()),
-        ),
-        artifact_ref(
-            "parentSession",
-            parent_session_id.to_string(),
-            "Parent Session",
-            Some(parent_session_id.to_string()),
-        ),
-        artifact_ref(
-            "session",
-            child_session_id.to_string(),
-            "Child Session",
-            Some(child_session_id.to_string()),
-        ),
-        artifact_ref(
-            "parentAgent",
-            parent_agent_id.to_string(),
-            "Parent Agent",
-            Some(parent_session_id.to_string()),
-        ),
-    ]
+    let mut artifacts = vec![artifact_ref(
+        "subRun",
+        child_handle.sub_run_id.clone(),
+        "Sub Run",
+        Some(parent_session_id.to_string()),
+    )];
+    artifacts.extend(child_reference_artifacts(
+        child_handle,
+        parent_session_id,
+        false,
+    ));
+    artifacts
 }
 
 fn map_orchestration_error(error: AgentOrchestrationError) -> astrcode_core::AstrError {
@@ -527,7 +490,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
                 .await;
         }
 
-        let accepted = match launch_subagent(
+        let launched = match launch_subagent(
             self.kernel.as_ref(),
             self.session_runtime.as_ref(),
             self.governance_surface.as_ref(),
@@ -537,7 +500,7 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
         )
         .await
         {
-            Ok(accepted) => accepted,
+            Ok(launched) => launched,
             Err(error) => {
                 return self
                     .fail_spawn_internal(
@@ -548,58 +511,42 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
                     .await;
             },
         };
-        let mut child_handle_for_handoff = None;
-        if let (Some(child_agent_id), Some(parent_turn_id)) =
-            (accepted.agent_id.clone(), ctx.turn_id())
-        {
-            if let Some(child_handle) = self.kernel.get_handle(&child_agent_id).await {
-                let fact = {
-                    let mut fact = collaboration
-                        .fact(
-                            AgentCollaborationActionKind::Spawn,
-                            AgentCollaborationOutcomeKind::Accepted,
-                        )
-                        .child(&child_handle);
-                    if let Some(summary) =
-                        Some(spawn_description.trim()).filter(|value| !value.is_empty())
-                    {
-                        fact = fact.summary(summary.to_string());
-                    }
-                    fact
-                };
-                self.record_fact_best_effort(&runtime_config, fact).await;
-                self.spawn_child_turn_terminal_watcher(
-                    child_handle.clone(),
-                    accepted.session_id.to_string(),
-                    accepted.turn_id.to_string(),
-                    parent_session_id.clone(),
-                    parent_turn_id.to_string(),
-                    collaboration.source_tool_call_id(),
-                );
-                child_handle_for_handoff = Some(child_handle);
-            }
+        let LaunchedSubagent { accepted, handle } = launched;
+        if let Some(parent_turn_id) = ctx.turn_id() {
+            let fact = {
+                let mut fact = collaboration
+                    .fact(
+                        AgentCollaborationActionKind::Spawn,
+                        AgentCollaborationOutcomeKind::Accepted,
+                    )
+                    .child(&handle);
+                if let Some(summary) =
+                    Some(spawn_description.trim()).filter(|value| !value.is_empty())
+                {
+                    fact = fact.summary(summary.to_string());
+                }
+                fact
+            };
+            self.record_fact_best_effort(&runtime_config, fact).await;
+            self.spawn_child_turn_terminal_watcher(
+                handle.clone(),
+                accepted.session_id.to_string(),
+                accepted.turn_id.to_string(),
+                parent_session_id.clone(),
+                parent_turn_id.to_string(),
+                collaboration.source_tool_call_id(),
+            );
         }
 
-        let accepted_sub_run_id = child_handle_for_handoff
-            .as_ref()
-            .map(|handle| handle.sub_run_id.to_string())
-            .unwrap_or_else(|| accepted.turn_id.to_string());
         let accepted_child_session_id = accepted.session_id.to_string();
-        let handoff_artifacts = spawn_handoff_artifacts(
-            child_handle_for_handoff.as_ref(),
-            &accepted_sub_run_id,
-            accepted.agent_id.as_deref(),
-            &accepted_child_session_id,
-            &parent_session_id,
-            &parent_agent_id,
-        );
+        let handoff_artifacts = spawn_handoff_artifacts(&handle, &parent_session_id);
 
         Ok(SubRunResult::Running {
             handoff: SubRunHandoff {
                 findings: Vec::new(),
                 artifacts: handoff_artifacts,
                 delivery: Some(ParentDelivery {
-                    idempotency_key: format!("subrun-started:{accepted_sub_run_id}"),
+                    idempotency_key: format!("subrun-started:{}", handle.sub_run_id),
                     origin: ParentDeliveryOrigin::Explicit,
                     terminal_semantics: ParentDeliveryTerminalSemantics::NonTerminal,
                     source_turn_id: None,

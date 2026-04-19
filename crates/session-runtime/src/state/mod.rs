@@ -13,6 +13,8 @@ mod paths;
 mod tasks;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+pub(crate) use test_support::sample_spawn_child_ref;
 mod writer;
 
 use std::{

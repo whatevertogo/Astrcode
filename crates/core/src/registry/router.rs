@@ -217,7 +217,10 @@ mod tests {
     use serde_json::json;
 
     use super::CapabilityExecutionResult;
-    use crate::ExecutionResultCommon;
+    use crate::{
+        AgentLifecycleStatus, ChildAgentRef, ChildExecutionIdentity, ChildSessionLineageKind,
+        ExecutionResultCommon, ParentExecutionRef,
+    };
 
     #[test]
     fn from_common_preserves_failure_fields_without_placeholder_override() {
@@ -239,5 +242,34 @@ mod tests {
         assert_eq!(result.metadata, Some(json!({ "streamEvents": [] })));
         assert_eq!(result.duration_ms, 23);
         assert!(!result.truncated);
+    }
+
+    #[test]
+    fn into_tool_execution_result_preserves_typed_child_ref() {
+        let child_ref = ChildAgentRef {
+            identity: ChildExecutionIdentity {
+                agent_id: "agent-child".into(),
+                session_id: "session-parent".into(),
+                sub_run_id: "subrun-1".into(),
+            },
+            parent: ParentExecutionRef {
+                parent_agent_id: Some("agent-parent".into()),
+                parent_sub_run_id: Some("subrun-parent".into()),
+            },
+            lineage_kind: ChildSessionLineageKind::Spawn,
+            status: AgentLifecycleStatus::Running,
+            open_session_id: "session-child".into(),
+        };
+        let result = CapabilityExecutionResult::from_common(
+            "spawn",
+            true,
+            json!("spawn accepted"),
+            Some(child_ref.clone()),
+            ExecutionResultCommon::success(None, 17, false),
+        );
+
+        let tool_result = result.into_tool_execution_result("call-1".to_string());
+        assert_eq!(tool_result.child_ref, Some(child_ref));
+        assert_eq!(tool_result.duration_ms, 17);
     }
 }

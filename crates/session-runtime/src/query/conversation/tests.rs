@@ -1,12 +1,11 @@
 use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
-    AgentEvent, AgentEventContext, AgentLifecycleStatus, ChildAgentRef, ChildExecutionIdentity,
-    ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
-    DeleteProjectResult, EventStore, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
-    ParentDeliveryTerminalSemantics, ParentExecutionRef, Phase, SessionEventRecord, SessionId,
-    SessionMeta, SessionTurnAcquireResult, StorageEvent, StorageEventPayload, StoredEvent,
-    ToolExecutionResult, ToolOutputStream, UserMessageOrigin,
+    AgentEvent, AgentEventContext, AgentLifecycleStatus, ChildAgentRef, ChildSessionNotification,
+    ChildSessionNotificationKind, DeleteProjectResult, EventStore, ParentDelivery,
+    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics, Phase,
+    SessionEventRecord, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
+    StorageEventPayload, StoredEvent, ToolExecutionResult, ToolOutputStream, UserMessageOrigin,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -21,6 +20,7 @@ use super::{
 };
 use crate::{
     SessionReplay, SessionRuntime,
+    state::sample_spawn_child_ref,
     turn::test_support::{NoopMetrics, NoopPromptFactsProvider, test_kernel},
 };
 
@@ -623,20 +623,7 @@ fn sample_agent_context() -> AgentEventContext {
 }
 
 fn sample_child_ref() -> ChildAgentRef {
-    ChildAgentRef {
-        identity: ChildExecutionIdentity {
-            agent_id: "agent-child-1".to_string().into(),
-            session_id: "session-root".to_string().into(),
-            sub_run_id: "subrun-child-1".to_string().into(),
-        },
-        parent: ParentExecutionRef {
-            parent_agent_id: Some("agent-root".to_string().into()),
-            parent_sub_run_id: Some("subrun-root".to_string().into()),
-        },
-        lineage_kind: ChildSessionLineageKind::Spawn,
-        status: AgentLifecycleStatus::Running,
-        open_session_id: "session-child-1".to_string().into(),
-    }
+    sample_spawn_child_ref(AgentLifecycleStatus::Running)
 }
 
 fn sample_child_notification() -> ChildSessionNotification {

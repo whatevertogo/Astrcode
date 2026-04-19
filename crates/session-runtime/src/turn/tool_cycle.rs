@@ -545,8 +545,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use astrcode_core::{
-        AgentLifecycleStatus, CapabilityKind, ChildAgentRef, ChildExecutionIdentity,
-        ChildSessionLineageKind, ParentExecutionRef, StorageEventPayload, Tool, ToolDefinition,
+        AgentLifecycleStatus, CapabilityKind, StorageEventPayload, Tool, ToolDefinition,
         ToolOutputStream,
     };
     use async_trait::async_trait;
@@ -554,7 +553,10 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use super::*;
-    use crate::turn::test_support::{test_kernel_with_tool, test_session_state};
+    use crate::{
+        state::sample_spawn_child_ref,
+        turn::test_support::{test_kernel_with_tool, test_session_state},
+    };
 
     #[test]
     fn tool_cycle_outcome_equality() {
@@ -808,21 +810,8 @@ mod tests {
         }
     }
 
-    fn sample_child_ref() -> ChildAgentRef {
-        ChildAgentRef {
-            identity: ChildExecutionIdentity {
-                agent_id: "agent-child-1".into(),
-                session_id: "session-parent-1".into(),
-                sub_run_id: "subrun-1".into(),
-            },
-            parent: ParentExecutionRef {
-                parent_agent_id: Some("root-agent:session-1".into()),
-                parent_sub_run_id: Some("root-root-agent:session-1".into()),
-            },
-            lineage_kind: ChildSessionLineageKind::Spawn,
-            status: AgentLifecycleStatus::Running,
-            open_session_id: "session-child-1".into(),
-        }
+    fn sample_child_ref() -> astrcode_core::ChildAgentRef {
+        sample_spawn_child_ref(AgentLifecycleStatus::Running)
     }
 
     #[tokio::test]
