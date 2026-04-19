@@ -6,13 +6,13 @@
 
 ### Requirement: delegation metadata SHALL be generated from the unified governance assembly path
 
-`DelegationMetadata`（responsibility_summary、reuse_scope_summary、restricted、capability_limit_summary）MUST 由统一治理装配器生成，而不是在 `agent/mod.rs:287-312` 的 `build_delegation_metadata` helper 中独立拼装。
+`DelegationMetadata`（responsibility_summary、reuse_scope_summary、restricted、capability_limit_summary）MUST 由统一治理装配器生成。`build_delegation_metadata`（`governance_surface/prompt.rs`）作为装配器的内部 helper，由 `GovernanceSurfaceAssembler` 的 `fresh_child_surface` 和 `resumed_child_surface` 统一调用。
 
 #### Scenario: delegation metadata comes from the governance assembler
 
 - **WHEN** 系统启动或恢复一个 child session
 - **THEN** `DelegationMetadata` SHALL 由治理装配器根据治理包络中的 child policy 统一生成
-- **AND** SHALL NOT 由 `build_delegation_metadata` helper 从局部参数独立构建
+- **AND** `build_delegation_metadata` 只通过治理装配路径调用，不从外部独立调用
 
 #### Scenario: delegation metadata is consistent across fresh and resumed child
 
@@ -32,7 +32,7 @@
 
 ### Requirement: AgentCollaborationPolicyContext SHALL be built from the governance envelope
 
-`AgentCollaborationPolicyContext`（policy_revision + max_subrun_depth + max_spawn_per_turn）MUST 从治理包络中获取参数，而不是在 `agent/mod.rs:741-749` 中独立从 runtime config 读取。
+`AgentCollaborationPolicyContext`（policy_revision + max_subrun_depth + max_spawn_per_turn）MUST 从治理包络中获取参数。`collaboration_policy_context`（`governance_surface/policy.rs`）从 `ResolvedRuntimeConfig` 构建，由治理装配器统一调用。
 
 #### Scenario: policy context uses governance-resolved parameters
 
@@ -42,7 +42,7 @@
 
 ### Requirement: spawn budget enforcement SHALL consume governance-resolved limits
 
-`enforce_spawn_budget_for_turn`（agent/mod.rs:992-1012）当前直接从 runtime config 读取 `max_spawn_per_turn`。它 MUST 使用治理包络中已解析的限制参数。
+`enforce_spawn_budget_for_turn`（`agent/mod.rs`）检查当前 turn 的 spawn 预算。它 MUST 使用治理包络中已解析的限制参数。
 
 #### Scenario: spawn budget check uses envelope parameters
 
@@ -52,7 +52,7 @@
 
 ### Requirement: delegation metadata persistence SHALL stay consistent with governance envelope
 
-`persist_delegation_for_handle`（agent/mod.rs:394-436）将 delegation metadata 持久化到 kernel 控制面。持久化的数据 MUST 与治理包络中的 delegation 信息保持一致。
+`persist_delegation_for_handle`（`agent/mod.rs`）将 delegation metadata 持久化到 kernel 控制面。持久化的数据 MUST 与治理包络中的 delegation 信息保持一致。
 
 #### Scenario: persisted delegation matches envelope
 

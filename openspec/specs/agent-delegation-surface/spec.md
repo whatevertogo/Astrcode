@@ -134,7 +134,7 @@ delegation catalog 可见的 behavior template、child execution contract 中的
 
 ### Requirement: collaboration facts SHALL be recordable with governance envelope context
 
-`AgentCollaborationFact`（core/agent/mod.rs:1129-1155）记录 spawn/send/observe/close/delivery 等协作动作的审计事件。这些事实 MUST 能关联到生成该动作时的治理包络上下文，使审计链路可追溯。
+`AgentCollaborationFact`（`core/agent/mod.rs`）记录 spawn/send/observe/close/delivery 等协作动作的审计事件。这些事实 MUST 能关联到生成该动作时的治理包络上下文，使审计链路可追溯。
 
 #### Scenario: collaboration fact includes governance context
 
@@ -150,7 +150,7 @@ delegation catalog 可见的 behavior template、child execution contract 中的
 
 ### Requirement: CollaborationFactRecord SHALL derive its parameters from the governance envelope
 
-`CollaborationFactRecord`（agent/mod.rs:96-166）跟踪每个协作动作的结果、原因码和延迟。其构建参数 MUST 来自治理包络，而不是各调用点独立组装。
+`CollaborationFactRecord`（`agent/context.rs`）跟踪每个协作动作的结果、原因码和延迟。其构建参数 MUST 来自治理包络，而不是各调用点独立组装。
 
 #### Scenario: fact record uses governance-resolved child identity and limits
 

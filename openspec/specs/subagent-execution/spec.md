@@ -34,29 +34,32 @@
 
 ### Requirement: 子代理关闭与观察走稳定业务入口
 
-子代理的关闭与观察 SHALL 通过稳定业务入口访问，并且只允许直接父代理对其拥有的 child 执行这些操作。观察结果 MUST 同时暴露原始状态真相和足以支持下一步决策的稳定输入。
+子代理的关闭与观察 SHALL 通过 `CollaborationExecutor` trait 的稳定业务入口访问，并且只允许直接父代理对其拥有的 child 执行这些操作。观察结果 MUST 同时暴露原始状态真相和足以支持下一步决策的稳定输入。
+
+系统 SHALL 通过 `verify_caller_owns_child(ctx, child_handle)` 校验调用者是目标的直接父级，通过 `require_direct_child_handle(agent_id, action, ctx, collaboration)` 校验目标存在且权限合法。
 
 #### Scenario: 关闭直接子代理
 
-- **WHEN** 直接父代理调用关闭入口
-- **THEN** 业务入口协调 control/session 两侧完成 subtree 级联关闭
-- **AND** 返回结果 SHALL 明确说明被关闭的 root agent 与级联影响范围
+- **WHEN** 直接父代理调用 `close_child(params, ctx)`
+- **THEN** 业务入口通过 `close_subtree` 协调 control/session 两侧完成 subtree 级联关闭
+- **AND** 返回 `CollaborationResult::Closed` 明确说明被关闭的 agent 与级联影响范围
+- **AND** 记录 Close + Accepted collaboration fact
 
 #### Scenario: 查询直接子代理状态
 
-- **WHEN** 直接父代理调用观察入口
-- **THEN** 返回与当前 control 真相一致的状态快照
+- **WHEN** 直接父代理调用 `observe_child(params, ctx)`
+- **THEN** 返回 `CollaborationResult::Observed` 含 `ObserveSnapshot`（lifecycle_status、phase、turn_count、active_task、last_output_tail、last_turn_tail）和 delegation metadata
 - **AND** 返回结果 SHALL 包含足以支持下一步决策的稳定字段，而不要求调用方重扫整段 transcript
 
 #### Scenario: 跨树或非直接父关系调用被拒绝
 
-- **WHEN** 调用方尝试观察或关闭不属于自己的 child
-- **THEN** 系统 MUST 返回业务错误
+- **WHEN** 调用方尝试观察或关闭不属于自己的 child（`verify_caller_owns_child` 校验失败）
+- **THEN** 系统 MUST 返回 `AgentOrchestrationError::InvalidInput`，记录 Rejected collaboration fact（reason_code 如 "not_direct_parent"）
 - **AND** MUST NOT 暴露目标 child 的内部状态
 
 ### Requirement: 向子代理或父代理发送协作消息 MUST 走统一 `send` 业务入口
 
-统一 `send` SHALL 作为父子协作的唯一消息入口，但上下行语义必须按这次消息的方向和参数分支严格区分，不得退化成自由双向聊天。非 root 的中间层 agent 既可能向上回 parent，也可能向下发 child。
+统一 `send` SHALL 通过 `route_send(params, ctx)` 作为父子协作的唯一消息入口，但上下行语义必须按这次消息的方向和参数分支（`SendToChildParams` vs `SendToParentParams`）严格区分，不得退化成自由双向聊天。非 root 的中间层 agent 既可能向上回 parent，也可能向下发 child。
 
 #### Scenario: parent sends next instruction to idle child
 

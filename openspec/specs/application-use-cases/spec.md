@@ -6,6 +6,18 @@
 
 `application` crate SHALL 提供 `App` 作为 server 的唯一业务入口。
 
+`App` 通过 port trait 与外部系统解耦，持有：
+- `kernel: Arc<dyn AppKernelPort>` — kernel 控制面
+- `session_runtime: Arc<dyn AppSessionPort>` — session-runtime 稳定端口
+- `profiles: Arc<ProfileResolutionService>` — agent profile 解析
+- `config_service: Arc<ConfigService>` — 配置服务
+- `composer_service: Arc<ComposerService>` — composer 补全服务
+- `composer_skills: Arc<dyn ComposerSkillPort>` — skill 查询端口
+- `governance_surface: Arc<GovernanceSurfaceAssembler>` — 治理面组装器
+- `mode_catalog: Arc<ModeCatalog>` — 模式目录
+- `mcp_service: Arc<McpService>` — MCP 服务
+- `agent_service: Arc<AgentOrchestrationService>` — agent 编排服务
+
 #### Scenario: server handler 只依赖 App 或其稳定服务接口
 
 - **WHEN** 检查 `server` handler
@@ -53,7 +65,7 @@
 #### Scenario: 非法请求在 application 层被拒绝
 
 - **WHEN** 传入无效 session id 或非法参数
-- **THEN** `application` 直接返回业务错误
+- **THEN** `application` 直接返回 `ApplicationError::InvalidArgument` 或 `ApplicationError::PermissionDenied`
 - **AND** 不将错误请求继续下推到 `kernel` 或 `session-runtime`
 
 #### Scenario: submit_prompt 只触发 turn，不持有 turn 内策略
@@ -104,14 +116,14 @@
 
 ### Requirement: Application Governs Plugin Reload
 
-`application` MUST 通过治理入口编排完整 capability reload 流程，而不是只编排 plugin 自身刷新。
+`application` MUST 通过 `AppGovernance` 编排完整 capability reload 流程，而不是只编排 plugin 自身刷新。
 
 #### Scenario: Reload triggers full capability refresh
 
 - **WHEN** 上层触发 reload
-- **THEN** `application` SHALL 编排完整刷新链路
+- **THEN** `application` SHALL 编排完整刷新链路（通过 `RuntimeReloader` trait）
 - **AND** 刷新结果 SHALL 同时覆盖 builtin、MCP、plugin 能力来源
-- **AND** SHALL 以统一治理结果表达当前生效 surface
+- **AND** SHALL 以 `ReloadResult` 表达当前生效 surface
 
 #### Scenario: Governance does not hide plugin failure
 
@@ -120,33 +132,31 @@
 - **AND** SHALL NOT 静默吞掉失败
 - **AND** SHALL NOT 让部分 plugin 刷新结果伪装成完整 reload 成功
 
-### Requirement: `application` 重建治理与运行时监督模型
+### Requirement: `application` 通过 `AppGovernance` 重建治理模型
 
-`RuntimeGovernance`、`RuntimeCoordinator`、`RuntimeHandle` 的职责 SHALL 迁移到 `application`，形成新的治理模型（例如 `AppGovernance`、`AppCoordinator`、`AppHandle`）。
+`AppGovernance` 通过以下 trait 提供者实现治理：
 
-新的治理模型 SHALL 负责：
-
-- 托管组件生命周期
-- active plugins / capabilities 快照
-- reload 结果
-- shutdown 协调
+- `RuntimeGovernancePort` — 运行时治理快照与关闭
+- `ObservabilitySnapshotProvider` — 可观测性指标
+- `SessionInfoProvider` — 会话计数与列表
+- `RuntimeReloader` — 重载策略（可选）
 
 #### Scenario: server 状态接口不再依赖 runtime 治理类型
 
 - **WHEN** 检查 `server` 状态接口与 mapper
-- **THEN** 使用 `application` 暴露的治理快照类型
+- **THEN** 使用 `application` 暴露的治理快照类型（`GovernanceSnapshot`, `ReloadResult` 等）
 - **AND** 不再依赖 `RuntimeGovernance` / `RuntimeCoordinator` / `RuntimeHandle`
 
 ---
 
 ### Requirement: `application` 暴露 typed error，不暴露 transport concern
 
-`application` SHALL 定义业务错误类型（如 `ApplicationError`），错误定义 SHALL NOT 混入 HTTP 状态码、Axum 类型或其他 transport 细节。
+`application` SHALL 定义 `ApplicationError`，包含 `InvalidArgument`, `PermissionDenied`, `Conflict`, `NotFound`, `Internal` 变体。错误定义 SHALL NOT 混入 HTTP 状态码、Axum 类型或其他 transport 细节。
 
 #### Scenario: HTTP 映射只在 server 层
 
 - **WHEN** 检查错误处理链路
-- **THEN** `application` 返回业务错误
+- **THEN** `application` 返回 `ApplicationError`
 - **AND** HTTP 状态码映射只发生在 `server`
 
 ---
@@ -158,7 +168,7 @@
 #### Scenario: App 字段保持干净
 
 - **WHEN** 检查 `App` 结构体
-- **THEN** 只持有 `Kernel` 和 `SessionRuntime` 等核心协作者
+- **THEN** 只通过 port trait（`AppKernelPort`, `AppSessionPort`）持有核心协作者
 - **AND** 不直接持有 `EventStore`、`LlmProvider`、`ToolProvider`、`PromptProvider`
 
 #### Scenario: App 不再保存 session shadow state
@@ -205,13 +215,13 @@
 
 ### Requirement: application SHALL expose task display facts through stable session-runtime contracts
 
-在 conversation snapshot、stream catch-up 或等价的 task display 场景中，`application` MUST 通过 `SessionRuntime` 的 `SessionQueries::active_task_snapshot()` 稳定 query 方法读取 authoritative task facts，并在 `terminal_control_facts()` 中将结果映射为 `TerminalControlFacts.active_tasks` 字段。`application` MUST NOT 直接扫描原始 `taskWrite` tool 事件、手写 replay 逻辑或把待上层再拼装的底层事实当成正式合同向上传递。
+在 conversation snapshot、stream catch-up 或等价的 task display 场景中，`application` MUST 通过 `SessionRuntime` 的稳定 query 方法读取 authoritative task facts，并在 `terminal_control_facts()` 中将结果映射为 `TerminalControlFacts.active_tasks` 字段。
 
 #### Scenario: server requests conversation facts with active tasks
 
 - **WHEN** `server` 请求某个 session 的 conversation snapshot 或 stream catch-up，且该 session 当前存在 active tasks
 - **THEN** `application` SHALL 通过 `terminal_control_facts()` 返回已收敛的 task display facts
-- **AND** `server` 只负责 DTO 映射（`to_conversation_control_state_dto()` 将 `active_tasks` 映射为 `ConversationControlStateDto.activeTasks`）、HTTP 状态码与 SSE framing
+- **AND** `server` 只负责 DTO 映射
 
 #### Scenario: application does not reconstruct tasks from raw tool history
 
@@ -221,6 +231,34 @@
 
 #### Scenario: no active tasks yields None
 
-- **WHEN** `application` 查询 task facts，但当前 session 无 active tasks（空列表或全部 completed）
+- **WHEN** `application` 查询 task facts，但当前 session 无 active tasks
 - **THEN** `TerminalControlFacts.active_tasks` SHALL 为 `None`
-- **AND** `ConversationControlStateDto.activeTasks` SHALL 为 `None`
+
+---
+
+### Requirement: `application` 内部按职责分块组织
+
+`application` 内部 SHALL 按以下职责分块：
+
+- `ports` — 与外部系统交互的 port trait（AppKernelPort, AppSessionPort, AgentKernelPort, AgentSessionPort, ComposerSkillPort）
+- `execution` — 根代理与子代理执行入口编排
+- `agent` — agent 编排服务（observe, wake, routing, terminal, context, collaboration flow）
+- `governance_surface` — 治理面组装器与策略（assembler, policy, prompt, inherited）
+- `terminal` / `terminal_queries` — 终端控制态查询
+- `config` — 配置 IO（api_key, constants, env_resolver, mcp, selection, validation）
+- `composer` — composer 补全服务
+- `mcp` — MCP 服务
+- `mode` — 模式目录与编译（catalog, compiler, validator, builtin_prompts）
+- `observability` — 可观测性收集与指标快照
+- `watch` — 文件监控服务
+- `lifecycle` — 应用层治理模型（AppGovernance）
+- `session_use_cases` — 会话级用例编排
+- `agent_use_cases` — agent 级用例编排
+- `session_plan` — session plan 查询
+- `errors` — ApplicationError 定义
+
+#### Scenario: port trait 实现依赖反转
+
+- **WHEN** 检查 `ports` 模块
+- **THEN** `App` 不直接依赖 `Kernel` 或 `SessionRuntime` 具体类型
+- **AND** 通过 `AppKernelPort`、`AppSessionPort` 等 trait 解耦
