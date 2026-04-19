@@ -15,7 +15,6 @@ graph TD
   astrcode-adapter-prompt[astrcode-adapter-prompt] --> astrcode-core[astrcode-core]
   astrcode-adapter-skills[astrcode-adapter-skills] --> astrcode-core[astrcode-core]
   astrcode-adapter-storage[astrcode-adapter-storage] --> astrcode-core[astrcode-core]
-  astrcode-adapter-tools[astrcode-adapter-tools] --> astrcode-adapter-skills[astrcode-adapter-skills]
   astrcode-adapter-tools[astrcode-adapter-tools] --> astrcode-core[astrcode-core]
   astrcode-application[astrcode-application] --> astrcode-core[astrcode-core]
   astrcode-application[astrcode-application] --> astrcode-kernel[astrcode-kernel]
@@ -57,7 +56,7 @@ graph TD
 | astrcode-adapter-prompt | crates/adapter-prompt | 1 | astrcode-core |
 | astrcode-adapter-skills | crates/adapter-skills | 1 | astrcode-core |
 | astrcode-adapter-storage | crates/adapter-storage | 1 | astrcode-core |
-| astrcode-adapter-tools | crates/adapter-tools | 2 | astrcode-adapter-skills, astrcode-core |
+| astrcode-adapter-tools | crates/adapter-tools | 1 | astrcode-core |
 | astrcode-application | crates/application | 3 | astrcode-core, astrcode-kernel, astrcode-session-runtime |
 | astrcode-cli | crates/cli | 2 | astrcode-client, astrcode-core |
 | astrcode-client | crates/client | 1 | astrcode-protocol |
