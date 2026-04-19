@@ -16,8 +16,9 @@
 use std::sync::OnceLock;
 
 use astrcode_core::{
-    AstrError, CancelToken, CompactAppliedMeta, CompactMode, LlmMessage, LlmRequest, ModelLimits,
-    Result, UserMessageOrigin, format_compact_summary, parse_compact_summary_message,
+    AstrError, CancelToken, CompactAppliedMeta, CompactMode, CompactSummaryEnvelope, LlmMessage,
+    LlmRequest, ModelLimits, Result, UserMessageOrigin, format_compact_summary,
+    parse_compact_summary_message,
     tool_result_persist::{is_persisted_output, persisted_output_absolute_path},
 };
 use astrcode_kernel::KernelGateway;
@@ -40,6 +41,8 @@ pub(crate) struct CompactConfig {
     pub summary_reserve_tokens: usize,
     /// compact 允许的最大裁剪重试次数。
     pub max_retry_attempts: usize,
+    /// compact 后注入给模型的旧历史 event log 路径提示。
+    pub history_path: Option<String>,
     /// 仅对手动 compact 生效的附加指令。
     pub custom_instructions: Option<String>,
 }
@@ -170,7 +173,16 @@ pub async fn auto_compact(
         }
     };
 
-    let summary = sanitize_compact_summary(&parsed_output.summary);
+    let summary = {
+        let summary = sanitize_compact_summary(&parsed_output.summary);
+        if let Some(history_path) = config.history_path.as_deref() {
+            CompactSummaryEnvelope::new(summary)
+                .with_history_path(history_path)
+                .render_body()
+        } else {
+            summary
+        }
+    };
     let output_summary_chars = summary.chars().count().min(u32::MAX as usize) as u32;
     let compacted_messages = compacted_messages(&summary, split.suffix);
     let post_tokens_estimate = estimate_request_tokens(&compacted_messages, compact_prompt_context);
@@ -977,6 +989,7 @@ mod tests {
             trigger: astrcode_core::CompactTrigger::Manual,
             summary_reserve_tokens: 20_000,
             max_retry_attempts: 3,
+            history_path: None,
             custom_instructions: None,
         }
     }
@@ -1164,6 +1177,22 @@ mod tests {
             }
         ));
         assert_eq!(compacted.len(), 1);
+    }
+
+    #[test]
+    fn prepare_compact_input_strips_history_note_from_previous_summary() {
+        let filtered = prepare_compact_input(&[LlmMessage::User {
+            content: CompactSummaryEnvelope::new("older summary")
+                .with_history_path("~/.astrcode/projects/demo/sessions/abc/session-abc.jsonl")
+                .render(),
+            origin: UserMessageOrigin::CompactSummary,
+        }]);
+
+        assert!(matches!(
+            filtered.prompt_mode,
+            CompactPromptMode::Incremental { ref previous_summary }
+                if previous_summary == "older summary"
+        ));
     }
 
     #[test]

@@ -43,6 +43,19 @@ pub enum ConversationTranscriptErrorKind {
     RateLimit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationPlanEventKind {
+    Saved,
+    ReviewPending,
+    Presented,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationPlanReviewKind {
+    RevisePlan,
+    FinalReview,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ToolCallStreamsFacts {
     pub stdout: String,
@@ -70,6 +83,35 @@ pub struct ConversationThinkingBlockFacts {
     pub turn_id: Option<String>,
     pub status: ConversationBlockStatus,
     pub markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationPlanReviewFacts {
+    pub kind: ConversationPlanReviewKind,
+    pub checklist: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConversationPlanBlockersFacts {
+    pub missing_headings: Vec<String>,
+    pub invalid_sections: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationPlanBlockFacts {
+    pub id: String,
+    pub turn_id: Option<String>,
+    pub tool_call_id: String,
+    pub event_kind: ConversationPlanEventKind,
+    pub title: String,
+    pub plan_path: String,
+    pub summary: Option<String>,
+    pub status: Option<String>,
+    pub slug: Option<String>,
+    pub updated_at: Option<String>,
+    pub content: Option<String>,
+    pub review: Option<ConversationPlanReviewFacts>,
+    pub blockers: ConversationPlanBlockersFacts,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +161,7 @@ pub enum ConversationBlockFacts {
     User(ConversationUserBlockFacts),
     Assistant(ConversationAssistantBlockFacts),
     Thinking(ConversationThinkingBlockFacts),
+    Plan(Box<ConversationPlanBlockFacts>),
     ToolCall(Box<ToolCallBlockFacts>),
     Error(ConversationErrorBlockFacts),
     SystemNote(ConversationSystemNoteBlockFacts),
@@ -429,7 +472,13 @@ impl ConversationDeltaProjector {
                 tool_name,
                 input,
                 ..
-            } => self.start_tool_call(turn_id, tool_call_id, tool_name, Some(input), source),
+            } => {
+                if should_suppress_tool_call_block(tool_name, Some(input)) {
+                    Vec::new()
+                } else {
+                    self.start_tool_call(turn_id, tool_call_id, tool_name, Some(input), source)
+                }
+            },
             AgentEvent::ToolCallDelta {
                 turn_id,
                 tool_call_id,
@@ -440,7 +489,13 @@ impl ConversationDeltaProjector {
             } => self.append_tool_stream(turn_id, tool_call_id, tool_name, *stream, delta, source),
             AgentEvent::ToolCallResult {
                 turn_id, result, ..
-            } => self.complete_tool_call(turn_id, result, source),
+            } => {
+                if let Some(block) = plan_block_from_tool_result(turn_id, result) {
+                    self.push_block(ConversationBlockFacts::Plan(Box::new(block)))
+                } else {
+                    self.complete_tool_call(turn_id, result, source)
+                }
+            },
             AgentEvent::CompactApplied {
                 turn_id,
                 trigger,
@@ -1256,11 +1311,150 @@ fn block_id(block: &ConversationBlockFacts) -> &str {
         ConversationBlockFacts::User(block) => &block.id,
         ConversationBlockFacts::Assistant(block) => &block.id,
         ConversationBlockFacts::Thinking(block) => &block.id,
+        ConversationBlockFacts::Plan(block) => &block.id,
         ConversationBlockFacts::ToolCall(block) => &block.id,
         ConversationBlockFacts::Error(block) => &block.id,
         ConversationBlockFacts::SystemNote(block) => &block.id,
         ConversationBlockFacts::ChildHandoff(block) => &block.id,
     }
+}
+
+fn should_suppress_tool_call_block(tool_name: &str, _input: Option<&Value>) -> bool {
+    matches!(tool_name, "upsertSessionPlan" | "exitPlanMode")
+}
+
+fn plan_block_from_tool_result(
+    turn_id: &str,
+    result: &ToolExecutionResult,
+) -> Option<ConversationPlanBlockFacts> {
+    if !result.ok {
+        return None;
+    }
+
+    let metadata = result.metadata.as_ref()?.as_object()?;
+    match result.tool_name.as_str() {
+        "upsertSessionPlan" => {
+            let title = json_string(metadata, "title")?;
+            let plan_path = json_string(metadata, "planPath")?;
+            Some(ConversationPlanBlockFacts {
+                id: format!("plan:{}:saved", result.tool_call_id),
+                turn_id: Some(turn_id.to_string()),
+                tool_call_id: result.tool_call_id.clone(),
+                event_kind: ConversationPlanEventKind::Saved,
+                title,
+                plan_path,
+                summary: Some(tool_result_summary(result)),
+                status: json_string(metadata, "status"),
+                slug: json_string(metadata, "slug"),
+                updated_at: json_string(metadata, "updatedAt"),
+                content: None,
+                review: None,
+                blockers: ConversationPlanBlockersFacts::default(),
+            })
+        },
+        "exitPlanMode" => match json_string(metadata, "schema").as_deref() {
+            Some("sessionPlanExit") => plan_presented_block(turn_id, result, metadata),
+            Some("sessionPlanExitReviewPending") | Some("sessionPlanExitBlocked") => {
+                plan_review_pending_block(turn_id, result, metadata)
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn plan_presented_block(
+    turn_id: &str,
+    result: &ToolExecutionResult,
+    metadata: &serde_json::Map<String, Value>,
+) -> Option<ConversationPlanBlockFacts> {
+    let plan = metadata.get("plan")?.as_object()?;
+    Some(ConversationPlanBlockFacts {
+        id: format!("plan:{}:presented", result.tool_call_id),
+        turn_id: Some(turn_id.to_string()),
+        tool_call_id: result.tool_call_id.clone(),
+        event_kind: ConversationPlanEventKind::Presented,
+        title: json_string(plan, "title")?,
+        plan_path: json_string(plan, "planPath")?,
+        summary: Some("计划已呈递".to_string()),
+        status: json_string(plan, "status"),
+        slug: json_string(plan, "slug"),
+        updated_at: json_string(plan, "updatedAt"),
+        content: json_string(plan, "content"),
+        review: None,
+        blockers: ConversationPlanBlockersFacts::default(),
+    })
+}
+
+fn plan_review_pending_block(
+    turn_id: &str,
+    result: &ToolExecutionResult,
+    metadata: &serde_json::Map<String, Value>,
+) -> Option<ConversationPlanBlockFacts> {
+    let plan = metadata.get("plan")?.as_object()?;
+    let review = metadata
+        .get("review")
+        .and_then(Value::as_object)
+        .and_then(|review| {
+            let kind = match json_string(review, "kind").as_deref() {
+                Some("revise_plan") => ConversationPlanReviewKind::RevisePlan,
+                Some("final_review") => ConversationPlanReviewKind::FinalReview,
+                _ => return None,
+            };
+            Some(ConversationPlanReviewFacts {
+                kind,
+                checklist: json_string_array(review, "checklist"),
+            })
+        });
+    let blockers = metadata
+        .get("blockers")
+        .and_then(Value::as_object)
+        .map(|blockers| ConversationPlanBlockersFacts {
+            missing_headings: json_string_array(blockers, "missingHeadings"),
+            invalid_sections: json_string_array(blockers, "invalidSections"),
+        })
+        .unwrap_or_default();
+
+    Some(ConversationPlanBlockFacts {
+        id: format!("plan:{}:review-pending", result.tool_call_id),
+        turn_id: Some(turn_id.to_string()),
+        tool_call_id: result.tool_call_id.clone(),
+        event_kind: ConversationPlanEventKind::ReviewPending,
+        title: json_string(plan, "title")?,
+        plan_path: json_string(plan, "planPath")?,
+        summary: Some(match review.as_ref().map(|review| review.kind) {
+            Some(ConversationPlanReviewKind::RevisePlan) => "正在修计划".to_string(),
+            Some(ConversationPlanReviewKind::FinalReview) => "正在做退出前自审".to_string(),
+            None => "继续完善中".to_string(),
+        }),
+        status: None,
+        slug: None,
+        updated_at: None,
+        content: None,
+        review,
+        blockers,
+    })
+}
+
+fn json_string(container: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    container
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn json_string_array(container: &serde_json::Map<String, Value>, key: &str) -> Vec<String> {
+    container
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn tool_result_summary(result: &ToolExecutionResult) -> String {
@@ -1317,7 +1511,7 @@ mod tests {
     use super::{
         ConversationBlockFacts, ConversationBlockPatchFacts, ConversationBlockStatus,
         ConversationChildHandoffKind, ConversationDeltaFacts, ConversationDeltaProjector,
-        ConversationStreamProjector, ConversationStreamReplayFacts,
+        ConversationPlanEventKind, ConversationStreamProjector, ConversationStreamReplayFacts,
         build_conversation_replay_frames, fallback_live_cursor, project_conversation_snapshot,
     };
     use crate::{
@@ -1452,6 +1646,140 @@ mod tests {
         assert_eq!(tool.status, ConversationBlockStatus::Failed);
         assert_eq!(tool.error.as_deref(), Some("command not found"));
         assert_eq!(tool.duration_ms, Some(127));
+    }
+
+    #[test]
+    fn snapshot_projects_plan_blocks_in_durable_event_order() {
+        let records = vec![
+            record(
+                "1.1",
+                AgentEvent::ToolCallStart {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    tool_call_id: "call-plan-save".to_string(),
+                    tool_name: "upsertSessionPlan".to_string(),
+                    input: json!({
+                        "title": "Cleanup crates",
+                        "content": "# Plan: Cleanup crates"
+                    }),
+                },
+            ),
+            record(
+                "1.2",
+                AgentEvent::ToolCallResult {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    result: ToolExecutionResult {
+                        tool_call_id: "call-plan-save".to_string(),
+                        tool_name: "upsertSessionPlan".to_string(),
+                        ok: true,
+                        output: "updated session plan".to_string(),
+                        error: None,
+                        metadata: Some(json!({
+                            "planPath": "C:/Users/demo/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md",
+                            "slug": "cleanup-crates",
+                            "status": "draft",
+                            "title": "Cleanup crates",
+                            "updatedAt": "2026-04-19T09:00:00Z"
+                        })),
+                        child_ref: None,
+                        duration_ms: 7,
+                        truncated: false,
+                    },
+                },
+            ),
+            record(
+                "1.3",
+                AgentEvent::ToolCallStart {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    tool_call_id: "call-shell".to_string(),
+                    tool_name: "shell_command".to_string(),
+                    input: json!({ "command": "pwd" }),
+                },
+            ),
+            record(
+                "1.4",
+                AgentEvent::ToolCallResult {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    result: ToolExecutionResult {
+                        tool_call_id: "call-shell".to_string(),
+                        tool_name: "shell_command".to_string(),
+                        ok: true,
+                        output: "D:/GitObjectsOwn/Astrcode".to_string(),
+                        error: None,
+                        metadata: None,
+                        child_ref: None,
+                        duration_ms: 9,
+                        truncated: false,
+                    },
+                },
+            ),
+            record(
+                "1.5",
+                AgentEvent::ToolCallStart {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    tool_call_id: "call-plan-exit".to_string(),
+                    tool_name: "exitPlanMode".to_string(),
+                    input: json!({}),
+                },
+            ),
+            record(
+                "1.6",
+                AgentEvent::ToolCallResult {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    result: ToolExecutionResult {
+                        tool_call_id: "call-plan-exit".to_string(),
+                        tool_name: "exitPlanMode".to_string(),
+                        ok: true,
+                        output: "Before exiting plan mode, do one final self-review.".to_string(),
+                        error: None,
+                        metadata: Some(json!({
+                            "schema": "sessionPlanExitReviewPending",
+                            "plan": {
+                                "title": "Cleanup crates",
+                                "planPath": "C:/Users/demo/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md"
+                            },
+                            "review": {
+                                "kind": "final_review",
+                                "checklist": [
+                                    "Re-check assumptions against the code you already inspected."
+                                ]
+                            },
+                            "blockers": {
+                                "missingHeadings": ["## Verification"],
+                                "invalidSections": []
+                            }
+                        })),
+                        child_ref: None,
+                        duration_ms: 5,
+                        truncated: false,
+                    },
+                },
+            ),
+        ];
+
+        let snapshot = project_conversation_snapshot(&records, Phase::Idle);
+        assert_eq!(snapshot.blocks.len(), 3);
+        assert!(matches!(
+            &snapshot.blocks[0],
+            ConversationBlockFacts::Plan(block)
+                if block.tool_call_id == "call-plan-save"
+                    && block.event_kind == ConversationPlanEventKind::Saved
+        ));
+        assert!(matches!(
+            &snapshot.blocks[1],
+            ConversationBlockFacts::ToolCall(block) if block.tool_call_id == "call-shell"
+        ));
+        assert!(matches!(
+            &snapshot.blocks[2],
+            ConversationBlockFacts::Plan(block)
+                if block.tool_call_id == "call-plan-exit"
+                    && block.event_kind == ConversationPlanEventKind::ReviewPending
+        ));
     }
 
     #[test]

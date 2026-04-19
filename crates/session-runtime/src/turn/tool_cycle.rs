@@ -415,6 +415,13 @@ async fn invoke_single_tool(
         tool_result_inline_limit,
     ))
     .with_tool_output_sender(tool_output_tx.clone());
+    let tool_ctx = match session_state.current_mode_id() {
+        Ok(current_mode_id) => tool_ctx.with_current_mode_id(current_mode_id),
+        Err(error) => {
+            log::warn!("failed to read current mode before tool execution: {error}");
+            tool_ctx
+        },
+    };
     let tool_ctx = if let Some(sink) = &event_sink {
         tool_ctx.with_event_sink(Arc::clone(sink))
     } else {

@@ -240,6 +240,41 @@ pub fn session_dir_for_tool_results(ctx: &ToolContext) -> Result<PathBuf> {
     Ok(project_dir.join("sessions").join(ctx.session_id()))
 }
 
+/// 拒绝通用文件写工具直接修改 canonical session plan。
+///
+/// session plan 的正式写入口必须统一走 `upsertSessionPlan`，否则会让 `state.json`
+/// 与 markdown artifact 脱节，并污染 conversation 对 canonical plan 的投影语义。
+pub fn ensure_not_canonical_session_plan_write_target(
+    ctx: &ToolContext,
+    path: &Path,
+    tool_name: &str,
+) -> Result<()> {
+    let plan_dir = resolve_for_host_access(&normalize_lexically(
+        &session_dir_for_tool_results(ctx)?.join("plan"),
+    ))?;
+    if !is_path_within_root(path, &plan_dir) {
+        return Ok(());
+    }
+
+    let is_canonical_plan_file = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("md"))
+        || path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("state.json"));
+    if !is_canonical_plan_file {
+        return Ok(());
+    }
+
+    Err(AstrError::Validation(format!(
+        "`{tool_name}` cannot modify canonical session plan artifacts under '{}'; use \
+         upsertSessionPlan instead",
+        plan_dir.display()
+    )))
+}
+
 /// 文件观察快照。
 ///
 /// `readFile` 成功后记录当前版本，`editFile` 写入前用它检测文件是否已被外部修改。

@@ -32,9 +32,10 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    build_text_change_report, capture_file_observation, check_cancel, file_observation_matches,
-    is_symlink, is_unc_path, load_file_observation, read_utf8_file, remember_file_observation,
-    resolve_path, write_text_file,
+    build_text_change_report, capture_file_observation, check_cancel,
+    ensure_not_canonical_session_plan_write_target, file_observation_matches, is_symlink,
+    is_unc_path, load_file_observation, read_utf8_file, remember_file_observation, resolve_path,
+    write_text_file,
 };
 
 /// 可编辑文件的最大大小（1 GiB）。
@@ -275,6 +276,7 @@ impl Tool for EditFileTool {
 
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
+        ensure_not_canonical_session_plan_write_target(ctx, &path, "editFile")?;
 
         // UNC 路径检查：防止 Windows NTLM 凭据泄露
         if is_unc_path(&path) {
@@ -962,6 +964,45 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_rejects_canonical_session_plan_targets() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp
+            .path()
+            .join(".astrcode-test-state")
+            .join("sessions")
+            .join("session-test")
+            .join("plan")
+            .join("cleanup-crates.md");
+        tokio::fs::create_dir_all(file.parent().expect("plan file should have a parent"))
+            .await
+            .expect("plan dir should be created");
+        tokio::fs::write(&file, "# Plan: Cleanup crates\n")
+            .await
+            .expect("seed write should work");
+        let tool = EditFileTool;
+
+        let result = tool
+            .execute(
+                "tc-edit-plan".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "oldStr": "Cleanup crates",
+                    "newStr": "Prompt governance"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("upsertSessionPlan")
+        );
     }
 
     #[tokio::test]

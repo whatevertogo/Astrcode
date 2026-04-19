@@ -8,6 +8,7 @@ const chatContextValue: ChatScreenContextValue = {
   projectName: 'Astrcode',
   sessionId: 'session-1',
   sessionTitle: 'Test Session',
+  currentModeId: 'code',
   isChildSession: false,
   workingDir: 'D:/GitObjectsOwn/Astrcode',
   phase: 'idle',
@@ -23,6 +24,7 @@ const chatContextValue: ChatScreenContextValue = {
   onOpenChildSession: () => {},
   onForkFromTurn: () => {},
   onSubmitPrompt: () => {},
+  onSwitchMode: () => {},
   onInterrupt: () => {},
   onCancelSubRun: () => {},
   listComposerOptions: () => Promise.resolve([]),
@@ -216,6 +218,101 @@ describe('ToolCallBlock', () => {
     expect(html).toContain('88 ms');
     expect(html).toContain('truncated');
     expect(html).toContain('失败');
+  });
+
+  it('renders a dedicated plan review card for exitPlanMode metadata', () => {
+    const html = renderToStaticMarkup(
+      <ChatScreenProvider value={chatContextValue}>
+        <ToolCallBlock
+          message={{
+            id: 'tool-call-plan-exit',
+            kind: 'toolCall',
+            toolCallId: 'call-plan-exit',
+            toolName: 'exitPlanMode',
+            status: 'ok',
+            args: {},
+            metadata: {
+              schema: 'sessionPlanExit',
+              mode: {
+                fromModeId: 'plan',
+                toModeId: 'code',
+                modeChanged: true,
+              },
+              plan: {
+                title: 'Cleanup crates',
+                status: 'awaiting_approval',
+                slug: 'cleanup-crates',
+                planPath:
+                  'D:/GitObjectsOwn/Astrcode/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md',
+                content:
+                  '# Plan: Cleanup crates\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries',
+              },
+            },
+            streams: {
+              stdout: '',
+              stderr: '',
+            },
+            timestamp: Date.now(),
+          }}
+        />
+      </ChatScreenProvider>
+    );
+
+    expect(html).toContain('计划已呈递');
+    expect(html).toContain('待确认');
+    expect(html).toContain('Cleanup crates');
+    expect(html).toContain('cleanup-crates.md');
+    expect(html).toContain('计划已经提交给你审核');
+  });
+
+  it('renders a dedicated review-pending card when exitPlanMode requires another reflection pass', () => {
+    const html = renderToStaticMarkup(
+      <ChatScreenProvider value={chatContextValue}>
+        <ToolCallBlock
+          message={{
+            id: 'tool-call-plan-blocked',
+            kind: 'toolCall',
+            toolCallId: 'call-plan-blocked',
+            toolName: 'exitPlanMode',
+            status: 'ok',
+            args: {},
+            metadata: {
+              schema: 'sessionPlanExitReviewPending',
+              plan: {
+                title: 'Cleanup crates',
+                planPath:
+                  'D:/GitObjectsOwn/Astrcode/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md',
+              },
+              review: {
+                kind: 'final_review',
+                checklist: [
+                  'Re-check assumptions against the code you already inspected.',
+                  'Look for missing edge cases, affected files, and integration boundaries.',
+                ],
+              },
+              blockers: {
+                missingHeadings: ['## Existing Code To Reuse'],
+                invalidSections: [
+                  "session plan section '## Verification' must contain concrete actionable items before exiting plan mode",
+                ],
+              },
+            },
+            streams: {
+              stdout: '',
+              stderr: '',
+            },
+            timestamp: Date.now(),
+          }}
+        />
+      </ChatScreenProvider>
+    );
+
+    expect(html).toContain('继续完善中');
+    expect(html).toContain('正在做退出前自审');
+    expect(html).toContain('自审检查项');
+    expect(html).toContain('缺失章节');
+    expect(html).toContain('## Existing Code To Reuse');
+    expect(html).toContain('Re-check assumptions against the code you already inspected.');
   });
 
   it('renders explicit tool error even when stdout is present', () => {

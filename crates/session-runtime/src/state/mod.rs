@@ -31,6 +31,7 @@ use chrono::{DateTime, Utc};
 pub(crate) use execution::SessionStateEventSink;
 pub use execution::{append_and_broadcast, complete_session_execution, prepare_session_execution};
 pub(crate) use input_queue::{InputQueueEventAppend, append_input_queue_event};
+pub(crate) use paths::compact_history_event_log_path;
 pub use paths::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
 use tokio::sync::broadcast;
 pub(crate) use writer::SessionWriter;

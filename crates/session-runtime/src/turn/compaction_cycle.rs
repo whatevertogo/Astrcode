@@ -23,6 +23,7 @@ use crate::{
         compaction::{CompactConfig, CompactResult, auto_compact},
         file_access::FileAccessTracker,
     },
+    state::compact_history_event_log_path,
     turn::{
         events::{CompactAppliedStats, compact_applied_event},
         request::{PromptOutputRequest, build_prompt_output},
@@ -114,6 +115,10 @@ pub async fn try_reactive_compact(
             trigger: CompactTrigger::Auto,
             summary_reserve_tokens: ctx.settings.summary_reserve_tokens,
             max_retry_attempts: ctx.settings.compact_max_retry_attempts,
+            history_path: Some(compact_history_event_log_path(
+                ctx.session_id,
+                std::path::Path::new(ctx.working_dir),
+            )?),
             custom_instructions: None,
         },
         ctx.cancel.clone(),

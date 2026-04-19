@@ -19,8 +19,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    TextChangeReport, build_text_change_report, check_cancel, is_symlink, is_unc_path,
-    read_utf8_file, resolve_path, write_text_file,
+    TextChangeReport, build_text_change_report, check_cancel,
+    ensure_not_canonical_session_plan_write_target, is_symlink, is_unc_path, read_utf8_file,
+    resolve_path, write_text_file,
 };
 
 /// WriteFile 工具实现。
@@ -109,6 +110,7 @@ impl Tool for WriteFileTool {
             .map_err(|e| AstrError::parse("invalid args for writeFile", e))?;
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
+        ensure_not_canonical_session_plan_write_target(ctx, &path, "writeFile")?;
 
         // UNC 路径检查：防止 Windows NTLM 凭据泄露
         if is_unc_path(&path) {
@@ -348,5 +350,33 @@ mod tests {
             .await
             .expect("outside file should be readable");
         assert_eq!(content, "outside");
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_canonical_session_plan_targets() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let tool = WriteFileTool;
+        let target = temp
+            .path()
+            .join(".astrcode-test-state")
+            .join("sessions")
+            .join("session-test")
+            .join("plan")
+            .join("cleanup-crates.md");
+
+        let err = tool
+            .execute(
+                "tc-write-plan".to_string(),
+                json!({
+                    "path": target.to_string_lossy(),
+                    "content": "# Plan: Cleanup crates",
+                    "createDirs": true
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect_err("canonical plan writes should be rejected");
+
+        assert!(err.to_string().contains("upsertSessionPlan"));
     }
 }

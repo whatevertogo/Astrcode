@@ -27,7 +27,9 @@ export default function InputBar() {
     sessionId,
     workingDir,
     phase,
+    currentModeId,
     onSubmitPrompt,
+    onSwitchMode,
     onInterrupt,
     listComposerOptions,
     modelRefreshKey,
@@ -192,6 +194,15 @@ export default function InputBar() {
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Tab' && event.shiftKey) {
+      event.preventDefault();
+      if (!slashTriggerVisible && sessionId) {
+        const nextModeId = currentModeId === 'plan' ? 'code' : 'plan';
+        void onSwitchMode(nextModeId);
+      }
+      return;
+    }
+
     if (slashTriggerVisible) {
       switch (event.key) {
         case 'Escape':

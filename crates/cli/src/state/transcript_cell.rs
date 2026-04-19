@@ -71,6 +71,7 @@ impl TranscriptCell {
             AstrcodeConversationBlockDto::User(block) => block.id.clone(),
             AstrcodeConversationBlockDto::Assistant(block) => block.id.clone(),
             AstrcodeConversationBlockDto::Thinking(block) => block.id.clone(),
+            AstrcodeConversationBlockDto::Plan(block) => block.id.clone(),
             AstrcodeConversationBlockDto::ToolCall(block) => block.id.clone(),
             AstrcodeConversationBlockDto::Error(block) => block.id.clone(),
             AstrcodeConversationBlockDto::SystemNote(block) => block.id.clone(),
@@ -104,6 +105,21 @@ impl TranscriptCell {
                 kind: TranscriptCellKind::Thinking {
                     body: block.markdown.clone(),
                     status: block.status.into(),
+                },
+            },
+            AstrcodeConversationBlockDto::Plan(block) => Self {
+                id,
+                expanded,
+                kind: TranscriptCellKind::SystemNote {
+                    note_kind: format!(
+                        "plan:{}",
+                        enum_wire_name(&block.event_kind).unwrap_or_else(|| "saved".to_string())
+                    ),
+                    markdown: block
+                        .summary
+                        .clone()
+                        .or_else(|| block.content.clone())
+                        .unwrap_or_else(|| format!("{} ({})", block.title, block.plan_path)),
                 },
             },
             AstrcodeConversationBlockDto::ToolCall(block) => Self {

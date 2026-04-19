@@ -86,6 +86,7 @@ pub use ports::{
     AgentKernelPort, AgentSessionPort, AppKernelPort, AppSessionPort, ComposerResolvedSkill,
     ComposerSkillPort,
 };
+pub use session_plan::{ProjectPlanArchiveDetail, ProjectPlanArchiveSummary};
 pub use session_use_cases::summarize_session_meta;
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
 

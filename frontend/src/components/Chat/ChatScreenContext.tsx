@@ -11,6 +11,7 @@ export interface ChatScreenContextValue {
   projectName: string | null;
   sessionId: string | null;
   sessionTitle: string | null;
+  currentModeId: string | null;
   isChildSession: boolean;
   workingDir: string;
   phase: Phase;
@@ -26,6 +27,7 @@ export interface ChatScreenContextValue {
   onOpenChildSession: (childSessionId: string) => void | Promise<void>;
   onForkFromTurn: (turnId: string) => void | Promise<void>;
   onSubmitPrompt: (text: string) => void | Promise<void>;
+  onSwitchMode: (modeId: string) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
   onCancelSubRun: (sessionId: string, subRunId: string) => void | Promise<void>;
   listComposerOptions: (

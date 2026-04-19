@@ -1,8 +1,9 @@
 import { memo, useEffect, useRef, useState } from 'react';
-
 import type { ToolCallMessage } from '../../types';
 import {
   extractPersistedToolOutput,
+  extractSessionPlanExit,
+  extractSessionPlanExitReviewPending,
   extractStructuredArgs,
   extractStructuredJsonOutput,
   extractToolMetadataSummary,
@@ -12,6 +13,7 @@ import {
 import { chevronIcon, infoButton, pillDanger, pillNeutral, pillSuccess } from '../../lib/styles';
 import { cn } from '../../lib/utils';
 import { useChatScreenContext } from './ChatScreenContext';
+import { PresentedPlanSurface, ReviewPendingPlanSurface } from './PlanSurface';
 import ToolCodePanel from './ToolCodePanel';
 import ToolJsonView from './ToolJsonView';
 import { useNestedScrollContainment } from './useNestedScrollContainment';
@@ -118,12 +120,47 @@ function persistedToolResultSurface(
   );
 }
 
+function planExitSurface(message: ToolCallMessage) {
+  const planExit = extractSessionPlanExit(message.metadata);
+  if (!planExit) {
+    return null;
+  }
+
+  return (
+    <PresentedPlanSurface
+      title={planExit.plan.title}
+      status={planExit.plan.status}
+      planPath={planExit.plan.planPath}
+      content={planExit.plan.content}
+      mode={planExit.mode}
+    />
+  );
+}
+
+function planExitReviewPendingSurface(message: ToolCallMessage) {
+  const pending = extractSessionPlanExitReviewPending(message.metadata);
+  if (!pending) {
+    return null;
+  }
+
+  return (
+    <ReviewPendingPlanSurface
+      title={pending.plan.title}
+      planPath={pending.plan.planPath}
+      review={pending.review}
+      blockers={pending.blockers}
+    />
+  );
+}
+
 function ToolCallBlock({ message }: ToolCallBlockProps) {
   const { onOpenChildSession, onOpenSubRun } = useChatScreenContext();
   const viewportRef = useRef<HTMLDivElement>(null);
   useNestedScrollContainment(viewportRef);
   const shellDisplay = extractToolShellDisplay(message.metadata);
   const persistedOutput = extractPersistedToolOutput(message.metadata);
+  const planExit = planExitSurface(message);
+  const planExitReviewPending = planExitReviewPendingSurface(message);
   const summary = formatToolCallSummary(
     message.toolName,
     message.args,
@@ -207,7 +244,11 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
           className="min-w-0 overflow-y-auto overscroll-contain pr-1 max-h-[min(58vh,560px)]"
         >
           <div className="flex min-w-0 flex-col gap-3">
-            {streamSections.length > 0 ? (
+            {planExit ? (
+              planExit
+            ) : planExitReviewPending ? (
+              planExitReviewPending
+            ) : streamSections.length > 0 ? (
               <>
                 {streamSections.map((streamMessage) => (
                   <section key={streamMessage.id} className="flex min-w-0 flex-col gap-2">

@@ -25,9 +25,11 @@ import {
   deleteProject,
   deleteSession,
   forkSession,
+  getSessionMode,
   interruptSession,
   listSessionsWithMeta,
   submitPrompt,
+  switchSessionMode,
 } from '../lib/api/sessions';
 import { getConfig, reloadConfig, saveActiveSelection } from '../lib/api/config';
 import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api/models';
@@ -38,6 +40,7 @@ import type {
   DeleteProjectResult,
   ExecutionControl,
   ModelOption,
+  SessionModeState,
   SessionMeta,
   TestResult,
 } from '../types';
@@ -429,6 +432,17 @@ export function useAgent() {
     []
   );
 
+  const handleGetSessionMode = useCallback(async (sessionId: string): Promise<SessionModeState> => {
+    return getSessionMode(sessionId);
+  }, []);
+
+  const handleSwitchSessionMode = useCallback(
+    async (sessionId: string, modeId: string): Promise<SessionModeState> => {
+      return switchSessionMode(sessionId, modeId);
+    },
+    []
+  );
+
   const handleCancelSubRun = useCallback(
     async (sessionId: string, agentId: string): Promise<void> => {
       try {
@@ -525,6 +539,8 @@ export function useAgent() {
     interrupt: handleInterrupt,
     cancelSubRun: handleCancelSubRun,
     compactSession: handleCompactSession,
+    getSessionMode: handleGetSessionMode,
+    switchSessionMode: handleSwitchSessionMode,
     deleteSession: handleDeleteSession,
     deleteProject: handleDeleteProject,
     listComposerOptions: handleListComposerOptions,

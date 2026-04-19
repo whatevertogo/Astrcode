@@ -148,14 +148,23 @@ export interface LastCompactMeta {
   meta: CompactMeta;
 }
 
+export interface ConversationPlanReference {
+  slug: string;
+  path: string;
+  status: string;
+  title: string;
+}
+
 export interface ConversationControlState {
   phase: Phase;
   canSubmitPrompt: boolean;
   canRequestCompact: boolean;
   compactPending: boolean;
   compacting: boolean;
+  currentModeId: string;
   activeTurnId?: string;
   lastCompactMeta?: LastCompactMeta;
+  activePlan?: ConversationPlanReference;
 }
 
 export type SubRunResult =
@@ -245,6 +254,46 @@ export interface AssistantMessage {
   text: string;
   reasoningText?: string;
   streaming: boolean;
+  timestamp: number;
+}
+
+export type PlanEventKind = 'saved' | 'review_pending' | 'presented';
+export type PlanReviewKind = 'revise_plan' | 'final_review';
+
+export interface PlanReviewState {
+  kind: PlanReviewKind;
+  checklist: string[];
+}
+
+export interface PlanBlockers {
+  missingHeadings: string[];
+  invalidSections: string[];
+}
+
+export interface PlanMessage {
+  id: string;
+  kind: 'plan';
+  turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  parentSubRunId?: string;
+  agentProfile?: string;
+  subRunId?: string;
+  executionId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
+  toolCallId: string;
+  eventKind: PlanEventKind;
+  title: string;
+  planPath: string;
+  summary?: string;
+  status?: string;
+  slug?: string;
+  updatedAt?: string;
+  content?: string;
+  review?: PlanReviewState;
+  blockers: PlanBlockers;
   timestamp: number;
 }
 
@@ -408,6 +457,7 @@ export interface ChildSessionNotificationMessage {
 export type Message =
   | UserMessage
   | AssistantMessage
+  | PlanMessage
   | ToolCallMessage
   | PromptMetricsMessage
   | CompactMessage
@@ -585,6 +635,11 @@ export interface CurrentModelInfo {
   profileName: string;
   model: string;
   providerKind: string;
+}
+
+export interface SessionModeState {
+  currentModeId: string;
+  lastModeChangedAt?: string;
 }
 
 export interface ModelOption {

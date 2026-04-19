@@ -9,6 +9,7 @@
     "canRequestCompact": true,
     "compactPending": false,
     "compacting": false,
+    "currentModeId": "code",
     "activeTurnId": "turn-42"
   },
   "blocks": [

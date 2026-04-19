@@ -6,6 +6,7 @@ import type {
   AgentLifecycle,
   DeleteProjectResult,
   ExecutionControl,
+  SessionModeState,
   SessionMeta,
 } from '../../types';
 import { request, requestJson } from './client';
@@ -129,6 +130,21 @@ export async function compactSession(
       body: JSON.stringify({ control, instructions }),
     }
   );
+}
+
+export async function getSessionMode(sessionId: string): Promise<SessionModeState> {
+  return requestJson<SessionModeState>(`/api/sessions/${encodeURIComponent(sessionId)}/mode`);
+}
+
+export async function switchSessionMode(
+  sessionId: string,
+  modeId: string
+): Promise<SessionModeState> {
+  return requestJson<SessionModeState>(`/api/sessions/${encodeURIComponent(sessionId)}/mode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modeId }),
+  });
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

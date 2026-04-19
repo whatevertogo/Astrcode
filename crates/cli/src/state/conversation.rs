@@ -197,6 +197,7 @@ fn block_id_of(block: &AstrcodeConversationBlockDto) -> &str {
         AstrcodeConversationBlockDto::User(block) => &block.id,
         AstrcodeConversationBlockDto::Assistant(block) => &block.id,
         AstrcodeConversationBlockDto::Thinking(block) => &block.id,
+        AstrcodeConversationBlockDto::Plan(block) => &block.id,
         AstrcodeConversationBlockDto::ToolCall(block) => &block.id,
         AstrcodeConversationBlockDto::Error(block) => &block.id,
         AstrcodeConversationBlockDto::SystemNote(block) => &block.id,
@@ -222,6 +223,7 @@ fn apply_block_patch(
             AstrcodeConversationBlockDto::User(block) => {
                 normalize_markdown_append(&mut block.markdown, &markdown)
             },
+            AstrcodeConversationBlockDto::Plan(_) => false,
             AstrcodeConversationBlockDto::ToolCall(_)
             | AstrcodeConversationBlockDto::Error(_)
             | AstrcodeConversationBlockDto::ChildHandoff(_) => false,
@@ -239,6 +241,7 @@ fn apply_block_patch(
             AstrcodeConversationBlockDto::User(block) => {
                 replace_if_changed(&mut block.markdown, markdown)
             },
+            AstrcodeConversationBlockDto::Plan(_) => false,
             AstrcodeConversationBlockDto::ToolCall(_)
             | AstrcodeConversationBlockDto::Error(_)
             | AstrcodeConversationBlockDto::ChildHandoff(_) => false,
@@ -380,6 +383,7 @@ fn set_block_status(
         AstrcodeConversationBlockDto::Thinking(block) => {
             replace_if_changed(&mut block.status, status)
         },
+        AstrcodeConversationBlockDto::Plan(_) => false,
         AstrcodeConversationBlockDto::ToolCall(block) => {
             replace_if_changed(&mut block.status, status)
         },

@@ -21,6 +21,7 @@ use crate::{
         micro_compact::MicroCompactState,
         token_usage::{TokenUsageTracker, build_prompt_snapshot, should_compact},
     },
+    state::compact_history_event_log_path,
     turn::{
         events::{CompactAppliedStats, compact_applied_event, prompt_metrics_event},
         tool_result_budget::{
@@ -150,6 +151,10 @@ pub async fn assemble_prompt_request(
                     trigger: CompactTrigger::Auto,
                     summary_reserve_tokens: request.settings.summary_reserve_tokens,
                     max_retry_attempts: request.settings.compact_max_retry_attempts,
+                    history_path: Some(compact_history_event_log_path(
+                        request.session_id,
+                        request.working_dir,
+                    )?),
                     custom_instructions: None,
                 },
                 request.cancel.clone(),

@@ -65,6 +65,12 @@ struct CliArgs {
 }
 
 #[derive(Debug)]
+struct SnapshotLoadedAction {
+    session_id: String,
+    result: Result<AstrcodeConversationSnapshotResponseDto, AstrcodeClientError>,
+}
+
+#[derive(Debug)]
 enum Action {
     Tick,
     Key(KeyEvent),
@@ -77,10 +83,7 @@ enum Action {
     Quit,
     SessionsRefreshed(Result<Vec<AstrcodeSessionListItem>, AstrcodeClientError>),
     SessionCreated(Result<AstrcodeSessionListItem, AstrcodeClientError>),
-    SnapshotLoaded {
-        session_id: String,
-        result: Result<AstrcodeConversationSnapshotResponseDto, AstrcodeClientError>,
-    },
+    SnapshotLoaded(Box<SnapshotLoadedAction>),
     StreamBatch {
         session_id: String,
         items: Vec<ConversationStreamItem>,
@@ -444,7 +447,8 @@ where
                     self.consume_bootstrap_refresh().await;
                 },
             },
-            Action::SnapshotLoaded { session_id, result } => {
+            Action::SnapshotLoaded(payload) => {
+                let SnapshotLoadedAction { session_id, result } = *payload;
                 if !self.pending_session_matches(session_id.as_str()) {
                     return Ok(());
                 }

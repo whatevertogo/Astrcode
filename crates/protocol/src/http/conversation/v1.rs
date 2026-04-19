@@ -143,6 +143,7 @@ pub enum ConversationBlockDto {
     User(ConversationUserBlockDto),
     Assistant(ConversationAssistantBlockDto),
     Thinking(ConversationThinkingBlockDto),
+    Plan(ConversationPlanBlockDto),
     ToolCall(ConversationToolCallBlockDto),
     Error(ConversationErrorBlockDto),
     SystemNote(ConversationSystemNoteBlockDto),
@@ -176,6 +177,68 @@ pub struct ConversationThinkingBlockDto {
     pub turn_id: Option<String>,
     pub status: ConversationBlockStatusDto,
     pub markdown: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationPlanEventKindDto {
+    Saved,
+    ReviewPending,
+    Presented,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationPlanReviewKindDto {
+    RevisePlan,
+    FinalReview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPlanReviewDto {
+    pub kind: ConversationPlanReviewKindDto,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checklist: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPlanBlockersDto {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_headings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invalid_sections: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPlanBlockDto {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    pub tool_call_id: String,
+    pub event_kind: ConversationPlanEventKindDto,
+    pub title: String,
+    pub plan_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ConversationPlanReviewDto>,
+    #[serde(default, skip_serializing_if = "is_empty_plan_blockers")]
+    pub blockers: ConversationPlanBlockersDto,
+}
+
+fn is_empty_plan_blockers(blockers: &ConversationPlanBlockersDto) -> bool {
+    blockers.missing_headings.is_empty() && blockers.invalid_sections.is_empty()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -314,12 +377,13 @@ pub struct ConversationControlStateDto {
     pub compact_pending: bool,
     #[serde(default)]
     pub compacting: bool,
+    pub current_mode_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_compact_meta: Option<ConversationLastCompactMetaDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_plan: Option<ConversationActivePlanDto>,
+    pub active_plan: Option<ConversationPlanReferenceDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -332,7 +396,8 @@ pub struct ConversationLastCompactMetaDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ConversationActivePlanDto {
+pub struct ConversationPlanReferenceDto {
+    pub slug: String,
     pub path: String,
     pub status: String,
     pub title: String,

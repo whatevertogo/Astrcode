@@ -14,6 +14,7 @@ use crate::{
         compaction::{CompactConfig, auto_compact},
         file_access::FileAccessTracker,
     },
+    state::compact_history_event_log_path,
     turn::{
         events::{CompactAppliedStats, compact_applied_event},
         request::{PromptOutputRequest, build_prompt_output},
@@ -65,6 +66,10 @@ pub(crate) async fn build_manual_compact_events(
             trigger: request.trigger,
             summary_reserve_tokens: settings.summary_reserve_tokens,
             max_retry_attempts: settings.compact_max_retry_attempts,
+            history_path: Some(compact_history_event_log_path(
+                request.session_id,
+                request.working_dir,
+            )?),
             custom_instructions: request.instructions.map(str::to_string),
         },
         CancelToken::new(),
@@ -277,7 +282,8 @@ mod tests {
         assert!(matches!(
             &events[0].payload,
             StorageEventPayload::CompactApplied { summary, meta, .. }
-                if summary == "manual compact summary"
+                if summary.contains("manual compact summary")
+                    && summary.contains("session-1.jsonl")
                     && meta.mode == CompactMode::Full
                     && meta.instructions_present
         ));

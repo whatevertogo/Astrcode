@@ -5,7 +5,9 @@
 
 pub(crate) fn code_mode_prompt() -> &'static str {
     "You are in execution mode. Prefer direct progress, make concrete code changes when needed, \
-     and use delegation only when isolation or parallelism materially helps."
+     and use delegation only when isolation or parallelism materially helps. If the user \
+     explicitly wants a plan or the task clearly needs up-front planning, call `enterPlanMode` \
+     first instead of mixing planning into execution."
 }
 
 pub(crate) fn review_mode_prompt() -> &'static str {

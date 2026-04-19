@@ -12,18 +12,19 @@ use astrcode_core::{
 
 use crate::{
     App, ApplicationError, CompactSessionAccepted, CompactSessionSummary, ExecutionControl,
-    ModeSummary, PromptAcceptedSummary, PromptSkillInvocation, SessionControlStateSnapshot,
-    SessionListSummary, SessionReplay, SessionTranscriptSnapshot,
+    ModeSummary, ProjectPlanArchiveDetail, ProjectPlanArchiveSummary, PromptAcceptedSummary,
+    PromptSkillInvocation, SessionControlStateSnapshot, SessionListSummary, SessionReplay,
+    SessionTranscriptSnapshot,
     agent::{
         IMPLICIT_ROOT_PROFILE_ID, implicit_session_root_agent_id, root_execution_event_context,
     },
     format_local_rfc3339,
     governance_surface::{GovernanceBusyPolicy, SessionGovernanceInput},
     session_plan::{
-        active_plan_summary, build_plan_exit_declaration, build_plan_prompt_context,
+        active_plan_requires_approval, build_plan_exit_declaration, build_plan_prompt_context,
         build_plan_prompt_declarations, copy_session_plan_artifacts,
-        current_mode_requires_plan_context, load_session_plan_state, mark_session_plan_approved,
-        parse_plan_approval,
+        current_mode_requires_plan_context, list_project_plan_archives, load_session_plan_state,
+        mark_active_session_plan_approved, parse_plan_approval, read_project_plan_archive,
     },
 };
 
@@ -104,6 +105,22 @@ impl App {
             .map_err(ApplicationError::from)
     }
 
+    pub fn list_project_plan_archives(
+        &self,
+        working_dir: &Path,
+    ) -> Result<Vec<ProjectPlanArchiveSummary>, ApplicationError> {
+        list_project_plan_archives(working_dir)
+    }
+
+    pub fn read_project_plan_archive(
+        &self,
+        working_dir: &Path,
+        archive_id: &str,
+    ) -> Result<Option<ProjectPlanArchiveDetail>, ApplicationError> {
+        self.validate_non_empty("archiveId", archive_id)?;
+        read_project_plan_archive(working_dir, archive_id)
+    }
+
     pub async fn submit_prompt(
         &self,
         session_id: &str,
@@ -158,25 +175,25 @@ impl App {
             .map_err(ApplicationError::from)?
             .current_mode_id;
         let mut prompt_declarations = Vec::new();
+        let plan_state = load_session_plan_state(session_id, Path::new(&working_dir))?;
+        let plan_approval = parse_plan_approval(&text);
 
-        if current_mode_id == ModeId::plan() {
-            let plan_state = load_session_plan_state(session_id, Path::new(&working_dir))?;
-            if plan_state
-                .as_ref()
-                .is_some_and(|state| state.status.as_str() == "awaiting_approval")
-                && parse_plan_approval(&text).approved
-            {
-                let _ = mark_session_plan_approved(session_id, Path::new(&working_dir))?;
+        if active_plan_requires_approval(plan_state.as_ref()) && plan_approval.approved {
+            let approved_plan =
+                mark_active_session_plan_approved(session_id, Path::new(&working_dir))?;
+            if current_mode_id == ModeId::plan() {
                 self.switch_mode(session_id, ModeId::code()).await?;
                 current_mode_id = ModeId::code();
-                if let Some(summary) = active_plan_summary(session_id, Path::new(&working_dir))? {
-                    prompt_declarations.push(build_plan_exit_declaration(session_id, &summary));
-                }
-            } else if current_mode_requires_plan_context(&current_mode_id) {
-                let context =
-                    build_plan_prompt_context(session_id, Path::new(&working_dir), &text)?;
-                prompt_declarations.extend(build_plan_prompt_declarations(session_id, &context));
             }
+            if let Some(summary) = approved_plan {
+                prompt_declarations.push(build_plan_exit_declaration(session_id, &summary));
+            }
+        } else if current_mode_id == ModeId::plan()
+            && current_mode_requires_plan_context(&current_mode_id)
+            && !plan_approval.approved
+        {
+            let context = build_plan_prompt_context(session_id, Path::new(&working_dir), &text)?;
+            prompt_declarations.extend(build_plan_prompt_declarations(session_id, &context));
         }
 
         if let Some(skill_invocation) = skill_invocation {

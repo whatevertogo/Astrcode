@@ -28,7 +28,8 @@ pub struct TerminalLastCompactMetaFacts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActivePlanFacts {
+pub struct PlanReferenceFacts {
+    pub slug: String,
     pub path: String,
     pub status: String,
     pub title: String,
@@ -43,7 +44,8 @@ pub struct ConversationControlSummary {
     pub compacting: bool,
     pub active_turn_id: Option<String>,
     pub last_compact_meta: Option<TerminalLastCompactMetaFacts>,
-    pub active_plan: Option<ActivePlanFacts>,
+    pub current_mode_id: String,
+    pub active_plan: Option<PlanReferenceFacts>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +55,8 @@ pub struct TerminalControlFacts {
     pub manual_compact_pending: bool,
     pub compacting: bool,
     pub last_compact_meta: Option<TerminalLastCompactMetaFacts>,
-    pub active_plan: Option<ActivePlanFacts>,
+    pub current_mode_id: String,
+    pub active_plan: Option<PlanReferenceFacts>,
 }
 
 pub type ConversationControlFacts = TerminalControlFacts;
@@ -219,6 +222,7 @@ pub fn summarize_conversation_control(
         compacting: control.compacting,
         active_turn_id: control.active_turn_id.clone(),
         last_compact_meta: control.last_compact_meta.clone(),
+        current_mode_id: control.current_mode_id.clone(),
         active_plan: control.active_plan.clone(),
     }
 }

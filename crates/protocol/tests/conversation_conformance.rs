@@ -2,9 +2,10 @@ use astrcode_protocol::http::{
     AgentLifecycleDto, ChildAgentRefDto, ChildSessionLineageKindDto,
     ConversationBannerErrorCodeDto, ConversationBlockDto, ConversationBlockPatchDto,
     ConversationBlockStatusDto, ConversationControlStateDto, ConversationCursorDto,
-    ConversationDeltaDto, ConversationErrorEnvelopeDto, ConversationSnapshotResponseDto,
-    ConversationStreamEnvelopeDto, ConversationToolCallBlockDto, ConversationToolStreamsDto,
-    PhaseDto,
+    ConversationDeltaDto, ConversationErrorEnvelopeDto, ConversationPlanBlockDto,
+    ConversationPlanBlockersDto, ConversationPlanEventKindDto, ConversationPlanReviewDto,
+    ConversationPlanReviewKindDto, ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto,
+    ConversationToolCallBlockDto, ConversationToolStreamsDto, PhaseDto,
 };
 use serde_json::json;
 
@@ -35,6 +36,7 @@ fn conversation_snapshot_fixture_freezes_authoritative_tool_block_shape() {
             can_request_compact: true,
             compact_pending: false,
             compacting: false,
+            current_mode_id: "code".to_string(),
             active_turn_id: Some("turn-42".to_string()),
             last_compact_meta: None,
             active_plan: None,
@@ -134,4 +136,43 @@ fn conversation_delta_fixtures_freeze_tool_patch_and_rehydrate_shapes() {
         serde_json::to_value(&rehydrate_decoded).expect("rehydrate should encode"),
         rehydrate_fixture
     );
+}
+
+#[test]
+fn conversation_plan_block_round_trips_with_review_details() {
+    let block = ConversationBlockDto::Plan(ConversationPlanBlockDto {
+        id: "plan-block-1".to_string(),
+        turn_id: Some("turn-42".to_string()),
+        tool_call_id: "call-plan-exit".to_string(),
+        event_kind: ConversationPlanEventKindDto::ReviewPending,
+        title: "Cleanup crates".to_string(),
+        plan_path: "D:/demo/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md"
+            .to_string(),
+        summary: Some("正在做退出前自审".to_string()),
+        status: None,
+        slug: None,
+        updated_at: None,
+        content: None,
+        review: Some(ConversationPlanReviewDto {
+            kind: ConversationPlanReviewKindDto::FinalReview,
+            checklist: vec![
+                "Re-check assumptions against the code you already inspected.".to_string(),
+            ],
+        }),
+        blockers: ConversationPlanBlockersDto {
+            missing_headings: vec!["## Verification".to_string()],
+            invalid_sections: vec![
+                "session plan section '## Verification' must contain concrete actionable items"
+                    .to_string(),
+            ],
+        },
+    });
+
+    let encoded = serde_json::to_value(&block).expect("plan block should encode");
+    let decoded: ConversationBlockDto =
+        serde_json::from_value(encoded.clone()).expect("plan block should decode");
+
+    assert_eq!(decoded, block);
+    assert_eq!(encoded["kind"], "plan");
+    assert_eq!(encoded["eventKind"], "review_pending");
 }

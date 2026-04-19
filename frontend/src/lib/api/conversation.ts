@@ -4,6 +4,7 @@ import type {
   ChildSessionNotificationMessage,
   CompactMeta,
   ConversationControlState,
+  ConversationPlanReference,
   LastCompactMeta,
   Message,
   ParentDelivery,
@@ -197,14 +198,27 @@ function parseConversationControlState(record: ConversationRecord): Conversation
   const controlRecord = asRecord(record.control);
   const phase = parsePhase(controlRecord?.phase ?? record.phase);
   const lastCompactMeta = parseLastCompactMeta(controlRecord?.lastCompactMeta);
+  const parsePlanReference = (value: unknown): ConversationPlanReference | undefined => {
+    const plan = asRecord(value);
+    const slug = pickString(plan ?? {}, 'slug');
+    const path = pickString(plan ?? {}, 'path');
+    const status = pickString(plan ?? {}, 'status');
+    const title = pickString(plan ?? {}, 'title');
+    if (!slug || !path || !status || !title) {
+      return undefined;
+    }
+    return { slug, path, status, title };
+  };
   return {
     phase,
     canSubmitPrompt: controlRecord?.canSubmitPrompt !== false,
     canRequestCompact: controlRecord?.canRequestCompact !== false,
     compactPending: controlRecord?.compactPending === true,
     compacting: controlRecord?.compacting === true,
+    currentModeId: pickString(controlRecord ?? {}, 'currentModeId') ?? 'code',
     activeTurnId: pickOptionalString(controlRecord ?? {}, 'activeTurnId') ?? undefined,
     lastCompactMeta,
+    activePlan: parsePlanReference(controlRecord?.activePlan),
   };
 }
 
@@ -359,6 +373,55 @@ function projectConversationMessages(
         });
         return;
 
+      case 'plan': {
+        const blockers = asRecord(block.blockers);
+        const review = asRecord(block.review);
+        messages.push({
+          id: `conversation-plan:${id}`,
+          kind: 'plan',
+          turnId,
+          toolCallId: pickString(block, 'toolCallId') ?? id,
+          eventKind:
+            pickString(block, 'eventKind') === 'review_pending'
+              ? 'review_pending'
+              : pickString(block, 'eventKind') === 'presented'
+                ? 'presented'
+                : 'saved',
+          title: pickString(block, 'title') ?? 'Session Plan',
+          planPath: pickString(block, 'planPath') ?? '',
+          summary: pickOptionalString(block, 'summary') ?? undefined,
+          status: pickOptionalString(block, 'status') ?? undefined,
+          slug: pickOptionalString(block, 'slug') ?? undefined,
+          updatedAt: pickOptionalString(block, 'updatedAt') ?? undefined,
+          content: pickOptionalString(block, 'content') ?? undefined,
+          review:
+            review &&
+            (pickString(review, 'kind') === 'revise_plan' ||
+              pickString(review, 'kind') === 'final_review')
+              ? {
+                  kind: pickString(review, 'kind') as 'revise_plan' | 'final_review',
+                  checklist: Array.isArray(review.checklist)
+                    ? review.checklist.filter((value): value is string => typeof value === 'string')
+                    : [],
+                }
+              : undefined,
+          blockers: {
+            missingHeadings: Array.isArray(blockers?.missingHeadings)
+              ? blockers.missingHeadings.filter(
+                  (value): value is string => typeof value === 'string'
+                )
+              : [],
+            invalidSections: Array.isArray(blockers?.invalidSections)
+              ? blockers.invalidSections.filter(
+                  (value): value is string => typeof value === 'string'
+                )
+              : [],
+          },
+          timestamp: index,
+        });
+        return;
+      }
+
       case 'tool_call': {
         const toolCallId = pickOptionalString(block, 'toolCallId') ?? id;
         const streams = asRecord(block.streams);
@@ -390,7 +453,7 @@ function projectConversationMessages(
         return;
       }
 
-      case 'system_note':
+      case 'system_note': {
         if (pickString(block, 'noteKind') !== 'compact') {
           return;
         }
@@ -419,6 +482,7 @@ function projectConversationMessages(
           timestamp: index,
         });
         return;
+      }
 
       case 'child_handoff': {
         const child = asRecord(block.child);
@@ -707,8 +771,17 @@ export function applyConversationEnvelope(
           canRequestCompact: control.canRequestCompact !== false,
           compactPending: control.compactPending === true,
           compacting: control.compacting === true,
+          currentModeId: pickString(control, 'currentModeId') ?? state.control.currentModeId,
           activeTurnId: pickOptionalString(control, 'activeTurnId') ?? undefined,
           lastCompactMeta: parseLastCompactMeta(control.lastCompactMeta),
+          activePlan: (() => {
+            const plan = asRecord(control.activePlan);
+            const slug = pickString(plan ?? {}, 'slug');
+            const path = pickString(plan ?? {}, 'path');
+            const status = pickString(plan ?? {}, 'status');
+            const title = pickString(plan ?? {}, 'title');
+            return slug && path && status && title ? { slug, path, status, title } : undefined;
+          })(),
         };
         state.phase = state.control.phase;
       }

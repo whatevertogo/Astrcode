@@ -6,7 +6,8 @@
 
 use astrcode_session_runtime::{
     ConversationBlockFacts, ConversationChildHandoffBlockFacts, ConversationErrorBlockFacts,
-    ConversationSnapshotFacts, ConversationSystemNoteBlockFacts, ToolCallBlockFacts,
+    ConversationPlanBlockFacts, ConversationSnapshotFacts, ConversationSystemNoteBlockFacts,
+    ToolCallBlockFacts,
 };
 
 use crate::terminal::{latest_transcript_cursor, truncate_terminal_summary};
@@ -23,6 +24,7 @@ pub(super) fn latest_terminal_summary(snapshot: &ConversationSnapshotFacts) -> O
 fn summary_from_block(block: &ConversationBlockFacts) -> Option<String> {
     match block {
         ConversationBlockFacts::Assistant(block) => summary_from_markdown(&block.markdown),
+        ConversationBlockFacts::Plan(block) => summary_from_plan_block(block),
         ConversationBlockFacts::ToolCall(block) => summary_from_tool_call(block),
         ConversationBlockFacts::ChildHandoff(block) => summary_from_child_handoff(block),
         ConversationBlockFacts::Error(block) => summary_from_error_block(block),
@@ -50,6 +52,22 @@ fn summary_from_tool_call(block: &ToolCallBlockFacts) -> Option<String> {
         })
         .or_else(|| summary_from_markdown(&block.streams.stderr))
         .or_else(|| summary_from_markdown(&block.streams.stdout))
+}
+
+fn summary_from_plan_block(block: &ConversationPlanBlockFacts) -> Option<String> {
+    block
+        .summary
+        .as_deref()
+        .filter(|summary| !summary.trim().is_empty())
+        .map(truncate_terminal_summary)
+        .or_else(|| {
+            block
+                .content
+                .as_deref()
+                .filter(|content| !content.trim().is_empty())
+                .map(truncate_terminal_summary)
+        })
+        .or_else(|| summary_from_markdown(&block.title))
 }
 
 fn summary_from_child_handoff(block: &ConversationChildHandoffBlockFacts) -> Option<String> {

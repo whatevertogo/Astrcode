@@ -41,6 +41,7 @@ pub mod registry;
 pub mod runtime;
 pub mod session;
 mod session_catalog;
+mod session_plan;
 mod shell;
 pub mod store;
 mod time;
@@ -146,6 +147,7 @@ pub use runtime::{
 };
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
 pub use session_catalog::SessionCatalogEvent;
+pub use session_plan::{SessionPlanState, SessionPlanStatus, session_plan_content_digest};
 pub use shell::{
     ResolvedShell, ShellFamily, default_shell_label, detect_shell_family, resolve_shell,
 };

@@ -15,6 +15,8 @@ use astrcode_adapter_tools::{
     builtin_tools::{
         apply_patch::ApplyPatchTool,
         edit_file::EditFileTool,
+        enter_plan_mode::EnterPlanModeTool,
+        exit_plan_mode::ExitPlanModeTool,
         find_files::FindFilesTool,
         grep::GrepTool,
         list_dir::ListDirTool,
@@ -51,6 +53,8 @@ pub(crate) fn build_core_tool_invokers(
         Arc::new(FindFilesTool),
         Arc::new(GrepTool),
         Arc::new(ShellTool),
+        Arc::new(EnterPlanModeTool),
+        Arc::new(ExitPlanModeTool),
         Arc::new(ToolSearchTool::new(tool_search_index)),
         Arc::new(SkillTool::new(skill_catalog)),
         Arc::new(UpsertSessionPlanTool),

@@ -11,6 +11,7 @@ import { useContextMenu } from '../../hooks/useContextMenu';
 import { resolveForkTurnIdFromMessage } from '../../lib/sessionFork';
 import AssistantMessage from './AssistantMessage';
 import CompactMessage from './CompactMessage';
+import PlanMessage from './PlanMessage';
 import SubRunBlock from './SubRunBlock';
 import ToolCallBlock from './ToolCallBlock';
 import UserMessage from './UserMessage';
@@ -72,6 +73,19 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
           ) : message.kind === 'compact' ? (
             <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
               {message.summary}
+            </pre>
+          ) : message.kind === 'plan' ? (
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
+              {JSON.stringify(
+                {
+                  toolCallId: message.toolCallId,
+                  eventKind: message.eventKind,
+                  title: message.title,
+                  planPath: message.planPath,
+                },
+                null,
+                2
+              )}
             </pre>
           ) : message.kind === 'promptMetrics' ? (
             <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
@@ -140,7 +154,7 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
 }
 
 function isAssistantLike(message: Message): boolean {
-  return message.kind === 'assistant' || message.kind === 'toolCall';
+  return message.kind === 'assistant' || message.kind === 'plan' || message.kind === 'toolCall';
 }
 
 function isRowNested(options?: { nested?: boolean }): boolean {
@@ -279,6 +293,9 @@ export default function MessageList({
             presentation={presentation}
           />
         );
+      }
+      if (msg.kind === 'plan') {
+        return <PlanMessage message={msg} />;
       }
       if (msg.kind === 'toolCall') {
         return <ToolCallBlock message={msg} />;

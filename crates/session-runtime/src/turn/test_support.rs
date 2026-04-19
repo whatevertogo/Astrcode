@@ -386,7 +386,7 @@ pub(crate) fn assert_contains_compact_summary(events: &[StoredEvent], expected_s
     assert!(
         events.iter().any(|stored| matches!(
             &stored.event.payload,
-            StorageEventPayload::CompactApplied { summary, .. } if summary == expected_summary
+            StorageEventPayload::CompactApplied { summary, .. } if summary.contains(expected_summary)
         )),
         "expected stored events to contain CompactApplied('{expected_summary}')"
     );

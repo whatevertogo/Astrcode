@@ -1,69 +1,35 @@
 //! `upsertSessionPlan` 工具。
 //!
 //! 该工具只允许写当前 session 下的 `plan/` 目录和 `state.json`，
-//! 作为 plan mode 唯一的受限写入口。
+//! 作为 canonical session plan 的唯一受限写入口。
 
-use std::{fs, path::PathBuf, time::Instant};
+use std::{fs, time::Instant};
 
 use astrcode_core::{
-    AstrError, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+    AstrError, Result, SessionPlanState, SessionPlanStatus, SideEffect, Tool,
+    ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
+use serde::Deserialize;
 use serde_json::json;
 
-use crate::builtin_tools::fs_common::{check_cancel, session_dir_for_tool_results};
-
-const PLAN_DIR_NAME: &str = "plan";
-const PLAN_STATE_FILE_NAME: &str = "state.json";
-const PLAN_PATH_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%SZ";
+use crate::builtin_tools::{
+    fs_common::check_cancel,
+    session_plan::{
+        PLAN_PATH_TIMESTAMP_FORMAT, load_session_plan_state, persist_session_plan_state,
+        session_plan_markdown_path, session_plan_paths,
+    },
+};
 
 #[derive(Default)]
 pub struct UpsertSessionPlanTool;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum SessionPlanStatus {
-    Draft,
-    AwaitingApproval,
-    Approved,
-    Superseded,
-}
-
-impl SessionPlanStatus {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Draft => "draft",
-            Self::AwaitingApproval => "awaiting_approval",
-            Self::Approved => "approved",
-            Self::Superseded => "superseded",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionPlanState {
-    active_plan_slug: String,
-    title: String,
-    status: SessionPlanStatus,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    approved_at: Option<DateTime<Utc>>,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpsertSessionPlanArgs {
     title: String,
     content: String,
-    #[serde(default)]
-    topic: Option<String>,
-    #[serde(default)]
-    slug: Option<String>,
     #[serde(default)]
     status: Option<SessionPlanStatus>,
 }
@@ -73,7 +39,7 @@ impl Tool for UpsertSessionPlanTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "upsertSessionPlan".to_string(),
-            description: "Create or overwrite the current session's plan artifact and state file."
+            description: "Create or overwrite the canonical session plan artifact and its state."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -84,19 +50,11 @@ impl Tool for UpsertSessionPlanTool {
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full markdown body to persist into the session plan file."
-                    },
-                    "topic": {
-                        "type": "string",
-                        "description": "Optional task/topic text used to derive a slug when no active plan exists yet."
-                    },
-                    "slug": {
-                        "type": "string",
-                        "description": "Optional explicit kebab-case slug. When omitted, the tool reuses the active session slug or derives one from topic/title."
+                        "description": "Full markdown body to persist into the canonical session plan file."
                     },
                     "status": {
                         "type": "string",
-                        "enum": ["draft", "awaiting_approval", "approved", "superseded"],
+                        "enum": ["draft", "awaiting_approval", "approved", "completed", "superseded"],
                         "description": "Plan state to persist alongside the markdown artifact."
                     }
                 },
@@ -113,18 +71,19 @@ impl Tool for UpsertSessionPlanTool {
             .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Create or update the current session's plan artifact.",
+                    "Create or update the canonical session plan artifact.",
                     "Use `upsertSessionPlan` when plan mode needs to persist the canonical \
-                     session plan markdown and its `state.json` metadata. This tool can only \
-                     write inside the current session's `plan/` directory.",
+                     session plan markdown and its `state.json`. This tool is the only supported \
+                     writer for `sessions/<id>/plan/**`.",
                 )
                 .caveat(
-                    "This is the only write tool available in plan mode. It overwrites the whole \
-                     plan file content each time.",
+                    "A session has exactly one canonical plan. Revise that plan for the same \
+                     task; if the task changes, overwrite the current canonical plan instead of \
+                     creating another one.",
                 )
                 .example(
-                    "{ title: \"Cleanup crates\", slug: \"cleanup-crates\", content: \"# Plan: \
-                     Cleanup crates\\n...\", status: \"draft\" }",
+                    "{ title: \"Cleanup crates\", content: \"# Plan: Cleanup crates\\n...\", \
+                     status: \"draft\" }",
                 )
                 .prompt_tag("plan")
                 .always_include(true),
@@ -155,40 +114,22 @@ impl Tool for UpsertSessionPlanTool {
         }
 
         let started_at = Instant::now();
-        let plan_dir = session_dir_for_tool_results(ctx)?.join(PLAN_DIR_NAME);
-        let state_path = plan_dir.join(PLAN_STATE_FILE_NAME);
-        let previous_state = load_state(&state_path)?;
-        let slug = resolve_slug(&args, previous_state.as_ref());
-        let plan_path = plan_dir.join(format!("{slug}.md"));
+        let paths = session_plan_paths(ctx)?;
         let now = Utc::now();
-        let status = args.status.unwrap_or(SessionPlanStatus::Draft);
-        let created_at = previous_state
+        let existing = load_session_plan_state(&paths.state_path)?;
+        let slug = existing
             .as_ref()
-            .filter(|state| state.active_plan_slug == slug)
-            .map(|state| state.created_at)
-            .unwrap_or(now);
-        let approved_at = if matches!(status, SessionPlanStatus::Approved) {
-            previous_state
-                .as_ref()
-                .and_then(|state| state.approved_at)
-                .or(Some(now))
-        } else {
-            None
-        };
-        let state = SessionPlanState {
-            active_plan_slug: slug.clone(),
-            title: title.to_string(),
-            status,
-            created_at,
-            updated_at: now,
-            approved_at,
-        };
+            .map(|state| state.active_plan_slug.clone())
+            .or_else(|| slugify(&args.title))
+            .unwrap_or_else(|| format!("plan-{}", Utc::now().format(PLAN_PATH_TIMESTAMP_FORMAT)));
+        let plan_path = session_plan_markdown_path(&paths.plan_dir, &slug);
+        let status = args.status.unwrap_or(SessionPlanStatus::Draft);
 
-        fs::create_dir_all(&plan_dir).map_err(|error| {
+        fs::create_dir_all(&paths.plan_dir).map_err(|error| {
             AstrError::io(
                 format!(
                     "failed creating session plan directory '{}'",
-                    plan_dir.display()
+                    paths.plan_dir.display()
                 ),
                 error,
             )
@@ -199,17 +140,30 @@ impl Tool for UpsertSessionPlanTool {
                 error,
             )
         })?;
-        let state_content = serde_json::to_string_pretty(&state)
-            .map_err(|error| AstrError::parse("failed to serialize session plan state", error))?;
-        fs::write(&state_path, state_content).map_err(|error| {
-            AstrError::io(
-                format!(
-                    "failed writing session plan state '{}'",
-                    state_path.display()
-                ),
-                error,
-            )
-        })?;
+
+        let state = SessionPlanState {
+            active_plan_slug: slug.clone(),
+            title: title.to_string(),
+            status: status.clone(),
+            created_at: existing
+                .as_ref()
+                .map(|state| state.created_at)
+                .unwrap_or(now),
+            updated_at: now,
+            reviewed_plan_digest: None,
+            approved_at: match status {
+                SessionPlanStatus::Approved => existing
+                    .as_ref()
+                    .and_then(|state| state.approved_at)
+                    .or(Some(now)),
+                _ => None,
+            },
+            archived_plan_digest: existing
+                .as_ref()
+                .and_then(|state| state.archived_plan_digest.clone()),
+            archived_at: existing.as_ref().and_then(|state| state.archived_at),
+        };
+        persist_session_plan_state(&paths.state_path, &state)?;
 
         Ok(ToolExecutionResult {
             tool_call_id,
@@ -235,32 +189,7 @@ impl Tool for UpsertSessionPlanTool {
     }
 }
 
-fn load_state(path: &PathBuf) -> Result<Option<SessionPlanState>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = fs::read_to_string(path)
-        .map_err(|error| AstrError::io(format!("failed reading '{}'", path.display()), error))?;
-    let state = serde_json::from_str::<SessionPlanState>(&content)
-        .map_err(|error| AstrError::parse("failed to parse session plan state", error))?;
-    Ok(Some(state))
-}
-
-fn resolve_slug(args: &UpsertSessionPlanArgs, previous_state: Option<&SessionPlanState>) -> String {
-    if let Some(slug) = args.slug.as_deref().and_then(normalize_slug) {
-        return slug;
-    }
-    if let Some(previous_state) = previous_state {
-        return previous_state.active_plan_slug.clone();
-    }
-    args.topic
-        .as_deref()
-        .and_then(slugify)
-        .or_else(|| slugify(&args.title))
-        .unwrap_or_else(|| format!("plan-{}", Utc::now().format(PLAN_PATH_TIMESTAMP_FORMAT)))
-}
-
-fn normalize_slug(input: &str) -> Option<String> {
+fn slugify(input: &str) -> Option<String> {
     let mut normalized = String::new();
     let mut last_dash = false;
     for ch in input.chars().map(|ch| ch.to_ascii_lowercase()) {
@@ -282,10 +211,6 @@ fn normalize_slug(input: &str) -> Option<String> {
     }
 }
 
-fn slugify(input: &str) -> Option<String> {
-    normalize_slug(input)
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -294,7 +219,7 @@ mod tests {
     use crate::test_support::test_tool_context_for;
 
     #[tokio::test]
-    async fn upsert_session_plan_creates_markdown_and_state() {
+    async fn upsert_session_plan_creates_canonical_plan_state() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let tool = UpsertSessionPlanTool;
         let result = tool
@@ -303,7 +228,6 @@ mod tests {
                 json!({
                     "title": "Cleanup crates",
                     "content": "# Plan: Cleanup crates\n\n## Context",
-                    "slug": "cleanup-crates",
                     "status": "draft"
                 }),
                 &test_tool_context_for(temp.path()),
@@ -318,32 +242,36 @@ mod tests {
             .join("sessions")
             .join("session-test")
             .join("plan");
-        assert!(plan_dir.join("cleanup-crates.md").exists());
+        let metadata = result.metadata.expect("metadata should exist");
+        let slug = metadata["slug"].as_str().expect("slug should exist");
+        assert!(plan_dir.join(format!("{slug}.md")).exists());
         assert!(plan_dir.join("state.json").exists());
-        assert_eq!(
-            result.metadata.expect("metadata should exist")["slug"],
-            json!("cleanup-crates")
-        );
     }
 
     #[tokio::test]
-    async fn upsert_session_plan_reuses_existing_slug_when_omitted() {
+    async fn upsert_session_plan_reuses_existing_slug() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let tool = UpsertSessionPlanTool;
         let ctx = test_tool_context_for(temp.path());
 
-        tool.execute(
-            "tc-plan-initial".to_string(),
-            json!({
-                "title": "Cleanup crates",
-                "content": "# Plan: Cleanup crates",
-                "slug": "cleanup-crates",
-                "status": "draft"
-            }),
-            &ctx,
-        )
-        .await
-        .expect("initial write should work");
+        let first = tool
+            .execute(
+                "tc-plan-initial".to_string(),
+                json!({
+                    "title": "Cleanup crates",
+                    "content": "# Plan: Cleanup crates",
+                    "status": "draft"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("initial write should work");
+        let first_slug = first
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata["slug"].as_str())
+            .expect("slug should exist")
+            .to_string();
 
         let result = tool
             .execute(
@@ -361,7 +289,100 @@ mod tests {
         assert!(result.ok);
         assert_eq!(
             result.metadata.expect("metadata should exist")["slug"],
-            json!("cleanup-crates")
+            json!(first_slug)
         );
+    }
+
+    #[tokio::test]
+    async fn upsert_session_plan_preserves_archive_markers() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let tool = UpsertSessionPlanTool;
+        let ctx = test_tool_context_for(temp.path());
+
+        tool.execute(
+            "tc-plan-first".to_string(),
+            json!({
+                "title": "Cleanup crates",
+                "content": "# Plan: Cleanup crates",
+                "status": "approved"
+            }),
+            &ctx,
+        )
+        .await
+        .expect("first plan should work");
+
+        let state_path = session_plan_paths(&ctx)
+            .expect("plan paths should resolve")
+            .state_path;
+        let mut state = load_session_plan_state(&state_path)
+            .expect("state should load")
+            .expect("state should exist");
+        state.archived_plan_digest = Some("digest-a".to_string());
+        state.archived_at = Some(Utc::now());
+        persist_session_plan_state(&state_path, &state).expect("state should persist");
+
+        tool.execute(
+            "tc-plan-second".to_string(),
+            json!({
+                "title": "Cleanup crates revised",
+                "content": "# Plan: Cleanup crates revised",
+                "status": "draft"
+            }),
+            &ctx,
+        )
+        .await
+        .expect("second write should work");
+
+        let state = load_session_plan_state(&state_path)
+            .expect("state should load")
+            .expect("state should exist");
+        assert_eq!(state.archived_plan_digest.as_deref(), Some("digest-a"));
+        assert!(state.reviewed_plan_digest.is_none());
+    }
+
+    #[tokio::test]
+    async fn upsert_session_plan_preserves_existing_custom_slug_from_state() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let tool = UpsertSessionPlanTool;
+        let ctx = test_tool_context_for(temp.path());
+        let paths = session_plan_paths(&ctx).expect("plan paths should resolve");
+        let now = Utc::now();
+        let existing_slug = "my-custom-slug".to_string();
+
+        persist_session_plan_state(
+            &paths.state_path,
+            &SessionPlanState {
+                active_plan_slug: existing_slug.clone(),
+                title: "Existing title".to_string(),
+                status: SessionPlanStatus::Draft,
+                created_at: now,
+                updated_at: now,
+                reviewed_plan_digest: None,
+                approved_at: None,
+                archived_plan_digest: None,
+                archived_at: None,
+            },
+        )
+        .expect("existing state should persist");
+
+        let result = tool
+            .execute(
+                "tc-plan-custom-slug".to_string(),
+                json!({
+                    "title": "Completely different title",
+                    "content": "# Plan: revised",
+                    "status": "draft"
+                }),
+                &ctx,
+            )
+            .await
+            .expect("update should execute");
+
+        assert!(result.ok);
+        assert_eq!(
+            result.metadata.expect("metadata should exist")["slug"],
+            json!(existing_slug)
+        );
+        assert!(paths.plan_dir.join("my-custom-slug.md").exists());
     }
 }

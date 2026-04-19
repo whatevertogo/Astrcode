@@ -119,6 +119,7 @@ pub(crate) fn sample_profile(id: &str) -> AgentProfile {
 }
 
 pub(crate) struct AgentTestEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
     _temp_home: tempfile::TempDir,
     previous_test_home: Option<std::ffi::OsString>,
 }
@@ -170,6 +171,9 @@ impl ConfigStore for TestConfigStore {
 
 impl AgentTestEnvGuard {
     fn new() -> Self {
+        let lock = astrcode_core::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp_home = tempfile::tempdir().expect("temp home should be created");
         let previous_test_home = std::env::var_os(astrcode_core::home::ASTRCODE_TEST_HOME_ENV);
         std::env::set_var(
@@ -177,6 +181,7 @@ impl AgentTestEnvGuard {
             temp_home.path(),
         );
         Self {
+            _lock: lock,
             _temp_home: temp_home,
             previous_test_home,
         }

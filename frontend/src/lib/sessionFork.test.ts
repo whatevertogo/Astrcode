@@ -9,6 +9,8 @@ const baseControl = {
   canRequestCompact: true,
   compactPending: false,
   compacting: false,
+  currentModeId: 'code',
+  activePlan: undefined,
 };
 
 describe('resolveForkTurnIdFromMessage', () => {

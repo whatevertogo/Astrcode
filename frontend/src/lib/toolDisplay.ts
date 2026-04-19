@@ -28,6 +28,39 @@ export interface PersistedToolOutputMetadata {
   previewBytes: number;
 }
 
+export interface SessionPlanExitMetadata {
+  schema: 'sessionPlanExit';
+  mode: {
+    fromModeId: string;
+    toModeId: string;
+    modeChanged: boolean;
+  };
+  plan: {
+    title: string;
+    status: string;
+    slug: string;
+    planPath: string;
+    content: string;
+    updatedAt?: string;
+  };
+}
+
+export interface SessionPlanExitReviewPendingMetadata {
+  schema: 'sessionPlanExitReviewPending' | 'sessionPlanExitBlocked';
+  plan: {
+    title: string;
+    planPath: string;
+  };
+  review?: {
+    kind: 'revise_plan' | 'final_review';
+    checklist: string[];
+  };
+  blockers: {
+    missingHeadings: string[];
+    invalidSections: string[];
+  };
+}
+
 export interface StructuredJsonOutput {
   value: UnknownRecord | unknown[];
   summary: string;
@@ -132,6 +165,103 @@ export function extractPersistedToolOutput(metadata: unknown): PersistedToolOutp
     totalBytes,
     previewText,
     previewBytes,
+  };
+}
+
+export function extractSessionPlanExit(metadata: unknown): SessionPlanExitMetadata | null {
+  const container = asRecord(metadata);
+  const plan = asRecord(container?.plan);
+  const mode = asRecord(container?.mode);
+  const title = pickString(plan ?? {}, 'title');
+  const status = pickString(plan ?? {}, 'status');
+  const slug = pickString(plan ?? {}, 'slug');
+  const planPath = pickString(plan ?? {}, 'planPath');
+  const content = pickString(plan ?? {}, 'content');
+  const fromModeId = pickString(mode ?? {}, 'fromModeId');
+  const toModeId = pickString(mode ?? {}, 'toModeId');
+  const modeChanged = pickBoolean(mode ?? {}, 'modeChanged');
+
+  if (
+    container?.schema !== 'sessionPlanExit' ||
+    !title ||
+    !status ||
+    !slug ||
+    !planPath ||
+    !content ||
+    !fromModeId ||
+    !toModeId ||
+    modeChanged === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    schema: 'sessionPlanExit',
+    mode: {
+      fromModeId,
+      toModeId,
+      modeChanged,
+    },
+    plan: {
+      title,
+      status,
+      slug,
+      planPath,
+      content,
+      updatedAt: pickString(plan ?? {}, 'updatedAt'),
+    },
+  };
+}
+
+export function extractSessionPlanExitReviewPending(
+  metadata: unknown
+): SessionPlanExitReviewPendingMetadata | null {
+  const container = asRecord(metadata);
+  const plan = asRecord(container?.plan);
+  const review = asRecord(container?.review);
+  const blockers = asRecord(container?.blockers);
+  const title = pickString(plan ?? {}, 'title');
+  const planPath = pickString(plan ?? {}, 'planPath');
+  const reviewKind = pickString(review ?? {}, 'kind');
+  const reviewChecklist = Array.isArray(review?.checklist)
+    ? review.checklist.filter((value): value is string => typeof value === 'string')
+    : [];
+  const missingHeadings = Array.isArray(blockers?.missingHeadings)
+    ? blockers.missingHeadings.filter((value): value is string => typeof value === 'string')
+    : [];
+  const invalidSections = Array.isArray(blockers?.invalidSections)
+    ? blockers.invalidSections.filter((value): value is string => typeof value === 'string')
+    : [];
+
+  if (
+    (container?.schema !== 'sessionPlanExitReviewPending' &&
+      container?.schema !== 'sessionPlanExitBlocked') ||
+    !title ||
+    !planPath
+  ) {
+    return null;
+  }
+
+  return {
+    schema:
+      container.schema === 'sessionPlanExitBlocked'
+        ? 'sessionPlanExitBlocked'
+        : 'sessionPlanExitReviewPending',
+    plan: {
+      title,
+      planPath,
+    },
+    review:
+      reviewKind === 'revise_plan' || reviewKind === 'final_review'
+        ? {
+            kind: reviewKind,
+            checklist: reviewChecklist,
+          }
+        : undefined,
+    blockers: {
+      missingHeadings,
+      invalidSections,
+    },
   };
 }
 

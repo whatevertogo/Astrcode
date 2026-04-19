@@ -9,9 +9,9 @@ use astrcode_client::{
 };
 
 use super::{
-    Action, AppController, filter_model_options, filter_resume_sessions, model_query_from_input,
-    required_working_dir, resume_query_from_input, slash_candidates_with_local_commands,
-    slash_query_from_input,
+    Action, AppController, SnapshotLoadedAction, filter_model_options, filter_resume_sessions,
+    model_query_from_input, required_working_dir, resume_query_from_input,
+    slash_candidates_with_local_commands, slash_query_from_input,
 };
 use crate::{
     command::{Command, InputAction, PaletteAction, classify_input, filter_slash_candidates},
@@ -231,7 +231,10 @@ where
         let client = self.client.clone();
         self.dispatch_async(async move {
             let result = client.fetch_conversation_snapshot(&session_id, None).await;
-            Some(Action::SnapshotLoaded { session_id, result })
+            Some(Action::SnapshotLoaded(Box::new(SnapshotLoadedAction {
+                session_id,
+                result,
+            })))
         });
     }
 

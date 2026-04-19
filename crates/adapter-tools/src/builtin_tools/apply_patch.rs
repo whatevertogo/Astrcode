@@ -26,8 +26,8 @@ use serde::Deserialize;
 use serde_json::{Map, json};
 
 use crate::builtin_tools::fs_common::{
-    build_text_change_report, check_cancel, is_symlink, is_unc_path, read_utf8_file, resolve_path,
-    write_text_file,
+    build_text_change_report, check_cancel, ensure_not_canonical_session_plan_write_target,
+    is_symlink, is_unc_path, read_utf8_file, resolve_path, write_text_file,
 };
 
 /// ApplyPatch 工具实现。
@@ -516,6 +516,17 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
             };
         },
     };
+    if let Err(error) =
+        ensure_not_canonical_session_plan_write_target(ctx, &target_path, "apply_patch")
+    {
+        return FileChange {
+            change_type: change_type.into(),
+            path: target_path_str.clone(),
+            applied: false,
+            summary: error.to_string(),
+            error: Some(error.to_string()),
+        };
+    }
 
     // UNC 路径检查：防止 Windows NTLM 凭据泄露
     if is_unc_path(&target_path) {
@@ -787,6 +798,7 @@ impl Tool for ApplyPatchTool {
         let applied = results.iter().filter(|r| r.applied).count();
         let failed = total_files - applied;
 
+        let first_error = results.iter().find_map(|result| result.error.clone());
         let (ok, output, error) = if failed == 0 {
             (
                 true,
@@ -797,7 +809,7 @@ impl Tool for ApplyPatchTool {
             (
                 false,
                 format!("apply_patch: all {total_files} file(s) failed to apply"),
-                Some(format!("{failed} file(s) failed to apply")),
+                first_error.or(Some(format!("{failed} file(s) failed to apply"))),
             )
         } else {
             (
@@ -1182,6 +1194,32 @@ mod tests {
         assert!(
             file.exists(),
             "file should remain when delete validation fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_rejects_canonical_session_plan_targets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tool = ApplyPatchTool;
+        let patch = "--- /dev/null\n+++ \
+                     b/.astrcode-test-state/sessions/session-test/plan/cleanup-crates.md\n@@ -0,0 \
+                     +1,1 @@\n+# Plan: Cleanup crates\n";
+
+        let result = tool
+            .execute(
+                "tc-patch-plan".into(),
+                json!({ "patch": patch }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("should return result");
+
+        assert!(!result.ok);
+        assert!(
+            result
+                .error
+                .unwrap_or_default()
+                .contains("upsertSessionPlan")
         );
     }
 }

@@ -114,6 +114,9 @@ function buildMessageFingerprint(message: Message): string {
       message.streaming ? 1 : 0
     }`;
   }
+  if (message.kind === 'plan') {
+    return `${message.id}:plan:${message.eventKind}:${message.title.length}:${message.planPath.length}:${message.content?.length ?? 0}:${message.review?.kind ?? ''}:${message.blockers.missingHeadings.length}:${message.blockers.invalidSections.length}`;
+  }
   if (message.kind === 'toolCall') {
     return `${message.id}:tool:${message.status}:${message.output?.length ?? 0}:${
       message.error?.length ?? 0

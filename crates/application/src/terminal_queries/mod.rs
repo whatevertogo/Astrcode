@@ -15,7 +15,7 @@ mod tests;
 
 use astrcode_session_runtime::SessionControlStateSnapshot;
 
-use crate::terminal::{ActivePlanFacts, TerminalControlFacts, TerminalLastCompactMetaFacts};
+use crate::terminal::{PlanReferenceFacts, TerminalControlFacts, TerminalLastCompactMetaFacts};
 
 fn map_control_facts(control: SessionControlStateSnapshot) -> TerminalControlFacts {
     TerminalControlFacts {
@@ -29,6 +29,7 @@ fn map_control_facts(control: SessionControlStateSnapshot) -> TerminalControlFac
                 trigger: meta.trigger,
                 meta: meta.meta,
             }),
-        active_plan: None::<ActivePlanFacts>,
+        current_mode_id: control.current_mode_id.to_string(),
+        active_plan: None::<PlanReferenceFacts>,
     }
 }

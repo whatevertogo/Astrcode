@@ -36,12 +36,14 @@ pub use query::{
     AgentObserveSnapshot, ConversationAssistantBlockFacts, ConversationBlockFacts,
     ConversationBlockPatchFacts, ConversationBlockStatus, ConversationChildHandoffBlockFacts,
     ConversationChildHandoffKind, ConversationDeltaFacts, ConversationDeltaFrameFacts,
-    ConversationDeltaProjector, ConversationErrorBlockFacts, ConversationSnapshotFacts,
-    ConversationStreamProjector, ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts,
-    ConversationSystemNoteKind, ConversationThinkingBlockFacts, ConversationTranscriptErrorKind,
-    ConversationUserBlockFacts, LastCompactMetaSnapshot, ProjectedTurnOutcome,
-    SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot,
-    ToolCallBlockFacts, ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
+    ConversationDeltaProjector, ConversationErrorBlockFacts, ConversationPlanBlockFacts,
+    ConversationPlanBlockersFacts, ConversationPlanEventKind, ConversationPlanReviewFacts,
+    ConversationPlanReviewKind, ConversationSnapshotFacts, ConversationStreamProjector,
+    ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts, ConversationSystemNoteKind,
+    ConversationThinkingBlockFacts, ConversationTranscriptErrorKind, ConversationUserBlockFacts,
+    LastCompactMetaSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot,
+    SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
+    ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
 };
 pub(crate) use state::{InputQueueEventAppend, SessionStateEventSink, append_input_queue_event};
 pub use state::{

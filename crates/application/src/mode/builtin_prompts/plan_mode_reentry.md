@@ -1,7 +1,6 @@
-An active session plan artifact already exists for this session.
+The session already has a canonical plan artifact.
 
 Re-entry contract:
-- Read the existing plan artifact first.
-- Prefer revising the current plan instead of creating a new file.
-- Only create a new slug when the user explicitly changes the task/topic.
-- Preserve the same plan file while iterating on the same topic.
+- Read the current plan artifact first.
+- If the user is continuing the same task, revise the current plan.
+- If the user clearly changed the task/topic, overwrite the current plan instead of creating another canonical plan.

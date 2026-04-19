@@ -9,6 +9,8 @@ const baseControl = {
   canRequestCompact: true,
   compactPending: false,
   compacting: false,
+  currentModeId: 'code',
+  activePlan: undefined,
 };
 
 describe('projectConversationState', () => {
@@ -561,6 +563,52 @@ describe('projectConversationState', () => {
     expect(projection.messages[0]).toMatchObject({
       kind: 'compact',
       trigger: 'auto',
+    });
+  });
+
+  it('projects plan blocks as first-class plan messages', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-plan-1',
+      phase: 'done',
+      blocks: [
+        {
+          id: 'plan-1',
+          kind: 'plan',
+          turnId: 'turn-plan-1',
+          toolCallId: 'call-plan-exit',
+          eventKind: 'review_pending',
+          title: 'Cleanup crates',
+          planPath:
+            'D:/GitObjectsOwn/Astrcode/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md',
+          summary: '正在做退出前自审',
+          review: {
+            kind: 'final_review',
+            checklist: ['Re-check assumptions against the code you already inspected.'],
+          },
+          blockers: {
+            missingHeadings: ['## Verification'],
+            invalidSections: ['session plan needs more verification detail'],
+          },
+        },
+      ],
+      control: { ...baseControl, phase: 'done' as const },
+      childSummaries: [],
+    };
+
+    const projection = projectConversationState(state);
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]).toMatchObject({
+      kind: 'plan',
+      toolCallId: 'call-plan-exit',
+      eventKind: 'review_pending',
+      title: 'Cleanup crates',
+      blockers: {
+        missingHeadings: ['## Verification'],
+      },
+      review: {
+        kind: 'final_review',
+      },
     });
   });
 });

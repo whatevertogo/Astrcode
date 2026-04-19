@@ -6,6 +6,7 @@ export default function TopBar() {
   const {
     projectName,
     sessionTitle,
+    currentModeId,
     conversationControl,
     activeSubRunPath,
     activeSubRunBreadcrumbs,
@@ -14,6 +15,7 @@ export default function TopBar() {
     onCloseSubRun,
     onNavigateSubRunPath,
   } = useChatScreenContext();
+  const activePlan = conversationControl?.activePlan;
 
   return (
     <div className={topBarShell}>
@@ -95,6 +97,19 @@ export default function TopBar() {
       </div>
       {conversationControl && (
         <div className="ml-3 flex shrink-0 items-center gap-2">
+          {currentModeId && (
+            <span className="inline-flex items-center rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+              {currentModeId}
+            </span>
+          )}
+          {activePlan ? (
+            <span
+              className="inline-flex max-w-[220px] items-center truncate rounded-full border border-emerald-300/50 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-900"
+              title={`当前计划: ${activePlan.title} (${activePlan.status})`}
+            >
+              当前计划 · {activePlan.title}
+            </span>
+          ) : null}
           {conversationControl.compacting ? (
             <span className="inline-flex items-center rounded-full border border-amber-300/50 bg-amber-100/70 px-2.5 py-1 text-[11px] font-medium text-amber-900">
               正在 compact

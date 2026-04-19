@@ -9,21 +9,24 @@ use astrcode_application::terminal::{
 };
 use astrcode_core::ChildAgentRef;
 use astrcode_protocol::http::{
-    ChildAgentRefDto, ConversationActivePlanDto, ConversationAssistantBlockDto,
-    ConversationBannerDto, ConversationBannerErrorCodeDto, ConversationBlockDto,
-    ConversationBlockPatchDto, ConversationBlockStatusDto, ConversationChildHandoffBlockDto,
-    ConversationChildHandoffKindDto, ConversationChildSummaryDto, ConversationControlStateDto,
-    ConversationCursorDto, ConversationDeltaDto, ConversationErrorBlockDto,
-    ConversationErrorEnvelopeDto, ConversationLastCompactMetaDto, ConversationSlashActionKindDto,
-    ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto,
-    ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto,
-    ConversationSystemNoteKindDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
-    ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
+    ChildAgentRefDto, ConversationAssistantBlockDto, ConversationBannerDto,
+    ConversationBannerErrorCodeDto, ConversationBlockDto, ConversationBlockPatchDto,
+    ConversationBlockStatusDto, ConversationChildHandoffBlockDto, ConversationChildHandoffKindDto,
+    ConversationChildSummaryDto, ConversationControlStateDto, ConversationCursorDto,
+    ConversationDeltaDto, ConversationErrorBlockDto, ConversationErrorEnvelopeDto,
+    ConversationLastCompactMetaDto, ConversationPlanBlockDto, ConversationPlanBlockersDto,
+    ConversationPlanEventKindDto, ConversationPlanReferenceDto, ConversationPlanReviewDto,
+    ConversationPlanReviewKindDto, ConversationSlashActionKindDto, ConversationSlashCandidateDto,
+    ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
+    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
+    ConversationThinkingBlockDto, ConversationToolCallBlockDto, ConversationToolStreamsDto,
+    ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
 };
 use astrcode_session_runtime::{
     ConversationBlockFacts, ConversationBlockPatchFacts, ConversationBlockStatus,
     ConversationChildHandoffBlockFacts, ConversationChildHandoffKind, ConversationDeltaFacts,
-    ConversationDeltaFrameFacts, ConversationSystemNoteKind, ConversationTranscriptErrorKind,
+    ConversationDeltaFrameFacts, ConversationPlanBlockFacts, ConversationPlanEventKind,
+    ConversationPlanReviewKind, ConversationSystemNoteKind, ConversationTranscriptErrorKind,
     ToolCallBlockFacts,
 };
 
@@ -287,6 +290,9 @@ fn project_block(
                 markdown: block.markdown.clone(),
             })
         },
+        ConversationBlockFacts::Plan(block) => {
+            ConversationBlockDto::Plan(project_plan_block(block.as_ref()))
+        },
         ConversationBlockFacts::ToolCall(block) => {
             ConversationBlockDto::ToolCall(project_tool_call_block(block))
         },
@@ -320,6 +326,44 @@ fn project_block(
         },
         ConversationBlockFacts::ChildHandoff(block) => {
             ConversationBlockDto::ChildHandoff(project_child_handoff_block(block, child_lookup))
+        },
+    }
+}
+
+fn project_plan_block(block: &ConversationPlanBlockFacts) -> ConversationPlanBlockDto {
+    ConversationPlanBlockDto {
+        id: block.id.clone(),
+        turn_id: block.turn_id.clone(),
+        tool_call_id: block.tool_call_id.clone(),
+        event_kind: match block.event_kind {
+            ConversationPlanEventKind::Saved => ConversationPlanEventKindDto::Saved,
+            ConversationPlanEventKind::ReviewPending => ConversationPlanEventKindDto::ReviewPending,
+            ConversationPlanEventKind::Presented => ConversationPlanEventKindDto::Presented,
+        },
+        title: block.title.clone(),
+        plan_path: block.plan_path.clone(),
+        summary: block.summary.clone(),
+        status: block.status.clone(),
+        slug: block.slug.clone(),
+        updated_at: block.updated_at.clone(),
+        content: block.content.clone(),
+        review: block
+            .review
+            .as_ref()
+            .map(|review| ConversationPlanReviewDto {
+                kind: match review.kind {
+                    ConversationPlanReviewKind::RevisePlan => {
+                        ConversationPlanReviewKindDto::RevisePlan
+                    },
+                    ConversationPlanReviewKind::FinalReview => {
+                        ConversationPlanReviewKindDto::FinalReview
+                    },
+                },
+                checklist: review.checklist.clone(),
+            }),
+        blockers: ConversationPlanBlockersDto {
+            missing_headings: block.blockers.missing_headings.clone(),
+            invalid_sections: block.blockers.invalid_sections.clone(),
         },
     }
 }
@@ -421,6 +465,7 @@ fn to_conversation_control_state_dto(
         can_request_compact: summary.can_request_compact,
         compact_pending: summary.compact_pending,
         compacting: summary.compacting,
+        current_mode_id: summary.current_mode_id,
         active_turn_id: summary.active_turn_id,
         last_compact_meta: summary
             .last_compact_meta
@@ -428,11 +473,18 @@ fn to_conversation_control_state_dto(
                 trigger: meta.trigger,
                 meta: meta.meta,
             }),
-        active_plan: summary.active_plan.map(|plan| ConversationActivePlanDto {
-            path: plan.path,
-            status: plan.status,
-            title: plan.title,
-        }),
+        active_plan: summary.active_plan.map(to_plan_reference_dto),
+    }
+}
+
+fn to_plan_reference_dto(
+    plan: astrcode_application::terminal::PlanReferenceFacts,
+) -> ConversationPlanReferenceDto {
+    ConversationPlanReferenceDto {
+        slug: plan.slug,
+        path: plan.path,
+        status: plan.status,
+        title: plan.title,
     }
 }
 

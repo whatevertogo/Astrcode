@@ -2,7 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
-use astrcode_core::AstrError;
+use astrcode_core::{
+    AstrError,
+    home::resolve_home_dir,
+    project::{project_dir_name, projects_dir},
+};
+
+const SESSIONS_DIR_NAME: &str = "sessions";
 
 /// 规范化会话 ID，去除首尾空白并剥离最外层 `session-` 前缀。
 pub fn normalize_session_id(session_id: &str) -> String {
@@ -11,6 +17,24 @@ pub fn normalize_session_id(session_id: &str) -> String {
         .strip_prefix("session-")
         .unwrap_or(trimmed)
         .to_string()
+}
+
+/// 生成供 compact 摘要引用的 session event log 路径提示。
+///
+/// Why: 路径协议应该收口在单一 helper 中，而不是散落在 compact prompt 拼接逻辑里。
+pub(crate) fn compact_history_event_log_path(
+    session_id: &str,
+    working_dir: &Path,
+) -> Result<String, AstrError> {
+    let session_id = normalize_session_id(session_id);
+    let path = projects_dir()
+        .map_err(|error| AstrError::Internal(format!("failed to resolve projects dir: {error}")))?
+        .join(project_dir_name(working_dir))
+        .join(SESSIONS_DIR_NAME)
+        .join(&session_id)
+        .join(format!("session-{session_id}.jsonl"));
+
+    Ok(render_home_relative_path(&path))
 }
 
 /// 规范化工作目录路径，要求路径存在且必须是目录。
@@ -56,13 +80,28 @@ pub fn display_name_from_working_dir(path: &Path) -> String {
         .to_string()
 }
 
+fn render_home_relative_path(path: &Path) -> String {
+    let display = resolve_home_dir()
+        .ok()
+        .and_then(|home| {
+            path.strip_prefix(home)
+                .ok()
+                .map(|relative| PathBuf::from("~").join(relative))
+        })
+        .unwrap_or_else(|| path.to_path_buf());
+    display.to_string_lossy().replace('\\', "/")
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
     use astrcode_core::AstrError;
 
-    use super::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
+    use super::{
+        compact_history_event_log_path, display_name_from_working_dir, normalize_session_id,
+        normalize_working_dir,
+    };
 
     #[test]
     fn normalize_session_id_only_removes_outer_prefix() {
@@ -77,6 +116,16 @@ mod tests {
         assert_eq!(normalize_session_id("session-abc "), "abc");
         assert_eq!(normalize_session_id(" session-abc"), "abc");
         assert_eq!(normalize_session_id(" abc "), "abc");
+    }
+
+    #[test]
+    fn compact_history_event_log_path_uses_tilde_and_canonical_session_file_name() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let path = compact_history_event_log_path("session-abc", temp_dir.path())
+            .expect("compact history path should build");
+
+        assert!(path.starts_with("~/.astrcode/projects/"));
+        assert!(path.ends_with("/sessions/abc/session-abc.jsonl"));
     }
 
     #[test]

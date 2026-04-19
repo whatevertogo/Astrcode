@@ -175,6 +175,7 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
                         CapabilitySelector::Tag("agent".to_string()),
                     ])),
                 },
+                CapabilitySelector::Name("exitPlanMode".to_string()),
                 CapabilitySelector::Name("upsertSessionPlan".to_string()),
             ]),
             action_policies: ActionPolicies {

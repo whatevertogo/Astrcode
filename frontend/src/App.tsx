@@ -23,6 +23,7 @@ export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, makeInitialState);
   const [showSettings, setShowSettings] = useState(false);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
+  const [activeModeId, setActiveModeId] = useState<string | null>(null);
   // 确认对话框状态（替代 window.confirm）
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
@@ -72,6 +73,7 @@ export default function App() {
     interrupt,
     cancelSubRun,
     compactSession,
+    getSessionMode,
     deleteSession,
     deleteProject,
     listComposerOptions,
@@ -81,6 +83,7 @@ export default function App() {
     setModel,
     getCurrentModel,
     listAvailableModels,
+    switchSessionMode,
     testConnection,
     openConfigInEditor,
     selectDirectory,
@@ -131,6 +134,39 @@ export default function App() {
   const activeSession =
     activeProject?.sessions.find((session) => session.id === state.activeSessionId) ?? null;
   const activeSubRunThreadTree = activeSession?.subRunThreadTree ?? null;
+
+  useEffect(() => {
+    const sessionId = activeSession?.id;
+    if (!sessionId) {
+      setActiveModeId(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const mode = await getSessionMode(sessionId);
+        if (!cancelled) {
+          setActiveModeId(mode.currentModeId);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          logger.warn('App', 'Failed to load session mode:', error);
+          setActiveModeId(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSession?.id, getSessionMode]);
+
+  useEffect(() => {
+    if (activeConversationControl?.currentModeId) {
+      setActiveModeId(activeConversationControl.currentModeId);
+    }
+  }, [activeConversationControl?.currentModeId]);
 
   useEffect(() => {
     if (!activeSubRunThreadTree) {
@@ -232,6 +268,22 @@ export default function App() {
     [loadAndActivateSession]
   );
 
+  const handleSwitchMode = useCallback(
+    async (modeId: string) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) {
+        return;
+      }
+      try {
+        const mode = await switchSessionMode(sessionId, modeId);
+        setActiveModeId(mode.currentModeId);
+      } catch (error) {
+        logger.error('App', 'Failed to switch session mode:', error);
+      }
+    },
+    [switchSessionMode]
+  );
+
   const { handleOpenSubRun, handleCloseSubRun, handleNavigateSubRunPath, handleOpenChildSession } =
     useSubRunNavigation({
       activeProjectId: state.activeProjectId,
@@ -270,6 +322,7 @@ export default function App() {
       projectName: activeProject?.name ?? null,
       sessionId: activeSession?.id ?? null,
       sessionTitle: activeSession?.title ?? null,
+      currentModeId: activeConversationControl?.currentModeId ?? activeModeId,
       isChildSession: activeSession?.parentSessionId !== undefined,
       workingDir: activeProject?.workingDir ?? '',
       phase: state.phase,
@@ -285,6 +338,7 @@ export default function App() {
       onOpenChildSession: handleOpenChildSession,
       onForkFromTurn: handleForkFromTurn,
       onSubmitPrompt: handleSubmit,
+      onSwitchMode: handleSwitchMode,
       onInterrupt: handleInterrupt,
       onCancelSubRun: cancelSubRun,
       listComposerOptions,
@@ -297,6 +351,7 @@ export default function App() {
       activeProject?.name,
       activeProject?.workingDir,
       activeConversationControl,
+      activeModeId,
       activeSession?.id,
       activeSession?.parentSessionId,
       activeSession?.title,
@@ -311,6 +366,7 @@ export default function App() {
       handleForkFromTurn,
       handleOpenSubRun,
       handleSubmit,
+      handleSwitchMode,
       isSidebarOpen,
       listAvailableModels,
       listComposerOptions,

@@ -17,10 +17,12 @@ pub use conversation::{
     ConversationAssistantBlockFacts, ConversationBlockFacts, ConversationBlockPatchFacts,
     ConversationBlockStatus, ConversationChildHandoffBlockFacts, ConversationChildHandoffKind,
     ConversationDeltaFacts, ConversationDeltaFrameFacts, ConversationDeltaProjector,
-    ConversationErrorBlockFacts, ConversationSnapshotFacts, ConversationStreamProjector,
-    ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts, ConversationSystemNoteKind,
-    ConversationThinkingBlockFacts, ConversationTranscriptErrorKind, ConversationUserBlockFacts,
-    ToolCallBlockFacts, ToolCallStreamsFacts,
+    ConversationErrorBlockFacts, ConversationPlanBlockFacts, ConversationPlanBlockersFacts,
+    ConversationPlanEventKind, ConversationPlanReviewFacts, ConversationPlanReviewKind,
+    ConversationSnapshotFacts, ConversationStreamProjector, ConversationStreamReplayFacts,
+    ConversationSystemNoteBlockFacts, ConversationSystemNoteKind, ConversationThinkingBlockFacts,
+    ConversationTranscriptErrorKind, ConversationUserBlockFacts, ToolCallBlockFacts,
+    ToolCallStreamsFacts,
 };
 pub use input_queue::recoverable_parent_deliveries;
 pub(crate) use service::SessionQueries;
