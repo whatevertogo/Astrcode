@@ -1,36 +1,12 @@
-//! 会话目录事件 DTO
+//! 会话目录事件 DTO。
 //!
-//! 定义会话生命周期中的目录级事件（创建、删除、分支），
-//! 通过 SSE 广播通知前端更新会话列表视图。
-//! 与 `event.rs` 中的 Agent 事件不同，这些事件关注会话管理而非 Agent 执行。
+//! 目录事件载荷已经是共享语义，协议层直接复用 `core`；
+//! 外层信封仍由 protocol 拥有。
 
+pub use astrcode_core::SessionCatalogEvent as SessionCatalogEventPayload;
 use serde::{Deserialize, Serialize};
 
 use crate::http::PROTOCOL_VERSION;
-
-/// 会话目录事件载荷的 tagged enum。
-///
-/// 采用 `#[serde(tag = "event", content = "data")]` 序列化策略。
-/// 这些事件由 server 在会话生命周期变更时广播，前端据此更新会话列表。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "event", content = "data", rename_all = "camelCase")]
-pub enum SessionCatalogEventPayload {
-    /// 新会话创建事件。
-    SessionCreated { session_id: String },
-    /// 会话删除事件。
-    SessionDeleted { session_id: String },
-    /// 整个项目（工作目录）删除事件。
-    ///
-    /// 删除项目会级联删除其下所有会话。
-    ProjectDeleted { working_dir: String },
-    /// 会话分支事件。
-    ///
-    /// 当从一个现有会话分支出新会话时触发。
-    SessionBranched {
-        session_id: String,
-        source_session_id: String,
-    },
-}
 
 /// 会话目录事件信封。
 ///

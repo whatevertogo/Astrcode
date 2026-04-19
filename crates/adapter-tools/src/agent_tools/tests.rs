@@ -2,9 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use astrcode_core::{
     AgentLifecycleStatus, AgentTurnOutcome, ArtifactRef, CancelToken, ChildAgentRef,
-    ChildSessionLineageKind, CloseAgentParams, CollaborationResult, CollaborationResultKind,
-    CompletedParentDeliveryPayload, DelegationMetadata, ObserveParams, ParentDelivery,
-    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
+    ChildExecutionIdentity, ChildSessionLineageKind, CloseAgentParams, CollaborationResult,
+    CompletedParentDeliveryPayload, CompletedSubRunOutcome, DelegationMetadata,
+    FailedSubRunOutcome, ObserveParams, ParentDelivery, ParentDeliveryOrigin,
+    ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ParentExecutionRef,
     ProgressParentDeliveryPayload, SendAgentParams, SendToChildParams, SendToParentParams,
     SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure, SubRunFailureCode, SubRunHandoff,
     SubRunResult, Tool, ToolContext,
@@ -21,6 +22,20 @@ struct RecordingExecutor {
     calls: Mutex<Vec<SpawnAgentParams>>,
 }
 
+fn boxed_subagent_executor<T>(executor: Arc<T>) -> Arc<dyn SubAgentExecutor>
+where
+    T: SubAgentExecutor + 'static,
+{
+    executor
+}
+
+fn boxed_collaboration_executor<T>(executor: Arc<T>) -> Arc<dyn CollaborationExecutor>
+where
+    T: CollaborationExecutor + 'static,
+{
+    executor
+}
+
 #[async_trait]
 impl SubAgentExecutor for RecordingExecutor {
     async fn launch(
@@ -29,10 +44,9 @@ impl SubAgentExecutor for RecordingExecutor {
         _ctx: &ToolContext,
     ) -> astrcode_core::Result<SubRunResult> {
         self.calls.lock().expect("calls lock").push(params);
-        Ok(SubRunResult {
-            lifecycle: AgentLifecycleStatus::Idle,
-            last_turn_outcome: Some(AgentTurnOutcome::Completed),
-            handoff: Some(SubRunHandoff {
+        Ok(SubRunResult::Completed {
+            outcome: CompletedSubRunOutcome::Completed,
+            handoff: SubRunHandoff {
                 findings: vec!["checked".to_string()],
                 artifacts: Vec::new(),
                 delivery: Some(ParentDelivery {
@@ -46,8 +60,7 @@ impl SubAgentExecutor for RecordingExecutor {
                         artifacts: Vec::new(),
                     }),
                 }),
-            }),
-            failure: None,
+            },
         })
     }
 }
@@ -65,7 +78,7 @@ async fn spawn_agent_tool_parses_params_and_returns_summary() {
     let executor = Arc::new(RecordingExecutor {
         calls: Mutex::new(Vec::new()),
     });
-    let tool = SpawnAgentTool::new(executor.clone());
+    let tool = SpawnAgentTool::new(boxed_subagent_executor(executor.clone()));
 
     let result = tool
         .execute(
@@ -106,9 +119,9 @@ async fn spawn_agent_tool_parses_params_and_returns_summary() {
 
 #[tokio::test]
 async fn spawn_agent_tool_reports_invalid_params_as_tool_failure() {
-    let tool = SpawnAgentTool::new(Arc::new(RecordingExecutor {
+    let tool = SpawnAgentTool::new(boxed_subagent_executor(Arc::new(RecordingExecutor {
         calls: Mutex::new(Vec::new()),
-    }));
+    })));
 
     let result = tool
         .execute(
@@ -133,7 +146,7 @@ fn tool_description_is_stable_and_excludes_dynamic_profile_listing() {
     let executor = Arc::new(RecordingExecutor {
         calls: Mutex::new(Vec::new()),
     });
-    let tool = SpawnAgentTool::new(executor);
+    let tool = SpawnAgentTool::new(boxed_subagent_executor(executor));
 
     let definition = tool.definition();
 
@@ -153,7 +166,7 @@ fn spawn_tool_exposes_prompt_metadata_for_tool_summary_indexing() {
     let executor = Arc::new(RecordingExecutor {
         calls: Mutex::new(Vec::new()),
     });
-    let tool = SpawnAgentTool::new(executor);
+    let tool = SpawnAgentTool::new(boxed_subagent_executor(executor));
 
     let prompt = tool
         .capability_metadata()
@@ -170,7 +183,7 @@ fn spawn_tool_exposes_prompt_metadata_for_tool_summary_indexing() {
 fn send_observe_close_prompt_metadata_stays_action_oriented() {
     let executor = Arc::new(RecordingCollabExecutor::new());
 
-    let send_prompt = SendAgentTool::new(executor.clone())
+    let send_prompt = SendAgentTool::new(boxed_collaboration_executor(executor.clone()))
         .capability_metadata()
         .prompt
         .expect("send should expose prompt metadata");
@@ -178,8 +191,13 @@ fn send_observe_close_prompt_metadata_stays_action_oriented() {
     assert!(send_prompt.guide.contains("direct child"));
     assert!(send_prompt.guide.contains("direct parent"));
     assert!(send_prompt.guide.contains("both directions in one turn"));
+    assert!(
+        send_prompt.caveats.iter().any(
+            |caveat| caveat.contains("Do not alternate `sleep -> observe -> sleep -> observe`")
+        )
+    );
 
-    let observe_prompt = ObserveAgentTool::new(executor.clone())
+    let observe_prompt = ObserveAgentTool::new(boxed_collaboration_executor(executor.clone()))
         .capability_metadata()
         .prompt
         .expect("observe should expose prompt metadata");
@@ -187,12 +205,17 @@ fn send_observe_close_prompt_metadata_stays_action_oriented() {
     assert!(observe_prompt.guide.contains("`wait`, `send`, or `close`"));
     assert!(observe_prompt.guide.contains("current child state"));
     assert!(
+        observe_prompt.caveats.iter().any(
+            |caveat| caveat.contains("Do not alternate `sleep -> observe -> sleep -> observe`")
+        )
+    );
+    assert!(
         !observe_prompt
             .guide
             .contains("Should I `send` another instruction")
     );
 
-    let close_prompt = CloseAgentTool::new(executor)
+    let close_prompt = CloseAgentTool::new(boxed_collaboration_executor(executor))
         .capability_metadata()
         .prompt
         .expect("close should expose prompt metadata");
@@ -215,10 +238,8 @@ async fn spawn_agent_tool_preserves_running_outcome_in_metadata() {
             _params: SpawnAgentParams,
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
-            Ok(SubRunResult {
-                lifecycle: AgentLifecycleStatus::Running,
-                last_turn_outcome: None,
-                handoff: Some(SubRunHandoff {
+            Ok(SubRunResult::Running {
+                handoff: SubRunHandoff {
                     findings: vec!["status=running".to_string()],
                     artifacts: Vec::new(),
                     delivery: Some(ParentDelivery {
@@ -230,13 +251,12 @@ async fn spawn_agent_tool_preserves_running_outcome_in_metadata() {
                             message: "running".to_string(),
                         }),
                     }),
-                }),
-                failure: None,
+                },
             })
         }
     }
 
-    let tool = SpawnAgentTool::new(Arc::new(RunningExecutor));
+    let tool = SpawnAgentTool::new(boxed_subagent_executor(Arc::new(RunningExecutor)));
     let result = tool
         .execute(
             "call-running".to_string(),
@@ -270,23 +290,21 @@ async fn spawn_agent_tool_surfaces_failure_display_and_technical_messages_separa
             _params: SpawnAgentParams,
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
-            Ok(SubRunResult {
-                lifecycle: AgentLifecycleStatus::Idle,
-                last_turn_outcome: Some(AgentTurnOutcome::Failed),
-                handoff: None,
-                failure: Some(SubRunFailure {
+            Ok(SubRunResult::Failed {
+                outcome: FailedSubRunOutcome::Failed,
+                failure: SubRunFailure {
                     code: SubRunFailureCode::Transport,
                     display_message: "子 Agent 调用模型时网络连接中断，未完成任务。".to_string(),
                     technical_message: "HTTP request error: failed to read anthropic response \
                                         stream"
                         .to_string(),
                     retryable: true,
-                }),
+                },
             })
         }
     }
 
-    let tool = SpawnAgentTool::new(Arc::new(FailingExecutor));
+    let tool = SpawnAgentTool::new(boxed_subagent_executor(Arc::new(FailingExecutor)));
     let result = tool
         .execute(
             "call-failed".to_string(),
@@ -321,10 +339,8 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
             _params: SpawnAgentParams,
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
-            Ok(SubRunResult {
-                lifecycle: AgentLifecycleStatus::Running,
-                last_turn_outcome: None,
-                handoff: Some(SubRunHandoff {
+            Ok(SubRunResult::Running {
+                handoff: SubRunHandoff {
                     findings: Vec::new(),
                     artifacts: vec![
                         ArtifactRef {
@@ -369,13 +385,12 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
                             message: "spawn 已在后台启动。".to_string(),
                         }),
                     }),
-                }),
-                failure: None,
+                },
             })
         }
     }
 
-    let tool = SpawnAgentTool::new(Arc::new(BackgroundExecutor));
+    let tool = SpawnAgentTool::new(boxed_subagent_executor(Arc::new(BackgroundExecutor)));
     let result = tool
         .execute(
             "call-background".to_string(),
@@ -402,19 +417,16 @@ async fn spawn_agent_tool_background_returns_subrun_artifact() {
     assert_eq!(artifact_kind, Some("subRun"));
     assert_eq!(
         result
-            .metadata
+            .child_ref
             .as_ref()
-            .and_then(|value| value.get("openSessionId"))
-            .and_then(|value| value.as_str()),
+            .map(|child_ref| child_ref.open_session_id.as_str()),
         Some("session-child-42")
     );
     assert_eq!(
         result
-            .metadata
+            .child_ref
             .as_ref()
-            .and_then(|value| value.get("agentRef"))
-            .and_then(|value| value.get("agentId"))
-            .and_then(|value| value.as_str()),
+            .map(|child_ref| child_ref.agent_id().as_str()),
         Some("agent-42")
     );
 }
@@ -430,10 +442,8 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
             _params: SpawnAgentParams,
             _ctx: &ToolContext,
         ) -> astrcode_core::Result<SubRunResult> {
-            Ok(SubRunResult {
-                lifecycle: AgentLifecycleStatus::Running,
-                last_turn_outcome: None,
-                handoff: Some(SubRunHandoff {
+            Ok(SubRunResult::Running {
+                handoff: SubRunHandoff {
                     findings: Vec::new(),
                     artifacts: vec![
                         ArtifactRef {
@@ -478,16 +488,15 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
                             message: "spawn 已在后台启动。".to_string(),
                         }),
                     }),
-                }),
-                failure: None,
+                },
             })
         }
     }
 
-    let spawn_tool = SpawnAgentTool::new(Arc::new(BackgroundExecutor));
+    let spawn_tool = SpawnAgentTool::new(boxed_subagent_executor(Arc::new(BackgroundExecutor)));
     let executor = Arc::new(RecordingCollabExecutor::new());
-    let send_tool = SendAgentTool::new(executor.clone());
-    let close_tool = CloseAgentTool::new(executor.clone());
+    let send_tool = SendAgentTool::new(boxed_collaboration_executor(executor.clone()));
+    let close_tool = CloseAgentTool::new(boxed_collaboration_executor(executor.clone()));
 
     let spawned = spawn_tool
         .execute(
@@ -501,11 +510,9 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
         .await
         .expect("spawn should succeed");
     let spawned_agent_id = spawned
-        .metadata
+        .child_ref
         .as_ref()
-        .and_then(|value| value.get("agentRef"))
-        .and_then(|value| value.get("agentId"))
-        .and_then(|value| value.as_str())
+        .map(|child_ref| child_ref.agent_id().as_str())
         .expect("spawn should expose a stable agentId")
         .to_string();
 
@@ -513,6 +520,7 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
         .execute(
             "call-flow-send".to_string(),
             json!({
+                "direction": "child",
                 "agentId": spawned_agent_id,
                 "message": "继续执行第二轮"
             }),
@@ -538,13 +546,13 @@ async fn tool_flow_reuses_spawned_agent_id_for_send_and_close() {
     assert_eq!(send_calls.len(), 1);
     assert!(matches!(
         &send_calls[0],
-        SendAgentParams::ToChild(SendToChildParams { agent_id, .. }) if agent_id == "agent-99"
+        SendAgentParams::ToChild(SendToChildParams { agent_id, .. }) if agent_id.as_str() == "agent-99"
     ));
     drop(send_calls);
 
     let close_calls = executor.close_calls.lock().expect("lock");
     assert_eq!(close_calls.len(), 1);
-    assert_eq!(close_calls[0].agent_id, "agent-99");
+    assert_eq!(close_calls[0].agent_id.as_str(), "agent-99");
 }
 
 // ─── 协作工具测试 ───────────────────────────────────────────
@@ -568,14 +576,18 @@ impl RecordingCollabExecutor {
 
 fn sample_child_ref() -> ChildAgentRef {
     ChildAgentRef {
-        agent_id: "agent-42".to_string(),
-        session_id: "session-parent".to_string(),
-        sub_run_id: "subrun-42".to_string(),
-        parent_agent_id: Some("agent-parent".to_string()),
-        parent_sub_run_id: Some("subrun-parent".to_string()),
+        identity: ChildExecutionIdentity {
+            agent_id: "agent-42".into(),
+            session_id: "session-parent".into(),
+            sub_run_id: "subrun-42".into(),
+        },
+        parent: ParentExecutionRef {
+            parent_agent_id: Some("agent-parent".into()),
+            parent_sub_run_id: Some("subrun-parent".into()),
+        },
         lineage_kind: ChildSessionLineageKind::Spawn,
         status: AgentLifecycleStatus::Running,
-        open_session_id: "session-child-42".to_string(),
+        open_session_id: "session-child-42".into(),
     }
 }
 
@@ -605,17 +617,11 @@ impl CollaborationExecutor for RecordingCollabExecutor {
         _ctx: &ToolContext,
     ) -> astrcode_core::Result<CollaborationResult> {
         self.send_calls.lock().expect("lock").push(params);
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Sent,
+        Ok(CollaborationResult::Sent {
             agent_ref: Some(sample_child_ref()),
-            delivery_id: Some("delivery-1".to_string()),
+            delivery_id: Some("delivery-1".into()),
             summary: Some("消息已发送".to_string()),
-            observe_result: None,
             delegation: Some(sample_delegation(false)),
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
         })
     }
 
@@ -625,17 +631,10 @@ impl CollaborationExecutor for RecordingCollabExecutor {
         _ctx: &ToolContext,
     ) -> astrcode_core::Result<CollaborationResult> {
         self.close_calls.lock().expect("lock").push(params);
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Closed,
-            agent_ref: None,
-            delivery_id: None,
+        Ok(CollaborationResult::Closed {
             summary: Some("子 Agent 已关闭".to_string()),
-            observe_result: None,
-            delegation: None,
-            cascade: Some(true),
-            closed_root_agent_id: Some("agent-42".to_string()),
-            failure: None,
+            cascade: true,
+            closed_root_agent_id: "agent-42".into(),
         })
     }
 
@@ -646,39 +645,21 @@ impl CollaborationExecutor for RecordingCollabExecutor {
     ) -> astrcode_core::Result<CollaborationResult> {
         let agent_id = params.agent_id.clone();
         self.observe_calls.lock().expect("lock").push(params);
-        Ok(CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Observed,
-            agent_ref: Some(sample_child_ref()),
-            delivery_id: None,
-            summary: Some(format!(
-                "子 Agent {} 当前为 Idle；建议 send_or_close：上一轮已完成。",
-                agent_id
-            )),
-            observe_result: Some(astrcode_core::ObserveAgentResult {
-                agent_id,
-                sub_run_id: "subrun-42".to_string(),
-                session_id: "session-parent".to_string(),
-                open_session_id: "session-child-42".to_string(),
-                parent_agent_id: "agent-parent".to_string(),
+        Ok(CollaborationResult::Observed {
+            agent_ref: sample_child_ref(),
+            summary: format!("子 Agent {} 当前为 Idle；最近输出：done。", agent_id),
+            observe_result: Box::new(astrcode_core::ObserveSnapshot {
+                agent_id: agent_id.to_string(),
+                session_id: "session-child-42".to_string(),
                 lifecycle_status: AgentLifecycleStatus::Idle,
                 last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 phase: "Idle".to_string(),
                 turn_count: 1,
-                pending_message_count: 0,
                 active_task: None,
-                pending_task: None,
-                recent_mailbox_messages: vec!["最近一条 mailbox 摘要".to_string()],
-                last_output: Some("done".to_string()),
-                delegation: Some(sample_delegation(false)),
-                recommended_next_action: "send_or_close".to_string(),
-                recommended_reason: "上一轮已完成。".to_string(),
-                delivery_freshness: "ready_for_follow_up".to_string(),
+                last_output_tail: Some("done".to_string()),
+                last_turn_tail: vec!["最近一条 input queue 摘要".to_string()],
             }),
             delegation: Some(sample_delegation(false)),
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
         })
     }
 }
@@ -688,12 +669,13 @@ impl CollaborationExecutor for RecordingCollabExecutor {
 #[tokio::test]
 async fn send_agent_tool_parses_downstream_params_and_delegates_to_executor() {
     let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = SendAgentTool::new(executor.clone());
+    let tool = SendAgentTool::new(boxed_collaboration_executor(executor.clone()));
 
     let result = tool
         .execute(
             "call-send-1".to_string(),
             json!({
+                "direction": "child",
                 "agentId": "agent-42",
                 "message": "请修改第三部分",
                 "context": "关注性能"
@@ -714,7 +696,7 @@ async fn send_agent_tool_parses_downstream_params_and_delegates_to_executor() {
             agent_id,
             message,
             context,
-        }) if agent_id == "agent-42"
+        }) if agent_id.as_str() == "agent-42"
             && message == "请修改第三部分"
             && context.as_deref() == Some("关注性能")
     ));
@@ -723,12 +705,13 @@ async fn send_agent_tool_parses_downstream_params_and_delegates_to_executor() {
 #[tokio::test]
 async fn send_agent_tool_parses_upstream_params_and_delegates_to_executor() {
     let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = SendAgentTool::new(executor.clone());
+    let tool = SendAgentTool::new(boxed_collaboration_executor(executor.clone()));
 
     let result = tool
         .execute(
             "call-send-upstream".to_string(),
             json!({
+                "direction": "parent",
                 "kind": "completed",
                 "payload": {
                     "message": "子任务已完成",
@@ -760,7 +743,9 @@ async fn send_agent_tool_parses_upstream_params_and_delegates_to_executor() {
 
 #[tokio::test]
 async fn send_agent_tool_rejects_missing_branch_shape() {
-    let tool = SendAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
+    let tool = SendAgentTool::new(boxed_collaboration_executor(Arc::new(
+        RecordingCollabExecutor::new(),
+    )));
 
     let result = tool
         .execute(
@@ -782,12 +767,14 @@ async fn send_agent_tool_rejects_missing_branch_shape() {
 
 #[tokio::test]
 async fn send_agent_tool_rejects_empty_downstream_message() {
-    let tool = SendAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
+    let tool = SendAgentTool::new(boxed_collaboration_executor(Arc::new(
+        RecordingCollabExecutor::new(),
+    )));
 
     let result = tool
         .execute(
             "call-send-empty-downstream".to_string(),
-            json!({"agentId": "agent-42", "message": "  "}),
+            json!({"direction": "child", "agentId": "agent-42", "message": "  "}),
             &tool_context(),
         )
         .await
@@ -804,12 +791,15 @@ async fn send_agent_tool_rejects_empty_downstream_message() {
 
 #[tokio::test]
 async fn send_agent_tool_rejects_empty_upstream_message() {
-    let tool = SendAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
+    let tool = SendAgentTool::new(boxed_collaboration_executor(Arc::new(
+        RecordingCollabExecutor::new(),
+    )));
 
     let result = tool
         .execute(
             "call-send-empty-upstream".to_string(),
             json!({
+                "direction": "parent",
                 "kind": "progress",
                 "payload": { "message": "  " }
             }),
@@ -829,7 +819,9 @@ async fn send_agent_tool_rejects_empty_upstream_message() {
 
 #[test]
 fn send_agent_tool_schema_uses_openai_compatible_top_level_object() {
-    let tool = SendAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
+    let tool = SendAgentTool::new(boxed_collaboration_executor(Arc::new(
+        RecordingCollabExecutor::new(),
+    )));
 
     let schema = tool.definition().parameters;
 
@@ -856,7 +848,7 @@ fn send_agent_tool_schema_uses_openai_compatible_top_level_object() {
 #[tokio::test]
 async fn close_agent_tool_parses_params_and_returns_cascade_info() {
     let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = CloseAgentTool::new(executor.clone());
+    let tool = CloseAgentTool::new(boxed_collaboration_executor(executor.clone()));
 
     let result = tool
         .execute(
@@ -872,12 +864,14 @@ async fn close_agent_tool_parses_params_and_returns_cascade_info() {
     assert_eq!(result.tool_name, "close");
     let calls = executor.close_calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].agent_id, "agent-42");
+    assert_eq!(calls[0].agent_id.as_str(), "agent-42");
 }
 
 #[tokio::test]
 async fn close_agent_tool_rejects_empty_agent_id() {
-    let tool = CloseAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
+    let tool = CloseAgentTool::new(boxed_collaboration_executor(Arc::new(
+        RecordingCollabExecutor::new(),
+    )));
 
     let result = tool
         .execute(
@@ -902,7 +896,7 @@ async fn close_agent_tool_rejects_empty_agent_id() {
 #[tokio::test]
 async fn observe_agent_tool_parses_params_and_delegates_to_executor() {
     let executor = Arc::new(RecordingCollabExecutor::new());
-    let tool = ObserveAgentTool::new(executor.clone());
+    let tool = ObserveAgentTool::new(boxed_collaboration_executor(executor.clone()));
 
     let result = tool
         .execute(
@@ -919,14 +913,14 @@ async fn observe_agent_tool_parses_params_and_delegates_to_executor() {
         result
             .metadata
             .as_ref()
-            .and_then(|value| value.get("observeResult"))
-            .and_then(|value| value.get("recommendedNextAction"))
+            .and_then(|value| value.get("observe_result"))
+            .and_then(|value| value.get("phase"))
             .and_then(|value| value.as_str())
-            .is_some_and(|value| value == "send_or_close")
+            .is_some_and(|value| value == "Idle")
     );
     let calls = executor.observe_calls.lock().expect("lock");
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].agent_id, "agent-42");
+    assert_eq!(calls[0].agent_id.as_str(), "agent-42");
 }
 
 #[test]
@@ -934,36 +928,21 @@ fn collaboration_result_metadata_projects_idle_reuse_and_branch_mismatch_hints()
     let mapped = map_collaboration_result(
         "call-observe-advisory".to_string(),
         "observe",
-        CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Observed,
-            agent_ref: Some(sample_child_ref()),
-            delivery_id: None,
-            summary: Some("子 Agent agent-42 当前为 Idle。".to_string()),
-            observe_result: Some(astrcode_core::ObserveAgentResult {
+        CollaborationResult::Observed {
+            agent_ref: sample_child_ref(),
+            summary: "子 Agent agent-42 当前为 Idle。".to_string(),
+            observe_result: Box::new(astrcode_core::ObserveSnapshot {
                 agent_id: "agent-42".to_string(),
-                sub_run_id: "subrun-42".to_string(),
-                session_id: "session-parent".to_string(),
-                open_session_id: "session-child-42".to_string(),
-                parent_agent_id: "agent-parent".to_string(),
+                session_id: "session-child-42".to_string(),
                 lifecycle_status: AgentLifecycleStatus::Idle,
                 last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 phase: "Idle".to_string(),
                 turn_count: 1,
-                pending_message_count: 0,
                 active_task: None,
-                pending_task: None,
-                recent_mailbox_messages: Vec::new(),
-                last_output: Some("done".to_string()),
-                delegation: Some(sample_delegation(false)),
-                recommended_next_action: "send_or_close".to_string(),
-                recommended_reason: "同一责任分支可继续 send。".to_string(),
-                delivery_freshness: "ready_for_follow_up".to_string(),
+                last_turn_tail: Vec::new(),
+                last_output_tail: Some("done".to_string()),
             }),
             delegation: Some(sample_delegation(false)),
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
         },
     );
 
@@ -994,36 +973,21 @@ fn collaboration_result_metadata_projects_restricted_child_broader_tool_hint() {
     let mapped = map_collaboration_result(
         "call-observe-restricted".to_string(),
         "observe",
-        CollaborationResult {
-            accepted: true,
-            kind: CollaborationResultKind::Observed,
-            agent_ref: Some(sample_child_ref()),
-            delivery_id: None,
-            summary: Some("restricted child idle".to_string()),
-            observe_result: Some(astrcode_core::ObserveAgentResult {
+        CollaborationResult::Observed {
+            agent_ref: sample_child_ref(),
+            summary: "restricted child idle".to_string(),
+            observe_result: Box::new(astrcode_core::ObserveSnapshot {
                 agent_id: "agent-42".to_string(),
-                sub_run_id: "subrun-42".to_string(),
-                session_id: "session-parent".to_string(),
-                open_session_id: "session-child-42".to_string(),
-                parent_agent_id: "agent-parent".to_string(),
+                session_id: "session-child-42".to_string(),
                 lifecycle_status: AgentLifecycleStatus::Idle,
                 last_turn_outcome: Some(AgentTurnOutcome::Completed),
                 phase: "Idle".to_string(),
                 turn_count: 1,
-                pending_message_count: 0,
                 active_task: None,
-                pending_task: None,
-                recent_mailbox_messages: Vec::new(),
-                last_output: Some("done".to_string()),
-                delegation: Some(sample_delegation(true)),
-                recommended_next_action: "send_or_close".to_string(),
-                recommended_reason: "同一责任分支且工具面匹配时可继续复用。".to_string(),
-                delivery_freshness: "ready_for_follow_up".to_string(),
+                last_turn_tail: Vec::new(),
+                last_output_tail: Some("done".to_string()),
             }),
             delegation: Some(sample_delegation(true)),
-            cascade: None,
-            closed_root_agent_id: None,
-            failure: None,
         },
     );
 
@@ -1051,7 +1015,9 @@ fn collaboration_result_metadata_projects_restricted_child_broader_tool_hint() {
 
 #[tokio::test]
 async fn observe_agent_tool_rejects_empty_agent_id() {
-    let tool = ObserveAgentTool::new(Arc::new(RecordingCollabExecutor::new()));
+    let tool = ObserveAgentTool::new(boxed_collaboration_executor(Arc::new(
+        RecordingCollabExecutor::new(),
+    )));
 
     let result = tool
         .execute(
@@ -1077,7 +1043,7 @@ async fn observe_agent_tool_rejects_empty_agent_id() {
 fn collaboration_prompt_metadata_stays_action_oriented() {
     let executor = Arc::new(RecordingCollabExecutor::new());
 
-    let send_prompt = SendAgentTool::new(executor.clone())
+    let send_prompt = SendAgentTool::new(boxed_collaboration_executor(executor.clone()))
         .capability_metadata()
         .prompt
         .expect("send should expose prompt metadata");
@@ -1085,16 +1051,26 @@ fn collaboration_prompt_metadata_stays_action_oriented() {
     assert!(send_prompt.guide.contains("direct child"));
     assert!(send_prompt.guide.contains("direct parent"));
     assert!(send_prompt.guide.contains("both directions in one turn"));
+    assert!(
+        send_prompt.caveats.iter().any(
+            |caveat| caveat.contains("Do not alternate `sleep -> observe -> sleep -> observe`")
+        )
+    );
 
-    let observe_prompt = ObserveAgentTool::new(executor.clone())
+    let observe_prompt = ObserveAgentTool::new(boxed_collaboration_executor(executor.clone()))
         .capability_metadata()
         .prompt
         .expect("observe should expose prompt metadata");
     assert!(observe_prompt.summary.contains("decide the next action"));
     assert!(observe_prompt.guide.contains("`wait`, `send`, or `close`"));
     assert!(observe_prompt.guide.contains("current child state"));
+    assert!(
+        observe_prompt.caveats.iter().any(
+            |caveat| caveat.contains("Do not alternate `sleep -> observe -> sleep -> observe`")
+        )
+    );
 
-    let close_prompt = CloseAgentTool::new(executor)
+    let close_prompt = CloseAgentTool::new(boxed_collaboration_executor(executor))
         .capability_metadata()
         .prompt
         .expect("close should expose prompt metadata");
@@ -1110,9 +1086,13 @@ fn collaboration_prompt_metadata_stays_action_oriented() {
 fn collaboration_tools_registered_in_public_surface() {
     let executor = Arc::new(RecordingCollabExecutor::new());
     let tools: Vec<Box<dyn Tool>> = vec![
-        Box::new(SendAgentTool::new(executor.clone())),
-        Box::new(ObserveAgentTool::new(executor.clone())),
-        Box::new(CloseAgentTool::new(executor)),
+        Box::new(SendAgentTool::new(boxed_collaboration_executor(
+            executor.clone(),
+        ))) as Box<dyn Tool>,
+        Box::new(ObserveAgentTool::new(boxed_collaboration_executor(
+            executor.clone(),
+        ))) as Box<dyn Tool>,
+        Box::new(CloseAgentTool::new(boxed_collaboration_executor(executor))) as Box<dyn Tool>,
     ];
 
     let names: Vec<String> = tools.iter().map(|t| t.definition().name.clone()).collect();
@@ -1123,24 +1103,29 @@ fn collaboration_tools_registered_in_public_surface() {
 fn collaboration_tool_definitions_exclude_runtime_internals() {
     let executor = Arc::new(RecordingCollabExecutor::new());
 
-    let send_def = SendAgentTool::new(executor.clone()).definition();
+    let send_def = SendAgentTool::new(boxed_collaboration_executor(executor.clone())).definition();
     assert!(!send_def.description.contains("AgentControl"));
     assert!(!send_def.description.contains("AgentInboxEnvelope"));
 
-    let close_def = CloseAgentTool::new(executor.clone()).definition();
+    let close_def =
+        CloseAgentTool::new(boxed_collaboration_executor(executor.clone())).definition();
     assert!(!close_def.description.contains("CancelToken"));
 
-    let observe_def = ObserveAgentTool::new(executor).definition();
-    assert!(!observe_def.description.contains("MailboxProjection"));
+    let observe_def = ObserveAgentTool::new(boxed_collaboration_executor(executor)).definition();
+    assert!(!observe_def.description.contains("InputQueueProjection"));
 }
 
 #[test]
 fn old_tool_names_not_in_definitions() {
     let executor = Arc::new(RecordingCollabExecutor::new());
     let tools: Vec<Box<dyn Tool>> = vec![
-        Box::new(SendAgentTool::new(executor.clone())),
-        Box::new(ObserveAgentTool::new(executor.clone())),
-        Box::new(CloseAgentTool::new(executor)),
+        Box::new(SendAgentTool::new(boxed_collaboration_executor(
+            executor.clone(),
+        ))) as Box<dyn Tool>,
+        Box::new(ObserveAgentTool::new(boxed_collaboration_executor(
+            executor.clone(),
+        ))) as Box<dyn Tool>,
+        Box::new(CloseAgentTool::new(boxed_collaboration_executor(executor))) as Box<dyn Tool>,
     ];
 
     for tool in &tools {

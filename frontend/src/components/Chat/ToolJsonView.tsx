@@ -1,13 +1,16 @@
-import { memo } from 'react';
+import { memo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import type { UnknownRecord } from '../../lib/shared';
+import { useNestedScrollContainment } from './useNestedScrollContainment';
 
 const MAX_CHILDREN_PER_NODE = 200;
-const MAX_STRING_PREVIEW = 240;
+const MAX_STRING_PREVIEW_CHARS = 320;
 
 interface ToolJsonViewProps {
   value: UnknownRecord | unknown[];
   summary: string;
+  defaultOpen?: boolean;
+  scrollMode?: 'self' | 'inherit';
 }
 
 interface JsonNodeProps {
@@ -28,19 +31,42 @@ function summarizeContainer(value: UnknownRecord | unknown[]): string {
   return `Object (${Object.keys(value).length})`;
 }
 
+export function summarizeLongString(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return '(empty string)';
+  }
+
+  if (normalized.length <= MAX_STRING_PREVIEW_CHARS) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, MAX_STRING_PREVIEW_CHARS)}...`;
+}
+
 function renderPrimitiveValue(value: unknown): ReactNode {
   if (value === null) {
     return <span className="text-text-secondary">null</span>;
   }
 
   if (typeof value === 'string') {
-    const truncated =
-      value.length > MAX_STRING_PREVIEW
-        ? `${value.slice(0, MAX_STRING_PREVIEW)}... (${value.length} chars)`
-        : value;
+    if (value.length > MAX_STRING_PREVIEW_CHARS) {
+      return (
+        <details className="group min-w-0 max-w-full">
+          <summary className="cursor-pointer list-none text-json-string [&::-webkit-details-marker]:hidden">
+            &quot;{summarizeLongString(value)}&quot;
+            <span className="ml-2 text-[11px] text-text-muted">展开完整内容 ({value.length})</span>
+          </summary>
+          <div className="mt-2 rounded-md border border-code-border bg-code-surface px-3 py-2 text-json-string">
+            <span className="whitespace-pre-wrap overflow-wrap-anywhere">&quot;{value}&quot;</span>
+          </div>
+        </details>
+      );
+    }
+
     return (
       <span className="whitespace-pre-wrap overflow-wrap-anywhere text-json-string">
-        &quot;{truncated}&quot;
+        &quot;{value}&quot;
       </span>
     );
   }
@@ -100,10 +126,26 @@ function JsonNode({ value, label, path, defaultOpen = false }: JsonNodeProps) {
   );
 }
 
-function ToolJsonView({ value, summary }: ToolJsonViewProps) {
+function ToolJsonView({
+  value,
+  summary,
+  defaultOpen = false,
+  scrollMode = 'self',
+}: ToolJsonViewProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inactiveRef = useRef<HTMLDivElement>(null);
+  useNestedScrollContainment(scrollMode === 'self' ? containerRef : inactiveRef);
+
   return (
-    <div className="m-0 max-h-[360px] overflow-auto rounded-lg border border-code-border bg-code-surface font-mono text-[13px]">
-      <JsonNode value={value} label="JSON" path="root" defaultOpen={false} />
+    <div
+      ref={containerRef}
+      className={
+        scrollMode === 'self'
+          ? 'm-0 max-h-[420px] overflow-auto rounded-lg border border-code-border bg-code-surface font-mono text-[13px]'
+          : 'm-0 rounded-lg border border-code-border bg-code-surface font-mono text-[13px]'
+      }
+    >
+      <JsonNode value={value} label="JSON" path="root" defaultOpen={defaultOpen} />
       <div className="px-3 py-2 border-t border-border text-text-secondary text-xs">{summary}</div>
     </div>
   );

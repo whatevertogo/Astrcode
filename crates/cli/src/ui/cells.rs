@@ -1,14 +1,24 @@
 use unicode_width::UnicodeWidthStr;
 
-use super::theme::ThemePalette;
+use super::{
+    markdown::{render_literal_text, render_markdown_lines, render_preformatted_block},
+    theme::ThemePalette,
+    truncate_to_width,
+};
 use crate::{
     capability::TerminalCapabilities,
     state::{
-        TranscriptCell, TranscriptCellKind, TranscriptCellStatus, WrappedLine, WrappedLineStyle,
+        ThinkingPresentationState, TranscriptCell, TranscriptCellKind, TranscriptCellStatus,
+        WrappedLine, WrappedLineStyle, WrappedSpan,
     },
 };
 
-const LIVE_PREFIX: usize = 2;
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TranscriptCellView {
+    pub selected: bool,
+    pub expanded: bool,
+    pub thinking: Option<ThinkingPresentationState>,
+}
 
 pub trait RenderableCell {
     fn render_lines(
@@ -16,6 +26,7 @@ pub trait RenderableCell {
         width: usize,
         capabilities: TerminalCapabilities,
         theme: &dyn ThemePalette,
+        view: &TranscriptCellView,
     ) -> Vec<WrappedLine>;
 }
 
@@ -25,310 +36,399 @@ impl RenderableCell for TranscriptCell {
         width: usize,
         capabilities: TerminalCapabilities,
         theme: &dyn ThemePalette,
+        view: &TranscriptCellView,
     ) -> Vec<WrappedLine> {
-        let width = width.max(20);
+        let width = width.max(28);
         match &self.kind {
-            TranscriptCellKind::User { body } => render_user_cell(body, width, capabilities, theme),
-            TranscriptCellKind::Assistant { body, status } => render_labeled_cell(
-                width,
-                capabilities,
-                theme,
-                &format!(
-                    "{} Astrcode{}",
-                    theme.glyph("●", "*"),
-                    status_suffix(*status)
-                ),
-                body,
-                WrappedLineStyle::Header,
-                WrappedLineStyle::Plain,
-            ),
-            TranscriptCellKind::Thinking { body, status } => render_labeled_cell(
-                width,
-                capabilities,
-                theme,
-                &format!(
-                    "{} thinking{}",
-                    theme.glyph("◌", "o"),
-                    status_suffix(*status)
-                ),
-                body,
-                WrappedLineStyle::Dim,
-                WrappedLineStyle::Dim,
-            ),
+            TranscriptCellKind::User { body } => {
+                render_message(body, width, capabilities, theme, view, true)
+            },
+            TranscriptCellKind::Assistant { body, status } => {
+                let content = if matches!(status, TranscriptCellStatus::Streaming) {
+                    format!("{body}{}", status_suffix(*status))
+                } else {
+                    body.clone()
+                };
+                render_message(content.as_str(), width, capabilities, theme, view, false)
+            },
+            TranscriptCellKind::Thinking { .. } => {
+                render_thinking_cell(width, capabilities, theme, view)
+            },
             TranscriptCellKind::ToolCall {
                 tool_name,
                 summary,
                 status,
-            } => render_labeled_cell(
-                width,
-                capabilities,
-                theme,
-                &format!(
-                    "{} tool {}{}",
-                    theme.glyph("↳", ">"),
-                    tool_name,
-                    status_suffix(*status)
-                ),
-                summary,
-                WrappedLineStyle::Warning,
-                WrappedLineStyle::Dim,
-            ),
-            TranscriptCellKind::ToolStream {
-                stream,
-                content,
-                status,
-            } => render_labeled_cell(
-                width,
-                capabilities,
-                theme,
-                &format!(
-                    "{} {}{}",
-                    theme.glyph("│", "|"),
-                    stream.to_lowercase(),
-                    status_suffix(*status)
-                ),
-                content,
-                WrappedLineStyle::Warning,
-                WrappedLineStyle::Plain,
-            ),
-            TranscriptCellKind::Error { code, message } => render_labeled_cell(
-                width,
-                capabilities,
-                theme,
-                &format!("{} error {code}", theme.glyph("✕", "x")),
-                message,
-                WrappedLineStyle::Error,
-                WrappedLineStyle::Error,
-            ),
-            TranscriptCellKind::SystemNote {
-                note_kind,
-                markdown,
-            } => render_labeled_cell(
-                width,
-                capabilities,
-                theme,
-                &format!("{} {note_kind}", theme.glyph("·", "-")),
-                markdown,
-                WrappedLineStyle::Dim,
-                WrappedLineStyle::Dim,
-            ),
-            TranscriptCellKind::ChildHandoff {
-                handoff_kind,
-                title,
-                lifecycle,
-                message,
+                stdout,
+                stderr,
+                error,
+                duration_ms,
+                truncated,
                 child_session_id,
-                child_agent_id,
-            } => {
-                let mut lines = render_labeled_cell(
-                    width,
-                    capabilities,
-                    theme,
-                    &format!(
-                        "{} child {} [{} / {}]",
-                        theme.glyph("◇", "*"),
-                        title,
-                        handoff_kind,
-                        lifecycle_label(*lifecycle)
-                    ),
-                    message,
-                    WrappedLineStyle::Accent,
-                    WrappedLineStyle::Plain,
-                );
-                lines.extend([
-                    prefixed_line(
-                        WrappedLineStyle::Dim,
-                        &format!("session {child_session_id}"),
-                        capabilities,
-                        width,
-                    ),
-                    prefixed_line(
-                        WrappedLineStyle::Dim,
-                        &format!("agent   {child_agent_id}"),
-                        capabilities,
-                        width,
-                    ),
-                    WrappedLine {
-                        style: WrappedLineStyle::Plain,
-                        content: String::new(),
-                    },
-                ]);
-                lines
-            },
+            } => render_tool_call_cell(
+                ToolCallView {
+                    tool_name,
+                    summary,
+                    status: *status,
+                    stdout,
+                    stderr,
+                    error: error.as_deref(),
+                    duration_ms: *duration_ms,
+                    truncated: *truncated,
+                    child_session_id: child_session_id.as_deref(),
+                },
+                width,
+                capabilities,
+                theme,
+                view,
+            ),
+            TranscriptCellKind::Error { code, message } => render_secondary_line(
+                &format!("{code} {message}"),
+                width,
+                capabilities,
+                theme,
+                view,
+                WrappedLineStyle::ErrorText,
+                MarkdownRenderMode::Literal,
+            ),
+            TranscriptCellKind::SystemNote { markdown, .. } => render_secondary_line(
+                markdown,
+                width,
+                capabilities,
+                theme,
+                view,
+                WrappedLineStyle::Notice,
+                MarkdownRenderMode::Display,
+            ),
+            TranscriptCellKind::ChildHandoff { title, message, .. } => render_secondary_line(
+                &format!("{title} · {message}"),
+                width,
+                capabilities,
+                theme,
+                view,
+                WrappedLineStyle::Notice,
+                MarkdownRenderMode::Literal,
+            ),
         }
     }
 }
 
-fn render_user_cell(
+impl TranscriptCellView {
+    fn resolve_style(&self, base: WrappedLineStyle) -> WrappedLineStyle {
+        if self.selected {
+            WrappedLineStyle::Selection
+        } else {
+            base
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkdownRenderMode {
+    Literal,
+    Display,
+}
+
+fn render_message(
     body: &str,
     width: usize,
     capabilities: TerminalCapabilities,
     theme: &dyn ThemePalette,
+    view: &TranscriptCellView,
+    is_user: bool,
 ) -> Vec<WrappedLine> {
-    let prefix = format!("{} ", theme.glyph("▌", "|"));
-    let body_width = width.saturating_sub(display_width(prefix.as_str(), capabilities));
-    let wrapped = wrap_text(body, body_width.max(8), capabilities);
-    let mut lines = Vec::with_capacity(wrapped.len() + 1);
-    for line in wrapped {
-        lines.push(WrappedLine {
-            style: WrappedLineStyle::User,
-            content: format!("{prefix}{line}"),
-        });
+    let first_prefix = if is_user {
+        format!("{} ", prompt_marker(theme))
+    } else {
+        format!("{} ", assistant_marker(theme))
+    };
+    let subsequent_prefix = " ".repeat(display_width(first_prefix.as_str()));
+    let wrapped = if is_user {
+        render_literal_lines(
+            body,
+            width.saturating_sub(display_width(first_prefix.as_str())),
+            capabilities,
+            view.resolve_style(WrappedLineStyle::PromptEcho),
+        )
+    } else {
+        render_markdown_lines(
+            body,
+            width.saturating_sub(display_width(first_prefix.as_str())),
+            capabilities,
+            view.resolve_style(WrappedLineStyle::Plain),
+        )
+    };
+
+    let mut lines = Vec::new();
+    for (index, line) in wrapped.into_iter().enumerate() {
+        lines.push(prepend_prefix(
+            line,
+            if index == 0 {
+                plain_prefix(first_prefix.as_str())
+            } else {
+                plain_prefix(subsequent_prefix.as_str())
+            },
+        ));
     }
-    lines.push(WrappedLine {
-        style: WrappedLineStyle::Plain,
-        content: String::new(),
-    });
+    lines.push(blank_line());
     lines
 }
 
-fn render_labeled_cell(
+fn render_thinking_cell(
     width: usize,
     capabilities: TerminalCapabilities,
     _theme: &dyn ThemePalette,
-    title: &str,
-    body: &str,
-    title_style: WrappedLineStyle,
-    body_style: WrappedLineStyle,
+    view: &TranscriptCellView,
 ) -> Vec<WrappedLine> {
-    let mut lines = vec![prefixed_line(title_style, title, capabilities, width)];
-    for line in wrap_text(body, width.saturating_sub(LIVE_PREFIX).max(8), capabilities) {
-        lines.push(prefixed_line(
-            body_style,
-            line.as_str(),
-            capabilities,
-            width,
-        ));
+    let Some(thinking) = view.thinking.as_ref() else {
+        return vec![blank_line()];
+    };
+    if !view.expanded {
+        return vec![
+            plain_line(
+                view.resolve_style(WrappedLineStyle::ThinkingLabel),
+                truncate_to_width(
+                    format!("{} {}", thinking_marker(_theme), thinking.summary).as_str(),
+                    width,
+                ),
+            ),
+            plain_line(
+                view.resolve_style(WrappedLineStyle::ThinkingPreview),
+                truncate_to_width(
+                    format!("  {} {}", thinking_preview_prefix(_theme), thinking.preview).as_str(),
+                    width,
+                ),
+            ),
+            blank_line(),
+        ];
     }
-    lines.push(WrappedLine {
-        style: WrappedLineStyle::Plain,
-        content: String::new(),
-    });
+
+    let mut lines = vec![plain_line(
+        view.resolve_style(WrappedLineStyle::ThinkingLabel),
+        format!("{} {}", thinking_marker(_theme), thinking.summary),
+    )];
+    lines.push(plain_line(
+        view.resolve_style(WrappedLineStyle::ThinkingPreview),
+        format!("  {}", thinking.hint),
+    ));
+    for line in render_markdown_lines(
+        thinking.expanded_body.as_str(),
+        width.saturating_sub(2),
+        capabilities,
+        view.resolve_style(WrappedLineStyle::ThinkingBody),
+    ) {
+        lines.push(prepend_prefix(line, plain_prefix("  ")));
+    }
+    lines.push(blank_line());
     lines
 }
 
-fn prefixed_line(
-    style: WrappedLineStyle,
-    content: &str,
-    capabilities: TerminalCapabilities,
+#[derive(Debug, Clone, Copy)]
+struct ToolCallView<'a> {
+    tool_name: &'a str,
+    summary: &'a str,
+    status: TranscriptCellStatus,
+    stdout: &'a str,
+    stderr: &'a str,
+    error: Option<&'a str>,
+    duration_ms: Option<u64>,
+    truncated: bool,
+    child_session_id: Option<&'a str>,
+}
+
+fn render_tool_call_cell(
+    tool: ToolCallView<'_>,
     width: usize,
-) -> WrappedLine {
-    let prefix = if matches!(style, WrappedLineStyle::Header | WrappedLineStyle::Accent) {
-        "  "
-    } else {
-        "  "
-    };
-    let available = width.saturating_sub(display_width(prefix, capabilities));
-    let text = truncate_to_width(content, available.max(1), capabilities);
-    WrappedLine {
-        style,
-        content: format!("{prefix}{text}"),
+    capabilities: TerminalCapabilities,
+    theme: &dyn ThemePalette,
+    view: &TranscriptCellView,
+) -> Vec<WrappedLine> {
+    let mut lines = vec![plain_line(
+        view.resolve_style(WrappedLineStyle::ToolLabel),
+        truncate_to_width(
+            format!(
+                "{} tool {}{} · {}",
+                tool_marker(theme),
+                tool.tool_name,
+                if tool.truncated { " · truncated" } else { "" },
+                tool.summary
+            )
+            .as_str(),
+            width,
+        ),
+    )];
+
+    if view.expanded {
+        let mut metadata = Vec::new();
+        metadata.push(match tool.status {
+            TranscriptCellStatus::Streaming => "streaming".to_string(),
+            TranscriptCellStatus::Complete => "complete".to_string(),
+            TranscriptCellStatus::Failed => "failed".to_string(),
+            TranscriptCellStatus::Cancelled => "cancelled".to_string(),
+        });
+        if let Some(duration_ms) = tool.duration_ms {
+            metadata.push(format!("{duration_ms}ms"));
+        }
+        if let Some(child_session_id) = tool.child_session_id {
+            metadata.push(format!("child session {child_session_id}"));
+        }
+        if !metadata.is_empty() {
+            lines.push(plain_line(
+                view.resolve_style(WrappedLineStyle::ToolBody),
+                format!("  meta {}", metadata.join(" · ")),
+            ));
+        }
+
+        if !tool.stdout.trim().is_empty() {
+            append_preformatted_tool_section(
+                &mut lines,
+                "stdout",
+                tool.stdout,
+                width,
+                capabilities,
+                theme,
+                view,
+            );
+        }
+        if !tool.stderr.trim().is_empty() {
+            append_preformatted_tool_section(
+                &mut lines,
+                "stderr",
+                tool.stderr,
+                width,
+                capabilities,
+                theme,
+                view,
+            );
+        }
+        if let Some(error) = tool.error {
+            append_preformatted_tool_section(
+                &mut lines,
+                "error",
+                error,
+                width,
+                capabilities,
+                theme,
+                view,
+            );
+        }
+    }
+
+    lines.push(blank_line());
+    lines
+}
+
+fn append_preformatted_tool_section(
+    lines: &mut Vec<WrappedLine>,
+    label: &str,
+    body: &str,
+    width: usize,
+    capabilities: TerminalCapabilities,
+    theme: &dyn ThemePalette,
+    view: &TranscriptCellView,
+) {
+    let section_style = view.resolve_style(WrappedLineStyle::ToolBody);
+    lines.push(plain_line(section_style, format!("  {label}")));
+    for line in render_preformatted_block(body, width.saturating_sub(4), capabilities) {
+        lines.push(plain_line(
+            section_style,
+            format!("  {} {line}", tool_block_marker(theme)),
+        ));
     }
 }
 
-pub fn wrap_text(text: &str, width: usize, capabilities: TerminalCapabilities) -> Vec<String> {
-    let width = width.max(1);
-    let mut out = Vec::new();
-    let normalized = if text.trim().is_empty() {
-        vec![String::new()]
-    } else {
-        text.lines().map(ToString::to_string).collect::<Vec<_>>()
+fn render_secondary_line(
+    body: &str,
+    width: usize,
+    capabilities: TerminalCapabilities,
+    theme: &dyn ThemePalette,
+    view: &TranscriptCellView,
+    style: WrappedLineStyle,
+    render_mode: MarkdownRenderMode,
+) -> Vec<WrappedLine> {
+    let base_style = view.resolve_style(style);
+    let rendered = match render_mode {
+        MarkdownRenderMode::Literal => {
+            render_literal_lines(body, width.saturating_sub(2), capabilities, base_style)
+        },
+        MarkdownRenderMode::Display => {
+            render_markdown_lines(body, width.saturating_sub(2), capabilities, base_style)
+        },
     };
 
-    for raw_line in normalized {
-        if raw_line.is_empty() {
-            out.push(String::new());
-            continue;
-        }
-
-        let words = raw_line.split_whitespace().collect::<Vec<_>>();
-        if words.len() <= 1 {
-            wrap_by_width(raw_line.as_str(), width, capabilities, &mut out);
-            continue;
-        }
-
-        let mut current = String::new();
-        for word in words {
-            let candidate = if current.is_empty() {
-                word.to_string()
-            } else {
-                format!("{current} {word}")
-            };
-            if display_width(candidate.as_str(), capabilities) > width && !current.is_empty() {
-                out.push(current);
-                current = String::new();
-            }
-
-            if current.is_empty() && display_width(word, capabilities) > width {
-                wrap_by_width(word, width, capabilities, &mut out);
-            } else if current.is_empty() {
-                current = word.to_string();
-            } else {
-                current = format!("{current} {word}");
-            }
-        }
-
-        if !current.is_empty() {
-            out.push(current);
-        }
+    let mut lines = Vec::new();
+    for line in rendered {
+        lines.push(prepend_prefix(
+            line,
+            plain_prefix(format!("{} ", secondary_marker(theme)).as_str()),
+        ));
     }
-
-    out
+    lines.push(blank_line());
+    lines
 }
 
-fn wrap_by_width(
+fn render_literal_lines(
     text: &str,
     width: usize,
     capabilities: TerminalCapabilities,
-    out: &mut Vec<String>,
-) {
-    let mut current = String::new();
-    let mut current_width = 0;
-    for ch in text.chars() {
-        let ch_width = display_width(ch.to_string().as_str(), capabilities).max(1);
-        if current_width + ch_width > width && !current.is_empty() {
-            out.push(std::mem::take(&mut current));
-            current_width = 0;
-        }
-        current.push(ch);
-        current_width += ch_width;
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
+    style: WrappedLineStyle,
+) -> Vec<WrappedLine> {
+    render_literal_text(text, width, capabilities)
+        .into_iter()
+        .map(|line| plain_line(style, line))
+        .collect()
 }
 
-fn truncate_to_width(text: &str, width: usize, capabilities: TerminalCapabilities) -> String {
-    let mut out = String::new();
-    let mut current_width = 0;
-    for ch in text.chars() {
-        let ch_width = display_width(ch.to_string().as_str(), capabilities).max(1);
-        if current_width + ch_width > width {
-            break;
-        }
-        current_width += ch_width;
-        out.push(ch);
-    }
-    out
+fn plain_line(style: WrappedLineStyle, content: impl Into<String>) -> WrappedLine {
+    WrappedLine::plain(style, content)
 }
 
-fn display_width(text: &str, capabilities: TerminalCapabilities) -> usize {
-    if capabilities.ascii_only() {
-        text.chars().count()
+fn plain_prefix(prefix: &str) -> Vec<WrappedSpan> {
+    if prefix.is_empty() {
+        Vec::new()
     } else {
-        UnicodeWidthStr::width(text)
+        vec![WrappedSpan::plain(prefix.to_string())]
     }
 }
 
-fn lifecycle_label(
-    lifecycle: astrcode_client::AstrcodeConversationAgentLifecycleDto,
-) -> &'static str {
-    match lifecycle {
-        astrcode_client::AstrcodeConversationAgentLifecycleDto::Pending => "pending",
-        astrcode_client::AstrcodeConversationAgentLifecycleDto::Running => "running",
-        astrcode_client::AstrcodeConversationAgentLifecycleDto::Idle => "idle",
-        astrcode_client::AstrcodeConversationAgentLifecycleDto::Terminated => "terminated",
+fn prepend_prefix(mut line: WrappedLine, mut prefix: Vec<WrappedSpan>) -> WrappedLine {
+    if prefix.is_empty() {
+        return line;
     }
+    prefix.extend(line.spans);
+    line.spans = prefix;
+    line
+}
+
+fn prompt_marker(theme: &dyn ThemePalette) -> &'static str {
+    theme.glyph("›", ">")
+}
+
+fn assistant_marker(theme: &dyn ThemePalette) -> &'static str {
+    theme.glyph("•", "*")
+}
+
+fn thinking_marker(theme: &dyn ThemePalette) -> &'static str {
+    theme.glyph("◦", "o")
+}
+
+fn thinking_preview_prefix(theme: &dyn ThemePalette) -> &'static str {
+    theme.glyph("↳", ">")
+}
+
+fn tool_marker(theme: &dyn ThemePalette) -> &'static str {
+    theme.glyph("◆", "+")
+}
+
+fn secondary_marker(theme: &dyn ThemePalette) -> &'static str {
+    theme.glyph("·", "-")
+}
+
+fn tool_block_marker(theme: &dyn ThemePalette) -> &'static str {
+    theme.glyph("│", "|")
+}
+
+fn blank_line() -> WrappedLine {
+    plain_line(WrappedLineStyle::Plain, String::new())
 }
 
 fn status_suffix(status: TranscriptCellStatus) -> &'static str {
@@ -337,5 +437,101 @@ fn status_suffix(status: TranscriptCellStatus) -> &'static str {
         TranscriptCellStatus::Complete => "",
         TranscriptCellStatus::Failed => " · failed",
         TranscriptCellStatus::Cancelled => " · cancelled",
+    }
+}
+
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        RenderableCell, TranscriptCellView, assistant_marker, secondary_marker, thinking_marker,
+        tool_marker,
+    };
+    use crate::{
+        capability::{ColorLevel, GlyphMode, TerminalCapabilities},
+        state::{TranscriptCell, TranscriptCellKind, TranscriptCellStatus},
+        ui::CodexTheme,
+    };
+
+    fn unicode_capabilities() -> TerminalCapabilities {
+        TerminalCapabilities {
+            color: ColorLevel::TrueColor,
+            glyphs: GlyphMode::Unicode,
+            alt_screen: false,
+            mouse: false,
+            bracketed_paste: false,
+        }
+    }
+
+    fn ascii_capabilities() -> TerminalCapabilities {
+        TerminalCapabilities {
+            color: ColorLevel::None,
+            glyphs: GlyphMode::Ascii,
+            alt_screen: false,
+            mouse: false,
+            bracketed_paste: false,
+        }
+    }
+
+    #[test]
+    fn ascii_markers_remain_distinct_by_cell_type() {
+        let theme = CodexTheme::new(ascii_capabilities());
+        assert_ne!(assistant_marker(&theme), thinking_marker(&theme));
+        assert_ne!(tool_marker(&theme), secondary_marker(&theme));
+    }
+
+    #[test]
+    fn assistant_wrapped_lines_use_hanging_indent() {
+        let theme = CodexTheme::new(unicode_capabilities());
+        let cell = TranscriptCell {
+            id: "assistant-1".to_string(),
+            expanded: false,
+            kind: TranscriptCellKind::Assistant {
+                body: "你好！我是 AstrCode，你的本地 AI \
+                       编码助手。我可以帮你处理代码编写、文件编辑、终端命令、\
+                       代码审查等各种开发任务。"
+                    .to_string(),
+                status: TranscriptCellStatus::Complete,
+            },
+        };
+
+        let lines = cell.render_lines(
+            36,
+            unicode_capabilities(),
+            &theme,
+            &TranscriptCellView::default(),
+        );
+
+        assert!(lines.len() >= 3);
+        assert!(lines[0].text().starts_with("• "));
+        assert!(lines[1].text().starts_with("  "));
+        assert!(!lines[1].text().starts_with("   "));
+    }
+
+    #[test]
+    fn assistant_rendering_preserves_markdown_line_breaks() {
+        let theme = CodexTheme::new(unicode_capabilities());
+        let cell = TranscriptCell {
+            id: "assistant-2".to_string(),
+            expanded: false,
+            kind: TranscriptCellKind::Assistant {
+                body: "你好！\n\n- 第一项\n- 第二项".to_string(),
+                status: TranscriptCellStatus::Complete,
+            },
+        };
+
+        let lines = cell.render_lines(
+            36,
+            unicode_capabilities(),
+            &theme,
+            &TranscriptCellView::default(),
+        );
+
+        assert!(lines.iter().any(|line| line.text() == "  "));
+        assert!(lines.iter().any(|line| line.text().contains("- 第一项")));
+        assert!(lines.iter().any(|line| line.text().contains("- 第二项")));
     }
 }

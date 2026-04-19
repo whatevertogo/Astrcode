@@ -18,9 +18,6 @@
     windows_subsystem = "windows"
 )]
 
-#[cfg(all(feature = "debug-workbench", not(debug_assertions)))]
-compile_error!("feature `debug-workbench` 仅允许在 debug/dev 构建中启用");
-
 #[cfg(test)]
 #[path = "tests/agent_routes_tests.rs"]
 mod agent_routes_tests;
@@ -56,8 +53,6 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Result as AnyhowResult, anyhow};
 use astrcode_application::{App, AppGovernance, ApplicationError, AstrError};
-#[cfg(feature = "debug-workbench")]
-use astrcode_debug_workbench::DebugWorkbenchService;
 use axum::{
     Json, Router,
     http::StatusCode,
@@ -92,9 +87,6 @@ pub(crate) struct AppState {
     app: Arc<App>,
     /// 新治理层（快照/shutdown/reload，替代旧 RuntimeGovernance）
     governance: Arc<AppGovernance>,
-    /// Debug Workbench 后端读模型。
-    #[cfg(feature = "debug-workbench")]
-    debug_workbench: Arc<DebugWorkbenchService>,
     /// 认证会话管理器
     auth_sessions: Arc<AuthSessionManager>,
     /// Bootstrap 阶段的认证（短期 token）
@@ -115,9 +107,6 @@ pub(crate) struct FrontendBuild {
     dist_dir: PathBuf,
     /// index.html 内容（已注入 bootstrap token 脚本）
     index_html: Arc<String>,
-    /// debug.html 内容（已注入 bootstrap token 脚本）
-    #[cfg(feature = "debug-workbench")]
-    debug_html: Option<Arc<String>>,
 }
 
 /// 错误响应载荷。
@@ -230,11 +219,6 @@ async fn main() -> AnyhowResult<()> {
     let state = AppState {
         app: Arc::clone(&app_service),
         governance: Arc::clone(&runtime.governance),
-        #[cfg(feature = "debug-workbench")]
-        debug_workbench: Arc::new(DebugWorkbenchService::new(
-            Arc::clone(&app_service),
-            Arc::clone(&runtime.governance),
-        )),
         auth_sessions: Arc::new(AuthSessionManager::default()),
         bootstrap_auth: prepared_launch.bootstrap_auth,
         frontend_build: prepared_launch.frontend_build.clone(),

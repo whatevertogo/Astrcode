@@ -23,11 +23,11 @@ use astrcode_core::{
 };
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Map, json};
 
 use crate::builtin_tools::fs_common::{
-    build_text_change_report, check_cancel, is_symlink, is_unc_path, read_utf8_file, resolve_path,
-    write_text_file,
+    build_text_change_report, check_cancel, ensure_not_canonical_session_plan_write_target,
+    is_symlink, is_unc_path, read_utf8_file, resolve_path, write_text_file,
 };
 
 /// ApplyPatch 工具实现。
@@ -123,12 +123,17 @@ fn parse_patch(patch: &str) -> Result<Vec<FilePatch>> {
             continue;
         }
 
-        if line.starts_with("--- ") {
-            let old_path = strip_diff_prefix(line.strip_prefix("--- ").unwrap());
+        if let Some(old_path_line) = line.strip_prefix("--- ") {
+            let old_path = strip_diff_prefix(old_path_line);
             i += 1;
 
-            if i < lines.len() && lines[i].starts_with("+++ ") {
-                let new_path = strip_diff_prefix(lines[i].strip_prefix("+++ ").unwrap());
+            if i < lines.len() {
+                let Some(new_path_line) = lines[i].strip_prefix("+++ ") else {
+                    return Err(AstrError::Validation(
+                        "patch format error: expected '+++ new_path' after '--- old_path'".into(),
+                    ));
+                };
+                let new_path = strip_diff_prefix(new_path_line);
                 i += 1;
                 let hunks = parse_hunks(&lines, &mut i)?;
 
@@ -145,10 +150,6 @@ fn parse_patch(patch: &str) -> Result<Vec<FilePatch>> {
                     },
                     hunks,
                 });
-            } else {
-                return Err(AstrError::Validation(
-                    "patch format error: expected '+++ new_path' after '--- old_path'".into(),
-                ));
             }
         } else {
             return Err(AstrError::Validation(format!(
@@ -203,7 +204,11 @@ fn parse_hunks(lines: &[&str], i: &mut usize) -> Result<Vec<Hunk>> {
                     hunk_lines.push(HunkLine::Context(String::new()));
                     *i += 1;
                 } else {
-                    match l.chars().next().unwrap() {
+                    let Some(prefix) = l.chars().next() else {
+                        *i += 1;
+                        continue;
+                    };
+                    match prefix {
                         ' ' => {
                             hunk_lines.push(HunkLine::Context(l.chars().skip(1).collect()));
                             *i += 1;
@@ -511,6 +516,17 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
             };
         },
     };
+    if let Err(error) =
+        ensure_not_canonical_session_plan_write_target(ctx, &target_path, "apply_patch")
+    {
+        return FileChange {
+            change_type: change_type.into(),
+            path: target_path_str.clone(),
+            applied: false,
+            summary: error.to_string(),
+            error: Some(error.to_string()),
+        };
+    }
 
     // UNC 路径检查：防止 Windows NTLM 凭据泄露
     if is_unc_path(&target_path) {
@@ -535,10 +551,13 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
             path: target_path_str.clone(),
             applied: false,
             summary: format!(
-                "refusing to patch symlink '{}' (symlinks may point outside working directory)",
+                "refusing to patch symlink '{}' (symlinks may point outside the intended target \
+                 path)",
                 target_path.display()
             ),
-            error: Some("refusing to patch symlink (may point outside working directory)".into()),
+            error: Some(
+                "refusing to patch symlink (may point outside the intended target path)".into(),
+            ),
         };
     }
 
@@ -711,7 +730,7 @@ impl Tool for ApplyPatchTool {
         ToolCapabilityMetadata::builtin()
             .tags(["filesystem", "write", "patch", "diff"])
             .permission("filesystem.write")
-            .side_effect(SideEffect::Workspace)
+            .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
                     "Apply a unified diff patch across one or more files.",
@@ -779,6 +798,7 @@ impl Tool for ApplyPatchTool {
         let applied = results.iter().filter(|r| r.applied).count();
         let failed = total_files - applied;
 
+        let first_error = results.iter().find_map(|result| result.error.clone());
         let (ok, output, error) = if failed == 0 {
             (
                 true,
@@ -789,7 +809,7 @@ impl Tool for ApplyPatchTool {
             (
                 false,
                 format!("apply_patch: all {total_files} file(s) failed to apply"),
-                Some(format!("{failed} file(s) failed to apply")),
+                first_error.or(Some(format!("{failed} file(s) failed to apply"))),
             )
         } else {
             (
@@ -811,6 +831,7 @@ impl Tool for ApplyPatchTool {
             output,
             error,
             metadata: Some(metadata),
+            child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
@@ -833,6 +854,7 @@ fn make_error_result(
             "filesApplied": 0,
             "filesFailed": 0,
         })),
+        child_ref: None,
         duration_ms: started_at.elapsed().as_millis() as u64,
         truncated: false,
     })
@@ -846,18 +868,15 @@ fn build_apply_patch_metadata(
     let file_results: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
-            let mut obj = json!({
-                "path": r.path,
-                "changeType": r.change_type,
-                "applied": r.applied,
-                "summary": r.summary,
-            });
+            let mut obj = Map::new();
+            obj.insert("path".to_string(), json!(r.path));
+            obj.insert("changeType".to_string(), json!(r.change_type));
+            obj.insert("applied".to_string(), json!(r.applied));
+            obj.insert("summary".to_string(), json!(r.summary));
             if let Some(err) = &r.error {
-                obj.as_object_mut()
-                    .unwrap()
-                    .insert("error".to_string(), json!(err));
+                obj.insert("error".to_string(), json!(err));
             }
-            obj
+            serde_json::Value::Object(obj)
         })
         .collect();
 
@@ -1125,6 +1144,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_patch_allows_relative_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let workspace = parent.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        let tool = ApplyPatchTool;
+
+        let patch = "--- /dev/null\n+++ b/../outside.txt\n@@ -0,0 +1,1 @@\n+outside patch\n";
+
+        let result = tool
+            .execute(
+                "tc-patch-outside".into(),
+                json!({ "patch": patch }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("should execute");
+
+        assert!(result.ok, "should succeed: {}", result.output);
+        let content = tokio::fs::read_to_string(parent.path().join("outside.txt"))
+            .await
+            .expect("outside file should be readable");
+        assert_eq!(content, "outside patch");
+    }
+
+    #[tokio::test]
     async fn apply_patch_delete_validates_existing_content() {
         let temp = tempfile::tempdir().expect("tempdir");
         let file = temp.path().join("old_file.txt");
@@ -1148,6 +1194,32 @@ mod tests {
         assert!(
             file.exists(),
             "file should remain when delete validation fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_rejects_canonical_session_plan_targets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tool = ApplyPatchTool;
+        let patch = "--- /dev/null\n+++ \
+                     b/.astrcode-test-state/sessions/session-test/plan/cleanup-crates.md\n@@ -0,0 \
+                     +1,1 @@\n+# Plan: Cleanup crates\n";
+
+        let result = tool
+            .execute(
+                "tc-patch-plan".into(),
+                json!({ "patch": patch }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("should return result");
+
+        assert!(!result.ok);
+        assert!(
+            result
+                .error
+                .unwrap_or_default()
+                .contains("upsertSessionPlan")
         );
     }
 }

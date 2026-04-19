@@ -8,8 +8,15 @@ describe('parseRuntimeSlashCommand', () => {
     expect(parseRuntimeSlashCommand('  /compact  ')).toEqual({ kind: 'compact' });
   });
 
-  it('rejects compact with unexpected arguments', () => {
-    expect(parseRuntimeSlashCommand('/compact now')).toEqual({ kind: 'compactInvalidArgs' });
+  it('captures compact instructions when arguments are present', () => {
+    expect(parseRuntimeSlashCommand('/compact now')).toEqual({
+      kind: 'compact',
+      instructions: 'now',
+    });
+    expect(parseRuntimeSlashCommand('/compact   keep paths and errors  ')).toEqual({
+      kind: 'compact',
+      instructions: 'keep paths and errors',
+    });
   });
 
   it('does not hijack similarly named prompt text', () => {

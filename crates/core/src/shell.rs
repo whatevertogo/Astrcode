@@ -1,3 +1,21 @@
+//! # Shell 检测与解析
+//!
+//! 自动检测当前平台的默认 Shell，并支持用户指定的 Shell 覆盖。
+//!
+//! ## 支持的 Shell 类型
+//!
+//! - **PowerShell**: `pwsh` / `powershell`
+//! - **Cmd**: `cmd`
+//! - **Posix**: `bash` / `zsh` / `sh`
+//! - **Wsl**: Windows WSL bash
+//!
+//! ## 检测策略（Windows 优先级）
+//!
+//! 1. `$env:SHELL` 环境变量（支持 Git Bash / WSL 环境检测）
+//! 2. Git Bash 磁盘路径探测
+//! 3. `wsl.exe` / `wsl` 命令探测
+//! 4. `pwsh` / `powershell` 兜底
+
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::{env, path::Path, process::Command, sync::OnceLock};

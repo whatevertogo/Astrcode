@@ -176,7 +176,7 @@ impl CapabilityInvoker for ReadMcpResourceTool {
                     json!({
                         "uri": content.uri,
                         "mimeType": content.mime_type,
-                        "text": rendered,
+                        "text": rendered.output,
                     })
                 } else if let Some(blob) = &content.blob {
                     match persist_blob_content(

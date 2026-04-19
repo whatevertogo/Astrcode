@@ -82,11 +82,12 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
         runtime.micro_compact_keep_recent_results => "runtime.microCompactKeepRecentResults",
         runtime.max_consecutive_failures => "runtime.maxConsecutiveFailures",
         runtime.recovery_truncate_bytes => "runtime.recoveryTruncateBytes",
+        runtime.reserved_context_size => "runtime.reservedContextSize",
     )?;
 
     validate_positive_fields!(
         runtime.compact_keep_recent_turns => "runtime.compactKeepRecentTurns",
-        runtime.max_reactive_compact_attempts => "runtime.maxReactiveCompactAttempts",
+        runtime.compact_max_retry_attempts => "runtime.compactMaxRetryAttempts",
         runtime.max_output_continuation_attempts => "runtime.maxOutputContinuationAttempts",
         runtime.max_continuations => "runtime.maxContinuations",
     )?;
@@ -321,7 +322,7 @@ mod tests {
             version: String::new(),
             ..Config::default()
         };
-        let result = normalize_config(config).unwrap();
+        let result = normalize_config(config).expect("normalize should succeed");
         assert_eq!(result.version, "1");
     }
 

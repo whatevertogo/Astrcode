@@ -32,9 +32,10 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    build_text_change_report, capture_file_observation, check_cancel, file_observation_matches,
-    is_symlink, is_unc_path, load_file_observation, read_utf8_file, remember_file_observation,
-    resolve_path, write_text_file,
+    build_text_change_report, capture_file_observation, check_cancel,
+    ensure_not_canonical_session_plan_write_target, file_observation_matches, is_symlink,
+    is_unc_path, load_file_observation, read_utf8_file, remember_file_observation, resolve_path,
+    write_text_file,
 };
 
 /// 可编辑文件的最大大小（1 GiB）。
@@ -143,7 +144,7 @@ impl Tool for EditFileTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path to edit (relative to workspace or absolute)."
+                        "description": "File path to edit (relative to the current working directory or absolute)."
                     },
                     "oldStr": {
                         "type": "string",
@@ -183,7 +184,7 @@ impl Tool for EditFileTool {
         ToolCapabilityMetadata::builtin()
             .tags(["filesystem", "write", "edit"])
             .permission("filesystem.write")
-            .side_effect(SideEffect::Workspace)
+            .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
                     "Apply a narrow, safety-checked string replacement inside an existing file.",
@@ -275,6 +276,7 @@ impl Tool for EditFileTool {
 
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
+        ensure_not_canonical_session_plan_write_target(ctx, &path, "editFile")?;
 
         // UNC 路径检查：防止 Windows NTLM 凭据泄露
         if is_unc_path(&path) {
@@ -292,6 +294,7 @@ impl Tool for EditFileTool {
                     "path": path.to_string_lossy(),
                     "uncPath": true,
                 })),
+                child_ref: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -305,13 +308,15 @@ impl Tool for EditFileTool {
                 ok: false,
                 output: String::new(),
                 error: Some(format!(
-                    "refusing to edit symlink '{}' (symlinks may point outside working directory)",
+                    "refusing to edit symlink '{}' (symlinks may point outside the intended \
+                     target path)",
                     path.display()
                 )),
                 metadata: Some(json!({
                     "path": path.to_string_lossy(),
                     "isSymlink": true,
                 })),
+                child_ref: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -346,6 +351,7 @@ impl Tool for EditFileTool {
                         "bytes": metadata.len(),
                         "tooLarge": true,
                     })),
+                    child_ref: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 });
@@ -452,6 +458,7 @@ impl Tool for EditFileTool {
             },
             error: None,
             metadata: Some(metadata),
+            child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
@@ -506,6 +513,7 @@ fn make_edit_error_result(
         metadata: Some(json!({
             "path": path.to_string_lossy(),
         })),
+        child_ref: None,
         duration_ms: started_at.elapsed().as_millis() as u64,
         truncated: false,
     })
@@ -902,6 +910,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edit_file_allows_relative_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside.txt");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        tokio::fs::write(&outside, "alpha beta")
+            .await
+            .expect("outside file should be written");
+        let tool = EditFileTool;
+
+        let result = tool
+            .execute(
+                "tc-edit-outside".to_string(),
+                json!({
+                    "path": "../outside.txt",
+                    "oldStr": "alpha",
+                    "newStr": "omega"
+                }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("editFile should execute");
+
+        assert!(result.ok);
+        let content = tokio::fs::read_to_string(&outside)
+            .await
+            .expect("outside file should be readable");
+        assert_eq!(content, "omega beta");
+    }
+
+    #[tokio::test]
     async fn edit_file_batch_edits_rejects_empty_array() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let file = temp.path().join("hello.txt");
@@ -923,6 +964,45 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_rejects_canonical_session_plan_targets() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp
+            .path()
+            .join(".astrcode-test-state")
+            .join("sessions")
+            .join("session-test")
+            .join("plan")
+            .join("cleanup-crates.md");
+        tokio::fs::create_dir_all(file.parent().expect("plan file should have a parent"))
+            .await
+            .expect("plan dir should be created");
+        tokio::fs::write(&file, "# Plan: Cleanup crates\n")
+            .await
+            .expect("seed write should work");
+        let tool = EditFileTool;
+
+        let result = tool
+            .execute(
+                "tc-edit-plan".to_string(),
+                json!({
+                    "path": file.to_string_lossy(),
+                    "oldStr": "Cleanup crates",
+                    "newStr": "Prompt governance"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("upsertSessionPlan")
+        );
     }
 
     #[tokio::test]

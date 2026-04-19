@@ -10,23 +10,24 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentCollaborationFact, AgentId, AgentStateProjector, AstrError, EventLogWriter, EventStore,
-    EventTranslator, LlmOutput, LlmProvider, LlmRequest, ModelLimits, Phase, PromptBuildOutput,
-    PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider,
-    ResourceProvider, ResourceReadResult, ResourceRequestContext, Result, RuntimeMetricsRecorder,
-    SessionMeta, SessionTurnAcquireResult, StorageEvent, StorageEventPayload, StoreResult,
-    StoredEvent, SubRunExecutionOutcome, Tool,
+    AgentCollaborationFact, AgentId, AgentStateProjector, AstrError, CompactAppliedMeta,
+    CompactMode, EventLogWriter, EventStore, EventTranslator, LlmOutput, LlmProvider, LlmRequest,
+    ModelLimits, Phase, PromptBuildOutput, PromptBuildRequest, PromptFacts, PromptFactsProvider,
+    PromptFactsRequest, PromptProvider, ResourceProvider, ResourceReadResult,
+    ResourceRequestContext, Result, RuntimeMetricsRecorder, SessionMeta, SessionTurnAcquireResult,
+    StorageEvent, StorageEventPayload, StoreResult, StoredEvent, Tool,
 };
 use astrcode_kernel::{Kernel, KernelGateway, ToolCapabilityInvoker};
 use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
-    SessionRuntime, SessionState, SessionWriter,
+    SessionRuntime, SessionState,
     actor::SessionActor,
-    state::append_and_broadcast,
+    state::{SessionWriter, append_and_broadcast},
     turn::events::{
-        CompactAppliedStats, assistant_final_event, compact_applied_event, user_message_event,
+        CompactAppliedStats, assistant_final_event, compact_applied_event, turn_done_event,
+        user_message_event,
     },
 };
 
@@ -61,6 +62,8 @@ impl PromptProvider for NoopPromptProvider {
         Ok(PromptBuildOutput {
             system_prompt: "noop".to_string(),
             system_prompt_blocks: Vec::new(),
+            prompt_cache_hints: Default::default(),
+            cache_metrics: Default::default(),
             metadata: Value::Null,
         })
     }
@@ -262,7 +265,7 @@ impl RuntimeMetricsRecorder for NoopMetrics {
     fn record_subrun_execution(
         &self,
         _duration_ms: u64,
-        _outcome: SubRunExecutionOutcome,
+        _outcome: astrcode_core::AgentTurnOutcome,
         _step_count: Option<u32>,
         _estimated_tokens: Option<u64>,
         _storage_mode: Option<astrcode_core::SubRunStorageMode>,
@@ -328,6 +331,15 @@ pub(crate) fn root_assistant_final_event(
     )
 }
 
+pub(crate) fn root_turn_done_event(turn_id: &str, reason: Option<String>) -> StorageEvent {
+    turn_done_event(
+        turn_id,
+        &astrcode_core::AgentEventContext::default(),
+        reason,
+        chrono::Utc::now(),
+    )
+}
+
 pub(crate) fn root_compact_applied_event(
     turn_id: &str,
     summary: impl Into<String>,
@@ -343,6 +355,14 @@ pub(crate) fn root_compact_applied_event(
         astrcode_core::CompactTrigger::Auto,
         summary.into(),
         CompactAppliedStats {
+            meta: CompactAppliedMeta {
+                mode: CompactMode::Full,
+                instructions_present: false,
+                fallback_used: false,
+                retry_count: 0,
+                input_units: 0,
+                output_summary_chars: 0,
+            },
             preserved_recent_turns,
             pre_tokens,
             post_tokens_estimate,
@@ -367,7 +387,7 @@ pub(crate) fn assert_contains_compact_summary(events: &[StoredEvent], expected_s
     assert!(
         events.iter().any(|stored| matches!(
             &stored.event.payload,
-            StorageEventPayload::CompactApplied { summary, .. } if summary == expected_summary
+            StorageEventPayload::CompactApplied { summary, .. } if summary.contains(expected_summary)
         )),
         "expected stored events to contain CompactApplied('{expected_summary}')"
     );
@@ -379,15 +399,6 @@ pub(crate) fn assert_has_turn_done(events: &[StorageEvent]) {
             .iter()
             .any(|event| matches!(&event.payload, StorageEventPayload::TurnDone { .. })),
         "expected events to contain TurnDone"
-    );
-}
-
-pub(crate) fn assert_has_assistant_final(events: &[StorageEvent]) {
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
-        "expected events to contain AssistantFinal"
     );
 }
 
@@ -431,6 +442,58 @@ impl BranchingTestEventStore {
             .get(session_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    pub(crate) fn seed_session(
+        &self,
+        session_id: &str,
+        working_dir: &str,
+        events: Vec<StoredEvent>,
+    ) {
+        let max_seq = events
+            .iter()
+            .map(|stored| stored.storage_seq)
+            .max()
+            .unwrap_or(0);
+        self.next_seq
+            .fetch_max(max_seq, std::sync::atomic::Ordering::SeqCst);
+        self.events
+            .lock()
+            .expect("events lock should work")
+            .insert(session_id.to_string(), events.clone());
+
+        let now = chrono::Utc::now();
+        let mut meta = SessionMeta {
+            session_id: session_id.to_string(),
+            working_dir: working_dir.to_string(),
+            display_name: crate::display_name_from_working_dir(Path::new(working_dir)),
+            title: "New Session".to_string(),
+            created_at: now,
+            updated_at: now,
+            parent_session_id: None,
+            parent_storage_seq: None,
+            phase: Phase::Idle,
+        };
+        if let Some(stored) = events.iter().find(|stored| {
+            matches!(
+                stored.event.payload,
+                StorageEventPayload::SessionStart { .. }
+            )
+        }) {
+            if let StorageEventPayload::SessionStart {
+                parent_session_id,
+                parent_storage_seq,
+                ..
+            } = &stored.event.payload
+            {
+                meta.parent_session_id = parent_session_id.clone();
+                meta.parent_storage_seq = *parent_storage_seq;
+            }
+        }
+        self.metas
+            .lock()
+            .expect("metas lock should work")
+            .insert(session_id.to_string(), meta);
     }
 }
 

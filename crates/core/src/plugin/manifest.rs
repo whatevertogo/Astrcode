@@ -28,6 +28,7 @@ pub enum PluginType {
 /// 从 `Plugin.toml` 解析，描述插件的元数据和能力声明。
 /// `name` 字段必须与插件目录名一致（kebab-case）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PluginManifest {
     /// 插件名称（必须与目录名一致，kebab-case）
     pub name: String,

@@ -33,10 +33,11 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
         | StorageEventPayload::SubRunFinished { .. }
         | StorageEventPayload::ChildSessionNotification { .. }
         | StorageEventPayload::AgentCollaborationFact { .. }
-        | StorageEventPayload::AgentMailboxQueued { .. }
-        | StorageEventPayload::AgentMailboxBatchStarted { .. }
-        | StorageEventPayload::AgentMailboxBatchAcked { .. }
-        | StorageEventPayload::AgentMailboxDiscarded { .. } => Phase::Idle,
+        | StorageEventPayload::ModeChanged { .. }
+        | StorageEventPayload::AgentInputQueued { .. }
+        | StorageEventPayload::AgentInputBatchStarted { .. }
+        | StorageEventPayload::AgentInputBatchAcked { .. }
+        | StorageEventPayload::AgentInputDiscarded { .. } => Phase::Idle,
         StorageEventPayload::AssistantDelta { .. }
         | StorageEventPayload::ThinkingDelta { .. }
         | StorageEventPayload::AssistantFinal { .. } => Phase::Streaming,
@@ -66,9 +67,14 @@ pub fn normalize_recovered_phase(phase: Phase) -> Phase {
 
 /// Stateful phase tracker.
 ///
-/// Call [`Self::on_event`] whenever a new `StorageEvent` arrives. If the event
-/// causes a phase transition you'll get back `Some(AgentEvent::PhaseChanged)`
-/// and should push it *before* the primary event record.
+/// 维护当前会话阶段状态，在阶段实际变更时才发出 `PhaseChanged` 事件。
+/// 这是 SSE 推送和前端状态指示器的唯一 phase 来源。
+///
+/// 关键设计：
+/// - 内部唤醒消息（AutoContinueNudge / QueuedInput / ContinuationPrompt / ReactivationPrompt /
+///   RecentUserContextDigest / RecentUserContext / CompactSummary）不触发 phase 变更，避免 UI 闪烁
+/// - 辅助事件（PromptMetrics / CompactApplied / SubRun 等）也不触发 phase 变更
+/// - `force_to` 用于 SessionStart → Idle 和 TurnDone → Idle 这类必须变更的场景
 pub struct PhaseTracker {
     current: Phase,
 }
@@ -78,8 +84,10 @@ impl PhaseTracker {
         Self { current: initial }
     }
 
-    /// Process a storage event and return a `PhaseChanged` event if the phase
-    /// actually changed.
+    /// 处理存储事件，若阶段实际变更则返回 `PhaseChanged` 事件。
+    ///
+    /// 返回的事件应在主事件之前推送（before-push），
+    /// 这样前端先收到 PhaseChanged 再收到实际内容，保证状态指示器及时更新。
     pub fn on_event(
         &mut self,
         event: &StorageEvent,
@@ -90,8 +98,11 @@ impl PhaseTracker {
             &event.payload,
             StorageEventPayload::UserMessage {
                 origin: UserMessageOrigin::AutoContinueNudge
+                    | UserMessageOrigin::QueuedInput
                     | UserMessageOrigin::ContinuationPrompt
                     | UserMessageOrigin::ReactivationPrompt
+                    | UserMessageOrigin::RecentUserContextDigest
+                    | UserMessageOrigin::RecentUserContext
                     | UserMessageOrigin::CompactSummary,
                 ..
             }
@@ -107,10 +118,11 @@ impl PhaseTracker {
                 | StorageEventPayload::SubRunFinished { .. }
                 | StorageEventPayload::ChildSessionNotification { .. }
                 | StorageEventPayload::AgentCollaborationFact { .. }
-                | StorageEventPayload::AgentMailboxQueued { .. }
-                | StorageEventPayload::AgentMailboxBatchStarted { .. }
-                | StorageEventPayload::AgentMailboxBatchAcked { .. }
-                | StorageEventPayload::AgentMailboxDiscarded { .. }
+                | StorageEventPayload::ModeChanged { .. }
+                | StorageEventPayload::AgentInputQueued { .. }
+                | StorageEventPayload::AgentInputBatchStarted { .. }
+                | StorageEventPayload::AgentInputBatchAcked { .. }
+                | StorageEventPayload::AgentInputDiscarded { .. }
         ) {
             return None;
         }
@@ -134,8 +146,10 @@ impl PhaseTracker {
         self.current
     }
 
-    /// Force a phase transition. Used by SessionStart and TurnDone where the
-    /// phase must change regardless of the event type alone.
+    /// 强制切换到指定阶段，无视事件类型推断。
+    ///
+    /// 用于 SessionStart（必须到 Idle）和 TurnDone（必须回到 Idle）等
+    /// 不依赖事件类型就能确定目标阶段的场景。
     pub fn force_to(
         &mut self,
         phase: Phase,

@@ -4,14 +4,15 @@
 //! 本模块将其适配到 `LayeredPromptBuilder` 的完整 prompt 构建能力上。
 
 use astrcode_core::{
-    Result, SystemPromptBlock,
-    ports::{PromptBuildOutput, PromptBuildRequest, PromptProvider},
+    Result, SystemPromptBlock, SystemPromptLayer,
+    ports::{PromptBuildCacheMetrics, PromptBuildOutput, PromptBuildRequest, PromptProvider},
 };
 use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
     PromptAgentProfileSummary, PromptContext, PromptDeclaration, PromptSkillSummary,
+    diagnostics::DiagnosticReason,
     layered_builder::{LayeredPromptBuilder, default_layered_prompt_builder},
 };
 
@@ -78,29 +79,21 @@ impl PromptProvider for ComposerPromptProvider {
             .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))?;
 
         let system_prompt = output.plan.render_system().unwrap_or_default();
-
-        // 将 ordered system blocks 转为 core 的 SystemPromptBlock 格式
-        let system_prompt_blocks: Vec<SystemPromptBlock> = output
-            .plan
-            .ordered_system_blocks()
-            .into_iter()
-            .map(|block| SystemPromptBlock {
-                title: block.title.clone(),
-                content: block.content.clone(),
-                cache_boundary: false,
-                layer: block.layer,
-            })
-            .collect();
+        let prompt_cache_hints = output.cache_hints.clone();
+        let system_prompt_blocks = build_system_prompt_blocks(&output.plan);
 
         Ok(PromptBuildOutput {
             system_prompt,
             system_prompt_blocks,
+            prompt_cache_hints: prompt_cache_hints.clone(),
+            cache_metrics: summarize_prompt_cache_metrics(&output),
             metadata: serde_json::json!({
                 "extra_tools_count": output.plan.extra_tools.len(),
                 "diagnostics_count": output.diagnostics.items.len(),
                 "profile": request.profile,
                 "step_index": request.step_index,
                 "turn_index": request.turn_index,
+                "promptCacheHints": prompt_cache_hints,
             }),
         })
     }
@@ -159,6 +152,52 @@ fn build_prompt_vars(request: &PromptBuildRequest) -> std::collections::HashMap<
         );
     }
     vars
+}
+
+fn summarize_prompt_cache_metrics(output: &crate::PromptBuildOutput) -> PromptBuildCacheMetrics {
+    let mut metrics = PromptBuildCacheMetrics::default();
+    for diagnostic in &output.diagnostics.items {
+        match &diagnostic.reason {
+            DiagnosticReason::CacheReuseHit { .. } => {
+                metrics.reuse_hits = metrics.reuse_hits.saturating_add(1);
+            },
+            DiagnosticReason::CacheReuseMiss { .. } => {
+                metrics.reuse_misses = metrics.reuse_misses.saturating_add(1);
+            },
+            _ => {},
+        }
+    }
+    metrics.unchanged_layers = output.cache_hints.unchanged_layers.clone();
+    metrics
+}
+
+fn build_system_prompt_blocks(plan: &crate::PromptPlan) -> Vec<SystemPromptBlock> {
+    let ordered = plan.ordered_system_blocks();
+    let mut last_cacheable_index = std::collections::HashMap::<SystemPromptLayer, usize>::new();
+    for (index, block) in ordered.iter().enumerate() {
+        if cacheable_prompt_layer(block.layer) {
+            last_cacheable_index.insert(block.layer, index);
+        }
+    }
+    ordered
+        .into_iter()
+        .enumerate()
+        .map(|(index, block)| SystemPromptBlock {
+            title: block.title.clone(),
+            content: block.content.clone(),
+            cache_boundary: last_cacheable_index
+                .get(&block.layer)
+                .is_some_and(|candidate| *candidate == index),
+            layer: block.layer,
+        })
+        .collect()
+}
+
+fn cacheable_prompt_layer(layer: SystemPromptLayer) -> bool {
+    matches!(
+        layer,
+        SystemPromptLayer::Stable | SystemPromptLayer::SemiStable | SystemPromptLayer::Inherited
+    )
 }
 
 fn insert_json_string(

@@ -1,20 +1,20 @@
 use astrcode_protocol::plugin::{
-    BudgetHint, CallerRef, CancelMessage, CapabilityDescriptor, CapabilityKind, ErrorPayload,
+    BudgetHint, CallerRef, CancelMessage, CapabilityKind, CapabilityWireDescriptor, ErrorPayload,
     EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor, InitializeMessage,
-    InitializeResultData, InvocationContext, PROTOCOL_VERSION, PeerDescriptor, PeerRole,
-    PermissionHint, PluginMessage, ProfileDescriptor, ResultMessage, SideEffectLevel,
-    StabilityLevel, TriggerDescriptor, WorkspaceRef,
+    InitializeResultData, InvocationContext, InvocationMode, PROTOCOL_VERSION, PeerDescriptor,
+    PeerRole, PermissionSpec, PluginMessage, ProfileDescriptor, ResultMessage, SideEffect,
+    Stability, TriggerDescriptor, WorkspaceRef,
 };
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> Value {
     let path = match name {
-        "initialize" => include_str!("fixtures/v4/initialize.json"),
-        "invoke" => include_str!("fixtures/v4/invoke.json"),
-        "result_initialize" => include_str!("fixtures/v4/result_initialize.json"),
-        "result_error" => include_str!("fixtures/v4/result_error.json"),
-        "event_delta" => include_str!("fixtures/v4/event_delta.json"),
-        "cancel" => include_str!("fixtures/v4/cancel.json"),
+        "initialize" => include_str!("fixtures/v5/initialize.json"),
+        "invoke" => include_str!("fixtures/v5/invoke.json"),
+        "result_initialize" => include_str!("fixtures/v5/result_initialize.json"),
+        "result_error" => include_str!("fixtures/v5/result_error.json"),
+        "event_delta" => include_str!("fixtures/v5/event_delta.json"),
+        "cancel" => include_str!("fixtures/v5/cancel.json"),
         other => panic!("unknown fixture {other}"),
     };
     serde_json::from_str(path).expect("fixture should be valid JSON")
@@ -31,9 +31,9 @@ fn sample_peer() -> PeerDescriptor {
     }
 }
 
-fn sample_capability() -> CapabilityDescriptor {
-    CapabilityDescriptor {
-        name: "workspace.summary".to_string(),
+fn sample_capability() -> CapabilityWireDescriptor {
+    CapabilityWireDescriptor {
+        name: "workspace.summary".into(),
         kind: CapabilityKind::tool(),
         description: "Summarize the active coding workspace.".to_string(),
         input_schema: json!({
@@ -41,17 +41,17 @@ fn sample_capability() -> CapabilityDescriptor {
             "properties": {}
         }),
         output_schema: json!({ "type": "object" }),
-        streaming: false,
+        invocation_mode: InvocationMode::Unary,
         concurrency_safe: false,
         compact_clearable: false,
         profiles: vec!["coding".to_string()],
         tags: vec!["workspace".to_string(), "summary".to_string()],
-        permissions: vec![PermissionHint {
+        permissions: vec![PermissionSpec {
             name: "filesystem.read".to_string(),
             rationale: Some("Need to inspect the active repository.".to_string()),
         }],
-        side_effect: SideEffectLevel::None,
-        stability: StabilityLevel::Stable,
+        side_effect: SideEffect::None,
+        stability: Stability::Stable,
         metadata: Value::Null,
         max_result_inline_size: None,
     }
@@ -81,7 +81,7 @@ fn sample_profile() -> ProfileDescriptor {
 }
 
 #[test]
-fn initialize_fixture_matches_protocol_v4_shape() {
+fn initialize_fixture_matches_protocol_v5_shape() {
     let expected = PluginMessage::Initialize(InitializeMessage {
         id: "init-1".to_string(),
         protocol_version: PROTOCOL_VERSION.to_string(),
@@ -102,7 +102,7 @@ fn initialize_fixture_matches_protocol_v4_shape() {
                 op: "eq".to_string(),
                 value: "coding".to_string(),
             }],
-            permissions: vec![PermissionHint {
+            permissions: vec![PermissionSpec {
                 name: "filesystem.read".to_string(),
                 rationale: Some("Reads workspace files.".to_string()),
             }],
@@ -193,6 +193,7 @@ fn result_initialize_fixture_freezes_handshake_response_shape() {
             handlers: vec![],
             profiles: vec![sample_profile()],
             skills: vec![],
+            modes: vec![],
             metadata: json!({ "transport": "stdio" }),
         })
         .expect("initialize result should serialize"),
@@ -214,7 +215,7 @@ fn result_initialize_fixture_freezes_handshake_response_shape() {
     };
     let handshake: InitializeResultData = result.parse_output().expect("output should parse");
     assert_eq!(handshake.protocol_version, PROTOCOL_VERSION);
-    assert_eq!(handshake.capabilities[0].name, "workspace.summary");
+    assert_eq!(handshake.capabilities[0].name.as_str(), "workspace.summary");
 }
 
 #[test]

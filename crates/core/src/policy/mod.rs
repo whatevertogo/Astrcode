@@ -12,6 +12,6 @@ mod engine;
 
 pub use engine::{
     AllowAllPolicyEngine, ApprovalDefault, ApprovalPending, ApprovalRequest, ApprovalResolution,
-    CapabilityCall, ContextDecisionInput, ContextStrategy, ModelRequest, PolicyContext,
-    PolicyEngine, PolicyVerdict, SystemPromptBlock, SystemPromptLayer,
+    CapabilityCall, ModelRequest, PolicyContext, PolicyEngine, PolicyVerdict, SystemPromptBlock,
+    SystemPromptLayer,
 };

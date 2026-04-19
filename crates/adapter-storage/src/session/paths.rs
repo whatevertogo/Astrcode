@@ -218,6 +218,47 @@ pub(crate) fn session_turn_metadata_path_from_projects_root(
     )
 }
 
+pub(crate) fn snapshots_dir(session_id: &str) -> Result<PathBuf> {
+    Ok(resolve_existing_session_dir(session_id)?.join("snapshots"))
+}
+
+pub(crate) fn snapshots_dir_from_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+) -> Result<PathBuf> {
+    Ok(
+        resolve_existing_session_dir_from_projects_root(projects_root, session_id)?
+            .join("snapshots"),
+    )
+}
+
+pub(crate) fn checkpoint_snapshot_path(
+    session_id: &str,
+    checkpoint_storage_seq: u64,
+) -> Result<PathBuf> {
+    Ok(snapshots_dir(session_id)?.join(format!("checkpoint-{checkpoint_storage_seq}.json")))
+}
+
+pub(crate) fn checkpoint_snapshot_path_from_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+    checkpoint_storage_seq: u64,
+) -> Result<PathBuf> {
+    Ok(snapshots_dir_from_projects_root(projects_root, session_id)?
+        .join(format!("checkpoint-{checkpoint_storage_seq}.json")))
+}
+
+pub(crate) fn latest_checkpoint_marker_path(session_id: &str) -> Result<PathBuf> {
+    Ok(snapshots_dir(session_id)?.join("latest-checkpoint.json"))
+}
+
+pub(crate) fn latest_checkpoint_marker_path_from_projects_root(
+    projects_root: &Path,
+    session_id: &str,
+) -> Result<PathBuf> {
+    Ok(snapshots_dir_from_projects_root(projects_root, session_id)?.join("latest-checkpoint.json"))
+}
+
 /// 枚举所有项目下的 sessions 目录。
 ///
 /// 遍历 `projects_root` 下的每个子目录，查找其 `sessions` 子目录，

@@ -408,14 +408,19 @@ mod tests {
 
     async fn setup_connected_client() -> McpClient {
         let (mock_transport, _) = create_connected_mock().await;
-        McpClient::connect(mock_transport).await.unwrap()
+        McpClient::connect(mock_transport)
+            .await
+            .expect("client connect should succeed")
     }
 
     #[tokio::test]
     async fn test_handshake_success() {
         let client = setup_connected_client().await;
         assert!(client.server_info().is_some());
-        assert_eq!(client.server_info().unwrap().name, "test-server");
+        assert_eq!(
+            client.server_info().expect("server_info should exist").name,
+            "test-server"
+        );
         assert!(client.capabilities().is_some());
         assert_eq!(client.instructions(), Some("Test server instructions"));
     }
@@ -447,9 +452,14 @@ mod tests {
 
         // 添加 tools/list 响应到 transport
         // 验证 capabilities 中 tools 存在
-        let caps = client.capabilities().unwrap();
+        let caps = client.capabilities().expect("capabilities should exist");
         assert!(caps.tools.is_some());
-        assert!(caps.tools.as_ref().unwrap().list_changed);
+        assert!(
+            caps.tools
+                .as_ref()
+                .expect("tools capability should exist")
+                .list_changed
+        );
     }
 
     #[tokio::test]

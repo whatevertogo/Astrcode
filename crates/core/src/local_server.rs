@@ -1,3 +1,8 @@
+//! # Local Server 引导协议
+//!
+//! 定义 Desktop shell 与 sidecar server 之间的发现和引导 DTO。
+//! 统一 `run.json` 文件写入和 stdout ready 行协议，避免两套近似字段随时间漂移。
+
 use serde::{Deserialize, Serialize};
 
 /// Desktop shell 和 sidecar server 之间用于发现和引导的共享载荷。
@@ -7,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// - `astrcode-server` 通过 stdout 发出 ready 事件，供桌面端进程同步等待
 ///
 /// 统一 DTO 的目的是避免两个进程各自维护一套近似字段，随着时间漂移后
-/// 出现“run.json 能读、ready 行却解析失败”之类的隐蔽兼容问题。
+/// 出现”run.json 能读、ready 行却解析失败”之类的隐蔽兼容问题。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalServerInfo {

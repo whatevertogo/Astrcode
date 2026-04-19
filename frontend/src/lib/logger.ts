@@ -103,6 +103,9 @@ function log(level: LogLevel, source: string, ...args: unknown[]): void {
 
   sendToServer(payload);
 
+  // Why: 浏览器端 logger 需要在本地开发和服务端日志桥接失效时保留可见输出，
+  // 这里的 console 是受控的 fallback，不是临时调试残留。
+  /* eslint-disable no-console */
   switch (level) {
     case 'debug':
       console.debug(message, ...details);
@@ -117,6 +120,7 @@ function log(level: LogLevel, source: string, ...args: unknown[]): void {
       console.error(message, ...details);
       return;
   }
+  /* eslint-enable no-console */
 }
 
 export const logger = {

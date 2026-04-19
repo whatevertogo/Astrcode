@@ -182,10 +182,10 @@ mod tests {
             event: StorageEvent {
                 turn_id: Some("turn-parent".to_string()),
                 agent: AgentEventContext {
-                    agent_id: Some("agent-child".to_string()),
-                    parent_turn_id: Some("turn-parent".to_string()),
+                    agent_id: Some("agent-child".into()),
+                    parent_turn_id: Some("turn-parent".into()),
                     agent_profile: Some("review".to_string()),
-                    sub_run_id: Some("subrun-1".to_string()),
+                    sub_run_id: Some("subrun-1".into()),
                     parent_sub_run_id: None,
                     invocation_kind: Some(InvocationKind::SubRun),
                     storage_mode: Some(SubRunStorageMode::IndependentSession),

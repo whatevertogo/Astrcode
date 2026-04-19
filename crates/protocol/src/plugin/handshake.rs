@@ -10,17 +10,18 @@
 //!
 //! 握手完成后，双方进入正常的调用/事件流阶段。
 
+use astrcode_core::GovernanceModeSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    CapabilityDescriptor, HandlerDescriptor, PeerDescriptor, ProfileDescriptor, SkillDescriptor,
+    CapabilityWireDescriptor, HandlerDescriptor, PeerDescriptor, ProfileDescriptor, SkillDescriptor,
 };
 
 /// 插件协议版本号。
 ///
-/// 当前版本为 "4"，与 ADR 0001 中定义的 wire model 版本一致。
-pub const PROTOCOL_VERSION: &str = "4";
+/// 当前版本为 "5"，与 capability wire shape 的 `invocationMode` 收口一致。
+pub const PROTOCOL_VERSION: &str = "5";
 
 /// 握手初始化消息，由 host 发送给插件。
 ///
@@ -41,7 +42,7 @@ pub struct InitializeMessage {
     pub peer: PeerDescriptor,
     /// host 暴露的能力列表
     #[serde(default)]
-    pub capabilities: Vec<CapabilityDescriptor>,
+    pub capabilities: Vec<CapabilityWireDescriptor>,
     /// host 注册的事件处理器列表
     #[serde(default)]
     pub handlers: Vec<HandlerDescriptor>,
@@ -63,6 +64,11 @@ pub struct InitializeMessage {
 /// 插件可以通过 `skills` 字段声明自己提供的 skill。Host 将这些声明解析为
 /// `SkillSpec`（来源标记为 `Plugin`），并统一纳入 `SkillCatalog` 管理。
 /// Skill 资产文件会在初始化时被物化到 runtime 缓存目录。
+///
+/// ## Mode 声明
+///
+/// 插件也可以通过 `modes` 字段声明治理 mode。Host 会在 bootstrap / reload 时
+/// 把这些 mode 注册到 `ModeCatalog`，并在后续 turn 编译阶段纳入统一治理装配。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResultData {
@@ -72,7 +78,7 @@ pub struct InitializeResultData {
     pub peer: PeerDescriptor,
     /// 插件注册的能力列表
     #[serde(default)]
-    pub capabilities: Vec<CapabilityDescriptor>,
+    pub capabilities: Vec<CapabilityWireDescriptor>,
     /// 插件注册的事件处理器列表
     #[serde(default)]
     pub handlers: Vec<HandlerDescriptor>,
@@ -85,6 +91,12 @@ pub struct InitializeResultData {
     /// Skill 资产文件会被物化到 runtime 缓存目录供运行时访问。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillDescriptor>,
+    /// 插件声明的治理 mode 列表。
+    ///
+    /// 这些 mode 会被 host 校验后注册到 `ModeCatalog`，供 session 切换与 turn
+    /// governance 编译复用。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<GovernanceModeSpec>,
     /// 扩展元数据
     #[serde(default)]
     pub metadata: Value,

@@ -1,7 +1,10 @@
-//! 强类型标识定义。
+//! # 强类型标识定义
 //!
-//! 这些 newtype 负责把会话、turn、agent、能力名称从裸字符串中剥离出来，
-//! 避免跨层 API 继续依赖脆弱的字符串约定。
+//! 通过宏批量生成 newtype 包装，将 SessionId / TurnId / AgentId / SubRunId /
+//! DeliveryId / CapabilityName 从裸字符串中剥离，避免跨层 API 依赖脆弱的字符串约定。
+//!
+//! 每个 ID 类型实现了 Display、Deref、From<String/&str>、Serialize、Deserialize
+//! 等标准 trait，可直接用于格式化、比较和序列化。
 
 use std::fmt;
 
@@ -80,4 +83,6 @@ macro_rules! typed_id {
 typed_id!(SessionId);
 typed_id!(TurnId);
 typed_id!(AgentId);
+typed_id!(SubRunId);
+typed_id!(DeliveryId);
 typed_id!(CapabilityName);

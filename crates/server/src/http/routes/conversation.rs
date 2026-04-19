@@ -1,14 +1,19 @@
 use std::{convert::Infallible, pin::Pin, time::Duration};
 
 use astrcode_application::{
-    ApplicationError, ConversationFocus, TerminalChildSummaryFacts, TerminalControlFacts,
-    TerminalSlashCandidateFacts, TerminalStreamFacts, TerminalStreamReplayFacts,
+    ApplicationError,
+    terminal::{
+        ConversationAuthoritativeSummary, ConversationChildSummarySummary,
+        ConversationControlSummary, ConversationFocus, ConversationSlashCandidateSummary,
+        TerminalStreamFacts, TerminalStreamReplayFacts, summarize_conversation_authoritative,
+    },
 };
-use astrcode_core::{AgentEvent, SessionEventRecord};
+use astrcode_core::AgentEvent;
 use astrcode_protocol::http::conversation::v1::{
     ConversationDeltaDto, ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
     ConversationStreamEnvelopeDto,
 };
+use astrcode_session_runtime::ConversationStreamProjector as RuntimeConversationStreamProjector;
 use async_stream::stream;
 use axum::{
     Json,
@@ -27,10 +32,10 @@ use crate::{
     auth::is_authorized,
     routes::sessions::validate_session_path_id,
     terminal_projection::{
-        TerminalDeltaProjector, project_terminal_child_summary_deltas,
-        project_terminal_control_delta, project_terminal_rehydrate_envelope,
-        project_terminal_slash_candidates, project_terminal_snapshot,
-        project_terminal_stream_replay, seeded_terminal_stream_projector,
+        child_summary_summary_lookup, project_conversation_child_summary_summary_deltas,
+        project_conversation_control_summary_delta, project_conversation_frame,
+        project_conversation_rehydrate_envelope, project_conversation_slash_candidate_summaries,
+        project_conversation_slash_candidates, project_conversation_snapshot,
     },
 };
 
@@ -153,7 +158,7 @@ pub(crate) async fn conversation_snapshot(
         .await
         .map_err(ConversationRouteError::from)?;
 
-    Ok(Json(project_terminal_snapshot(&facts)))
+    Ok(Json(project_conversation_snapshot(&facts)))
 }
 
 pub(crate) async fn conversation_stream(
@@ -183,7 +188,7 @@ pub(crate) async fn conversation_stream(
             state, session_id, cursor, focus, *facts,
         )),
         TerminalStreamFacts::RehydrateRequired(rehydrate) => Ok(single_envelope_stream(
-            project_terminal_rehydrate_envelope(&rehydrate),
+            project_conversation_rehydrate_envelope(&rehydrate),
         )),
     }
 }
@@ -203,7 +208,7 @@ pub(crate) async fn conversation_slash_candidates(
         .await
         .map_err(ConversationRouteError::from)?;
 
-    Ok(Json(project_terminal_slash_candidates(&candidates)))
+    Ok(Json(project_conversation_slash_candidates(&candidates)))
 }
 
 fn require_conversation_auth(
@@ -228,8 +233,8 @@ fn build_conversation_stream(
     let mut stream_state =
         ConversationStreamProjectorState::new(session_id.clone(), cursor, &facts);
     let initial_envelopes = stream_state.seed_initial_replay(&facts);
-    let mut durable_receiver = facts.replay.receiver;
-    let mut live_receiver = facts.replay.live_receiver;
+    let mut durable_receiver = facts.replay.replay.receiver;
+    let mut live_receiver = facts.replay.replay.live_receiver;
     let app = state.app.clone();
     let session_id_for_stream = session_id.clone();
     let mut live_receiver_open = true;
@@ -285,13 +290,13 @@ fn build_conversation_stream(
                                 for envelope in stream_state.recover_from(&recovered) {
                                     yield Ok::<Event, Infallible>(to_conversation_sse_event(envelope));
                                 }
-                                durable_receiver = recovered.replay.receiver;
-                                live_receiver = recovered.replay.live_receiver;
+                                durable_receiver = recovered.replay.replay.receiver;
+                                live_receiver = recovered.replay.replay.live_receiver;
                                 live_receiver_open = true;
                             }
                             Ok(TerminalStreamFacts::RehydrateRequired(rehydrate)) => {
                                 yield Ok::<Event, Infallible>(to_conversation_sse_event(
-                                    project_terminal_rehydrate_envelope(&rehydrate),
+                                    project_conversation_rehydrate_envelope(&rehydrate),
                                 ));
                                 break;
                             }
@@ -337,44 +342,35 @@ fn build_conversation_stream(
     )
 }
 
-fn project_terminal_control_deltas(
-    previous: &TerminalControlFacts,
-    current: &TerminalControlFacts,
-) -> Vec<ConversationDeltaDto> {
-    let previous = control_state_delta(previous);
-    let current = control_state_delta(current);
-    if previous == current {
-        Vec::new()
-    } else {
-        vec![current]
-    }
-}
-
 #[derive(Debug, Clone)]
 struct ConversationAuthoritativeFacts {
-    control: TerminalControlFacts,
-    child_summaries: Vec<TerminalChildSummaryFacts>,
-    slash_candidates: Vec<TerminalSlashCandidateFacts>,
+    control: ConversationControlSummary,
+    child_summaries: Vec<ConversationChildSummarySummary>,
+    slash_candidates: Vec<ConversationSlashCandidateSummary>,
 }
 
 impl ConversationAuthoritativeFacts {
     fn from_replay(facts: &TerminalStreamReplayFacts) -> Self {
+        Self::from_summary(summarize_conversation_authoritative(
+            &facts.control,
+            &facts.child_summaries,
+            &facts.slash_candidates,
+        ))
+    }
+
+    fn from_summary(summary: ConversationAuthoritativeSummary) -> Self {
         Self {
-            control: facts.control.clone(),
-            child_summaries: facts.child_summaries.clone(),
-            slash_candidates: facts.slash_candidates.clone(),
+            control: summary.control,
+            child_summaries: summary.child_summaries,
+            slash_candidates: summary.slash_candidates,
         }
     }
 }
 
 struct ConversationStreamProjectorState {
     session_id: String,
-    projector: TerminalDeltaProjector,
-    last_sent_cursor: Option<String>,
-    fallback_live_cursor: Option<String>,
-    control: TerminalControlFacts,
-    child_summaries: Vec<TerminalChildSummaryFacts>,
-    slash_candidates: Vec<TerminalSlashCandidateFacts>,
+    projector: RuntimeConversationStreamProjector,
+    authoritative: ConversationAuthoritativeFacts,
 }
 
 impl ConversationStreamProjectorState {
@@ -385,43 +381,52 @@ impl ConversationStreamProjectorState {
     ) -> Self {
         Self {
             session_id,
-            projector: seeded_terminal_stream_projector(facts),
-            last_sent_cursor,
-            fallback_live_cursor: fallback_live_cursor(facts),
-            control: facts.control.clone(),
-            child_summaries: facts.child_summaries.clone(),
-            slash_candidates: facts.slash_candidates.clone(),
+            projector: RuntimeConversationStreamProjector::new(last_sent_cursor, &facts.replay),
+            authoritative: ConversationAuthoritativeFacts::from_replay(facts),
         }
     }
 
     fn last_sent_cursor(&self) -> Option<&str> {
-        self.last_sent_cursor.as_deref()
+        self.projector.last_sent_cursor()
     }
 
     fn seed_initial_replay(
         &mut self,
         facts: &TerminalStreamReplayFacts,
     ) -> Vec<ConversationStreamEnvelopeDto> {
-        let envelopes = project_terminal_stream_replay(facts, self.last_sent_cursor.as_deref());
-        self.observe_durable_envelopes(&envelopes);
+        let child_lookup = child_summary_summary_lookup(&self.authoritative.child_summaries);
+        let envelopes = self
+            .projector
+            .seed_initial_replay(&facts.replay)
+            .into_iter()
+            .map(|frame| project_conversation_frame(self.session_id.as_str(), frame, &child_lookup))
+            .collect::<Vec<_>>();
+        let _ = self.projector.recover_from(&facts.replay);
         envelopes
     }
 
     fn project_durable_record(
         &mut self,
-        record: &SessionEventRecord,
+        record: &astrcode_core::SessionEventRecord,
     ) -> Vec<ConversationStreamEnvelopeDto> {
-        let deltas = self.projector.project_record(record);
-        self.wrap_durable_deltas(record.event_id.as_str(), deltas)
+        let child_lookup = child_summary_summary_lookup(&self.authoritative.child_summaries);
+        self.projector
+            .project_durable_record(record)
+            .into_iter()
+            .map(|frame| project_conversation_frame(self.session_id.as_str(), frame, &child_lookup))
+            .collect()
     }
 
     fn project_live_event(&mut self, event: &AgentEvent) -> Vec<ConversationStreamEnvelopeDto> {
-        let cursor = self.live_cursor();
         self.projector
             .project_live_event(event)
             .into_iter()
-            .map(|delta| {
-                make_conversation_envelope(self.session_id.as_str(), cursor.as_str(), delta)
+            .map(|frame| {
+                project_conversation_frame(
+                    self.session_id.as_str(),
+                    frame,
+                    &child_summary_summary_lookup(&self.authoritative.child_summaries),
+                )
             })
             .collect()
     }
@@ -431,20 +436,27 @@ impl ConversationStreamProjectorState {
         cursor: &str,
         refreshed: ConversationAuthoritativeFacts,
     ) -> Vec<ConversationStreamEnvelopeDto> {
-        let mut deltas = project_terminal_control_deltas(&self.control, &refreshed.control);
-        deltas.extend(project_terminal_child_summary_deltas(
-            &self.child_summaries,
+        let mut deltas = if self.authoritative.control == refreshed.control {
+            Vec::new()
+        } else {
+            vec![project_conversation_control_summary_delta(
+                &refreshed.control,
+            )]
+        };
+        deltas.extend(project_conversation_child_summary_summary_deltas(
+            &self.authoritative.child_summaries,
             &refreshed.child_summaries,
         ));
-        if self.slash_candidates != refreshed.slash_candidates {
+        if self.authoritative.slash_candidates != refreshed.slash_candidates {
             deltas.push(ConversationDeltaDto::ReplaceSlashCandidates {
-                candidates: project_terminal_slash_candidates(&refreshed.slash_candidates).items,
+                candidates: project_conversation_slash_candidate_summaries(
+                    &refreshed.slash_candidates,
+                )
+                .items,
             });
         }
 
-        self.control = refreshed.control;
-        self.child_summaries = refreshed.child_summaries;
-        self.slash_candidates = refreshed.slash_candidates;
+        self.authoritative = refreshed;
         self.wrap_durable_deltas(cursor, deltas)
     }
 
@@ -452,17 +464,21 @@ impl ConversationStreamProjectorState {
         &mut self,
         recovered: &TerminalStreamReplayFacts,
     ) -> Vec<ConversationStreamEnvelopeDto> {
-        let mut envelopes =
-            project_terminal_stream_replay(recovered, self.last_sent_cursor.as_deref());
-        self.observe_durable_envelopes(&envelopes);
-        self.projector = seeded_terminal_stream_projector(recovered);
-        self.fallback_live_cursor = fallback_live_cursor(recovered);
+        let refreshed = ConversationAuthoritativeFacts::from_replay(recovered);
+        let child_lookup = child_summary_summary_lookup(&refreshed.child_summaries);
+        let mut envelopes = self
+            .projector
+            .recover_from(&recovered.replay)
+            .into_iter()
+            .map(|frame| project_conversation_frame(self.session_id.as_str(), frame, &child_lookup))
+            .collect::<Vec<_>>();
 
-        let recovery_cursor = self.live_cursor();
-        envelopes.extend(self.apply_authoritative_refresh(
-            recovery_cursor.as_str(),
-            ConversationAuthoritativeFacts::from_replay(recovered),
-        ));
+        let recovery_cursor = self
+            .projector
+            .last_sent_cursor()
+            .unwrap_or("0.0")
+            .to_string();
+        envelopes.extend(self.apply_authoritative_refresh(recovery_cursor.as_str(), refreshed));
         envelopes
     }
 
@@ -475,7 +491,6 @@ impl ConversationStreamProjectorState {
             return Vec::new();
         }
         let cursor_owned = cursor.to_string();
-        self.last_sent_cursor = Some(cursor_owned.clone());
         deltas
             .into_iter()
             .map(|delta| {
@@ -483,33 +498,6 @@ impl ConversationStreamProjectorState {
             })
             .collect()
     }
-
-    fn observe_durable_envelopes(&mut self, envelopes: &[ConversationStreamEnvelopeDto]) {
-        if let Some(cursor) = envelopes.last().map(|envelope| envelope.cursor.0.clone()) {
-            self.last_sent_cursor = Some(cursor);
-        }
-    }
-
-    fn live_cursor(&self) -> String {
-        self.last_sent_cursor
-            .clone()
-            .or_else(|| self.fallback_live_cursor.clone())
-            .unwrap_or_else(|| "0.0".to_string())
-    }
-}
-
-fn fallback_live_cursor(facts: &TerminalStreamReplayFacts) -> Option<String> {
-    facts
-        .seed_records
-        .last()
-        .map(|record| record.event_id.clone())
-        .or_else(|| {
-            facts
-                .replay
-                .history
-                .last()
-                .map(|record| record.event_id.clone())
-        })
 }
 
 async fn refresh_conversation_authoritative_facts(
@@ -517,15 +505,10 @@ async fn refresh_conversation_authoritative_facts(
     session_id: &str,
     focus: &ConversationFocus,
 ) -> Result<ConversationAuthoritativeFacts, ApplicationError> {
-    Ok(ConversationAuthoritativeFacts {
-        control: app.terminal_control_facts(session_id).await?,
-        child_summaries: app.conversation_child_summaries(session_id, focus).await?,
-        slash_candidates: app.terminal_slash_candidates(session_id, None).await?,
-    })
-}
-
-fn control_state_delta(control: &TerminalControlFacts) -> ConversationDeltaDto {
-    project_terminal_control_delta(control)
+    Ok(ConversationAuthoritativeFacts::from_summary(
+        app.conversation_authoritative_summary(session_id, focus)
+            .await?,
+    ))
 }
 
 fn single_envelope_stream(envelope: ConversationStreamEnvelopeDto) -> ConversationSse {
@@ -598,3 +581,343 @@ fn parse_focus_query(raw: Option<&str>) -> Result<ConversationFocus, Conversatio
 type ConversationEventStream =
     Pin<Box<dyn futures_util::Stream<Item = Result<Event, Infallible>> + Send>>;
 type ConversationSse = Sse<axum::response::sse::KeepAliveStream<ConversationEventStream>>;
+
+#[cfg(test)]
+mod tests {
+    use astrcode_application::terminal::{
+        TaskItemFacts, TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
+        summarize_conversation_authoritative,
+    };
+    use astrcode_core::{
+        AgentEventContext, AgentLifecycleStatus, ChildExecutionIdentity, ChildSessionLineageKind,
+        ChildSessionNode, ChildSessionStatusSource, ExecutionTaskStatus, ParentExecutionRef, Phase,
+        SessionEventRecord, ToolExecutionResult, ToolOutputStream,
+    };
+    use astrcode_session_runtime::{
+        ConversationBlockPatchFacts, ConversationDeltaFacts, ConversationDeltaFrameFacts,
+        ConversationStreamReplayFacts as RuntimeConversationStreamReplayFacts, SessionReplay,
+    };
+    use serde_json::json;
+    use tokio::sync::broadcast;
+
+    use super::{AgentEvent, ConversationAuthoritativeFacts, ConversationStreamProjectorState};
+
+    #[test]
+    fn recover_from_replays_only_missing_records_and_advances_cursor() {
+        let initial = sample_stream_facts(
+            vec![record(
+                "1.1",
+                AgentEvent::UserMessage {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    content: "check pipeline".to_string(),
+                },
+            )],
+            vec![record(
+                "1.2",
+                AgentEvent::ToolCallStart {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "shell_command".to_string(),
+                    input: json!({ "command": "pwd" }),
+                },
+            )],
+        );
+        let mut state = ConversationStreamProjectorState::new(
+            "session-root".to_string(),
+            Some("1.1".to_string()),
+            &initial,
+        );
+
+        let initial_envelopes = state.seed_initial_replay(&initial);
+        assert_eq!(initial_envelopes.len(), 1);
+        assert_eq!(initial_envelopes[0].cursor.0, "1.2");
+
+        let recovered = sample_stream_facts(
+            vec![
+                record(
+                    "1.1",
+                    AgentEvent::UserMessage {
+                        turn_id: "turn-1".to_string(),
+                        agent: sample_agent_context(),
+                        content: "check pipeline".to_string(),
+                    },
+                ),
+                record(
+                    "1.2",
+                    AgentEvent::ToolCallStart {
+                        turn_id: "turn-1".to_string(),
+                        agent: sample_agent_context(),
+                        tool_call_id: "call-1".to_string(),
+                        tool_name: "shell_command".to_string(),
+                        input: json!({ "command": "pwd" }),
+                    },
+                ),
+            ],
+            vec![record(
+                "1.3",
+                AgentEvent::ToolCallDelta {
+                    turn_id: "turn-1".to_string(),
+                    agent: sample_agent_context(),
+                    tool_call_id: "call-1".to_string(),
+                    tool_name: "shell_command".to_string(),
+                    stream: ToolOutputStream::Stdout,
+                    delta: "D:/GitObjectsOwn/Astrcode\n".to_string(),
+                },
+            )],
+        );
+
+        let recovered_envelopes = state.recover_from(&recovered);
+        assert_eq!(recovered_envelopes.len(), 1);
+        assert_eq!(recovered_envelopes[0].cursor.0, "1.3");
+        assert_eq!(
+            serde_json::to_value(&recovered_envelopes[0])
+                .expect("recovered envelope should encode"),
+            json!({
+                "sessionId": "session-root",
+                "cursor": "1.3",
+                "kind": "patch_block",
+                "blockId": "tool:call-1:call",
+                "patch": {
+                    "kind": "append_tool_stream",
+                    "stream": "stdout",
+                    "chunk": "D:/GitObjectsOwn/Astrcode\n"
+                }
+            })
+        );
+
+        let live_envelopes = state.project_live_event(&AgentEvent::ToolCallResult {
+            turn_id: "turn-1".to_string(),
+            agent: sample_agent_context(),
+            result: ToolExecutionResult {
+                tool_call_id: "call-1".to_string(),
+                tool_name: "shell_command".to_string(),
+                ok: true,
+                output: "D:/GitObjectsOwn/Astrcode\n".to_string(),
+                child_ref: None,
+                error: None,
+                metadata: None,
+                duration_ms: 8,
+                truncated: false,
+            },
+        });
+        assert!(
+            live_envelopes
+                .iter()
+                .all(|envelope| envelope.cursor.0 == "1.3"),
+            "live cursor should stay anchored to last durable cursor after recovery"
+        );
+    }
+
+    #[test]
+    fn authoritative_refresh_emits_child_summary_delta_on_current_cursor() {
+        let facts = sample_stream_facts(Vec::new(), Vec::new());
+        let mut state = ConversationStreamProjectorState::new(
+            "session-root".to_string(),
+            Some("1.4".to_string()),
+            &facts,
+        );
+
+        let refreshed =
+            ConversationAuthoritativeFacts::from_summary(summarize_conversation_authoritative(
+                &facts.control,
+                &[sample_child_summary()],
+                &facts.slash_candidates,
+            ));
+
+        let envelopes = state.apply_authoritative_refresh("1.4", refreshed);
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&envelopes[0]).expect("child summary envelope should encode"),
+            json!({
+                "sessionId": "session-root",
+                "cursor": "1.4",
+                "kind": "upsert_child_summary",
+                "child": {
+                    "childSessionId": "session-child-1",
+                    "childAgentId": "agent-child-1",
+                    "title": "Repo inspector",
+                    "lifecycle": "running",
+                    "latestOutputSummary": "正在检查 conversation projector",
+                    "childRef": {
+                        "agentId": "agent-child-1",
+                        "sessionId": "session-root",
+                        "subRunId": "subrun-child-1",
+                        "parentAgentId": "agent-root",
+                        "parentSubRunId": "subrun-root",
+                        "lineageKind": "spawn",
+                        "status": "running",
+                        "openSessionId": "session-child-1"
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn authoritative_refresh_emits_control_delta_for_active_tasks() {
+        let facts = sample_stream_facts(Vec::new(), Vec::new());
+        let mut state = ConversationStreamProjectorState::new(
+            "session-root".to_string(),
+            Some("1.4".to_string()),
+            &facts,
+        );
+
+        let mut refreshed_control = facts.control.clone();
+        refreshed_control.active_tasks = Some(vec![
+            TaskItemFacts {
+                content: "实现 authoritative task panel".to_string(),
+                status: ExecutionTaskStatus::InProgress,
+                active_form: Some("正在实现 authoritative task panel".to_string()),
+            },
+            TaskItemFacts {
+                content: "补充前端 hydration 测试".to_string(),
+                status: ExecutionTaskStatus::Pending,
+                active_form: None,
+            },
+        ]);
+
+        let refreshed =
+            ConversationAuthoritativeFacts::from_summary(summarize_conversation_authoritative(
+                &refreshed_control,
+                &facts.child_summaries,
+                &facts.slash_candidates,
+            ));
+
+        let envelopes = state.apply_authoritative_refresh("1.4", refreshed);
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&envelopes[0]).expect("control envelope should encode"),
+            json!({
+                "sessionId": "session-root",
+                "cursor": "1.4",
+                "kind": "update_control_state",
+                "control": {
+                    "phase": "callingTool",
+                    "canSubmitPrompt": false,
+                    "canRequestCompact": true,
+                    "compactPending": false,
+                    "compacting": false,
+                    "currentModeId": "code",
+                    "activeTurnId": "turn-1",
+                    "activeTasks": [
+                        {
+                            "content": "实现 authoritative task panel",
+                            "status": "in_progress",
+                            "activeForm": "正在实现 authoritative task panel"
+                        },
+                        {
+                            "content": "补充前端 hydration 测试",
+                            "status": "pending"
+                        }
+                    ]
+                }
+            })
+        );
+    }
+
+    fn sample_stream_facts(
+        seed_records: Vec<SessionEventRecord>,
+        history: Vec<SessionEventRecord>,
+    ) -> TerminalStreamReplayFacts {
+        let (_, receiver) = broadcast::channel(8);
+        let (_, live_receiver) = broadcast::channel(8);
+
+        TerminalStreamReplayFacts {
+            active_session_id: "session-root".to_string(),
+            replay: RuntimeConversationStreamReplayFacts {
+                cursor: history.last().map(|record| record.event_id.clone()),
+                phase: Phase::CallingTool,
+                seed_records: seed_records.clone(),
+                replay_frames: history
+                    .iter()
+                    .map(|record| ConversationDeltaFrameFacts {
+                        cursor: record.event_id.clone(),
+                        delta: match &record.event {
+                            AgentEvent::ToolCallDelta {
+                                tool_call_id,
+                                stream,
+                                delta,
+                                ..
+                            } => ConversationDeltaFacts::PatchBlock {
+                                block_id: format!("tool:{tool_call_id}:call"),
+                                patch: ConversationBlockPatchFacts::AppendToolStream {
+                                    stream: *stream,
+                                    chunk: delta.clone(),
+                                },
+                            },
+                            _ => ConversationDeltaFacts::AppendBlock {
+                                block: Box::new(
+                                    astrcode_session_runtime::ConversationBlockFacts::User(
+                                        astrcode_session_runtime::ConversationUserBlockFacts {
+                                            id: "noop".to_string(),
+                                            turn_id: None,
+                                            markdown: String::new(),
+                                        },
+                                    ),
+                                ),
+                            },
+                        },
+                    })
+                    .collect(),
+                replay: SessionReplay {
+                    history,
+                    receiver,
+                    live_receiver,
+                },
+            },
+            control: TerminalControlFacts {
+                phase: Phase::CallingTool,
+                active_turn_id: Some("turn-1".to_string()),
+                manual_compact_pending: false,
+                compacting: false,
+                last_compact_meta: None,
+                current_mode_id: "code".to_string(),
+                active_plan: None,
+                active_tasks: None,
+            },
+            child_summaries: Vec::new(),
+            slash_candidates: Vec::new(),
+        }
+    }
+
+    fn sample_child_summary() -> TerminalChildSummaryFacts {
+        TerminalChildSummaryFacts {
+            node: ChildSessionNode {
+                identity: ChildExecutionIdentity {
+                    agent_id: "agent-child-1".into(),
+                    session_id: "session-root".into(),
+                    sub_run_id: "subrun-child-1".into(),
+                },
+                child_session_id: "session-child-1".into(),
+                parent_session_id: "session-root".into(),
+                parent: ParentExecutionRef {
+                    parent_agent_id: Some("agent-root".into()),
+                    parent_sub_run_id: Some("subrun-root".into()),
+                },
+                parent_turn_id: "turn-1".into(),
+                lineage_kind: ChildSessionLineageKind::Spawn,
+                status: AgentLifecycleStatus::Running,
+                status_source: ChildSessionStatusSource::Durable,
+                created_by_tool_call_id: Some("call-2".into()),
+                lineage_snapshot: None,
+            },
+            phase: Phase::CallingTool,
+            title: Some("Repo inspector".to_string()),
+            display_name: Some("repo-inspector".to_string()),
+            recent_output: Some("正在检查 conversation projector".to_string()),
+        }
+    }
+
+    fn sample_agent_context() -> AgentEventContext {
+        AgentEventContext::root_execution("agent-root", "default")
+    }
+
+    fn record(event_id: &str, event: AgentEvent) -> SessionEventRecord {
+        SessionEventRecord {
+            event_id: event_id.to_string(),
+            event,
+        }
+    }
+}

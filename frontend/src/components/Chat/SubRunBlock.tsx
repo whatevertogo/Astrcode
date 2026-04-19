@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChildSessionNotificationMessage,
+  SubRunResult,
   ParentDelivery,
   SubRunFinishMessage,
   SubRunStartMessage,
@@ -41,7 +42,7 @@ interface SubRunBlockProps {
   displayMode?: 'thread' | 'directory';
 }
 
-type SubRunStatus = 'running' | 'completed' | 'aborted' | 'token_exceeded' | 'failed';
+type SubRunStatus = 'running' | 'completed' | 'cancelled' | 'token_exceeded' | 'failed';
 
 function toSubRunStatus(finishMessage?: SubRunFinishMessage): SubRunStatus {
   return finishMessage?.result.status ?? 'running';
@@ -51,8 +52,8 @@ function getStatusLabel(status: SubRunStatus): string {
   switch (status) {
     case 'completed':
       return 'completed';
-    case 'aborted':
-      return 'aborted';
+    case 'cancelled':
+      return 'cancelled';
     case 'token_exceeded':
       return 'token exceeded';
     case 'failed':
@@ -74,7 +75,7 @@ function getStatusVariant(status: SubRunStatus): string {
   switch (status) {
     case 'completed':
       return pillSuccess;
-    case 'aborted':
+    case 'cancelled':
       return pillNeutral;
     case 'token_exceeded':
       return pillWarning;
@@ -91,16 +92,30 @@ function isVisibleActivityItem(item: ThreadItem): boolean {
     return true;
   }
 
-  return (
-    item.message.kind === 'assistant' ||
-    item.message.kind === 'toolCall' ||
-    item.message.kind === 'toolStream'
-  );
+  return item.message.kind === 'assistant' || item.message.kind === 'toolCall';
 }
 
 function getDeliveryMessage(delivery?: ParentDelivery): string | null {
   const message = delivery?.payload.message?.trim();
   return message && message.length > 0 ? message : null;
+}
+
+function getResultHandoff(result?: SubRunResult) {
+  if (!result) {
+    return undefined;
+  }
+  return result.status === 'failed' || result.status === 'cancelled' ? undefined : result.handoff;
+}
+
+function getResultFailure(result?: SubRunResult) {
+  if (!result) {
+    return undefined;
+  }
+  return result.status === 'failed' || result.status === 'cancelled' ? result.failure : undefined;
+}
+
+function isSuccessfulTerminalStatus(status: SubRunStatus): boolean {
+  return status === 'completed' || status === 'token_exceeded';
 }
 
 function SubRunBlock({
@@ -136,8 +151,8 @@ function SubRunBlock({
     finishMessage !== undefined
       ? `${finishMessage.stepCount} steps`
       : getStorageModeLabel(startMessage, childSessionId);
-  const resultHandoff = finishMessage?.result.handoff;
-  const resultFailure = finishMessage?.result.failure;
+  const resultHandoff = getResultHandoff(finishMessage?.result);
+  const resultFailure = getResultFailure(finishMessage?.result);
   const latestDelivery = latestNotification?.delivery ?? resultHandoff?.delivery;
   const latestDeliveryMessage = getDeliveryMessage(latestDelivery);
   const isBackgroundRunning = status === 'running';
@@ -341,7 +356,7 @@ function SubRunBlock({
         ? completedDelivery.payload.findings
         : (resultHandoff?.findings ?? []);
 
-    if (!completedSummary || status !== 'completed') {
+    if (!completedSummary || !isSuccessfulTerminalStatus(status)) {
       return null;
     }
     return (

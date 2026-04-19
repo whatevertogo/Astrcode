@@ -1,3 +1,8 @@
+//! Agent 编排子域的测试基础设施。
+//!
+//! 提供 `AgentTestHarness` 和 `AgentTestEnvGuard`，用于在隔离环境中测试
+//! `AgentOrchestrationService` 的协作编排逻辑，无需启动真实 session-runtime。
+
 use std::{
     collections::HashMap,
     path::Path,
@@ -21,8 +26,8 @@ use serde_json::Value;
 
 use crate::{
     AgentKernelPort, AgentOrchestrationService, AgentSessionPort, ApplicationError, ConfigService,
-    ProfileResolutionService, RuntimeObservabilityCollector, execution::ProfileProvider,
-    lifecycle::TaskRegistry,
+    GovernanceSurfaceAssembler, ProfileResolutionService, RuntimeObservabilityCollector,
+    execution::ProfileProvider, lifecycle::TaskRegistry,
 };
 
 pub(crate) struct AgentTestHarness {
@@ -83,6 +88,7 @@ pub(crate) fn build_agent_test_harness_with_agent_config(
         session_port,
         config_service.clone(),
         profiles.clone(),
+        Arc::new(GovernanceSurfaceAssembler::default()),
         task_registry,
         metrics.clone(),
     );
@@ -113,6 +119,7 @@ pub(crate) fn sample_profile(id: &str) -> AgentProfile {
 }
 
 pub(crate) struct AgentTestEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
     _temp_home: tempfile::TempDir,
     previous_test_home: Option<std::ffi::OsString>,
 }
@@ -164,6 +171,9 @@ impl ConfigStore for TestConfigStore {
 
 impl AgentTestEnvGuard {
     fn new() -> Self {
+        let lock = astrcode_core::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp_home = tempfile::tempdir().expect("temp home should be created");
         let previous_test_home = std::env::var_os(astrcode_core::home::ASTRCODE_TEST_HOME_ENV);
         std::env::set_var(
@@ -171,6 +181,7 @@ impl AgentTestEnvGuard {
             temp_home.path(),
         );
         Self {
+            _lock: lock,
             _temp_home: temp_home,
             previous_test_home,
         }
@@ -276,6 +287,8 @@ impl PromptProvider for TestPromptProvider {
         Ok(PromptBuildOutput {
             system_prompt: "test".to_string(),
             system_prompt_blocks: Vec::new(),
+            prompt_cache_hints: Default::default(),
+            cache_metrics: Default::default(),
             metadata: Value::Null,
         })
     }

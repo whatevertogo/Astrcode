@@ -57,10 +57,5 @@ pub(crate) async fn test_model_connection(
         .test_connection(&request.profile_name, &request.model)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(TestResultDto {
-        success: result.success,
-        provider: result.provider,
-        model: result.model,
-        error: result.error,
-    }))
+    Ok(Json(result))
 }

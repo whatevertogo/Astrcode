@@ -12,7 +12,7 @@ use astrcode_core::{AstrError, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use log::{debug, info, warn};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 
 use super::McpTransport;
 use crate::protocol::types::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
@@ -129,6 +129,7 @@ impl McpTransport for StreamableHttpTransport {
         let mut req_builder = client
             .post(&self.url)
             .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
             .body(body);
 
         for (key, value) in &self.headers {
@@ -142,11 +143,19 @@ impl McpTransport for StreamableHttpTransport {
             .await
             .map_err(|e| AstrError::http("MCP HTTP notification", e))?;
 
-        if !response.status().is_success() {
-            warn!(
-                "MCP HTTP notification returned {} (notifications are fire-and-forget)",
-                response.status()
-            );
+        let status = response.status();
+        if !status.is_success() {
+            if should_downgrade_notification_status(&notification, status) {
+                debug!(
+                    "MCP HTTP notification '{}' returned {} and was ignored for compatibility",
+                    notification.method, status
+                );
+            } else {
+                warn!(
+                    "MCP HTTP notification '{}' returned {} (notifications are fire-and-forget)",
+                    notification.method, status
+                );
+            }
         }
 
         Ok(())
@@ -234,6 +243,13 @@ fn parse_sse_event_jsonrpc(event: &str) -> Result<Option<JsonRpcResponse>> {
     Ok(Some(response))
 }
 
+fn should_downgrade_notification_status(
+    notification: &JsonRpcNotification,
+    status: StatusCode,
+) -> bool {
+    notification.method == "notifications/initialized" && status == StatusCode::BAD_REQUEST
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,15 +267,15 @@ mod tests {
     #[tokio::test]
     async fn test_start_sets_active() {
         let mut transport = StreamableHttpTransport::new("http://localhost:8080/mcp", Vec::new());
-        transport.start().await.unwrap();
+        transport.start().await.expect("start should succeed");
         assert!(transport.is_active());
     }
 
     #[tokio::test]
     async fn test_close_deactivates() {
         let mut transport = StreamableHttpTransport::new("http://localhost:8080/mcp", Vec::new());
-        transport.start().await.unwrap();
-        transport.close().await.unwrap();
+        transport.start().await.expect("start should succeed");
+        transport.close().await.expect("close should succeed");
         assert!(!transport.is_active());
     }
 
@@ -284,7 +300,7 @@ mod tests {
         let event =
             "id:1\nevent:message\ndata:{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}";
         let response = parse_sse_event_jsonrpc(event)
-            .unwrap()
+            .expect("parsing should succeed")
             .expect("json-rpc response");
         assert_eq!(response.id, Some(serde_json::json!(1)));
     }
@@ -295,5 +311,23 @@ mod tests {
         let event = drain_next_sse_event(&mut buffer).expect("first event");
         assert!(event.contains("data:{\"jsonrpc\":\"2.0\"}"));
         assert_eq!(buffer, "partial");
+    }
+
+    #[test]
+    fn initialized_bad_request_is_downgraded() {
+        let notification = JsonRpcNotification::new("notifications/initialized");
+        assert!(should_downgrade_notification_status(
+            &notification,
+            StatusCode::BAD_REQUEST
+        ));
+    }
+
+    #[test]
+    fn other_notification_errors_still_warn() {
+        let notification = JsonRpcNotification::new("notifications/cancelled");
+        assert!(!should_downgrade_notification_status(
+            &notification,
+            StatusCode::BAD_REQUEST
+        ));
     }
 }

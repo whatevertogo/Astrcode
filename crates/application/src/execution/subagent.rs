@@ -6,21 +6,22 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted,
-    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, RuntimeMetricsRecorder,
-    SpawnCapabilityGrant, normalize_non_empty_unique_string_list,
+    AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, ModeId,
+    ResolvedRuntimeConfig, RuntimeMetricsRecorder, SpawnCapabilityGrant,
 };
 use astrcode_kernel::AgentControlError;
-use astrcode_session_runtime::AgentPromptSubmission;
 
 use crate::{
     AgentKernelPort, AgentSessionPort,
     agent::{
-        build_delegation_metadata, build_fresh_child_contract, persist_delegation_for_handle,
-        persist_resolved_limits_for_handle, subrun_event_context,
+        persist_delegation_for_handle, persist_resolved_limits_for_handle, subrun_event_context,
     },
     errors::ApplicationError,
     execution::{ensure_profile_mode, merge_task_with_context},
+    governance_surface::{
+        FreshChildGovernanceInput, GovernanceBusyPolicy, GovernanceSurfaceAssembler,
+        build_delegation_metadata,
+    },
 };
 
 /// 子代理执行请求。
@@ -29,6 +30,7 @@ pub struct SubagentExecutionRequest {
     pub parent_agent_id: String,
     pub parent_turn_id: String,
     pub working_dir: String,
+    pub mode_id: ModeId,
     pub profile: AgentProfile,
     pub description: String,
     pub task: String,
@@ -49,29 +51,37 @@ pub struct SubagentExecutionRequest {
 pub async fn launch_subagent(
     kernel: &dyn AgentKernelPort,
     session_runtime: &dyn AgentSessionPort,
+    governance: &GovernanceSurfaceAssembler,
     request: SubagentExecutionRequest,
     runtime_config: ResolvedRuntimeConfig,
     metrics: &Arc<dyn RuntimeMetricsRecorder>,
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_subagent_request(&request)?;
     ensure_subagent_profile_mode(&request.profile)?;
-    let resolved_limits = resolve_child_execution_limits(
-        &request.parent_allowed_tools,
-        request.capability_grant.as_ref(),
-        runtime_config.max_steps as u32,
-    )?;
-    let scoped_gateway = kernel
-        .gateway()
-        .subset_for_tools_checked(&resolved_limits.allowed_tools)
-        .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
-    let scoped_router = scoped_gateway.capabilities().clone();
+    let surface = governance
+        .fresh_child_surface(
+            kernel,
+            session_runtime,
+            FreshChildGovernanceInput {
+                session_id: request.parent_session_id.clone(),
+                turn_id: request.parent_turn_id.clone(),
+                working_dir: request.working_dir.clone(),
+                mode_id: request.mode_id.clone(),
+                runtime: runtime_config,
+                parent_allowed_tools: request.parent_allowed_tools.clone(),
+                capability_grant: request.capability_grant.clone(),
+                description: request.description.clone(),
+                task: request.task.clone(),
+                busy_policy: GovernanceBusyPolicy::BranchOnBusy,
+            },
+        )
+        .await?;
     let delegation = build_delegation_metadata(
         request.description.as_str(),
         request.task.as_str(),
-        &resolved_limits,
+        &surface.resolved_limits,
         request.capability_grant.is_some(),
     );
-    let contract = build_fresh_child_contract(&delegation);
 
     let child_session = session_runtime
         .create_child_session(&request.working_dir, &request.parent_session_id)
@@ -99,66 +109,30 @@ pub async fn launch_subagent(
             handle.agent_id
         )));
     }
-    let handle = persist_resolved_limits_for_handle(kernel, handle, resolved_limits.clone())
-        .await
-        .map_err(ApplicationError::Internal)?;
+    let handle =
+        persist_resolved_limits_for_handle(kernel, handle, surface.resolved_limits.clone())
+            .await
+            .map_err(ApplicationError::Internal)?;
     let handle = persist_delegation_for_handle(kernel, handle, delegation)
         .await
         .map_err(ApplicationError::Internal)?;
-
     let merged_task = merge_task_with_context(&request.task, request.context.as_deref());
 
     let mut accepted = session_runtime
         .submit_prompt_for_agent_with_submission(
             &child_session.session_id,
             merged_task,
-            runtime_config,
-            AgentPromptSubmission {
-                agent: subrun_event_context(&handle),
-                capability_router: Some(scoped_router),
-                prompt_declarations: vec![contract],
-                resolved_limits: Some(resolved_limits),
-                source_tool_call_id: request.source_tool_call_id,
-            },
+            surface.runtime.clone(),
+            surface.into_submission(
+                subrun_event_context(&handle),
+                request.source_tool_call_id.clone(),
+            ),
         )
         .await
         .map_err(ApplicationError::from)?;
     metrics.record_child_spawned();
-    accepted.agent_id = Some(handle.agent_id.into());
+    accepted.agent_id = Some(handle.agent_id);
     Ok(accepted)
-}
-
-fn resolve_child_execution_limits(
-    parent_allowed_tools: &[String],
-    capability_grant: Option<&SpawnCapabilityGrant>,
-    max_steps: u32,
-) -> Result<ResolvedExecutionLimitsSnapshot, ApplicationError> {
-    let parent_allowed_tools =
-        normalize_non_empty_unique_string_list(parent_allowed_tools, "parentAllowedTools")
-            .map_err(ApplicationError::from)?;
-    let allowed_tools = match capability_grant {
-        Some(grant) => {
-            let requested_tools = grant
-                .normalized_allowed_tools()
-                .map_err(ApplicationError::from)?;
-            let allowed_tools = requested_tools
-                .into_iter()
-                .filter(|tool| parent_allowed_tools.iter().any(|parent| parent == tool))
-                .collect::<Vec<_>>();
-            if allowed_tools.is_empty() {
-                return Err(ApplicationError::InvalidArgument(
-                    "capability grant 与父级当前可继承工具无交集".to_string(),
-                ));
-            }
-            allowed_tools
-        },
-        None => parent_allowed_tools,
-    };
-
-    Ok(ResolvedExecutionLimitsSnapshot {
-        allowed_tools,
-        max_steps: Some(max_steps),
-    })
 }
 
 fn validate_subagent_request(request: &SubagentExecutionRequest) -> Result<(), ApplicationError> {
@@ -189,6 +163,11 @@ fn ensure_subagent_profile_mode(profile: &AgentProfile) -> Result<(), Applicatio
     ensure_profile_mode(profile, &[AgentMode::SubAgent, AgentMode::All], "subagent")
 }
 
+/// 将 kernel spawn 错误映射为用户友好的应用层错误。
+///
+/// - MaxDepthExceeded → InvalidArgument（提示复用已有 child）
+/// - MaxConcurrentExceeded → Conflict（提示等待或关闭已有 child）
+/// - ParentAgentNotFound → NotFound
 fn map_spawn_error(error: AgentControlError) -> ApplicationError {
     match error {
         AgentControlError::MaxDepthExceeded { current, max } => {
@@ -215,6 +194,7 @@ mod tests {
     use astrcode_core::{AgentMode, AgentProfile};
 
     use super::*;
+    use crate::governance_surface::GovernanceSurfaceAssembler;
 
     fn test_profile() -> AgentProfile {
         AgentProfile {
@@ -235,6 +215,7 @@ mod tests {
             parent_agent_id: "root-agent".to_string(),
             parent_turn_id: "turn-1".to_string(),
             working_dir: "/tmp/project".to_string(),
+            mode_id: ModeId::default(),
             profile: test_profile(),
             description: "探索代码".to_string(),
             task: "explore the code".to_string(),
@@ -327,44 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_child_execution_limits_inherits_parent_tools_when_no_grant() {
-        let limits = resolve_child_execution_limits(
-            &["read_file".to_string(), "grep".to_string()],
-            None,
-            12,
-        )
-        .expect("limits should resolve");
-
-        assert_eq!(limits.allowed_tools, vec!["read_file", "grep"]);
-        assert_eq!(limits.max_steps, Some(12));
-    }
-
-    #[test]
-    fn resolve_child_execution_limits_intersects_parent_and_grant() {
-        let limits = resolve_child_execution_limits(
-            &["read_file".to_string(), "grep".to_string()],
-            Some(&SpawnCapabilityGrant {
-                allowed_tools: vec!["grep".to_string(), "write_file".to_string()],
-            }),
-            8,
-        )
-        .expect("limits should resolve");
-
-        assert_eq!(limits.allowed_tools, vec!["grep"]);
-        assert_eq!(limits.max_steps, Some(8));
-    }
-
-    #[test]
-    fn resolve_child_execution_limits_rejects_disjoint_grant() {
-        let error = resolve_child_execution_limits(
-            &["read_file".to_string(), "grep".to_string()],
-            Some(&SpawnCapabilityGrant {
-                allowed_tools: vec!["write_file".to_string()],
-            }),
-            8,
-        )
-        .expect_err("disjoint grants should fail fast");
-
-        assert!(error.to_string().contains("无交集"));
+    fn governance_surface_builder_exists_for_subagent_paths() {
+        let _assembler = GovernanceSurfaceAssembler::default();
     }
 }

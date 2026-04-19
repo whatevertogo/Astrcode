@@ -1,14 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use astrcode_core::{
-    DeleteProjectResult, Result, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
-    StoredEvent,
+    DeleteProjectResult, RecoveredSessionState, Result, SessionId, SessionMeta,
+    SessionRecoveryCheckpoint, SessionTurnAcquireResult, StorageEvent, StoredEvent,
     ports::EventStore,
     store::{EventLogWriter, SessionManager, StoreResult},
 };
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use super::{
+    batch_appender::{BatchAppender, SharedAppenderRegistry},
+    checkpoint,
     event_log::EventLog,
     iterator::EventLogIterator,
     paths::resolve_existing_session_path,
@@ -16,15 +22,17 @@ use super::{
 };
 
 /// 基于本地文件系统的会话仓储实现。
-#[derive(Debug, Default, Clone)]
+#[derive(Clone)]
 pub struct FileSystemSessionRepository {
     projects_root: Option<PathBuf>,
+    appenders: SharedAppenderRegistry,
 }
 
 impl FileSystemSessionRepository {
     pub fn new() -> Self {
         Self {
             projects_root: None,
+            appenders: default_appender_registry(),
         }
     }
 
@@ -35,6 +43,7 @@ impl FileSystemSessionRepository {
     pub fn new_with_projects_root(projects_root: PathBuf) -> Self {
         Self {
             projects_root: Some(projects_root),
+            appenders: default_appender_registry(),
         }
     }
 
@@ -71,6 +80,24 @@ impl FileSystemSessionRepository {
     pub fn append_sync(&self, session_id: &str, event: &StorageEvent) -> StoreResult<StoredEvent> {
         let mut log = self.open_event_log_sync(session_id)?;
         log.append_stored(event)
+    }
+
+    pub fn recover_session_sync(&self, session_id: &str) -> StoreResult<RecoveredSessionState> {
+        checkpoint::recover_session(self.projects_root.as_deref(), session_id)
+    }
+
+    pub fn checkpoint_session_sync(
+        &self,
+        event_log_path: &Path,
+        session_id: &str,
+        checkpoint: &SessionRecoveryCheckpoint,
+    ) -> StoreResult<()> {
+        checkpoint::persist_checkpoint(
+            self.projects_root.as_deref(),
+            event_log_path,
+            session_id,
+            checkpoint,
+        )
     }
 
     pub fn replay_events_sync(&self, session_id: &str) -> StoreResult<Vec<StoredEvent>> {
@@ -140,6 +167,25 @@ impl FileSystemSessionRepository {
         };
         EventLog::last_storage_seq_from_path(&path)
     }
+
+    async fn appender_for_session(&self, session_id: &str) -> Arc<BatchAppender> {
+        let mut registry = self.appenders.lock().await;
+        if let Some(appender) = registry.get(session_id) {
+            return Arc::clone(appender);
+        }
+        let appender = Arc::new(BatchAppender::new(
+            session_id.to_string(),
+            self.projects_root.clone(),
+        ));
+        registry.insert(session_id.to_string(), Arc::clone(&appender));
+        appender
+    }
+}
+
+impl Default for FileSystemSessionRepository {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
@@ -155,13 +201,11 @@ impl EventStore for FileSystemSessionRepository {
     }
 
     async fn append(&self, session_id: &SessionId, event: &StorageEvent) -> Result<StoredEvent> {
-        let repo = self.clone();
-        let session_id = session_id.to_string();
-        let event = event.clone();
-        run_blocking("append storage event", move || {
-            repo.append_sync(&session_id, &event)
-        })
-        .await
+        let appender = self.appender_for_session(session_id.as_str()).await;
+        appender
+            .append(event.clone())
+            .await
+            .map_err(crate::map_store_error)
     }
 
     async fn replay(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
@@ -171,6 +215,31 @@ impl EventStore for FileSystemSessionRepository {
             repo.replay_events_sync(&session_id)
         })
         .await
+    }
+
+    async fn recover_session(&self, session_id: &SessionId) -> Result<RecoveredSessionState> {
+        let repo = self.clone();
+        let session_id = session_id.to_string();
+        run_blocking("recover storage session", move || {
+            repo.recover_session_sync(&session_id)
+        })
+        .await
+    }
+
+    async fn checkpoint_session(
+        &self,
+        session_id: &SessionId,
+        checkpoint: &SessionRecoveryCheckpoint,
+    ) -> Result<()> {
+        let appender = self.appender_for_session(session_id.as_str()).await;
+        let repo = self.clone();
+        let session_id_string = session_id.to_string();
+        appender
+            .checkpoint_with_payload(checkpoint.clone(), move |event_log_path, checkpoint| {
+                repo.checkpoint_session_sync(event_log_path, &session_id_string, checkpoint)
+            })
+            .await
+            .map_err(crate::map_store_error)
     }
 
     async fn try_acquire_turn(
@@ -222,6 +291,10 @@ impl EventStore for FileSystemSessionRepository {
         })
         .await
     }
+}
+
+fn default_appender_registry() -> SharedAppenderRegistry {
+    Arc::new(Mutex::new(std::collections::HashMap::new()))
 }
 
 async fn run_blocking<T, F>(label: &'static str, work: F) -> Result<T>
@@ -297,5 +370,194 @@ impl SessionManager for FileSystemSessionRepository {
         working_dir: &str,
     ) -> StoreResult<DeleteProjectResult> {
         self.delete_sessions_by_working_dir_sync(working_dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, time::Instant};
+
+    use astrcode_core::{
+        AgentEventContext, AgentState, EventStore, LlmMessage, ModeId, Phase,
+        SessionRecoveryCheckpoint, StorageEvent, StorageEventPayload, UserMessageOrigin,
+    };
+
+    use super::*;
+    use crate::session::paths::checkpoint_snapshot_path_from_projects_root;
+
+    fn user_message_event(turn_id: &str, content: &str) -> StorageEvent {
+        StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::UserMessage {
+                content: content.to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: chrono::Utc::now(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn append_batches_events_with_contiguous_storage_seq() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let repo = FileSystemSessionRepository::new_with_projects_root(temp.path().to_path_buf());
+        let session_id = SessionId::from("session-batch-1".to_string());
+        let working_dir = temp.path().join("work");
+        std::fs::create_dir_all(&working_dir).expect("working dir should exist");
+        repo.ensure_session(&session_id, &working_dir)
+            .await
+            .expect("session should be created");
+
+        let started = Instant::now();
+        let first_event = user_message_event("turn-1", "first");
+        let second_event = user_message_event("turn-2", "second");
+        let first = repo.append(&session_id, &first_event);
+        let second = repo.append(&session_id, &second_event);
+        let (first, second) = tokio::join!(first, second);
+        let elapsed = started.elapsed();
+
+        let first = first.expect("first append should succeed");
+        let second = second.expect("second append should succeed");
+        let mut seqs = vec![first.storage_seq, second.storage_seq];
+        seqs.sort_unstable();
+
+        assert_eq!(seqs, vec![1, 2]);
+        assert!(
+            elapsed >= std::time::Duration::from_millis(40),
+            "batch append should wait for the drain window before returning"
+        );
+        assert_eq!(
+            repo.replay_events_sync(session_id.as_str())
+                .expect("replay should succeed")
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_session_uses_checkpoint_plus_tail_events() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let repo = FileSystemSessionRepository::new_with_projects_root(temp.path().to_path_buf());
+        let session_id = SessionId::from("session-recovery-1".to_string());
+        let working_dir = temp.path().join("work");
+        std::fs::create_dir_all(&working_dir).expect("working dir should exist");
+        repo.ensure_session(&session_id, &working_dir)
+            .await
+            .expect("session should be created");
+
+        repo.append(&session_id, &user_message_event("turn-1", "first"))
+            .await
+            .expect("first append should succeed");
+        repo.append(&session_id, &user_message_event("turn-2", "second"))
+            .await
+            .expect("second append should succeed");
+        let tail = repo
+            .append(&session_id, &user_message_event("turn-3", "tail"))
+            .await
+            .expect("tail append should succeed");
+
+        repo.checkpoint_session(
+            &session_id,
+            &SessionRecoveryCheckpoint {
+                agent_state: AgentState {
+                    session_id: session_id.to_string(),
+                    working_dir: working_dir.clone(),
+                    messages: vec![LlmMessage::User {
+                        content: "checkpoint".to_string(),
+                        origin: UserMessageOrigin::User,
+                    }],
+                    phase: Phase::Idle,
+                    mode_id: ModeId::default(),
+                    turn_count: 2,
+                    last_assistant_at: None,
+                },
+                phase: Phase::Idle,
+                last_mode_changed_at: None,
+                child_nodes: HashMap::new(),
+                active_tasks: HashMap::new(),
+                input_queue_projection_index: HashMap::new(),
+                checkpoint_storage_seq: 2,
+            },
+        )
+        .await
+        .expect("checkpoint should succeed");
+
+        let recovered = repo
+            .recover_session(&session_id)
+            .await
+            .expect("recovery should succeed");
+
+        assert_eq!(
+            recovered
+                .checkpoint
+                .expect("checkpoint should exist")
+                .checkpoint_storage_seq,
+            2
+        );
+        assert_eq!(recovered.tail_events.len(), 1);
+        assert_eq!(recovered.tail_events[0].storage_seq, tail.storage_seq);
+        assert_eq!(
+            repo.replay_events_sync(session_id.as_str())
+                .expect("replay should succeed")
+                .into_iter()
+                .map(|stored| stored.storage_seq)
+                .collect::<Vec<_>>(),
+            vec![tail.storage_seq]
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_session_fails_when_marker_points_to_missing_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let repo = FileSystemSessionRepository::new_with_projects_root(temp.path().to_path_buf());
+        let session_id = SessionId::from("session-recovery-missing-snapshot".to_string());
+        let working_dir = temp.path().join("work");
+        std::fs::create_dir_all(&working_dir).expect("working dir should exist");
+        repo.ensure_session(&session_id, &working_dir)
+            .await
+            .expect("session should be created");
+
+        repo.append(&session_id, &user_message_event("turn-1", "first"))
+            .await
+            .expect("append should succeed");
+        repo.checkpoint_session(
+            &session_id,
+            &SessionRecoveryCheckpoint {
+                agent_state: AgentState {
+                    session_id: session_id.to_string(),
+                    working_dir: working_dir.clone(),
+                    messages: vec![LlmMessage::User {
+                        content: "checkpoint".to_string(),
+                        origin: UserMessageOrigin::User,
+                    }],
+                    phase: Phase::Idle,
+                    mode_id: ModeId::default(),
+                    turn_count: 1,
+                    last_assistant_at: None,
+                },
+                phase: Phase::Idle,
+                last_mode_changed_at: None,
+                child_nodes: HashMap::new(),
+                active_tasks: HashMap::new(),
+                input_queue_projection_index: HashMap::new(),
+                checkpoint_storage_seq: 1,
+            },
+        )
+        .await
+        .expect("checkpoint should succeed");
+
+        let snapshot_path =
+            checkpoint_snapshot_path_from_projects_root(temp.path(), session_id.as_str(), 1)
+                .expect("snapshot path should resolve");
+        std::fs::remove_file(&snapshot_path).expect("snapshot should be removable");
+
+        let error = repo
+            .recover_session(&session_id)
+            .await
+            .expect_err("recovery should fail when snapshot is missing");
+        assert!(
+            error.to_string().contains("points to missing snapshot"),
+            "unexpected error: {error}"
+        );
     }
 }

@@ -82,6 +82,8 @@ crates/
   - HTTP request/response DTO
   - SSE event DTO
   - wire-level enum / payload
+- `CapabilityWireDescriptor` 是 plugin/protocol 边界上的 transport DTO；
+  `CapabilitySpec` 仍然是运行时内部唯一的能力语义真相
 - `protocol` 可以表达：
   - 字段命名
   - 可选字段
@@ -150,7 +152,7 @@ agent delegation experience 也遵循同样的分层边界：
 - 共享协作协议由 `adapter-prompt::contributors::workflow_examples` 承担，只负责四工具的通用决策规则与 fresh / resumed / restricted 三种 delegation mode。
 - 行为模板目录由 `adapter-prompt::contributors::agent_profile_summary` 承担，只回答“什么样的 child 适合做什么事”，不能伪装成 capability 授权目录。
 - child 专属 execution contract 只能通过 `PromptDeclaration` 注入，沿 child launch / resume 的 submission-time 链路进入 prompt，不能回退到工具 description 或 profile 文本拼装。
-- `observe` / collaboration result 中的 reuse / close / respawn 建议只能是 advisory projection；真正的事实源仍然是 lifecycle、turn outcome、mailbox 投影与 resolved capability surface。
+- `observe` / collaboration result 中的 reuse / close / respawn 建议只能是 advisory projection；真正的事实源仍然是 lifecycle、turn outcome、input queue 投影与 resolved capability surface。
 
 ### 4.5 `session-runtime`
 
@@ -161,7 +163,7 @@ agent delegation experience 也遵循同样的分层边界：
   - transcript snapshot/replay
   - interrupt/compact/run_turn
   - branch/subrun 的单 session 执行真相
-  - child delivery / mailbox / observe 的会话内推进部分
+- child delivery / input queue / observe 的会话内推进部分
   - context window / compaction / request assembly
 - `session-runtime` 不负责：
   - 全局 plugin discovery
@@ -174,7 +176,7 @@ agent delegation experience 也遵循同样的分层边界：
 
 1. **优先 Event Log，再做投影**
    - 长期目标是把 session 视为 append-only event log，而不是一组可变字段。
-   - durable 真相来自 `SessionLog`；`history view`、`branch snapshot`、mailbox replay 等读模型都应以 log 投影为准。
+   - durable 真相来自 `SessionLog`；`history view`、`branch snapshot`、input queue replay 等读模型都应以 log 投影为准。
    - `SessionState` 不是“纯 log projection”，而是 `projection cache + live execution control`：例如 `running`、`cancel token`、turn lease、待执行 compact 请求这类运行态协调信息允许只存在于 live state。
    - 当前项目已经部分符合这个方向：`EventStore.append/replay`、`SessionState` 内部 projector、`history/replay` 查询都建立在事件回放之上。
    - 长期仍应继续收口：减少“字段即 durable 真相”的写法，让 `SessionLog -> Projection` 与 `LiveControlState` 的边界都显式可见。
@@ -193,13 +195,13 @@ agent delegation experience 也遵循同样的分层边界：
      - compaction 策略可替换
      - budget 决策与 prompt 拼装解耦
 
-4. **Mailbox / child delivery 优先使用类型化消息契约**
+4. **Input Queue / child delivery 优先使用类型化消息契约**
    - child delivery、interrupt、observe、wake、close 这些能力，长期应尽量通过明确的消息类型表达，而不是靠共享可变状态和隐式约定拼接。
-   - 当前项目已经有 durable mailbox 事件、Envelope DTO 与投影；这部分是 durable contract，不应再重复包装出第二套“伪类型化 mailbox”。
+   - 当前项目已经有 durable input queue 事件、Envelope DTO 与投影；这部分是 durable contract，不应再重复包装出第二套“伪类型化 input queue”。
    - 后续真正需要继续 typed 化的是 `SessionActor` / wake / interrupt / close 的 live command path，让 actor loop 按明确消息处理运行态协调，而不是继续扩张共享状态与隐式约定。
 
 5. **Query 与 Command 逻辑继续分离**
-   - 写侧负责追加事件、推进 turn、驱动 mailbox。
+   - 写侧负责追加事件、推进 turn、驱动 input queue。
    - 读侧负责 transcript snapshot、stream replay、context view 等投影查询。
    - 当前项目已经开始分离：有 `query/` 模块，也有 `SessionQueries` / `SessionCommands` 这类内部 helper。
    - `SessionRuntime` 对外仍是过渡 façade，但应只承担构造和薄委托；新增读写能力时，优先落到 `query` 或 `command` 子域，再由 façade 暴露稳定入口。
@@ -222,7 +224,7 @@ agent delegation experience 也遵循同样的分层边界：
   - allowed：replay/live 订阅语义、scope/filter、状态来源整合
   - forbidden：同步快照投影算法、turn 推进、副作用
 - `query`
-  - allowed：拉取、快照、投影、durable replay 后的只读恢复
+  - allowed：拉取、快照、投影、durable replay 后的只读恢复、conversation/tool display authoritative read model
   - forbidden：推进、副作用、长时间持有运行态协调逻辑
 - `factory`
   - allowed：执行输入或执行对象构造
@@ -230,8 +232,8 @@ agent delegation experience 也遵循同样的分层边界：
 
 `application` 在这个边界上继续保持：
 
-- allowed：参数校验、权限检查、错误归类、跨 session 编排、稳定 `SessionRuntime` API 调用
-- forbidden：单 session 终态投影细节、durable append 细节、observe 快照拼装细节
+- allowed：参数校验、权限检查、错误归类、跨 session 编排、稳定 `SessionRuntime` API 调用、conversation/tool display facts 编排
+- forbidden：单 session 终态投影细节、durable append 细节、observe 快照拼装细节、tool block 聚合与 replay/live 去重规则
 
 ### 4.6 `adapter-*`
 
@@ -271,7 +273,11 @@ agent delegation experience 也遵循同样的分层边界：
 
 - `conversation v1` 是当前唯一的产品读协议，统一承担 snapshot、stream、child summaries、slash candidates 与 control state 的 authoritative read model。
 - 旧 `/api/sessions/*/view`、`/history`、`/events` 产品读面已删除；客户端不得再通过本地 reducer 重放原始事件来重建 UI 真相。
-- `server` 内部的 `terminal_projection` 负责把 `application` 返回的 `ConversationFacts` 投影成 `protocol` DTO；它是纯 projection，不做业务校验。
+- `conversation` contract 必须直接表达后端收敛后的 tool display 语义：
+  - 一个 tool call 只对应一个 authoritative tool block
+  - stdout/stderr 通过同一 block 的 stream patch 增量更新
+  - error、duration、truncated 与 childRef 都是一等字段
+- `server` 内部的 `terminal_projection` 负责把 `application` 返回的 `ConversationFacts` 投影成 `protocol` DTO；它是纯 projection，不做业务校验，也不重新承担 tool 聚合。
 - `client` crate 只负责：
   - bootstrap exchange 后的 typed HTTP/SSE facade
   - 结构化错误归一化
@@ -295,10 +301,12 @@ agent delegation experience 也遵循同样的分层边界：
 - `cli` 不允许在本地复制平行业务语义：
   - slash command 只是输入壳，语义必须映射到稳定 server contract
   - child pane / transcript 只能消费 authoritative conversation surface
+  - 不得通过 sibling `tool_stream`、metadata fallback 或本地 regroup 恢复工具展示真相
 
 ## 5. 关键不变量
 
 - `CapabilitySpec` 是运行时内部唯一能力语义模型。
+- `CapabilityWireDescriptor` 只允许出现在协议边界与 transport adapter 中，不能成为运行时内部事实源。
 - HTTP 状态码映射只在 `server` 层发生。
 - `SessionActor` 不直接持有 provider；统一经由 `kernel` gateway 或已解析句柄。
 - `application::App` 不保存 session shadow state；session 列表、history、replay、turn 推进都由 `session-runtime` 提供。

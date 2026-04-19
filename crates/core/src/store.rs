@@ -76,16 +76,21 @@ pub trait EventLogWriter: Send + Sync {
     fn append(&mut self, event: &StorageEvent) -> StoreResult<StoredEvent>;
 }
 
-/// 跨进程 session turn 执行租约。
+/// 跨进程 session turn 执行租约（RAII 语义）。
 ///
-/// 该 trait 故意不暴露行为方法，只依赖 RAII 语义：当租约对象被 drop 时，
-/// 底层实现必须释放对应的跨进程 session 锁。这样 runtime 无需了解
-/// 文件锁、命名锁等具体机制，只需要持有租约直到 turn 结束。
+/// 该 trait 故意不暴露行为方法，完全依赖 RAII 语义：
+/// 当租约对象被 drop 时，底层实现必须释放对应的跨进程 session 锁。
+/// 这样 runtime 无需了解文件锁、命名锁等具体机制，
+/// 只需要持有租约直到 turn 结束即可保证互斥。
 pub trait SessionTurnLease: Send + Sync {}
 
 /// 另一个执行者已经持有该 session 的 turn 执行权。
 ///
-/// `turn_id` 是 branch 逻辑的关键输入：后发请求需要从「最后一个稳定完成的 turn」
+/// 这是 **正常并发竞争**（不是错误）：当多个进程或 tab 同时向同一 session
+/// 发送 prompt 时，只有第一个获得锁，后续请求拿到 `Busy` 后
+/// 可以选择自动分叉新 session 继续执行。
+///
+/// `turn_id` 是分支逻辑的关键输入：后发请求需要从「最后一个稳定完成的 turn」
 /// 分叉，所以必须知道当前正在进行的是哪个 turn，才能在复制历史时排除其事件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionTurnBusy {
@@ -94,6 +99,7 @@ pub struct SessionTurnBusy {
     pub acquired_at: DateTime<Utc>,
 }
 
+/// Turn 获取结果：要么成功拿到锁（Acquired），要么被另一个执行者占着（Busy）。
 pub enum SessionTurnAcquireResult {
     Acquired(Box<dyn SessionTurnLease>),
     Busy(SessionTurnBusy),
@@ -119,6 +125,7 @@ pub trait SessionManager: Send + Sync {
     /// 尝试获取某个 session 的 turn 执行权。
     ///
     /// 获取失败不算错误，而是返回 `Busy`，让调用方可以选择自动分叉新 session。
+    /// 这是实现多 tab 并发 prompt 的核心机制。
     fn try_acquire_turn(
         &self,
         session_id: &str,

@@ -19,7 +19,7 @@
 //!
 //! ```ignore
 //! use astrcode_sdk::{ToolHandler, ToolRegistration, ToolFuture, PluginContext, StreamWriter};
-//! use astrcode_sdk::{CapabilityDescriptor, CapabilityKind, SideEffectLevel};
+//! use astrcode_sdk::{CapabilityKind, CapabilitySpec, SideEffect};
 //! use serde::{Deserialize, Serialize};
 //!
 //! // 1. 定义工具的输入/输出类型
@@ -33,12 +33,11 @@
 //! struct GreetTool;
 //!
 //! impl ToolHandler<GreetInput, GreetOutput> for GreetTool {
-//!     fn descriptor(&self) -> CapabilityDescriptor {
-//!         CapabilityDescriptor::builder()
-//!             .name("greet")
-//!             .kind(CapabilityKind::Tool)
+//!     fn descriptor(&self) -> CapabilitySpec {
+//!         CapabilitySpec::builder("greet", CapabilityKind::Tool)
 //!             .description("向指定用户打招呼")
-//!             .side_effect_level(SideEffectLevel::None)
+//!             .schema(serde_json::json!({ "type": "object" }), serde_json::json!({ "type": "object" }))
+//!             .side_effect(SideEffect::None)
 //!             .build()
 //!             .unwrap()
 //!     }
@@ -67,12 +66,12 @@ mod stream;
 mod tests;
 mod tool;
 
-// Re-export protocol types that plugin authors commonly need.
-pub use astrcode_protocol::plugin::{
-    CapabilityDescriptor, CapabilityDescriptorBuilder, CapabilityKind, DescriptorBuildError,
-    PermissionHint, SideEffectLevel, StabilityLevel,
+// Re-export canonical capability types for plugin authors.
+pub use astrcode_core::{
+    CapabilityKind, CapabilitySpec, CapabilitySpecBuildError, CapabilitySpecBuilder,
+    InvocationMode, PermissionSpec, SideEffect, Stability,
 };
-// Re-export SDK core types.
+// Re-export SDK-local types.
 pub use context::PluginContext;
 pub use error::{SdkError, ToolSerdeStage};
 pub use hook::{

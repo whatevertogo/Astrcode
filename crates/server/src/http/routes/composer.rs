@@ -1,7 +1,7 @@
 //! 输入候选（composer options）路由。
 //!
 //! 该接口服务于前端输入框的自动展开面板，返回已经过 runtime 统一投影的候选项。
-//! 它故意不直接暴露 `SkillSpec` / `CapabilityDescriptor`，避免 UI 反向理解内部装配细节。
+//! 它故意不直接暴露 `SkillSpec` / `CapabilityWireDescriptor`，避免 UI 反向理解内部装配细节。
 
 use astrcode_application::{ComposerOptionKind, ComposerOptionsRequest};
 use astrcode_protocol::http::ComposerOptionsResponseDto;

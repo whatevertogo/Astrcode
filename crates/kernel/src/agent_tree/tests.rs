@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use astrcode_core::{
     AgentInboxEnvelope, AgentLifecycleStatus, AgentMode, AgentProfile, AgentTurnOutcome,
-    ChildAgentRef, ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
-    CompletedParentDeliveryPayload, LiveSubRunControlBoundary, ParentDelivery,
-    ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics, SessionId,
-    SubRunHandle,
+    ChildAgentRef, ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNotification,
+    ChildSessionNotificationKind, CompletedParentDeliveryPayload, LiveSubRunControlBoundary,
+    ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
+    ParentExecutionRef, SessionId, SubRunHandle,
 };
 
 use super::{
@@ -45,6 +45,31 @@ fn explore_profile() -> AgentProfile {
     }
 }
 
+fn build_child_ref(
+    agent_id: impl Into<astrcode_core::AgentId>,
+    session_id: impl Into<astrcode_core::SessionId>,
+    sub_run_id: impl Into<astrcode_core::SubRunId>,
+    parent_agent_id: Option<impl Into<astrcode_core::AgentId>>,
+    parent_sub_run_id: Option<impl Into<astrcode_core::SubRunId>>,
+    status: AgentLifecycleStatus,
+    open_session_id: impl Into<astrcode_core::SessionId>,
+) -> ChildAgentRef {
+    ChildAgentRef {
+        identity: ChildExecutionIdentity {
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+            sub_run_id: sub_run_id.into(),
+        },
+        parent: ParentExecutionRef {
+            parent_agent_id: parent_agent_id.map(Into::into),
+            parent_sub_run_id: parent_sub_run_id.map(Into::into),
+        },
+        lineage_kind: ChildSessionLineageKind::Spawn,
+        status,
+        open_session_id: open_session_id.into(),
+    }
+}
+
 fn sample_parent_delivery(
     notification_id: &str,
     parent_session_id: &str,
@@ -54,19 +79,17 @@ fn sample_parent_delivery(
         parent_session_id.to_string(),
         parent_turn_id.to_string(),
         ChildSessionNotification {
-            notification_id: notification_id.to_string(),
-            child_ref: ChildAgentRef {
-                agent_id: format!("agent-{notification_id}"),
-                session_id: parent_session_id.to_string(),
-                sub_run_id: format!("subrun-{notification_id}"),
-                parent_agent_id: None,
-                parent_sub_run_id: None,
-                lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentLifecycleStatus::Idle,
-                open_session_id: format!("child-session-{notification_id}"),
-            },
+            notification_id: notification_id.into(),
+            child_ref: build_child_ref(
+                format!("agent-{notification_id}"),
+                parent_session_id,
+                format!("subrun-{notification_id}"),
+                None::<astrcode_core::AgentId>,
+                None::<astrcode_core::SubRunId>,
+                AgentLifecycleStatus::Idle,
+                format!("child-session-{notification_id}"),
+            ),
             kind: ChildSessionNotificationKind::Delivered,
-            status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             delivery: Some(completed_delivery(
                 notification_id,
@@ -83,22 +106,20 @@ fn sample_parent_delivery_for_child(
     child: &SubRunHandle,
 ) -> ChildSessionNotification {
     ChildSessionNotification {
-        notification_id: notification_id.to_string(),
-        child_ref: ChildAgentRef {
-            agent_id: child.agent_id.clone(),
-            session_id: parent_session_id.to_string(),
-            sub_run_id: child.sub_run_id.clone(),
-            parent_agent_id: child.parent_agent_id.clone(),
-            parent_sub_run_id: child.parent_sub_run_id.clone(),
-            lineage_kind: ChildSessionLineageKind::Spawn,
-            status: child.lifecycle,
-            open_session_id: child
+        notification_id: notification_id.into(),
+        child_ref: build_child_ref(
+            child.agent_id.clone(),
+            parent_session_id,
+            child.sub_run_id.clone(),
+            child.parent_agent_id.clone(),
+            child.parent_sub_run_id.clone(),
+            child.lifecycle,
+            child
                 .child_session_id
                 .clone()
                 .unwrap_or_else(|| child.session_id.clone()),
-        },
+        ),
         kind: ChildSessionNotificationKind::Delivered,
-        status: child.lifecycle,
         source_tool_call_id: None,
         delivery: Some(completed_delivery(
             notification_id,
@@ -178,7 +199,7 @@ async fn cancelling_parent_turn_cascades_to_children() {
             &explore_profile(),
             "session-child",
             "turn-root".to_string(),
-            Some(parent.agent_id.clone()),
+            Some(parent.agent_id.to_string()),
         )
         .await
         .expect("spawn should succeed");
@@ -249,7 +270,7 @@ async fn failed_spawn_does_not_consume_agent_id() {
         .await
         .expect("first successful spawn should still get the first id");
 
-    assert_eq!(handle.agent_id, "agent-1");
+    assert_eq!(handle.agent_id.as_str(), "agent-1");
 }
 
 #[tokio::test]
@@ -270,7 +291,7 @@ async fn cancel_directly_cascades_to_child_tree() {
             &explore_profile(),
             "session-child",
             "turn-root".to_string(),
-            Some(parent.agent_id.clone()),
+            Some(parent.agent_id.to_string()),
         )
         .await
         .expect("child spawn should succeed");
@@ -279,7 +300,7 @@ async fn cancel_directly_cascades_to_child_tree() {
             &explore_profile(),
             "session-grandchild",
             "turn-root".to_string(),
-            Some(child.agent_id.clone()),
+            Some(child.agent_id.to_string()),
         )
         .await
         .expect("grandchild spawn should succeed");
@@ -403,7 +424,7 @@ async fn spawn_rejects_agents_that_exceed_max_depth() {
             &explore_profile(),
             "session-child",
             "turn-root".to_string(),
-            Some(root.agent_id.clone()),
+            Some(root.agent_id.to_string()),
         )
         .await
         .expect("child should fit within depth 2");
@@ -415,7 +436,7 @@ async fn spawn_rejects_agents_that_exceed_max_depth() {
             &explore_profile(),
             "session-grandchild",
             "turn-root".to_string(),
-            Some(child.agent_id.clone()),
+            Some(child.agent_id.to_string()),
         )
         .await
         .expect_err("grandchild should exceed max depth");
@@ -568,7 +589,7 @@ async fn resume_mints_new_execution_for_completed_agent() {
         .expect("resume should succeed");
     assert_eq!(resumed.lifecycle, AgentLifecycleStatus::Running);
     assert_eq!(resumed.agent_id, handle.agent_id);
-    assert_eq!(resumed.parent_turn_id, "turn-2");
+    assert_eq!(resumed.parent_turn_id, "turn-2".into());
     assert_eq!(resumed.lineage_kind, ChildSessionLineageKind::Resume);
     assert_ne!(
         resumed.sub_run_id, handle.sub_run_id,
@@ -622,7 +643,7 @@ async fn close_cascades_to_entire_subtree_but_not_siblings() {
             &explore_profile(),
             "session-1",
             "turn-1".to_string(),
-            Some(tree_a_parent.agent_id.clone()),
+            Some(tree_a_parent.agent_id.to_string()),
         )
         .await
         .expect("tree A child spawn should succeed");
@@ -636,7 +657,7 @@ async fn close_cascades_to_entire_subtree_but_not_siblings() {
             &explore_profile(),
             "session-1",
             "turn-1".to_string(),
-            Some(tree_b_parent.agent_id.clone()),
+            Some(tree_b_parent.agent_id.to_string()),
         )
         .await
         .expect("tree B child spawn should succeed");
@@ -699,7 +720,7 @@ async fn terminate_subtree_and_collect_handles_survives_pruning_closed_branch() 
             &explore_profile(),
             "session-1",
             "turn-1".to_string(),
-            Some(parent.agent_id.clone()),
+            Some(parent.agent_id.to_string()),
         )
         .await
         .expect("child spawn should succeed");
@@ -708,7 +729,7 @@ async fn terminate_subtree_and_collect_handles_survives_pruning_closed_branch() 
             &explore_profile(),
             "session-1",
             "turn-1".to_string(),
-            Some(child.agent_id.clone()),
+            Some(child.agent_id.to_string()),
         )
         .await
         .expect("grandchild spawn should succeed");
@@ -947,7 +968,7 @@ async fn terminate_subtree_clears_pending_inbox_messages() {
             &explore_profile(),
             "session-1",
             "turn-1".to_string(),
-            Some(parent.agent_id.clone()),
+            Some(parent.agent_id.to_string()),
         )
         .await
         .expect("child spawn should succeed");
@@ -999,7 +1020,7 @@ async fn terminate_subtree_discards_pending_parent_deliveries_for_closed_branch(
             &explore_profile(),
             "session-child-a",
             "turn-root".to_string(),
-            Some(root.agent_id.clone()),
+            Some(root.agent_id.to_string()),
         )
         .await
         .expect("child spawn should succeed");
@@ -1008,7 +1029,7 @@ async fn terminate_subtree_discards_pending_parent_deliveries_for_closed_branch(
             &explore_profile(),
             "session-child-b",
             "turn-root".to_string(),
-            Some(root.agent_id.clone()),
+            Some(root.agent_id.to_string()),
         )
         .await
         .expect("sibling spawn should succeed");
@@ -1045,7 +1066,10 @@ async fn terminate_subtree_discards_pending_parent_deliveries_for_closed_branch(
         .checkout_parent_delivery(&session_id)
         .await
         .expect("sibling delivery should remain queued");
-    assert_eq!(remaining.notification.child_ref.agent_id, sibling.agent_id);
+    assert_eq!(
+        remaining.notification.child_ref.agent_id(),
+        &sibling.agent_id
+    );
 }
 
 #[tokio::test]
@@ -1184,19 +1208,17 @@ async fn parent_delivery_batch_checkout_uses_turn_start_snapshot_for_same_parent
     let turn_id = "turn-parent".to_string();
     let make_delivery =
         |delivery_id: &str, child_id: &str, parent_agent_id: &str| ChildSessionNotification {
-            notification_id: delivery_id.to_string(),
-            child_ref: ChildAgentRef {
-                agent_id: child_id.to_string(),
-                session_id: session_id.clone(),
-                sub_run_id: format!("subrun-{delivery_id}"),
-                parent_agent_id: Some(parent_agent_id.to_string()),
-                parent_sub_run_id: Some(format!("subrun-{parent_agent_id}")),
-                lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentLifecycleStatus::Idle,
-                open_session_id: format!("child-session-{delivery_id}"),
-            },
+            notification_id: delivery_id.into(),
+            child_ref: build_child_ref(
+                child_id,
+                session_id.clone(),
+                format!("subrun-{delivery_id}"),
+                Some(parent_agent_id),
+                Some(format!("subrun-{parent_agent_id}")),
+                AgentLifecycleStatus::Idle,
+                format!("child-session-{delivery_id}"),
+            ),
             kind: ChildSessionNotificationKind::Delivered,
-            status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             delivery: Some(completed_delivery(
                 delivery_id,
@@ -1277,19 +1299,17 @@ async fn parent_delivery_batch_requeue_restores_started_snapshot_for_retry() {
     let turn_id = "turn-parent".to_string();
     let make_delivery =
         |delivery_id: &str, child_id: &str, parent_agent_id: &str| ChildSessionNotification {
-            notification_id: delivery_id.to_string(),
-            child_ref: ChildAgentRef {
-                agent_id: child_id.to_string(),
-                session_id: session_id.clone(),
-                sub_run_id: format!("subrun-{delivery_id}"),
-                parent_agent_id: Some(parent_agent_id.to_string()),
-                parent_sub_run_id: Some(format!("subrun-{parent_agent_id}")),
-                lineage_kind: ChildSessionLineageKind::Spawn,
-                status: AgentLifecycleStatus::Idle,
-                open_session_id: format!("child-session-{delivery_id}"),
-            },
+            notification_id: delivery_id.into(),
+            child_ref: build_child_ref(
+                child_id,
+                session_id.clone(),
+                format!("subrun-{delivery_id}"),
+                Some(parent_agent_id),
+                Some(format!("subrun-{parent_agent_id}")),
+                AgentLifecycleStatus::Idle,
+                format!("child-session-{delivery_id}"),
+            ),
             kind: ChildSessionNotificationKind::Delivered,
-            status: AgentLifecycleStatus::Idle,
             source_tool_call_id: None,
             delivery: Some(completed_delivery(
                 delivery_id,
@@ -1372,7 +1392,7 @@ async fn leaf_first_cascade_cancels_deepest_child_before_parent() {
             &explore_profile(),
             "session-middle",
             "turn-1".to_string(),
-            Some(root.agent_id.clone()),
+            Some(root.agent_id.to_string()),
         )
         .await
         .expect("middle spawn should succeed");
@@ -1381,7 +1401,7 @@ async fn leaf_first_cascade_cancels_deepest_child_before_parent() {
             &explore_profile(),
             "session-leaf",
             "turn-1".to_string(),
-            Some(middle.agent_id.clone()),
+            Some(middle.agent_id.to_string()),
         )
         .await
         .expect("leaf spawn should succeed");
@@ -1453,7 +1473,7 @@ async fn subtree_isolation_closing_one_branch_does_not_affect_sibling_branch() {
             &explore_profile(),
             "session-middle-a",
             "turn-1".to_string(),
-            Some(root.agent_id.clone()),
+            Some(root.agent_id.to_string()),
         )
         .await
         .expect("middle_a spawn should succeed");
@@ -1462,7 +1482,7 @@ async fn subtree_isolation_closing_one_branch_does_not_affect_sibling_branch() {
             &explore_profile(),
             "session-leaf-a",
             "turn-1".to_string(),
-            Some(middle_a.agent_id.clone()),
+            Some(middle_a.agent_id.to_string()),
         )
         .await
         .expect("leaf_a spawn should succeed");
@@ -1471,7 +1491,7 @@ async fn subtree_isolation_closing_one_branch_does_not_affect_sibling_branch() {
             &explore_profile(),
             "session-middle-b",
             "turn-1".to_string(),
-            Some(root.agent_id.clone()),
+            Some(root.agent_id.to_string()),
         )
         .await
         .expect("middle_b spawn should succeed");
@@ -1480,7 +1500,7 @@ async fn subtree_isolation_closing_one_branch_does_not_affect_sibling_branch() {
             &explore_profile(),
             "session-leaf-b",
             "turn-1".to_string(),
-            Some(middle_b.agent_id.clone()),
+            Some(middle_b.agent_id.to_string()),
         )
         .await
         .expect("leaf_b spawn should succeed");
@@ -1576,7 +1596,7 @@ async fn deliver_to_parent_only_reaches_direct_parent_not_grandparent() {
             &explore_profile(),
             "session-middle",
             "turn-1".to_string(),
-            Some(root.agent_id.clone()),
+            Some(root.agent_id.to_string()),
         )
         .await
         .expect("middle spawn should succeed");
@@ -1585,7 +1605,7 @@ async fn deliver_to_parent_only_reaches_direct_parent_not_grandparent() {
             &explore_profile(),
             "session-leaf",
             "turn-1".to_string(),
-            Some(middle.agent_id.clone()),
+            Some(middle.agent_id.to_string()),
         )
         .await
         .expect("leaf spawn should succeed");
@@ -1602,8 +1622,8 @@ async fn deliver_to_parent_only_reaches_direct_parent_not_grandparent() {
     // leaf 向直接父 (middle) 投递
     let leaf_delivery = AgentInboxEnvelope {
         delivery_id: "delivery-leaf-to-middle".to_string(),
-        from_agent_id: leaf.agent_id.clone(),
-        to_agent_id: middle.agent_id.clone(),
+        from_agent_id: leaf.agent_id.to_string(),
+        to_agent_id: middle.agent_id.to_string(),
         kind: astrcode_core::InboxEnvelopeKind::ChildDelivery,
         message: "leaf 的结果".to_string(),
         context: None,
@@ -1624,7 +1644,7 @@ async fn deliver_to_parent_only_reaches_direct_parent_not_grandparent() {
         .await
         .expect("drain middle inbox should succeed");
     assert_eq!(middle_inbox.len(), 1);
-    assert_eq!(middle_inbox[0].from_agent_id, leaf.agent_id);
+    assert_eq!(middle_inbox[0].from_agent_id, leaf.agent_id.to_string());
     assert_eq!(
         middle_inbox[0].kind,
         astrcode_core::InboxEnvelopeKind::ChildDelivery
@@ -1656,7 +1676,7 @@ async fn wait_for_inbox_resolves_on_terminate_subtree() {
             &explore_profile(),
             "session-1",
             "turn-1".to_string(),
-            Some(parent.agent_id.clone()),
+            Some(parent.agent_id.to_string()),
         )
         .await
         .expect("child spawn should succeed");
@@ -1689,7 +1709,7 @@ async fn wait_for_inbox_resolves_on_terminate_subtree() {
         result.is_some(),
         "wait_for_inbox should return Some after terminate"
     );
-    let handle = result.unwrap();
+    let handle = result.expect("result should be Some after terminate");
     assert!(
         handle.lifecycle.is_final(),
         "handle should be in final state after terminate, got {:?}",

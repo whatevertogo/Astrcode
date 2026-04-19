@@ -86,14 +86,13 @@ fn normalize_project_identity(path: &Path) -> PathBuf {
     }
 }
 
-/// 将路径组件转换为 kebab-case slug
+/// 将路径组件转换为 kebab-case slug。
 ///
-/// ## 处理规则
-///
-/// - **Prefix**（Windows 盘符）: `D:` → `D`，UNC 路径 → `server-share`
-/// - **RootDir**: 根目录 → `root`（Windows 下后续会移除）
-/// - **Normal**: 清理非法字符，连续非法字符合并为单个 `-`
-/// - **CurDir/ParentDir**: 忽略（`.` 和 `..`）
+/// 处理各种操作系统的路径怪异情况：
+/// - **Prefix**（Windows 盘符）: `D:` → `D`，UNC `\\server\share` → `server-share`
+/// - **RootDir**: 根目录标记 → `root`（Windows 下后续会移除，因为盘符已够用）
+/// - **Normal**: 将非法文件名字符替换为 `-`，连续非法字符合并为单个 `-`
+/// - **CurDir/ParentDir**: 忽略（`.` 和 `..` 不参与 slug）
 fn components_to_slug(path: &Path) -> String {
     let mut segments = Vec::new();
 
@@ -185,6 +184,10 @@ fn sanitize_component(value: &str) -> String {
         .collect::<String>()
 }
 
+/// 基于路径生成稳定的 8 字符 hex hash。
+///
+/// 使用 UUID v5（namespace URL + 路径内容），
+/// 相同路径始终产生相同 hash，用于超长路径名的唯一截断标识。
 fn stable_project_hash(path: &Path) -> String {
     let source = path.to_string_lossy();
     Uuid::new_v5(&Uuid::NAMESPACE_URL, source.as_bytes())

@@ -15,7 +15,8 @@ use std::{
     sync::Arc,
 };
 
-use astrcode_adapter_skills::{SkillSource, SkillSpec, collect_asset_files, is_valid_skill_name};
+use astrcode_adapter_skills::collect_asset_files;
+use astrcode_core::{GovernanceModeSpec, SkillSource, SkillSpec, is_valid_skill_name};
 use astrcode_plugin::{PluginLoader, Supervisor, default_initialize_message, default_profiles};
 use astrcode_protocol::plugin::{PeerDescriptor, SkillDescriptor};
 use log::warn;
@@ -30,6 +31,8 @@ pub(crate) struct PluginBootstrapResult {
     pub invokers: Vec<Arc<dyn CapabilityInvoker>>,
     /// 物化后的插件 skill。
     pub skills: Vec<SkillSpec>,
+    /// 插件声明的治理 mode。
+    pub modes: Vec<GovernanceModeSpec>,
     /// 插件注册表引用（治理视图使用）。
     pub registry: Arc<PluginRegistry>,
     /// 活跃的插件 supervisor 列表（shutdown 时需要关闭）。
@@ -69,6 +72,7 @@ pub(crate) async fn bootstrap_plugins_with_skill_root(
             return PluginBootstrapResult {
                 invokers: Vec::new(),
                 skills: Vec::new(),
+                modes: Vec::new(),
                 registry,
                 supervisors: Vec::new(),
                 search_paths,
@@ -91,6 +95,7 @@ pub(crate) async fn bootstrap_plugins_with_skill_root(
 
     let mut all_invokers: Vec<Arc<dyn CapabilityInvoker>> = Vec::new();
     let mut all_skills = Vec::new();
+    let mut all_modes = Vec::new();
     let mut supervisors = Vec::new();
 
     for manifest in manifests {
@@ -116,16 +121,19 @@ pub(crate) async fn bootstrap_plugins_with_skill_root(
                     &name,
                     supervisor.declared_skills(),
                 );
+                let modes = supervisor.declared_modes();
 
                 log::info!(
-                    "plugin '{name}' initialized with {} capabilities and {} skills",
+                    "plugin '{name}' initialized with {} capabilities, {} skills and {} modes",
                     capabilities.len(),
-                    skills.len()
+                    skills.len(),
+                    modes.len()
                 );
 
                 registry.record_initialized(manifest, capabilities, warnings);
                 all_invokers.extend(invokers);
                 all_skills.extend(skills);
+                all_modes.extend(modes);
                 supervisors.push(supervisor);
             },
             Err(error) => {
@@ -143,6 +151,7 @@ pub(crate) async fn bootstrap_plugins_with_skill_root(
     PluginBootstrapResult {
         invokers: all_invokers,
         skills: all_skills,
+        modes: all_modes,
         registry,
         supervisors,
         search_paths,
@@ -356,6 +365,7 @@ mod tests {
         let result = bootstrap_plugins(vec![]).await;
         assert!(result.invokers.is_empty());
         assert!(result.skills.is_empty());
+        assert!(result.modes.is_empty());
         assert!(result.supervisors.is_empty());
         assert!(result.registry.snapshot().is_empty());
     }
@@ -365,6 +375,7 @@ mod tests {
         let result = bootstrap_plugins(vec![PathBuf::from("/nonexistent/path")]).await;
         assert!(result.invokers.is_empty());
         assert!(result.skills.is_empty());
+        assert!(result.modes.is_empty());
         assert!(result.supervisors.is_empty());
     }
 

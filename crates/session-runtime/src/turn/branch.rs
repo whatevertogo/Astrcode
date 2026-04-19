@@ -90,15 +90,31 @@ impl SessionRuntime {
         source_session_id: &SessionId,
         active_turn_id: &str,
     ) -> astrcode_core::Result<SessionId> {
-        let source_actor = self.ensure_loaded_session(source_session_id).await?;
-        let working_dir = normalize_working_dir(PathBuf::from(source_actor.working_dir()))?;
         let source_events = self.event_store.replay(source_session_id).await?;
         let stable_events = stable_events_before_active_turn(&source_events, active_turn_id);
+        let source_actor = self.ensure_loaded_session(source_session_id).await?;
+        let working_dir = normalize_working_dir(PathBuf::from(source_actor.working_dir()))?;
         let parent_storage_seq = stable_events.last().map(|event| event.storage_seq);
 
+        self.fork_events_up_to(
+            source_session_id,
+            &working_dir,
+            &stable_events,
+            parent_storage_seq,
+        )
+        .await
+    }
+
+    pub(super) async fn fork_events_up_to(
+        &self,
+        source_session_id: &SessionId,
+        working_dir: &std::path::Path,
+        source_events: &[StoredEvent],
+        parent_storage_seq: Option<u64>,
+    ) -> astrcode_core::Result<SessionId> {
         let branched_session_id: SessionId = generate_session_id().into();
         self.event_store
-            .ensure_session(&branched_session_id, &working_dir)
+            .ensure_session(&branched_session_id, working_dir)
             .await?;
 
         let session_start = session_start_event(
@@ -114,7 +130,7 @@ impl SessionRuntime {
 
         // 为什么只复制稳定历史：活跃 turn 的半截输出不应污染新分支，
         // 否则 replay/context window 会同时看到未完成与新分支的事件。
-        for stored in stable_events {
+        for stored in source_events {
             if matches!(
                 stored.event.payload,
                 StorageEventPayload::SessionStart { .. }

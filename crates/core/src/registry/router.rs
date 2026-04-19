@@ -1,6 +1,6 @@
 //! # 能力路由契约
 //!
-//! core 仅保留能力调用相关的契约与 DTO，具体路由实现下沉到 runtime-registry。
+//! core 仅保留能力调用相关的契约与 DTO，具体路由实现下沉到 adapter 层
 
 use std::{fmt, path::PathBuf, sync::Arc};
 
@@ -10,8 +10,8 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, CapabilitySpec, ExecutionOwner, Result, SessionId,
-    ToolEventSink, ToolExecutionResult, ToolOutputDelta,
+    AgentEventContext, CancelToken, CapabilitySpec, ExecutionOwner, ExecutionResultCommon, ModeId,
+    Result, SessionId, ToolEventSink, ToolExecutionResult, ToolOutputDelta,
 };
 
 /// 能力调用的上下文信息。
@@ -31,6 +31,8 @@ pub struct CapabilityContext {
     pub turn_id: Option<String>,
     /// 当前调用所属 Agent 元数据。
     pub agent: AgentEventContext,
+    /// 当前调用开始时的治理 mode。
+    pub current_mode_id: ModeId,
     /// 当前调用所属执行 owner。
     pub execution_owner: Option<ExecutionOwner>,
     /// 当前使用的 profile 名称
@@ -55,6 +57,7 @@ impl fmt::Debug for CapabilityContext {
             .field("cancel", &self.cancel)
             .field("turn_id", &self.turn_id)
             .field("agent", &self.agent)
+            .field("current_mode_id", &self.current_mode_id)
             .field("execution_owner", &self.execution_owner)
             .field("profile", &self.profile)
             .field("profile_context", &self.profile_context)
@@ -95,6 +98,24 @@ pub struct CapabilityExecutionResult {
 }
 
 impl CapabilityExecutionResult {
+    /// 用公共执行结果字段一次性构造能力结果，避免二段式覆盖。
+    pub fn from_common(
+        capability_name: impl Into<String>,
+        success: bool,
+        output: Value,
+        common: ExecutionResultCommon,
+    ) -> Self {
+        Self {
+            capability_name: capability_name.into(),
+            success,
+            output,
+            error: common.error,
+            metadata: common.metadata,
+            duration_ms: common.duration_ms,
+            truncated: common.truncated,
+        }
+    }
+
     /// 构造成功结果。
     pub fn ok(capability_name: impl Into<String>, output: Value) -> Self {
         Self {
@@ -136,10 +157,10 @@ impl CapabilityExecutionResult {
         }
     }
 
-    /// 转换为 LLM 工具执行结果。
+    /// 将通用能力执行结果转换为 LLM 工具执行结果。
     ///
-    /// 将通用的能力执行结果映射为 `ToolExecutionResult`，
-    /// 以便前端渲染工具调用卡片。
+    /// 填充 tool_call_id 并将 JSON 输出序列化为可读文本，
+    /// 使结果能直接用于前端工具卡片渲染和 LLM 上下文回传。
     pub fn into_tool_execution_result(self, tool_call_id: String) -> ToolExecutionResult {
         let output = self.output_text();
         ToolExecutionResult {
@@ -149,6 +170,16 @@ impl CapabilityExecutionResult {
             output,
             error: self.error,
             metadata: self.metadata,
+            child_ref: None,
+            duration_ms: self.duration_ms,
+            truncated: self.truncated,
+        }
+    }
+
+    pub fn common(&self) -> ExecutionResultCommon {
+        ExecutionResultCommon {
+            error: self.error.clone(),
+            metadata: self.metadata.clone(),
             duration_ms: self.duration_ms,
             truncated: self.truncated,
         }
@@ -171,4 +202,33 @@ pub trait CapabilityInvoker: Send + Sync {
         payload: Value,
         ctx: &CapabilityContext,
     ) -> Result<CapabilityExecutionResult>;
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::CapabilityExecutionResult;
+    use crate::ExecutionResultCommon;
+
+    #[test]
+    fn from_common_preserves_failure_fields_without_placeholder_override() {
+        let result = CapabilityExecutionResult::from_common(
+            "plugin.read",
+            false,
+            json!(null),
+            ExecutionResultCommon::failure(
+                "transport failed",
+                Some(json!({ "streamEvents": [] })),
+                23,
+                false,
+            ),
+        );
+
+        assert!(!result.success);
+        assert_eq!(result.error.as_deref(), Some("transport failed"));
+        assert_eq!(result.metadata, Some(json!({ "streamEvents": [] })));
+        assert_eq!(result.duration_ms, 23);
+        assert!(!result.truncated);
+    }
 }

@@ -9,7 +9,7 @@
 - session query / replay / history view
 - turn loop
 - interrupt / replay / branch
-- observe / mailbox / routing
+- observe / input queue / routing
 - durable event append
 - session catalog 广播
 - token budget 驱动的单 turn 自动续写
@@ -158,5 +158,5 @@ SessionActor SHALL NOT 直接持有 `LlmProvider`、`PromptProvider`、`ToolProv
 #### Scenario: query 按读取语义拆分子模块
 
 - **WHEN** 检查 `query` 子域
-- **THEN** 其实现至少按 `history`、`agent`、`mailbox`、`turn` 四类读取场景拆分
+- **THEN** 其实现至少按 `history`、`agent`、`input_queue`、`turn` 四类读取场景拆分
 - **AND** crate 根只保留统一入口与类型导出

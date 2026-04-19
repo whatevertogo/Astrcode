@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use astrcode_protocol::plugin::CapabilityDescriptor;
+use astrcode_core::CapabilitySpec;
 use serde_json::Value;
 
 use crate::{PluginContext, SdkError};
@@ -69,11 +69,8 @@ impl PolicyDecision {
 /// Use this for plugin-local validation and gating. Host-level approval, sandbox, or runtime
 /// policy should stay in the host runtime rather than being reimplemented here.
 pub trait PolicyHook: Send + Sync {
-    fn before_invoke(
-        &self,
-        capability: &CapabilityDescriptor,
-        context: &PluginContext,
-    ) -> PolicyDecision;
+    fn before_invoke(&self, capability: &CapabilitySpec, context: &PluginContext)
+    -> PolicyDecision;
 }
 
 /// 钩子短路策略。
@@ -270,7 +267,7 @@ impl PolicyHookChain {
 impl PolicyHook for PolicyHookChain {
     fn before_invoke(
         &self,
-        capability: &CapabilityDescriptor,
+        capability: &CapabilitySpec,
         context: &PluginContext,
     ) -> PolicyDecision {
         let mut final_decision = PolicyDecision::allow();

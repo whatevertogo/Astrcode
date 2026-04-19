@@ -6,8 +6,13 @@ use astrcode_core::ResolvedRuntimeConfig;
 pub struct ContextWindowSettings {
     pub auto_compact_enabled: bool,
     pub compact_threshold_percent: u8,
+    pub reserved_context_size: usize,
+    pub summary_reserve_tokens: usize,
+    pub compact_max_output_tokens: usize,
+    pub compact_max_retry_attempts: usize,
     pub tool_result_max_bytes: usize,
     pub compact_keep_recent_turns: usize,
+    pub compact_keep_recent_user_messages: usize,
     pub max_tracked_files: usize,
     pub max_recovered_files: usize,
     pub recovery_token_budget: usize,
@@ -35,11 +40,20 @@ impl ContextWindowSettings {
 
 impl From<&ResolvedRuntimeConfig> for ContextWindowSettings {
     fn from(config: &ResolvedRuntimeConfig) -> Self {
+        // TODO: 如果未来需要 mode 感知的上下文压缩，请在 compact 参数模型上做显式覆盖，
+        // 而不是重新引入 summarize/truncate/ignore 这类未落地的策略枚举。
         Self {
             auto_compact_enabled: config.auto_compact_enabled,
             compact_threshold_percent: config.compact_threshold_percent,
+            reserved_context_size: config.reserved_context_size.max(1),
+            summary_reserve_tokens: config.summary_reserve_tokens.max(1),
+            compact_max_output_tokens: config.compact_max_output_tokens.max(1),
+            compact_max_retry_attempts: usize::from(config.compact_max_retry_attempts.max(1)),
             tool_result_max_bytes: config.tool_result_max_bytes,
             compact_keep_recent_turns: usize::from(config.compact_keep_recent_turns),
+            compact_keep_recent_user_messages: usize::from(
+                config.compact_keep_recent_user_messages.max(1),
+            ),
             max_tracked_files: config.max_tracked_files,
             max_recovered_files: config.max_recovered_files.max(1),
             recovery_token_budget: config.recovery_token_budget.max(1),

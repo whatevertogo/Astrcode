@@ -45,7 +45,8 @@ interface UseComposerActionsOptions {
   interrupt: (sessionId: string) => Promise<void>;
   compactSession: (
     sessionId: string,
-    control?: ExecutionControl
+    control?: ExecutionControl,
+    instructions?: string
   ) => Promise<{ accepted: boolean; deferred: boolean; message: string }>;
   deleteSession: (sessionId: string) => Promise<void>;
   deleteProject: (workingDir: string) => Promise<DeleteProjectResult>;
@@ -195,17 +196,12 @@ export function useComposerActions({
       }
 
       if (slashCommand) {
-        if (slashCommand.kind === 'compactInvalidArgs') {
-          appendLocalError(
-            dispatch,
-            sessionId,
-            '`/compact` 当前不接受参数，请直接输入 `/compact`。'
-          );
-          return;
-        }
-
         try {
-          const acceptance = await compactSession(sessionId, { manualCompact: true });
+          const acceptance = await compactSession(
+            sessionId,
+            { manualCompact: true },
+            slashCommand.kind === 'compact' ? slashCommand.instructions : undefined
+          );
           if (acceptance.deferred) {
             appendLocalNotice(dispatch, sessionId, acceptance.message);
           }

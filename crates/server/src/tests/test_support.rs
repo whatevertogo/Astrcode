@@ -6,8 +6,6 @@ use std::{
 };
 
 use astrcode_application::{ApplicationError, WatchEvent, WatchPort, WatchService, WatchSource};
-#[cfg(feature = "debug-workbench")]
-use astrcode_debug_workbench::DebugWorkbenchService;
 use tokio::sync::broadcast;
 
 use crate::{
@@ -185,11 +183,6 @@ pub(crate) async fn test_state_with_options(
         AppState {
             app,
             governance,
-            #[cfg(feature = "debug-workbench")]
-            debug_workbench: Arc::new(DebugWorkbenchService::new(
-                Arc::clone(&runtime.app),
-                Arc::clone(&runtime.governance),
-            )),
             auth_sessions,
             bootstrap_auth: BootstrapAuth::new(
                 "browser-token".to_string(),

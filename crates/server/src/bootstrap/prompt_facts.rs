@@ -10,19 +10,19 @@ use std::{
 
 use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_mcp::manager::McpConnectionManager;
-use astrcode_adapter_skills::SkillCatalog;
-use astrcode_application::{ConfigService, resolve_current_model};
+use astrcode_application::config::{ConfigService, resolve_current_model};
+use astrcode_core::SkillCatalog;
 use async_trait::async_trait;
 
 use super::deps::core::{
-    AstrError, PromptAgentProfileSummary, PromptDeclaration, PromptDeclarationKind,
-    PromptDeclarationRenderTarget, PromptDeclarationSource, PromptFacts, PromptFactsProvider,
-    PromptFactsRequest, PromptSkillSummary, Result, SystemPromptLayer, resolve_runtime_config,
+    AstrError, PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    PromptDeclarationSource, PromptEntrySummary, PromptFacts, PromptFactsProvider,
+    PromptFactsRequest, Result, SystemPromptLayer, resolve_runtime_config,
 };
 
 pub(crate) fn build_prompt_facts_provider(
     config_service: Arc<ConfigService>,
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<dyn SkillCatalog>,
     mcp_manager: Arc<McpConnectionManager>,
     agent_loader: AgentProfileLoader,
 ) -> Result<Arc<dyn PromptFactsProvider>> {
@@ -36,7 +36,7 @@ pub(crate) fn build_prompt_facts_provider(
 
 struct RuntimePromptFactsProvider {
     config_service: Arc<ConfigService>,
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<dyn SkillCatalog>,
     agent_loader: AgentProfileLoader,
     mcp_manager: Arc<McpConnectionManager>,
 }
@@ -57,16 +57,14 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
             .load_overlayed_config(Some(working_dir.as_path()))
             .map_err(|error| AstrError::Internal(error.to_string()))?;
         let runtime = resolve_runtime_config(&config.runtime);
+        let governance = request.governance.clone().unwrap_or_default();
         let selection = resolve_current_model(&config)
             .map_err(|error| AstrError::Internal(error.to_string()))?;
         let skill_summaries = self
             .skill_catalog
             .resolve_for_working_dir(&working_dir.to_string_lossy())
             .into_iter()
-            .map(|skill| PromptSkillSummary {
-                id: skill.id,
-                description: skill.description,
-            })
+            .map(|skill| PromptEntrySummary::new(skill.id, skill.description))
             .collect();
         let agent_profiles = self
             .agent_loader
@@ -74,10 +72,7 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
             .map_err(|error| AstrError::Internal(error.to_string()))?
             .list_subagent_profiles()
             .into_iter()
-            .map(|profile| PromptAgentProfileSummary {
-                id: profile.id.clone(),
-                description: profile.description.clone(),
-            })
+            .map(|profile| PromptEntrySummary::new(profile.id.clone(), profile.description.clone()))
             .collect();
         let prompt_declarations = self
             .mcp_manager
@@ -85,7 +80,12 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
             .await
             .prompt_declarations
             .into_iter()
-            .filter(|declaration| prompt_declaration_is_visible(request, declaration))
+            .filter(|declaration| {
+                prompt_declaration_is_visible(
+                    governance.allowed_capability_names.as_slice(),
+                    declaration,
+                )
+            })
             .map(convert_prompt_declaration)
             .collect();
 
@@ -95,13 +95,16 @@ impl PromptFactsProvider for RuntimePromptFactsProvider {
                 working_dir.as_path(),
                 request.session_id.as_ref().map(ToString::to_string),
                 request.turn_id.as_ref().map(ToString::to_string),
+                governance.approval_mode.as_str(),
             ),
             metadata: serde_json::json!({
                 "configVersion": config.version,
                 "activeProfile": config.active_profile,
                 "activeModel": config.active_model,
-                "agentMaxSubrunDepth": runtime.agent.max_subrun_depth,
-                "agentMaxSpawnPerTurn": runtime.agent.max_spawn_per_turn,
+                "modeId": governance.mode_id,
+                "agentMaxSubrunDepth": governance.max_subrun_depth.unwrap_or(runtime.agent.max_subrun_depth),
+                "agentMaxSpawnPerTurn": governance.max_spawn_per_turn.unwrap_or(runtime.agent.max_spawn_per_turn),
+                "governancePolicyRevision": governance.policy_revision,
             }),
             skills: skill_summaries,
             agent_profiles,
@@ -114,6 +117,7 @@ fn build_profile_context(
     working_dir: &Path,
     session_id: Option<String>,
     turn_id: Option<String>,
+    approval_mode: &str,
 ) -> serde_json::Value {
     let working_dir = normalize_context_path(working_dir);
     let mut context = serde_json::Map::new();
@@ -127,7 +131,11 @@ fn build_profile_context(
     );
     context.insert(
         "approvalMode".to_string(),
-        serde_json::Value::String("inherit".to_string()),
+        serde_json::Value::String(if approval_mode.trim().is_empty() {
+            "inherit".to_string()
+        } else {
+            approval_mode.to_string()
+        }),
     );
     if let Some(session_id) = session_id {
         context.insert(
@@ -204,15 +212,14 @@ fn convert_prompt_declaration(
 }
 
 fn prompt_declaration_is_visible(
-    request: &PromptFactsRequest,
+    allowed_capability_names: &[String],
     declaration: &astrcode_adapter_prompt::PromptDeclaration,
 ) -> bool {
     declaration
         .capability_name
         .as_ref()
         .is_none_or(|capability_name| {
-            request
-                .allowed_capability_names
+            allowed_capability_names
                 .iter()
                 .any(|allowed| allowed == capability_name)
         })
@@ -255,13 +262,24 @@ mod tests {
                 .iter()
                 .map(|name| (*name).to_string())
                 .collect(),
+            governance: Some(astrcode_core::PromptGovernanceContext {
+                allowed_capability_names: allowed_capability_names
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect(),
+                mode_id: Some(astrcode_core::ModeId::code()),
+                approval_mode: "inherit".to_string(),
+                policy_revision: "governance-surface-v1".to_string(),
+                max_subrun_depth: Some(3),
+                max_spawn_per_turn: Some(2),
+            }),
         }
     }
 
     #[test]
     fn prompt_declaration_visibility_keeps_capabilityless_declarations() {
         assert!(prompt_declaration_is_visible(
-            &request(&[]),
+            &request(&[]).governance.unwrap().allowed_capability_names,
             &declaration(None)
         ));
     }
@@ -269,7 +287,10 @@ mod tests {
     #[test]
     fn prompt_declaration_visibility_filters_out_ungranted_capabilities() {
         assert!(!prompt_declaration_is_visible(
-            &request(&["readFile"]),
+            &request(&["readFile"])
+                .governance
+                .unwrap()
+                .allowed_capability_names,
             &declaration(Some("spawn"))
         ));
     }
@@ -277,7 +298,10 @@ mod tests {
     #[test]
     fn prompt_declaration_visibility_keeps_granted_capabilities() {
         assert!(prompt_declaration_is_visible(
-            &request(&["spawn"]),
+            &request(&["spawn"])
+                .governance
+                .unwrap()
+                .allowed_capability_names,
             &declaration(Some("spawn"))
         ));
     }

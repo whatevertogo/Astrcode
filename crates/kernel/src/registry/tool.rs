@@ -73,15 +73,15 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
             .await;
 
         match result {
-            Ok(result) => Ok(CapabilityExecutionResult {
-                capability_name: result.tool_name,
-                success: result.ok,
-                output: Value::String(result.output),
-                error: result.error,
-                metadata: result.metadata,
-                duration_ms: result.duration_ms,
-                truncated: result.truncated,
-            }),
+            Ok(result) => {
+                let common = result.common();
+                Ok(CapabilityExecutionResult::from_common(
+                    result.tool_name,
+                    result.ok,
+                    Value::String(result.output),
+                    common,
+                ))
+            },
             Err(error) => Ok(CapabilityExecutionResult::failure(
                 self.capability_spec.name.to_string(),
                 error.to_string(),
@@ -110,6 +110,7 @@ struct ToolBridgeContext {
     turn_id: Option<String>,
     request_id: Option<String>,
     agent: AgentEventContext,
+    current_mode_id: astrcode_core::ModeId,
     execution_owner: Option<ExecutionOwner>,
     tool_output_sender: Option<UnboundedSender<ToolOutputDelta>>,
     event_sink: Option<Arc<dyn ToolEventSink>>,
@@ -124,6 +125,7 @@ impl ToolBridgeContext {
             turn_id: ctx.turn_id().map(ToString::to_string),
             request_id: None,
             agent: ctx.agent_context().clone(),
+            current_mode_id: ctx.current_mode_id().clone(),
             execution_owner: ctx.execution_owner().cloned(),
             tool_output_sender: ctx.tool_output_sender(),
             event_sink: ctx.event_sink(),
@@ -138,6 +140,7 @@ impl ToolBridgeContext {
             turn_id: ctx.turn_id.clone(),
             request_id: ctx.request_id.clone(),
             agent: ctx.agent.clone(),
+            current_mode_id: ctx.current_mode_id.clone(),
             execution_owner: ctx.execution_owner.clone(),
             tool_output_sender: ctx.tool_output_sender.clone(),
             event_sink: ctx.event_sink.clone(),
@@ -155,6 +158,7 @@ impl ToolBridgeContext {
             cancel: self.cancel,
             turn_id: self.turn_id,
             agent: self.agent,
+            current_mode_id: self.current_mode_id,
             execution_owner: self.execution_owner,
             profile: default_tool_capability_profile().to_string(),
             profile_context,
@@ -173,6 +177,7 @@ impl ToolBridgeContext {
             tool_ctx = tool_ctx.with_tool_call_id(tool_call_id);
         }
         tool_ctx = tool_ctx.with_agent_context(self.agent);
+        tool_ctx = tool_ctx.with_current_mode_id(self.current_mode_id);
         if let Some(sender) = self.tool_output_sender {
             tool_ctx = tool_ctx.with_tool_output_sender(sender);
         }

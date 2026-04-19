@@ -41,7 +41,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::builtin_tools::fs_common::{check_cancel, resolve_path, session_dir_for_tool_results};
+use crate::builtin_tools::fs_common::{
+    check_cancel, merge_persisted_tool_output_metadata, resolve_path, session_dir_for_tool_results,
+};
 
 /// Shell 工具实现。
 ///
@@ -396,8 +398,8 @@ impl Tool for ShellTool {
                          inspection commands. Prefer dedicated tools instead of `shell` for file \
                          reading (`readFile`), code search (`grep`/`findFiles`), and structured \
                          file edits (`editFile`/`apply_patch`). Keep commands scoped to the \
-                         workspace, explain risky commands before running them, and prefer \
-                         read-only inspection before mutation."
+                         intended host paths, explain risky commands before running them, and \
+                         prefer read-only inspection before mutation."
                     ),
                 )
                 .caveat(
@@ -507,28 +509,33 @@ impl Tool for ShellTool {
                     &output,
                     ctx.resolved_inline_limit(),
                 );
+                let mut metadata = serde_json::Map::new();
+                metadata.insert("command".to_string(), json!(command_text));
+                metadata.insert("cwd".to_string(), json!(cwd_text.clone()));
+                metadata.insert("shell".to_string(), json!(shell_display.clone()));
+                metadata.insert("exitCode".to_string(), json!(-1));
+                metadata.insert("streamed".to_string(), json!(true));
+                metadata.insert("timedOut".to_string(), json!(true));
+                metadata.insert(
+                    "display".to_string(),
+                    json!({
+                        "kind": "terminal",
+                        "command": args.command,
+                        "cwd": cwd_text,
+                        "shell": spec.display_shell,
+                        "exitCode": -1,
+                    }),
+                );
+                merge_persisted_tool_output_metadata(&mut metadata, output.persisted.as_ref());
 
                 return Ok(ToolExecutionResult {
                     tool_call_id,
                     tool_name: "shell".to_string(),
                     ok: false,
-                    output,
+                    output: output.output,
                     error: Some(format!("shell command timed out after {timeout_secs}s")),
-                    metadata: Some(json!({
-                        "command": command_text,
-                        "cwd": cwd_text.clone(),
-                        "shell": shell_display.clone(),
-                        "exitCode": -1,
-                        "streamed": true,
-                        "timedOut": true,
-                        "display": {
-                            "kind": "terminal",
-                            "command": args.command,
-                            "cwd": cwd_text,
-                            "shell": spec.display_shell,
-                            "exitCode": -1,
-                        },
-                    })),
+                    metadata: Some(serde_json::Value::Object(metadata)),
+                    child_ref: None,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                     truncated: false,
                 });
@@ -581,36 +588,47 @@ impl Tool for ShellTool {
             &output,
             ctx.resolved_inline_limit(),
         );
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("command".to_string(), json!(command_text));
+        metadata.insert("cwd".to_string(), json!(cwd_text.clone()));
+        metadata.insert("shell".to_string(), json!(shell_display));
+        metadata.insert("exitCode".to_string(), json!(exit_code));
+        metadata.insert("streamed".to_string(), json!(true));
+        metadata.insert("stdoutBytes".to_string(), json!(stdout_capture.bytes_read));
+        metadata.insert("stderrBytes".to_string(), json!(stderr_capture.bytes_read));
+        metadata.insert(
+            "stdoutTruncated".to_string(),
+            json!(stdout_capture.truncated),
+        );
+        metadata.insert(
+            "stderrTruncated".to_string(),
+            json!(stderr_capture.truncated),
+        );
+        metadata.insert(
+            "display".to_string(),
+            json!({
+                "kind": "terminal",
+                "command": args.command,
+                "cwd": cwd_text,
+                "shell": spec.display_shell,
+                "exitCode": exit_code,
+            }),
+        );
+        metadata.insert("truncated".to_string(), json!(truncated));
+        merge_persisted_tool_output_metadata(&mut metadata, output.persisted.as_ref());
 
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "shell".to_string(),
             ok,
-            output,
+            output: output.output,
             error: if ok {
                 None
             } else {
                 Some(format!("shell command exited with code {}", exit_code))
             },
-            metadata: Some(json!({
-                "command": command_text,
-                "cwd": cwd_text.clone(),
-                "shell": shell_display,
-                "exitCode": exit_code,
-                "streamed": true,
-                "stdoutBytes": stdout_capture.bytes_read,
-                "stderrBytes": stderr_capture.bytes_read,
-                "stdoutTruncated": stdout_capture.truncated,
-                "stderrTruncated": stderr_capture.truncated,
-                "display": {
-                    "kind": "terminal",
-                    "command": args.command,
-                    "cwd": cwd_text,
-                    "shell": spec.display_shell,
-                    "exitCode": exit_code,
-                },
-                "truncated": truncated,
-            })),
+            metadata: Some(serde_json::Value::Object(metadata)),
+            child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })
@@ -657,13 +675,13 @@ fn default_shell_for_prompt() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, io};
+    use std::{collections::VecDeque, io, path::Path};
 
     use astrcode_core::ToolOutputDelta;
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::{builtin_tools::read_file::ReadFileTool, test_support::test_tool_context_for};
 
     struct ChunkedReader {
         chunks: VecDeque<Vec<u8>>,
@@ -821,6 +839,104 @@ mod tests {
 
         assert!(result.ok);
         assert!(result.output.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn shell_persists_large_output_and_read_file_can_open_it() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let shell_ctx = test_tool_context_for(temp.path())
+            .with_resolved_inline_limit(4 * 1024)
+            .with_max_output_size(20 * 1024);
+        let tool = ShellTool;
+        let args = if cfg!(windows) {
+            json!({
+                "command": "[Console]::Write(('x' * 10000))",
+                "shell": "pwsh"
+            })
+        } else {
+            json!({
+                "command": "yes x | head -c 10000",
+                "shell": "sh"
+            })
+        };
+
+        let result = tool
+            .execute("tc-shell-persisted".to_string(), args, &shell_ctx)
+            .await
+            .expect("shell tool should persist oversized output");
+
+        assert!(result.ok);
+        assert!(result.output.starts_with("<persisted-output>"));
+        let metadata = result.metadata.as_ref().expect("metadata should exist");
+        let persisted_absolute = metadata["persistedOutput"]["absolutePath"]
+            .as_str()
+            .expect("persisted absolute path should be present");
+        assert!(Path::new(persisted_absolute).exists());
+
+        let read_tool = ReadFileTool;
+        let read_result = read_tool
+            .execute(
+                "tc-shell-read-persisted".to_string(),
+                json!({
+                    "path": persisted_absolute,
+                    "charOffset": 0,
+                    "maxChars": 2048
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should open persisted shell output");
+
+        assert!(read_result.ok);
+        assert!(read_result.output.contains('x'));
+        assert!(read_result.output.len() >= 1024);
+        let read_metadata = read_result.metadata.expect("metadata should exist");
+        assert_eq!(read_metadata["persistedRead"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn shell_allows_cwd_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        tokio::fs::create_dir_all(&outside)
+            .await
+            .expect("outside dir should be created");
+        let tool = ShellTool;
+        let args = if cfg!(windows) {
+            json!({
+                "command": "(Get-Location).Path",
+                "shell": "pwsh",
+                "cwd": outside.to_string_lossy()
+            })
+        } else {
+            json!({
+                "command": "pwd",
+                "shell": "sh",
+                "cwd": outside.to_string_lossy()
+            })
+        };
+
+        let result = tool
+            .execute(
+                "tc-shell-cwd-outside".to_string(),
+                args,
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("shell tool should execute");
+
+        assert!(result.ok);
+        let metadata = result.metadata.expect("metadata should exist");
+        let expected_cwd = resolve_path(&test_tool_context_for(&workspace), &outside)
+            .expect("cwd should resolve consistently");
+        assert_eq!(
+            metadata["cwd"],
+            json!(expected_cwd.to_string_lossy().to_string())
+        );
     }
 
     #[tokio::test]

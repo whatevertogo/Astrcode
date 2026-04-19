@@ -17,13 +17,18 @@
 
 use std::collections::HashMap;
 
+use serde_json::json;
+
 use super::phase::PhaseTracker;
 use crate::{
     AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload, StoredEvent,
     ToolExecutionResult, UserMessageOrigin, session::SessionEventRecord, split_assistant_content,
 };
 
-/// 回放存储事件为会话事件记录
+/// 批量回放存储事件为会话事件记录。
+///
+/// 用于 `/history` 端点和冷启动恢复：将持久化的 `StoredEvent` 序列
+/// 经过 `EventTranslator` 转换为前端可消费的 `AgentEvent` 记录。
 ///
 /// ## 断点续传
 ///
@@ -197,6 +202,7 @@ impl EventTranslator {
             StorageEventPayload::CompactApplied {
                 trigger,
                 summary,
+                meta,
                 preserved_recent_turns,
                 ..
             } => {
@@ -205,6 +211,7 @@ impl EventTranslator {
                     agent: agent.clone(),
                     trigger: *trigger,
                     summary: summary.clone(),
+                    meta: meta.clone(),
                     preserved_recent_turns: *preserved_recent_turns,
                 });
             },
@@ -246,6 +253,7 @@ impl EventTranslator {
                 });
             },
             StorageEventPayload::AgentCollaborationFact { .. } => {},
+            StorageEventPayload::ModeChanged { .. } => {},
             StorageEventPayload::AssistantDelta { token, .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::ModelDelta {
@@ -344,6 +352,7 @@ impl EventTranslator {
                 success,
                 error,
                 metadata,
+                child_ref,
                 duration_ms,
                 ..
             } => {
@@ -364,6 +373,7 @@ impl EventTranslator {
                             output: output.clone(),
                             error: error.clone(),
                             metadata: metadata.clone(),
+                            child_ref: child_ref.clone(),
                             duration_ms: *duration_ms,
                             truncated: false,
                         },
@@ -372,7 +382,39 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "toolCallResult");
                 }
             },
-            StorageEventPayload::ToolResultReferenceApplied { .. } => {},
+            StorageEventPayload::ToolResultReferenceApplied {
+                tool_call_id,
+                persisted_output,
+                replacement,
+                ..
+            } => {
+                if let Some(turn_id) = turn_id_ref {
+                    push(AgentEvent::ToolCallResult {
+                        turn_id: turn_id.clone(),
+                        agent: agent.clone(),
+                        result: ToolExecutionResult {
+                            tool_call_id: tool_call_id.clone(),
+                            tool_name: self
+                                .tool_call_names
+                                .get(tool_call_id)
+                                .cloned()
+                                .unwrap_or_default(),
+                            ok: true,
+                            output: replacement.clone(),
+                            error: None,
+                            metadata: Some(json!({
+                                "persistedOutput": persisted_output,
+                                "truncated": true,
+                            })),
+                            child_ref: None,
+                            duration_ms: 0,
+                            truncated: true,
+                        },
+                    });
+                } else {
+                    warn_missing_turn_id(stored.storage_seq, "toolResultReferenceApplied");
+                }
+            },
             StorageEventPayload::TurnDone { .. } => {
                 if let Some(turn_id) = turn_id_ref {
                     push(AgentEvent::TurnDone {
@@ -402,29 +444,29 @@ impl EventTranslator {
                         .force_to(Phase::Interrupted, turn_id, agent);
                 }
             },
-            StorageEventPayload::AgentMailboxQueued { payload, .. } => {
-                push(AgentEvent::AgentMailboxQueued {
+            StorageEventPayload::AgentInputQueued { payload, .. } => {
+                push(AgentEvent::AgentInputQueued {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
                     payload: payload.clone(),
                 });
             },
-            StorageEventPayload::AgentMailboxBatchStarted { payload, .. } => {
-                push(AgentEvent::AgentMailboxBatchStarted {
+            StorageEventPayload::AgentInputBatchStarted { payload, .. } => {
+                push(AgentEvent::AgentInputBatchStarted {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
                     payload: payload.clone(),
                 });
             },
-            StorageEventPayload::AgentMailboxBatchAcked { payload, .. } => {
-                push(AgentEvent::AgentMailboxBatchAcked {
+            StorageEventPayload::AgentInputBatchAcked { payload, .. } => {
+                push(AgentEvent::AgentInputBatchAcked {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
                     payload: payload.clone(),
                 });
             },
-            StorageEventPayload::AgentMailboxDiscarded { payload, .. } => {
-                push(AgentEvent::AgentMailboxDiscarded {
+            StorageEventPayload::AgentInputDiscarded { payload, .. } => {
+                push(AgentEvent::AgentInputDiscarded {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
                     payload: payload.clone(),
@@ -433,6 +475,15 @@ impl EventTranslator {
         }
     }
 
+    /// 从存储事件中提取或推断 turn_id。
+    ///
+    /// 策略：
+    /// - 事件自身携带 turn_id → 直接使用并缓存为当前 turn
+    /// - SessionStart → 返回 None（会话启动事件不属于任何 turn）
+    /// - 其他无 turn_id 的事件 → 复用上一条事件的 turn_id
+    ///
+    /// 这样即使部分辅助事件（如 CompactApplied）未携带 turn_id，
+    /// 也能正确归属到当前 turn 上下文中。
     fn turn_id_for(&mut self, event: &StorageEvent) -> Option<String> {
         if let Some(turn_id) = event.turn_id() {
             let turn_id = turn_id.to_string();
@@ -453,8 +504,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentEvent, AgentEventContext, PromptMetricsPayload, StoredEvent, ToolOutputStream,
-        UserMessageOrigin, format_compact_summary, phase_of_storage_event,
+        AgentEvent, AgentEventContext, CompactAppliedMeta, CompactMode, PromptMetricsPayload,
+        StoredEvent, ToolOutputStream, UserMessageOrigin, format_compact_summary,
+        phase_of_storage_event,
     };
 
     #[test]
@@ -525,6 +577,8 @@ mod tests {
             UserMessageOrigin::CompactSummary,
             UserMessageOrigin::AutoContinueNudge,
             UserMessageOrigin::ContinuationPrompt,
+            UserMessageOrigin::RecentUserContextDigest,
+            UserMessageOrigin::RecentUserContext,
         ] {
             let records = replay_records(
                 &[StoredEvent {
@@ -589,6 +643,7 @@ mod tests {
                     success: true,
                     error: None,
                     metadata: None,
+                    child_ref: None,
                     duration_ms: 12,
                 },
             },
@@ -673,6 +728,14 @@ mod tests {
                     payload: StorageEventPayload::CompactApplied {
                         trigger: crate::CompactTrigger::Manual,
                         summary: "保留最近上下文".to_string(),
+                        meta: CompactAppliedMeta {
+                            mode: CompactMode::Incremental,
+                            instructions_present: true,
+                            fallback_used: false,
+                            retry_count: 1,
+                            input_units: 4,
+                            output_summary_chars: 24,
+                        },
                         preserved_recent_turns: 2,
                         pre_tokens: 200,
                         post_tokens_estimate: 80,
@@ -693,9 +756,17 @@ mod tests {
                 turn_id: None,
                 trigger: crate::CompactTrigger::Manual,
                 summary,
+                meta,
                 preserved_recent_turns,
                 ..
-            } if summary == "保留最近上下文" && *preserved_recent_turns == 2
+            } if summary == "保留最近上下文"
+                && meta.mode == CompactMode::Incremental
+                && meta.instructions_present
+                && !meta.fallback_used
+                && meta.retry_count == 1
+                && meta.input_units == 4
+                && meta.output_summary_chars == 24
+                && *preserved_recent_turns == 2
         ));
     }
 
@@ -722,6 +793,7 @@ mod tests {
                             provider_cache_metrics_supported: true,
                             prompt_cache_reuse_hits: 3,
                             prompt_cache_reuse_misses: 1,
+                            prompt_cache_unchanged_layers: Vec::new(),
                         },
                     },
                 },

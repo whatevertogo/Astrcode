@@ -69,6 +69,7 @@ impl StepDriver for RuntimeStepDriver {
             session_state: resources.session_state,
             tool_result_replacement_state: &mut execution.tool_result_replacement_state,
             prompt_declarations: resources.prompt_declarations,
+            prompt_governance: resources.prompt_governance,
         })
         .await?;
         execution.messages = std::mem::take(&mut assembled.messages);

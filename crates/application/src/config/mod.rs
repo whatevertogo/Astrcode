@@ -24,7 +24,7 @@ use std::{
     sync::Arc,
 };
 
-use astrcode_core::{Config, ConfigOverlay};
+use astrcode_core::{Config, ConfigOverlay, TestConnectionResult};
 pub use astrcode_core::{
     config::{
         DEFAULT_API_SESSION_TTL_HOURS, DEFAULT_AUTO_COMPACT_ENABLED,
@@ -38,10 +38,11 @@ pub use astrcode_core::{
         DEFAULT_MAX_SPAWN_PER_TURN, DEFAULT_MAX_STEPS, DEFAULT_MAX_SUBRUN_DEPTH,
         DEFAULT_MAX_TOOL_CONCURRENCY, DEFAULT_MAX_TRACKED_FILES, DEFAULT_PARENT_DELIVERY_CAPACITY,
         DEFAULT_RECOVERY_TOKEN_BUDGET, DEFAULT_RECOVERY_TRUNCATE_BYTES,
-        DEFAULT_SESSION_BROADCAST_CAPACITY, DEFAULT_SESSION_RECENT_RECORD_LIMIT,
-        DEFAULT_SUMMARY_RESERVE_TOKENS, DEFAULT_TOOL_RESULT_INLINE_LIMIT,
-        DEFAULT_TOOL_RESULT_MAX_BYTES, DEFAULT_TOOL_RESULT_PREVIEW_LIMIT, ResolvedAgentConfig,
-        ResolvedRuntimeConfig, max_tool_concurrency, resolve_agent_config, resolve_runtime_config,
+        DEFAULT_RESERVED_CONTEXT_SIZE, DEFAULT_SESSION_BROADCAST_CAPACITY,
+        DEFAULT_SESSION_RECENT_RECORD_LIMIT, DEFAULT_SUMMARY_RESERVE_TOKENS,
+        DEFAULT_TOOL_RESULT_INLINE_LIMIT, DEFAULT_TOOL_RESULT_MAX_BYTES,
+        DEFAULT_TOOL_RESULT_PREVIEW_LIMIT, ResolvedAgentConfig, ResolvedRuntimeConfig,
+        max_tool_concurrency, resolve_agent_config, resolve_runtime_config,
     },
     ports::{ConfigStore, McpConfigFileScope},
 };
@@ -61,19 +62,31 @@ use tokio::sync::RwLock;
 
 use crate::ApplicationError;
 
-/// 模型连通性测试结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TestConnectionResult {
-    pub success: bool,
-    pub provider: String,
-    pub model: String,
-    pub error: Option<String>,
-}
-
 /// 配置用例入口：负责配置的读取、写入、校验和装配。
 pub struct ConfigService {
     pub(super) store: Arc<dyn ConfigStore>,
     pub(super) config: Arc<RwLock<Config>>,
+}
+
+/// 单个 profile 的摘要输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigProfileSummary {
+    pub name: String,
+    pub base_url: String,
+    pub api_key_preview: String,
+    pub models: Vec<String>,
+}
+
+/// 已解析的配置摘要输入。
+///
+/// 这是 protocol `ConfigView` 的共享 projection input，
+/// server 只需要补上 `config_path` 和协议外层壳。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedConfigSummary {
+    pub active_profile: String,
+    pub active_model: String,
+    pub profiles: Vec<ConfigProfileSummary>,
+    pub warning: Option<String>,
 }
 
 impl ConfigService {
@@ -196,6 +209,88 @@ impl ConfigService {
     }
 }
 
+/// 生成配置摘要输入，供协议层投影复用。
+pub fn resolve_config_summary(config: &Config) -> Result<ResolvedConfigSummary, ApplicationError> {
+    if config.profiles.is_empty() {
+        return Ok(ResolvedConfigSummary {
+            active_profile: String::new(),
+            active_model: String::new(),
+            profiles: Vec::new(),
+            warning: Some("no profiles configured".to_string()),
+        });
+    }
+
+    let profiles = config
+        .profiles
+        .iter()
+        .map(|profile| ConfigProfileSummary {
+            name: profile.name.clone(),
+            base_url: profile.base_url.clone(),
+            api_key_preview: api_key_preview(profile.api_key.as_deref()),
+            models: profile
+                .models
+                .iter()
+                .map(|model| model.id.clone())
+                .collect(),
+        })
+        .collect();
+
+    let selection = selection::resolve_active_selection(
+        &config.active_profile,
+        &config.active_model,
+        &config.profiles,
+    )?;
+
+    Ok(ResolvedConfigSummary {
+        active_profile: selection.active_profile,
+        active_model: selection.active_model,
+        profiles,
+        warning: selection.warning,
+    })
+}
+
+/// 生成 API key 的安全预览字符串。
+///
+/// 规则：
+/// - `None` 或空字符串 → "未配置"
+/// - `env:VAR_NAME` 前缀 → "环境变量: VAR_NAME"（不读取实际值）
+/// - `literal:KEY` 前缀 → 显示 **** + 最后 4 个字符
+/// - 纯大写+下划线且是有效环境变量名 → "环境变量: NAME"
+/// - 长度 > 4 → 显示 "****" + 最后 4 个字符
+/// - 其他 → "****"
+pub fn api_key_preview(api_key: Option<&str>) -> String {
+    match api_key.map(str::trim) {
+        None | Some("") => "未配置".to_string(),
+        Some(value) if value.starts_with("env:") => {
+            let env_name = value.trim_start_matches("env:").trim();
+            if env_name.is_empty() {
+                "未配置".to_string()
+            } else {
+                format!("环境变量: {}", env_name)
+            }
+        },
+        Some(value) if value.starts_with("literal:") => {
+            let key = value.trim_start_matches("literal:").trim();
+            masked_key_preview(key)
+        },
+        Some(value) if is_env_var_name(value) && std::env::var_os(value).is_some() => {
+            format!("环境变量: {}", value)
+        },
+        Some(value) => masked_key_preview(value),
+    }
+}
+
+fn masked_key_preview(value: &str) -> String {
+    let char_starts: Vec<usize> = value.char_indices().map(|(index, _)| index).collect();
+
+    if char_starts.len() <= 4 {
+        "****".to_string()
+    } else {
+        let suffix_start = char_starts[char_starts.len() - 4];
+        format!("****{}", &value[suffix_start..])
+    }
+}
+
 /// 应用项目 overlay 到基础配置（仅覆盖显式设置的字段）。
 fn apply_overlay(mut base: Config, overlay: ConfigOverlay) -> Config {
     if let Some(active_profile) = overlay.active_profile {
@@ -219,8 +314,14 @@ pub fn is_env_var_name(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::{ModelConfig, Profile};
+
     use super::*;
     use crate::config::test_support::TestConfigStore;
+
+    fn model(id: &str) -> ModelConfig {
+        ModelConfig::new(id)
+    }
 
     #[test]
     fn load_resolved_runtime_config_materializes_defaults() {
@@ -262,5 +363,61 @@ mod tests {
         assert_eq!(runtime.llm_read_timeout_secs, 120);
         assert_eq!(runtime.agent.max_subrun_depth, 5);
         assert_eq!(runtime.agent.max_spawn_per_turn, 2);
+    }
+
+    #[test]
+    fn api_key_preview_masks_utf8_literal_without_panicking() {
+        assert_eq!(
+            api_key_preview(Some("literal:令牌甲乙丙丁")),
+            "****甲乙丙丁"
+        );
+    }
+
+    #[test]
+    fn api_key_preview_masks_utf8_plain_value_without_panicking() {
+        assert_eq!(api_key_preview(Some("令牌甲乙丙丁戊")), "****乙丙丁戊");
+    }
+
+    #[test]
+    fn resolve_config_summary_builds_preview_and_selection() {
+        let config = Config {
+            active_profile: "missing".to_string(),
+            active_model: "missing-model".to_string(),
+            profiles: vec![Profile {
+                name: "deepseek".to_string(),
+                base_url: "https://example.com".to_string(),
+                api_key: Some("literal:abc12345".to_string()),
+                models: vec![model("deepseek-chat"), model("deepseek-reasoner")],
+                ..Profile::default()
+            }],
+            ..Config::default()
+        };
+
+        let summary = resolve_config_summary(&config).expect("summary should resolve");
+
+        assert_eq!(summary.active_profile, "deepseek");
+        assert_eq!(summary.active_model, "deepseek-chat");
+        assert!(summary.warning.is_some());
+        assert_eq!(summary.profiles.len(), 1);
+        assert_eq!(summary.profiles[0].api_key_preview, "****2345");
+        assert_eq!(
+            summary.profiles[0].models,
+            vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_config_summary_returns_empty_state_for_missing_profiles() {
+        let config = Config {
+            profiles: Vec::new(),
+            ..Config::default()
+        };
+
+        let summary = resolve_config_summary(&config).expect("summary should resolve");
+
+        assert_eq!(summary.active_profile, "");
+        assert_eq!(summary.active_model, "");
+        assert!(summary.profiles.is_empty());
+        assert_eq!(summary.warning.as_deref(), Some("no profiles configured"));
     }
 }

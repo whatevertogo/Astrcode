@@ -1,7 +1,7 @@
 use astrcode_core::{LlmFinishReason, LlmOutput, LlmRequest, Result};
 
 use super::{TurnExecutionContext, TurnExecutionResources, driver::StepDriver};
-use crate::turn::{compaction_cycle, llm_cycle::ToolCallDeltaSink};
+use crate::turn::llm_cycle::ToolCallDeltaSink;
 
 pub(super) enum StepLlmResult {
     Output(LlmOutput),
@@ -26,7 +26,7 @@ pub(super) async fn call_llm_for_step(
             }
             if error.is_prompt_too_long()
                 && execution.reactive_compact_attempts
-                    < compaction_cycle::MAX_REACTIVE_COMPACT_ATTEMPTS
+                    < resources.settings.compact_max_retry_attempts
             {
                 execution.reactive_compact_attempts =
                     execution.reactive_compact_attempts.saturating_add(1);
@@ -35,7 +35,7 @@ pub(super) async fn call_llm_for_step(
                     resources.turn_id,
                     execution.step_index,
                     execution.reactive_compact_attempts,
-                    compaction_cycle::MAX_REACTIVE_COMPACT_ATTEMPTS,
+                    resources.settings.compact_max_retry_attempts,
                 );
 
                 let recovery = driver.try_reactive_compact(execution, resources).await?;

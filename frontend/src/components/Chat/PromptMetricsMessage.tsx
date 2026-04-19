@@ -2,7 +2,7 @@ import { memo } from 'react';
 
 import type { PromptMetricsMessage as PromptMetricsMessageType } from '../../types';
 import { pillInfo } from '../../lib/styles';
-import { calculateCacheHitRatePercent } from '../../lib/utils';
+import { calculateCacheHitRatePercent, calculatePromptReuseRatePercent } from '../../lib/utils';
 
 interface PromptMetricsMessageProps {
   message: PromptMetricsMessageType;
@@ -16,7 +16,8 @@ function formatTokenCount(value?: number): string {
 }
 
 function PromptMetricsMessage({ message }: PromptMetricsMessageProps) {
-  const hitRate = calculateCacheHitRatePercent(message);
+  const providerHitRate = calculateCacheHitRatePercent(message);
+  const promptReuseRate = calculatePromptReuseRatePercent(message);
 
   return (
     <div className="ml-[var(--chat-assistant-content-offset)] rounded-[18px] border border-info-border bg-info-soft px-4 py-3.5 shadow-code-panel">
@@ -45,17 +46,32 @@ function PromptMetricsMessage({ message }: PromptMetricsMessageProps) {
           </div>
         </div>
         <div>
-          <div className="text-text-muted text-xs mb-1">Cache 读 / 写</div>
+          <div className="text-text-muted text-xs mb-1">KV Cache 读 / 写</div>
           <div className="text-text-primary text-sm font-semibold">
             {formatTokenCount(message.cacheReadInputTokens)} /{' '}
             {formatTokenCount(message.cacheCreationInputTokens)}
+          </div>
+        </div>
+        <div>
+          <div className="text-text-muted text-xs mb-1">Prompt 复用 命中 / 未命中</div>
+          <div className="text-text-primary text-sm font-semibold">
+            {formatTokenCount(message.promptCacheReuseHits)} /{' '}
+            {formatTokenCount(message.promptCacheReuseMisses)}
           </div>
         </div>
       </div>
       <div className="flex gap-3 flex-wrap mt-3 text-text-muted text-xs">
         <span>压缩阈值 {formatTokenCount(message.thresholdTokens)}</span>
         <span>截断工具结果 {message.truncatedToolResults}</span>
-        {hitRate === null ? null : <span>缓存命中 {hitRate}% </span>}
+        <span>
+          Provider Cache{' '}
+          {message.providerCacheMetricsSupported
+            ? providerHitRate === null
+              ? '已启用，当前 step 无读缓存'
+              : `命中 ${providerHitRate}%`
+            : '未上报'}
+        </span>
+        {promptReuseRate === null ? null : <span>Prompt 复用 {promptReuseRate}%</span>}
       </div>
     </div>
   );

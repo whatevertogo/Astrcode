@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use astrcode_core::{ManagedRuntimeComponent, PluginManifest, Result};
 use astrcode_protocol::plugin::{
-    CapabilityDescriptor, InitializeMessage, InitializeResultData, InvokeMessage, PROTOCOL_VERSION,
-    PeerDescriptor, ProfileDescriptor, ResultMessage,
+    CapabilityWireDescriptor, InitializeMessage, InitializeResultData, InvokeMessage,
+    PROTOCOL_VERSION, PeerDescriptor, ProfileDescriptor, ResultMessage,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -274,7 +274,7 @@ impl ManagedRuntimeComponent for Supervisor {
 /// * `profiles` - 支持的 profile 列表
 pub fn default_initialize_message(
     local_peer: PeerDescriptor,
-    capabilities: Vec<CapabilityDescriptor>,
+    capabilities: Vec<CapabilityWireDescriptor>,
     profiles: Vec<ProfileDescriptor>,
 ) -> InitializeMessage {
     InitializeMessage {

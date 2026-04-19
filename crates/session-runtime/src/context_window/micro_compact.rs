@@ -14,20 +14,14 @@ use chrono::{DateTime, Utc};
 use super::tool_results::tool_call_name_map;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MicroCompactConfig {
+pub(crate) struct MicroCompactConfig {
     pub gap_threshold: Duration,
     pub keep_recent_results: usize,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct MicroCompactStats {
-    pub cleared_tool_results: usize,
-}
-
 #[derive(Debug, Clone)]
-pub struct MicroCompactOutcome {
+pub(crate) struct MicroCompactOutcome {
     pub messages: Vec<LlmMessage>,
-    pub stats: MicroCompactStats,
 }
 
 #[derive(Debug, Clone)]
@@ -37,7 +31,7 @@ struct TrackedToolResult {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct MicroCompactState {
+pub(crate) struct MicroCompactState {
     tracked_results: VecDeque<TrackedToolResult>,
     last_prompt_activity: Option<Instant>,
 }
@@ -102,14 +96,12 @@ impl MicroCompactState {
         let Some(last_activity) = self.last_prompt_activity else {
             return MicroCompactOutcome {
                 messages: messages.to_vec(),
-                stats: MicroCompactStats::default(),
             };
         };
 
         if now.duration_since(last_activity) < config.gap_threshold {
             return MicroCompactOutcome {
                 messages: messages.to_vec(),
-                stats: MicroCompactStats::default(),
             };
         }
 
@@ -117,7 +109,6 @@ impl MicroCompactState {
         if self.tracked_results.len() <= keep_recent_results {
             return MicroCompactOutcome {
                 messages: messages.to_vec(),
-                stats: MicroCompactStats::default(),
             };
         }
 
@@ -146,12 +137,10 @@ impl MicroCompactState {
         if stale_ids.is_empty() {
             return MicroCompactOutcome {
                 messages: messages.to_vec(),
-                stats: MicroCompactStats::default(),
             };
         }
 
         let mut compacted = messages.to_vec();
-        let mut cleared = 0usize;
         for message in &mut compacted {
             let LlmMessage::Tool {
                 tool_call_id,
@@ -173,14 +162,10 @@ impl MicroCompactState {
                 "[micro-compacted stale tool result from '{tool_name}' after idle gap; rerun the \
                  tool if exact output is needed]"
             );
-            cleared += 1;
         }
 
         MicroCompactOutcome {
             messages: compacted,
-            stats: MicroCompactStats {
-                cleared_tool_results: cleared,
-            },
         }
     }
 
@@ -263,7 +248,6 @@ mod tests {
             now + Duration::from_secs(31),
         );
 
-        assert_eq!(outcome.stats.cleared_tool_results, 1);
         assert!(matches!(
             &outcome.messages[2],
             LlmMessage::Tool { content, .. } if content.contains("micro-compacted")
@@ -309,7 +293,6 @@ mod tests {
             now + Duration::from_secs(5),
         );
 
-        assert_eq!(outcome.stats.cleared_tool_results, 0);
         assert_eq!(outcome.messages, messages);
     }
 
@@ -361,7 +344,7 @@ mod tests {
             config,
             now + Duration::from_secs(35),
         );
-        assert_eq!(early.stats.cleared_tool_results, 0);
+        assert_eq!(early.messages, messages);
 
         let late = state.apply_if_idle(
             &messages,
@@ -369,7 +352,10 @@ mod tests {
             config,
             now + Duration::from_secs(41),
         );
-        assert_eq!(late.stats.cleared_tool_results, 1);
+        assert!(matches!(
+            &late.messages[1],
+            LlmMessage::Tool { content, .. } if content.contains("micro-compacted")
+        ));
     }
 
     #[test]
@@ -419,7 +405,7 @@ mod tests {
             config,
             now + Duration::from_secs(15),
         );
-        assert_eq!(early.stats.cleared_tool_results, 0);
+        assert_eq!(early.messages, messages);
 
         let mut late_state = state;
         let late = late_state.apply_if_idle(
@@ -428,6 +414,9 @@ mod tests {
             config,
             now + Duration::from_secs(25),
         );
-        assert_eq!(late.stats.cleared_tool_results, 1);
+        assert!(matches!(
+            &late.messages[1],
+            LlmMessage::Tool { content, .. } if content.contains("micro-compacted")
+        ));
     }
 }

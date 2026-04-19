@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentCollaborationFact, AgentEventContext, AstrError, ChildSessionNotification,
-    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
-    MailboxQueuedPayload, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    Result, SubRunResult, ToolOutputStream, UserMessageOrigin,
+    AgentCollaborationFact, AgentEventContext, AstrError, ChildAgentRef, ChildSessionNotification,
+    InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
+    ModeId, PersistedToolOutput, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    Result, SubRunResult, SystemPromptLayer, ToolOutputStream, UserMessageOrigin,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -49,6 +49,8 @@ pub struct PromptMetricsPayload {
     pub prompt_cache_reuse_hits: u32,
     #[serde(default)]
     pub prompt_cache_reuse_misses: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt_cache_unchanged_layers: Vec<SystemPromptLayer>,
 }
 
 /// 上下文压缩的触发方式。
@@ -59,6 +61,40 @@ pub enum CompactTrigger {
     Auto,
     /// 手动触发（用户主动请求）
     Manual,
+    /// 手动请求登记后在当前 turn 结束时执行。
+    Deferred,
+}
+
+/// 上下文压缩的执行模式。
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactMode {
+    /// 标准全量 compact。
+    Full,
+    /// 基于历史 compact summary 的滚动 incremental compact。
+    Incremental,
+    /// 为了从 PTL/超窗中恢复而触发的裁剪重试 compact。
+    RetrySalvage,
+}
+
+/// compact 执行元数据。
+///
+/// Why: compact 不再只是“有一段 summary”，还要暴露触发方式、回退路径和
+/// 产出质量，让前端、调试面板和后续治理逻辑使用同一份事实。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactAppliedMeta {
+    pub mode: CompactMode,
+    #[serde(default)]
+    pub instructions_present: bool,
+    #[serde(default)]
+    pub fallback_used: bool,
+    #[serde(default)]
+    pub retry_count: u32,
+    #[serde(default)]
+    pub input_units: u32,
+    #[serde(default)]
+    pub output_summary_chars: u32,
 }
 
 /// 存储事件载荷。
@@ -131,12 +167,14 @@ pub enum StorageEventPayload {
         error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        child_ref: Option<ChildAgentRef>,
         duration_ms: u64,
     },
     /// 将大型工具结果替换为 `<persisted-output>` 引用后的 durable 决策。
     ToolResultReferenceApplied {
         tool_call_id: String,
-        persisted_relative_path: String,
+        persisted_output: PersistedToolOutput,
         replacement: String,
         original_bytes: u64,
     },
@@ -149,6 +187,8 @@ pub enum StorageEventPayload {
     CompactApplied {
         trigger: CompactTrigger,
         summary: String,
+        #[serde(flatten)]
+        meta: CompactAppliedMeta,
         preserved_recent_turns: u32,
         pre_tokens: u32,
         post_tokens_estimate: u32,
@@ -207,6 +247,13 @@ pub enum StorageEventPayload {
         )]
         timestamp: Option<DateTime<Utc>>,
     },
+    /// 会话治理模式变更。
+    ModeChanged {
+        from: ModeId,
+        to: ModeId,
+        #[serde(with = "crate::local_rfc3339")]
+        timestamp: DateTime<Utc>,
+    },
     /// Turn 完成（一轮 Agent 循环结束）。
     TurnDone {
         #[serde(with = "crate::local_rfc3339")]
@@ -214,35 +261,35 @@ pub enum StorageEventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
-    /// Durable mailbox 消息入队。
+    /// Durable input queue 消息入队。
     ///
-    /// 记录一条协作消息成功进入目标 agent 的 mailbox。
+    /// 记录一条协作消息成功进入目标 agent 的 input queue。
     /// live inbox 只能在该事件 append 成功后更新。
-    AgentMailboxQueued {
+    AgentInputQueued {
         #[serde(flatten)]
-        payload: MailboxQueuedPayload,
+        payload: InputQueuedPayload,
     },
-    /// Mailbox 批次开始消费。
+    /// input queue 批次开始消费。
     ///
     /// snapshot drain 时写入，记录本轮接管了哪些 delivery_ids。
-    /// 必须是 mailbox-wake turn 的第一条 durable 事件。
-    AgentMailboxBatchStarted {
+    /// 必须是 input-queue turn 的第一条 durable 事件。
+    AgentInputBatchStarted {
         #[serde(flatten)]
-        payload: MailboxBatchStartedPayload,
+        payload: InputBatchStartedPayload,
     },
-    /// Mailbox 批次确认完成。
+    /// input queue 批次确认完成。
     ///
     /// durable turn completion 后写入，标记对应 delivery_ids 已被消费。
-    AgentMailboxBatchAcked {
+    AgentInputBatchAcked {
         #[serde(flatten)]
-        payload: MailboxBatchAckedPayload,
+        payload: InputBatchAckedPayload,
     },
-    /// Mailbox 消息丢弃。
+    /// input queue 消息丢弃。
     ///
     /// close 时写入，记录被主动丢弃的 pending delivery_ids。
-    AgentMailboxDiscarded {
+    AgentInputDiscarded {
         #[serde(flatten)]
-        payload: MailboxDiscardedPayload,
+        payload: InputDiscardedPayload,
     },
     /// 错误事件。
     Error {
@@ -346,10 +393,13 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use serde_json::Value;
 
-    use super::{CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload};
+    use super::{
+        CompactAppliedMeta, CompactMode, CompactTrigger, PromptMetricsPayload, StorageEvent,
+        StorageEventPayload,
+    };
     use crate::{
-        AgentEventContext, AgentLifecycleStatus, ResolvedExecutionLimitsSnapshot,
-        ResolvedSubagentContextOverrides, SubRunResult, SubRunStorageMode, format_local_rfc3339,
+        AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+        SubRunStorageMode, format_local_rfc3339,
     };
 
     #[test]
@@ -412,6 +462,7 @@ mod tests {
                     provider_cache_metrics_supported: true,
                     prompt_cache_reuse_hits: 2,
                     prompt_cache_reuse_misses: 1,
+                    prompt_cache_unchanged_layers: Vec::new(),
                 },
             },
         };
@@ -476,6 +527,14 @@ mod tests {
             payload: StorageEventPayload::CompactApplied {
                 trigger: CompactTrigger::Manual,
                 summary: "condensed work".to_string(),
+                meta: CompactAppliedMeta {
+                    mode: CompactMode::Full,
+                    instructions_present: true,
+                    fallback_used: true,
+                    retry_count: 2,
+                    input_units: 9,
+                    output_summary_chars: 14,
+                },
                 preserved_recent_turns: 2,
                 pre_tokens: 2_000,
                 post_tokens_estimate: 600,
@@ -496,6 +555,7 @@ mod tests {
                     StorageEventPayload::CompactApplied {
                         trigger,
                         summary,
+                        meta,
                         preserved_recent_turns,
                         pre_tokens,
                         post_tokens_estimate,
@@ -508,6 +568,12 @@ mod tests {
                 assert_eq!(turn_id.as_deref(), Some("turn-2"));
                 assert_eq!(trigger, CompactTrigger::Manual);
                 assert_eq!(summary, "condensed work");
+                assert_eq!(meta.mode, CompactMode::Full);
+                assert!(meta.instructions_present);
+                assert!(meta.fallback_used);
+                assert_eq!(meta.retry_count, 2);
+                assert_eq!(meta.input_units, 9);
+                assert_eq!(meta.output_summary_chars, 14);
                 assert_eq!(preserved_recent_turns, 2);
                 assert_eq!(pre_tokens, 2_000);
                 assert_eq!(post_tokens_estimate, 600);
@@ -525,6 +591,12 @@ mod tests {
                 "turn_id": "turn-2",
                 "trigger": "manual",
                 "summary": "condensed work",
+                "mode": "full",
+                "instructionsPresent": true,
+                "fallbackUsed": true,
+                "retryCount": 2,
+                "inputUnits": 9,
+                "outputSummaryChars": 14,
                 "preserved_recent_turns": 2,
                 "pre_tokens": 2000,
                 "post_tokens_estimate": 600,
@@ -571,7 +643,7 @@ mod tests {
                 "subrun-1",
                 None,
                 SubRunStorageMode::IndependentSession,
-                Some("child-session".to_string()),
+                Some("child-session".into()),
             ),
             payload: StorageEventPayload::SubRunStarted {
                 tool_call_id: Some("call-1".to_string()),
@@ -589,15 +661,17 @@ mod tests {
                 "subrun-1",
                 None,
                 SubRunStorageMode::IndependentSession,
-                Some("child-session".to_string()),
+                Some("child-session".into()),
             ),
             payload: StorageEventPayload::SubRunFinished {
                 tool_call_id: Some("call-1".to_string()),
-                result: SubRunResult {
-                    lifecycle: AgentLifecycleStatus::Idle,
-                    last_turn_outcome: Some(crate::AgentTurnOutcome::Completed),
-                    handoff: None,
-                    failure: None,
+                result: crate::SubRunResult::Completed {
+                    outcome: crate::CompletedSubRunOutcome::Completed,
+                    handoff: crate::SubRunHandoff {
+                        findings: Vec::new(),
+                        artifacts: Vec::new(),
+                        delivery: None,
+                    },
                 },
                 step_count: 3,
                 estimated_tokens: 99,
@@ -652,10 +726,10 @@ mod tests {
         let error = StorageEvent {
             turn_id: Some("turn-parent".to_string()),
             agent: AgentEventContext {
-                agent_id: Some("agent-child".to_string()),
-                parent_turn_id: Some("turn-parent".to_string()),
+                agent_id: Some("agent-child".into()),
+                parent_turn_id: Some("turn-parent".into()),
                 agent_profile: Some("review".to_string()),
-                sub_run_id: Some("subrun-1".to_string()),
+                sub_run_id: Some("subrun-1".into()),
                 parent_sub_run_id: None,
                 invocation_kind: Some(crate::InvocationKind::SubRun),
                 storage_mode: Some(crate::SubRunStorageMode::IndependentSession),
@@ -686,14 +760,18 @@ mod tests {
             ("resume", crate::ChildSessionLineageKind::Resume),
         ] {
             let child_ref = crate::ChildAgentRef {
-                agent_id: "agent-child".to_string(),
-                session_id: "session-parent".to_string(),
-                sub_run_id: "subrun-1".to_string(),
-                parent_agent_id: Some("agent-parent".to_string()),
-                parent_sub_run_id: Some("subrun-parent".to_string()),
+                identity: crate::ChildExecutionIdentity {
+                    agent_id: "agent-child".into(),
+                    session_id: "session-parent".into(),
+                    sub_run_id: "subrun-1".into(),
+                },
+                parent: crate::ParentExecutionRef {
+                    parent_agent_id: Some("agent-parent".into()),
+                    parent_sub_run_id: Some("subrun-parent".into()),
+                },
                 lineage_kind: kind,
                 status: crate::AgentLifecycleStatus::Running,
-                open_session_id: "session-child".to_string(),
+                open_session_id: "session-child".into(),
             };
 
             let json = serde_json::to_value(&child_ref).expect("serialize child ref");
@@ -720,14 +798,18 @@ mod tests {
             crate::ChildSessionLineageKind::Resume,
         ] {
             let node = crate::ChildSessionNode {
-                agent_id: "agent-child".to_string(),
-                session_id: "session-parent".to_string(),
-                child_session_id: "session-child".to_string(),
-                sub_run_id: "subrun-1".to_string(),
-                parent_session_id: "session-parent".to_string(),
-                parent_agent_id: Some("agent-parent".to_string()),
-                parent_sub_run_id: Some("subrun-parent".to_string()),
-                parent_turn_id: "turn-1".to_string(),
+                identity: crate::ChildExecutionIdentity {
+                    agent_id: "agent-child".into(),
+                    session_id: "session-parent".into(),
+                    sub_run_id: "subrun-1".into(),
+                },
+                child_session_id: "session-child".into(),
+                parent_session_id: "session-parent".into(),
+                parent: crate::ParentExecutionRef {
+                    parent_agent_id: Some("agent-parent".into()),
+                    parent_sub_run_id: Some("subrun-parent".into()),
+                },
+                parent_turn_id: "turn-1".into(),
                 lineage_kind: kind,
                 status: crate::AgentLifecycleStatus::Idle,
                 status_source: crate::ChildSessionStatusSource::Durable,

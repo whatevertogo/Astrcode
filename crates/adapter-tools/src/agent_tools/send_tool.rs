@@ -32,8 +32,8 @@ impl SendAgentTool {
 
 Use `send` in one of two shapes:
 
-- Downstream: `agentId + message (+ context)` sends the next concrete instruction to a direct child
-- Upstream: `kind + payload` sends a typed delivery to the direct parent from a child context
+- Downstream: `direction="child" + agentId + message (+ context)` sends the next concrete instruction to a direct child
+- Upstream: `direction="parent" + kind + payload` sends a typed delivery to the direct parent from a child context
 
 Do not use `send` for status checks, vague reminders, sibling chat, or cross-tree routing."#
             .to_string()
@@ -96,6 +96,11 @@ Do not use `send` for status checks, vague reminders, sibling chat, or cross-tre
                     "type": "string",
                     "description": "Target direct child stable ID."
                 },
+                "direction": {
+                    "type": "string",
+                    "enum": ["child", "parent"],
+                    "description": "Direct collaboration edge direction."
+                },
                 "message": {
                     "type": "string",
                     "description": "Concrete instruction for the child."
@@ -115,40 +120,41 @@ Do not use `send` for status checks, vague reminders, sibling chat, or cross-tre
             },
             "oneOf": [
                 {
-                    "required": ["agentId", "message"],
-                    "not": {
-                        "anyOf": [
-                            { "required": ["kind"] },
-                            { "required": ["payload"] }
-                        ]
+                    "required": ["direction", "agentId", "message"],
+                    "properties": {
+                        "direction": { "const": "child" }
                     }
                 },
                 {
                     "oneOf": [
                         {
-                            "required": ["kind", "payload"],
+                            "required": ["direction", "kind", "payload"],
                             "properties": {
+                                "direction": { "const": "parent" },
                                 "kind": { "const": "progress" },
                                 "payload": progress_payload
                             }
                         },
                         {
-                            "required": ["kind", "payload"],
+                            "required": ["direction", "kind", "payload"],
                             "properties": {
+                                "direction": { "const": "parent" },
                                 "kind": { "const": "completed" },
                                 "payload": completed_payload
                             }
                         },
                         {
-                            "required": ["kind", "payload"],
+                            "required": ["direction", "kind", "payload"],
                             "properties": {
+                                "direction": { "const": "parent" },
                                 "kind": { "const": "failed" },
                                 "payload": failed_payload
                             }
                         },
                         {
-                            "required": ["kind", "payload"],
+                            "required": ["direction", "kind", "payload"],
                             "properties": {
+                                "direction": { "const": "parent" },
                                 "kind": { "const": "close_request" },
                                 "payload": close_request_payload
                             }
@@ -188,8 +194,8 @@ impl Tool for SendAgentTool {
             .prompt(
                 ToolPromptMetadata::new(
                     "Send a downstream instruction or an upstream typed delivery on the direct collaboration edge.",
-                    "Use `send` with `agentId + message` when you need a direct child to continue. \
-                     Use `send` with `kind + payload` when you need to report progress, completion, \
+                    "Use `send` with `direction=\"child\" + agentId + message` when you need a direct child to continue. \
+                     Use `send` with `direction=\"parent\" + kind + payload` when you need to report progress, completion, \
                      failure, or a close request to your direct parent. The same middle-layer agent \
                      can use both directions in one turn.",
                 )
@@ -200,7 +206,9 @@ impl Tool for SendAgentTool {
                 .caveat(
                     "Do not use `send` for status checks. If you already know a child is still \
                      running and are simply waiting, do not call `observe` repeatedly either; wait \
-                     briefly with your current shell tool instead.",
+                     briefly with your current shell tool instead. Do not alternate \
+                     `sleep -> observe -> sleep -> observe` while the child has not produced a \
+                     new delivery.",
                 )
                 .caveat(
                     "Messages must stay on the direct parent/child edge. No sibling chat, no \

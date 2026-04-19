@@ -4,16 +4,17 @@
 
 export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interrupted' | 'done';
 export type ToolOutputStream = 'stdout' | 'stderr';
-export type CompactTrigger = 'auto' | 'manual';
+export type CompactTrigger = 'auto' | 'manual' | 'deferred';
+export type CompactMode = 'full' | 'incremental' | 'retry_salvage';
 export type InvocationKind = 'subRun' | 'rootExecution';
-// Why: 新写路径已经全部切到 `independentSession`，但前端读侧仍需要识别
-// 历史 `sharedSession` 样本并做显式降级展示，不能把旧数据直接类型抹掉。
+// Why: 当前写路径只允许 `independentSession`，前端读侧保持同样约束，
+// 避免把已经移除的历史模式继续编码成正式类型。
+// TODO: 如果未来后端真的引入第二种 storage mode，再把这里扩成判别联合；
+// 在那之前保持字面量类型，避免前端自行发明并不存在的模式。
 export type SubRunStorageMode = 'independentSession';
-// Why: `legacyDurable` 仍承担“旧数据可识别但不受支持”的投影语义，
-// 前端需要它来渲染稳定错误，而不是把样本误当成正常 durable child。
-export type SubRunStatusSource = 'live' | 'durable' | 'legacyDurable';
+export type ForkMode = 'fullHistory' | { lastNTurns: number };
+export type SubRunStatusSource = 'live' | 'durable';
 export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
-export type UnsupportedLegacyErrorCode = 'unsupported_legacy_shared_history';
 export type AgentLifecycle = 'pending' | 'running' | 'idle' | 'terminated';
 export type AgentTurnOutcome = 'completed' | 'failed' | 'cancelled' | 'token_exceeded';
 // Why: `waiting` 仍保留给 durable child 通知读侧，避免旧事件样本在前端反序列化失败。
@@ -25,7 +26,7 @@ export type ChildSessionNotificationKind =
   | 'resumed'
   | 'closed'
   | 'failed';
-export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'aborted' | 'token_exceeded';
+export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'cancelled' | 'token_exceeded';
 export type SubRunFailureCode =
   | 'transport'
   | 'provider_http'
@@ -120,6 +121,7 @@ export interface ResolvedSubagentContextOverrides {
   includeRecentTail: boolean;
   includeRecoveryRefs: boolean;
   includeParentFindings: boolean;
+  forkMode?: ForkMode;
 }
 
 export interface ResolvedExecutionLimits {
@@ -132,20 +134,68 @@ export interface ExecutionControl {
   manualCompact?: boolean;
 }
 
-export interface SubRunResult {
-  status: SubRunOutcome;
-  handoff?: {
-    findings: string[];
-    artifacts: ArtifactRef[];
-    delivery?: ParentDelivery;
-  };
-  failure?: {
-    code: SubRunFailureCode;
-    displayMessage: string;
-    technicalMessage: string;
-    retryable: boolean;
-  };
+export interface CompactMeta {
+  mode: CompactMode;
+  instructionsPresent: boolean;
+  fallbackUsed: boolean;
+  retryCount: number;
+  inputUnits: number;
+  outputSummaryChars: number;
 }
+
+export interface LastCompactMeta {
+  trigger: CompactTrigger;
+  meta: CompactMeta;
+}
+
+export interface ConversationPlanReference {
+  slug: string;
+  path: string;
+  status: string;
+  title: string;
+}
+
+export type ConversationTaskStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface ConversationTaskItem {
+  content: string;
+  status: ConversationTaskStatus;
+  activeForm?: string;
+}
+
+export interface ConversationControlState {
+  phase: Phase;
+  canSubmitPrompt: boolean;
+  canRequestCompact: boolean;
+  compactPending: boolean;
+  compacting: boolean;
+  currentModeId: string;
+  activeTurnId?: string;
+  lastCompactMeta?: LastCompactMeta;
+  activePlan?: ConversationPlanReference;
+  activeTasks?: ConversationTaskItem[];
+}
+
+export type SubRunResult =
+  | {
+      status: 'running' | 'completed' | 'token_exceeded';
+      handoff: {
+        findings: string[];
+        artifacts: ArtifactRef[];
+        delivery?: ParentDelivery;
+      };
+      failure?: never;
+    }
+  | {
+      status: 'failed' | 'cancelled';
+      handoff?: never;
+      failure: {
+        code: SubRunFailureCode;
+        displayMessage: string;
+        technicalMessage: string;
+        retryable: boolean;
+      };
+    };
 
 export interface SubRunStatusSnapshot {
   subRunId: string;
@@ -216,7 +266,64 @@ export interface AssistantMessage {
   timestamp: number;
 }
 
+export type PlanEventKind = 'saved' | 'review_pending' | 'presented';
+export type PlanReviewKind = 'revise_plan' | 'final_review';
+
+export interface PlanReviewState {
+  kind: PlanReviewKind;
+  checklist: string[];
+}
+
+export interface PlanBlockers {
+  missingHeadings: string[];
+  invalidSections: string[];
+}
+
+export interface PlanMessage {
+  id: string;
+  kind: 'plan';
+  turnId?: string | null;
+  agentId?: string;
+  parentTurnId?: string;
+  parentSubRunId?: string;
+  agentProfile?: string;
+  subRunId?: string;
+  executionId?: string;
+  invocationKind?: InvocationKind;
+  storageMode?: SubRunStorageMode;
+  childSessionId?: string;
+  toolCallId: string;
+  eventKind: PlanEventKind;
+  title: string;
+  planPath: string;
+  summary?: string;
+  status?: string;
+  slug?: string;
+  updatedAt?: string;
+  content?: string;
+  review?: PlanReviewState;
+  blockers: PlanBlockers;
+  timestamp: number;
+}
+
 export type ToolStatus = 'running' | 'ok' | 'fail';
+
+export interface ToolChildRef {
+  agentId: string;
+  sessionId: string;
+  subRunId: string;
+  executionId?: string;
+  parentAgentId?: string;
+  parentSubRunId?: string;
+  lineageKind: 'spawn' | 'fork' | 'resume';
+  status: AgentLifecycle;
+  openSessionId: string;
+}
+
+export interface ToolCallStreams {
+  stdout: string;
+  stderr: string;
+}
 
 export interface ToolCallMessage {
   id: string;
@@ -238,28 +345,10 @@ export interface ToolCallMessage {
   output?: string;
   error?: string;
   metadata?: unknown;
+  childRef?: ToolChildRef;
+  streams?: ToolCallStreams;
   durationMs?: number;
   truncated?: boolean;
-  timestamp: number;
-}
-
-export interface ToolStreamMessage {
-  id: string;
-  kind: 'toolStream';
-  turnId?: string | null;
-  agentId?: string;
-  parentTurnId?: string;
-  parentSubRunId?: string;
-  agentProfile?: string;
-  subRunId?: string;
-  executionId?: string;
-  invocationKind?: InvocationKind;
-  storageMode?: SubRunStorageMode;
-  childSessionId?: string;
-  toolCallId: string;
-  stream: ToolOutputStream;
-  status: ToolStatus;
-  content: string;
   timestamp: number;
 }
 
@@ -277,6 +366,7 @@ export interface CompactMessage {
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
   trigger: CompactTrigger;
+  meta: CompactMeta;
   summary: string;
   preservedRecentTurns: number;
   timestamp: number;
@@ -365,17 +455,7 @@ export interface ChildSessionNotificationMessage {
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
-  childRef: {
-    agentId: string;
-    sessionId: string;
-    subRunId: string;
-    executionId?: string;
-    parentAgentId?: string;
-    parentSubRunId?: string;
-    lineageKind: 'spawn' | 'fork' | 'resume';
-    status: AgentLifecycle;
-    openSessionId: string;
-  };
+  childRef: ToolChildRef;
   notificationKind: ChildSessionNotificationKind;
   status: AgentLifecycle;
   sourceToolCallId?: string;
@@ -386,8 +466,8 @@ export interface ChildSessionNotificationMessage {
 export type Message =
   | UserMessage
   | AssistantMessage
+  | PlanMessage
   | ToolCallMessage
-  | ToolStreamMessage
   | PromptMetricsMessage
   | CompactMessage
   | SubRunStartMessage
@@ -489,7 +569,7 @@ export interface SubRunExecutionMetricsSnapshot {
   total: number;
   failures: number;
   completed: number;
-  aborted: number;
+  cancelled: number;
   tokenExceeded: number;
   independentSessionTotal: number;
   totalDurationMs: number;
@@ -553,91 +633,6 @@ export interface RuntimeMetricsSnapshot {
   agentCollaboration: AgentCollaborationScorecard;
 }
 
-export interface RuntimeDebugOverview {
-  collectedAt: string;
-  spawnRejectionRatioBps?: number;
-  metrics: RuntimeMetricsSnapshot;
-}
-
-export interface RuntimeDebugTimelineSample {
-  collectedAt: string;
-  spawnRejectionRatioBps?: number;
-  observeToActionRatioBps?: number;
-  childReuseRatioBps?: number;
-}
-
-export interface RuntimeDebugTimeline {
-  windowStartedAt: string;
-  windowEndedAt: string;
-  samples: RuntimeDebugTimelineSample[];
-}
-
-export type SessionDebugTraceItemKind =
-  | 'toolCall'
-  | 'toolResult'
-  | 'promptMetrics'
-  | 'subRunStarted'
-  | 'subRunFinished'
-  | 'childNotification'
-  | 'collaborationFact'
-  | 'mailboxQueued'
-  | 'mailboxBatchStarted'
-  | 'mailboxBatchAcked'
-  | 'mailboxDiscarded'
-  | 'turnDone'
-  | 'error';
-
-export interface SessionDebugTraceItem {
-  id: string;
-  storageSeq: number;
-  turnId?: string;
-  recordedAt?: string;
-  kind: SessionDebugTraceItemKind;
-  title: string;
-  summary: string;
-  agentId?: string;
-  subRunId?: string;
-  childAgentId?: string;
-  deliveryId?: string;
-  toolCallId?: string;
-  toolName?: string;
-  lifecycle?: AgentLifecycle;
-  lastTurnOutcome?: AgentTurnOutcome;
-}
-
-export interface SessionDebugTrace {
-  sessionId: string;
-  title: string;
-  phase: Phase;
-  parentSessionId?: string;
-  items: SessionDebugTraceItem[];
-}
-
-export type DebugAgentNodeKind = 'sessionRoot' | 'childAgent';
-
-export interface SessionDebugAgentNode {
-  nodeId: string;
-  kind: DebugAgentNodeKind;
-  title: string;
-  agentId: string;
-  sessionId: string;
-  childSessionId?: string;
-  subRunId?: string;
-  parentAgentId?: string;
-  parentSessionId?: string;
-  depth: number;
-  lifecycle: AgentLifecycle;
-  lastTurnOutcome?: AgentTurnOutcome;
-  statusSource?: string;
-  lineageKind?: string;
-}
-
-export interface SessionDebugAgents {
-  sessionId: string;
-  title: string;
-  nodes: SessionDebugAgentNode[];
-}
-
 export interface TestResult {
   success: boolean;
   provider: string;
@@ -649,6 +644,11 @@ export interface CurrentModelInfo {
   profileName: string;
   model: string;
   providerKind: string;
+}
+
+export interface SessionModeState {
+  currentModeId: string;
+  lastModeChangedAt?: string;
 }
 
 export interface ModelOption {

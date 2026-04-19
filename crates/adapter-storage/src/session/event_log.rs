@@ -192,14 +192,31 @@ impl EventLog {
     /// 序列化为 JSON 行写入文件，然后立即 flush 并 sync 到磁盘。
     /// 返回包含已分配 `storage_seq` 的 `StoredEvent`。
     pub fn append_stored(&mut self, event: &StorageEvent) -> Result<StoredEvent> {
-        let stored = StoredEvent {
-            storage_seq: self.next_storage_seq,
-            event: event.clone(),
-        };
+        Ok(self
+            .append_batch(std::slice::from_ref(event))?
+            .into_iter()
+            .next()
+            .expect("single append should always produce one stored event"))
+    }
 
-        serde_json::to_writer(&mut self.writer, &stored)
-            .map_err(|e| crate::parse_error("failed to serialize StoredEvent", e))?;
-        writeln!(self.writer).map_err(|e| crate::io_error("failed to write newline", e))?;
+    pub fn append_batch(&mut self, events: &[StorageEvent]) -> Result<Vec<StoredEvent>> {
+        let mut stored_events = Vec::with_capacity(events.len());
+        for event in events {
+            let stored = StoredEvent {
+                storage_seq: self.next_storage_seq,
+                event: event.clone(),
+            };
+            serde_json::to_writer(&mut self.writer, &stored)
+                .map_err(|e| crate::parse_error("failed to serialize StoredEvent", e))?;
+            writeln!(self.writer).map_err(|e| crate::io_error("failed to write newline", e))?;
+            self.next_storage_seq = self.next_storage_seq.saturating_add(1);
+            stored_events.push(stored);
+        }
+        self.flush_and_sync()?;
+        Ok(stored_events)
+    }
+
+    pub(crate) fn flush_and_sync(&mut self) -> Result<()> {
         self.writer
             .flush()
             .map_err(|e| crate::io_error("failed to flush event log", e))?;
@@ -207,8 +224,7 @@ impl EventLog {
             .get_ref()
             .sync_all()
             .map_err(|e| crate::io_error("failed to sync event log", e))?;
-        self.next_storage_seq = self.next_storage_seq.saturating_add(1);
-        Ok(stored)
+        Ok(())
     }
 
     /// 回放指定路径的会话文件中的所有事件。

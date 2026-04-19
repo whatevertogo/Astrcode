@@ -1,13 +1,21 @@
 import { createContext, useContext } from 'react';
-import type { ComposerOption, CurrentModelInfo, ModelOption, Phase } from '../../types';
+import type {
+  ComposerOption,
+  ConversationControlState,
+  CurrentModelInfo,
+  ModelOption,
+  Phase,
+} from '../../types';
 
 export interface ChatScreenContextValue {
   projectName: string | null;
   sessionId: string | null;
   sessionTitle: string | null;
+  currentModeId: string | null;
   isChildSession: boolean;
   workingDir: string;
   phase: Phase;
+  conversationControl: ConversationControlState | null;
   activeSubRunPath: string[];
   activeSubRunTitle: string | null;
   activeSubRunBreadcrumbs: Array<{ subRunId: string; title: string }>;
@@ -17,7 +25,9 @@ export interface ChatScreenContextValue {
   onCloseSubRun: () => void | Promise<void>;
   onNavigateSubRunPath: (subRunPath: string[]) => void | Promise<void>;
   onOpenChildSession: (childSessionId: string) => void | Promise<void>;
+  onForkFromTurn: (turnId: string) => void | Promise<void>;
   onSubmitPrompt: (text: string) => void | Promise<void>;
+  onSwitchMode: (modeId: string) => void | Promise<void>;
   onInterrupt: () => void | Promise<void>;
   onCancelSubRun: (sessionId: string, subRunId: string) => void | Promise<void>;
   listComposerOptions: (

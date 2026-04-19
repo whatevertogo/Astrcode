@@ -4,10 +4,6 @@ use astrcode_core::{SessionId, StorageEventPayload};
 use astrcode_protocol::http::{
     CompactSessionResponse, ConfigReloadResponse, PromptAcceptedResponse,
 };
-#[cfg(feature = "debug-workbench")]
-use astrcode_protocol::http::{
-    RuntimeDebugOverviewDto, RuntimeDebugTimelineDto, SessionDebugAgentsDto, SessionDebugTraceDto,
-};
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -44,179 +40,6 @@ async fn config_reload_returns_runtime_status_when_idle() {
     let payload: ConfigReloadResponse = json_body(response).await;
     assert!(!payload.reloaded_at.is_empty());
     assert_eq!(payload.status.runtime_name, "astrcode-application");
-}
-
-#[cfg(feature = "debug-workbench")]
-#[tokio::test]
-async fn debug_runtime_overview_route_returns_workbench_overview() {
-    let (state, _guard) = test_state(None).await;
-    let app = build_api_router().with_state(state.clone());
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/debug/runtime/overview")
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: RuntimeDebugOverviewDto = json_body(response).await;
-    assert!(!payload.collected_at.is_empty());
-}
-
-#[cfg(feature = "debug-workbench")]
-#[tokio::test]
-async fn debug_runtime_timeline_route_returns_server_window_samples() {
-    let (state, _guard) = test_state(None).await;
-    let app = build_api_router().with_state(state.clone());
-    let _ = state.debug_workbench.runtime_overview();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/debug/runtime/timeline")
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: RuntimeDebugTimelineDto = json_body(response).await;
-    assert!(
-        !payload.samples.is_empty(),
-        "timeline should contain at least the freshly recorded overview sample"
-    );
-}
-
-#[cfg(feature = "debug-workbench")]
-#[tokio::test]
-async fn debug_session_trace_route_is_scoped_to_requested_session() {
-    let (state, _guard) = test_state(None).await;
-    let session_a = state
-        .app
-        .create_session(
-            tempfile::tempdir()
-                .expect("tempdir")
-                .path()
-                .display()
-                .to_string(),
-        )
-        .await
-        .expect("session should be created");
-    let session_b = state
-        .app
-        .create_session(
-            tempfile::tempdir()
-                .expect("tempdir")
-                .path()
-                .display()
-                .to_string(),
-        )
-        .await
-        .expect("session should be created");
-    let app = build_api_router().with_state(state.clone());
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/api/debug/sessions/{}/trace",
-                    session_a.session_id
-                ))
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: SessionDebugTraceDto = json_body(response).await;
-    assert_eq!(payload.session_id, session_a.session_id);
-    assert_ne!(payload.session_id, session_b.session_id);
-}
-
-#[cfg(feature = "debug-workbench")]
-#[tokio::test]
-async fn debug_session_agents_route_is_scoped_to_requested_session() {
-    let (state, _guard) = test_state(None).await;
-    let session_a = state
-        .app
-        .create_session(
-            tempfile::tempdir()
-                .expect("tempdir")
-                .path()
-                .display()
-                .to_string(),
-        )
-        .await
-        .expect("session should be created");
-    let session_b = state
-        .app
-        .create_session(
-            tempfile::tempdir()
-                .expect("tempdir")
-                .path()
-                .display()
-                .to_string(),
-        )
-        .await
-        .expect("session should be created");
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/api/debug/sessions/{}/agents",
-                    session_a.session_id
-                ))
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: SessionDebugAgentsDto = json_body(response).await;
-    assert_eq!(payload.session_id, session_a.session_id);
-    assert_ne!(payload.session_id, session_b.session_id);
-    assert_eq!(
-        payload.nodes.first().map(|node| node.session_id.as_str()),
-        Some(session_a.session_id.as_str())
-    );
-}
-
-#[cfg(feature = "debug-workbench")]
-#[tokio::test]
-async fn debug_session_trace_route_returns_not_found_for_unknown_session() {
-    let (state, _guard) = test_state(None).await;
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/debug/sessions/unknown-session/trace")
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .body(Body::empty())
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -363,6 +186,89 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
         .expect("accepted control should be returned");
     assert_eq!(accepted_control.max_steps, Some(7));
     assert_eq!(accepted_control.manual_compact, None);
+}
+
+#[tokio::test]
+async fn prompt_route_accepts_structured_skill_invocation() {
+    let (state, _guard) = test_state(None).await;
+    let session = state
+        .app
+        .create_session(
+            tempfile::tempdir()
+                .expect("tempdir")
+                .path()
+                .display()
+                .to_string(),
+        )
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/prompts", session.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "text": "提交当前修改",
+                        "skillInvocation": {
+                            "skillId": "git-commit",
+                            "userPrompt": "提交当前修改"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let payload: PromptAcceptedResponse = json_body(response).await;
+    assert!(!payload.turn_id.is_empty());
+}
+
+#[tokio::test]
+async fn prompt_route_rejects_unknown_skill_invocation() {
+    let (state, _guard) = test_state(None).await;
+    let session = state
+        .app
+        .create_session(
+            tempfile::tempdir()
+                .expect("tempdir")
+                .path()
+                .display()
+                .to_string(),
+        )
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{}/prompts", session.session_id))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "text": "",
+                        "skillInvocation": {
+                            "skillId": "missing-skill"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

@@ -6,6 +6,7 @@ import type {
   AgentLifecycle,
   DeleteProjectResult,
   ExecutionControl,
+  SessionModeState,
   SessionMeta,
 } from '../../types';
 import { request, requestJson } from './client';
@@ -64,6 +65,20 @@ export async function listSessionsWithMeta(): Promise<SessionMeta[]> {
   return requestJson<SessionMeta[]>('/api/sessions');
 }
 
+export async function forkSession(
+  sessionId: string,
+  options?: { turnId?: string; storageSeq?: number }
+): Promise<SessionMeta> {
+  return requestJson<SessionMeta>(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      turnId: options?.turnId,
+      storageSeq: options?.storageSeq,
+    }),
+  });
+}
+
 export async function submitPrompt(
   sessionId: string,
   text: string,
@@ -104,16 +119,32 @@ export async function closeChildAgent(
 
 export async function compactSession(
   sessionId: string,
-  control?: ExecutionControl
+  control?: ExecutionControl,
+  instructions?: string
 ): Promise<CompactSessionAcceptance> {
   return requestJson<CompactSessionAcceptance>(
     `/api/sessions/${encodeURIComponent(sessionId)}/compact`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ control }),
+      body: JSON.stringify({ control, instructions }),
     }
   );
+}
+
+export async function getSessionMode(sessionId: string): Promise<SessionModeState> {
+  return requestJson<SessionModeState>(`/api/sessions/${encodeURIComponent(sessionId)}/mode`);
+}
+
+export async function switchSessionMode(
+  sessionId: string,
+  modeId: string
+): Promise<SessionModeState> {
+  return requestJson<SessionModeState>(`/api/sessions/${encodeURIComponent(sessionId)}/mode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modeId }),
+  });
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

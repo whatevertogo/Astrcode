@@ -15,7 +15,7 @@ use serde::Deserialize;
 use super::token_usage::estimate_text_tokens;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileRecoveryConfig {
+pub(crate) struct FileRecoveryConfig {
     pub max_tracked_files: usize,
     pub max_recovered_files: usize,
     pub recovery_token_budget: usize,
@@ -29,7 +29,7 @@ struct TrackedFileAccess {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct FileAccessTracker {
+pub(crate) struct FileAccessTracker {
     accesses: VecDeque<TrackedFileAccess>,
     max_tracked_files: usize,
 }
@@ -329,6 +329,7 @@ mod tests {
             output: "fn nested() {}".to_string(),
             error: None,
             metadata: Some(json!({"path": absolute.to_string_lossy()})),
+            child_ref: None,
             duration_ms: 1,
             truncated: false,
         };

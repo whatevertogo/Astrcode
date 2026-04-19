@@ -3,10 +3,7 @@
 //! 提供 few-shot 示例对话，教导模型"先收集上下文再修改代码"的行为模式。
 //! 仅在第一步（step_index == 0）时生效，以 prepend 方式插入到对话消息中。
 //!
-//! 同时提供子 Agent 协作决策指导：当父 Agent 收到子 Agent 交付结果后，
-//! 指导模型如何决定关闭或保留子 Agent。
-
-use astrcode_core::config::DEFAULT_MAX_SUBRUN_DEPTH;
+//! 子 Agent 协作指导现在由上游治理声明注入；本 contributor 只保留 few-shot 示例。
 use async_trait::async_trait;
 
 use crate::{
@@ -15,8 +12,6 @@ use crate::{
 };
 
 pub struct WorkflowExamplesContributor;
-
-const AGENT_COLLABORATION_TOOLS: &[&str] = &["spawn", "send", "observe", "close"];
 
 #[async_trait]
 impl PromptContributor for WorkflowExamplesContributor {
@@ -84,69 +79,6 @@ impl PromptContributor for WorkflowExamplesContributor {
             );
         }
 
-        if has_agent_collaboration_tools(ctx) {
-            let max_depth = collaboration_depth_limit(ctx).unwrap_or(DEFAULT_MAX_SUBRUN_DEPTH);
-            let max_spawn_per_turn = collaboration_spawn_limit(ctx).unwrap_or(3);
-            blocks.push(
-                BlockSpec::system_text(
-                    "child-collaboration-guidance",
-                    BlockKind::CollaborationGuide,
-                    "Child Agent Collaboration Guide",
-                    format!(
-                        "Use the child-agent tools as one decision protocol.\n\nKeep `agentId` \
-                         exact. Copy it byte-for-byte in later `send`, `observe`, and `close` \
-                         calls. Never renumber it, never zero-pad it, and never invent `agent-01` \
-                         when the tool result says `agent-1`.\n\nDefault protocol:\n1. `spawn` \
-                         only for a new isolated responsibility with real parallel or \
-                         context-isolation value.\n2. `send` when the same child should take one \
-                         concrete next step on the same responsibility branch.\n3. `observe` only \
-                         when the next decision depends on current child state.\n4. `close` when \
-                         the branch is done or no longer useful.\n\nDelegation modes:\n- Fresh \
-                         child: use `spawn` for a new responsibility branch. Give the child a \
-                         full briefing: task scope, boundaries, expected deliverable, and any \
-                         important focus or exclusion. Do not treat a short nudge like 'take a \
-                         look' as a sufficient fresh-child brief.\n- Resumed child: use `send` \
-                         when the same child should continue the same responsibility branch. Send \
-                         one concrete delta instruction or clarification, not a full re-briefing \
-                         of the original task.\n- Restricted child: when you narrow a child with \
-                         `capabilityGrant`, assign only work that fits that reduced capability \
-                         surface. If the next step needs tools the restricted child does not \
-                         have, choose a different child or do the work locally instead of forcing \
-                         a mismatch.\n\n`Idle` is normal and reusable. Do not respawn just \
-                         because a child finished one turn. Reuse an idle child with \
-                         `send(agentId, message)` when the responsibility stays the same. If you \
-                         are unsure whether the child is still running, idle, or terminated, call \
-                         `observe(agentId)` once and act on the result.\n\nSpawn sparingly. The \
-                         runtime enforces a maximum child depth of {max_depth} and at most \
-                         {max_spawn_per_turn} new children per turn. Start with one child unless \
-                         there are clearly separate workstreams. Do not blanket-spawn agents just \
-                         to explore a repo broadly.\n\nAvoid waste:\n- Do not loop on `observe` \
-                         with no decision attached.\n- If a child is still running and you are \
-                         simply waiting, use your current shell tool to sleep briefly instead of \
-                         spending another tool call on `observe`.\n- Do not stack speculative \
-                         `send` calls.\n- Do not spawn a new child when an existing idle child \
-                         already owns the responsibility.\n\nIf a delivery satisfies the request, \
-                         `close` the branch. If the same child should continue, `send` one \
-                         precise follow-up. If you see the same `deliveryId` again after \
-                         recovery, treat it as the same delivery, not a new task.\n\nWhen you are \
-                         the child on a delegated task, use upstream `send(kind + payload)` to \
-                         deliver a formal message to your direct parent. Report `progress`, \
-                         `completed`, `failed`, or `close_request` explicitly. Do not wait for \
-                         the parent to infer state from raw intermediate steps, and do not end \
-                         with an open loop like '继续观察中' unless you are also sending a \
-                         non-terminal `progress` delivery that keeps the branch alive.\n\nWhen \
-                         you are the parent and receive a child delivery, treat it as a decision \
-                         point. Do not leave it hanging and do not immediately re-observe the \
-                         same child unless the state is unclear. Decide immediately whether the \
-                         result is complete enough to `close` the branch, or whether the same \
-                         child should continue with one concrete `send` follow-up that names the \
-                         exact next step."
-                    ),
-                )
-                .with_priority(600),
-            );
-        }
-
         PromptContribution {
             blocks,
             ..PromptContribution::default()
@@ -154,28 +86,8 @@ impl PromptContributor for WorkflowExamplesContributor {
     }
 }
 
-fn has_agent_collaboration_tools(ctx: &PromptContext) -> bool {
-    ctx.tool_names.iter().any(|tool_name| {
-        AGENT_COLLABORATION_TOOLS
-            .iter()
-            .any(|candidate| tool_name == candidate)
-    })
-}
-
 fn should_add_tool_search_example(ctx: &PromptContext) -> bool {
     has_tool_search(ctx) && has_external_tools(ctx)
-}
-
-fn collaboration_depth_limit(ctx: &PromptContext) -> Option<usize> {
-    ctx.vars
-        .get("agent.max_subrun_depth")
-        .and_then(|value| value.parse::<usize>().ok())
-}
-
-fn collaboration_spawn_limit(ctx: &PromptContext) -> Option<usize> {
-    ctx.vars
-        .get("agent.max_spawn_per_turn")
-        .and_then(|value| value.parse::<usize>().ok())
 }
 
 fn has_tool_search(ctx: &PromptContext) -> bool {
@@ -297,7 +209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adds_collaboration_guidance_only_when_agent_tools_are_available() {
+    async fn does_not_add_collaboration_guidance_directly() {
         let _guard = TestEnvGuard::new();
         let composer = PromptComposer::with_options(PromptComposerOptions {
             validation_level: ValidationLevel::Strict,
@@ -322,84 +234,12 @@ mod tests {
 
         let output = composer.build(&ctx).await.expect("build should succeed");
 
-        let collaboration_block = output
-            .plan
-            .system_blocks
-            .iter()
-            .find(|block| block.id == "child-collaboration-guidance")
-            .expect("collaboration guidance block should exist");
-        assert!(collaboration_block.content.contains("Keep `agentId` exact"));
-        assert!(collaboration_block.content.contains(&format!(
-            "maximum child depth of {DEFAULT_MAX_SUBRUN_DEPTH}"
-        )));
-        assert!(collaboration_block.content.contains("Default protocol:"));
-        assert!(collaboration_block.content.contains("Delegation modes:"));
-        assert!(collaboration_block.content.contains("Fresh child:"));
-        assert!(collaboration_block.content.contains("Resumed child:"));
-        assert!(collaboration_block.content.contains("Restricted child:"));
         assert!(
-            collaboration_block
-                .content
-                .contains("same `deliveryId` again")
-        );
-        assert!(
-            collaboration_block
-                .content
-                .contains("`Idle` is normal and reusable")
-        );
-        assert!(
-            collaboration_block
-                .content
-                .contains("Do not loop on `observe`")
-        );
-        assert!(
-            collaboration_block
-                .content
-                .contains("use upstream `send(kind + payload)`")
-        );
-        assert!(collaboration_block.content.contains("`close_request`"));
-        assert!(collaboration_block.content.contains("exact next step"));
-    }
-
-    #[tokio::test]
-    async fn collaboration_guidance_uses_configured_depth_limit() {
-        let _guard = TestEnvGuard::new();
-        let composer = PromptComposer::with_options(PromptComposerOptions {
-            validation_level: ValidationLevel::Strict,
-            ..PromptComposerOptions::default()
-        });
-
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("agent.max_subrun_depth".to_string(), "5".to_string());
-        let ctx = PromptContext {
-            working_dir: "/workspace/demo".to_string(),
-            tool_names: vec![
-                "spawn".to_string(),
-                "send".to_string(),
-                "observe".to_string(),
-                "close".to_string(),
-            ],
-            capability_specs: Vec::new(),
-            prompt_declarations: Vec::new(),
-            agent_profiles: Vec::new(),
-            skills: Vec::new(),
-            step_index: 0,
-            turn_index: 0,
-            vars,
-        };
-
-        let output = composer.build(&ctx).await.expect("build should succeed");
-
-        let collaboration_block = output
-            .plan
-            .system_blocks
-            .iter()
-            .find(|block| block.id == "child-collaboration-guidance")
-            .expect("collaboration guidance block should exist");
-        assert!(
-            collaboration_block
-                .content
-                .contains("maximum child depth of 5")
+            output
+                .plan
+                .system_blocks
+                .iter()
+                .all(|block| block.id != "child-collaboration-guidance")
         );
     }
 }

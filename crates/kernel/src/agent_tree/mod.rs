@@ -291,14 +291,14 @@ impl AgentControl {
             .and_then(|parent_agent_id| state.agent_index.get(parent_agent_id))
             .cloned();
         let handle = SubRunHandle {
-            sub_run_id: sub_run_id.clone(),
-            agent_id: agent_id.clone(),
-            session_id,
-            child_session_id,
+            sub_run_id: sub_run_id.clone().into(),
+            agent_id: agent_id.clone().into(),
+            session_id: session_id.into(),
+            child_session_id: child_session_id.map(Into::into),
             depth,
-            parent_turn_id,
-            parent_agent_id: parent_agent_id.clone(),
-            parent_sub_run_id,
+            parent_turn_id: parent_turn_id.into(),
+            parent_agent_id: parent_agent_id.clone().map(Into::into),
+            parent_sub_run_id: parent_sub_run_id.map(Into::into),
             lineage_kind: ChildSessionLineageKind::Spawn,
             agent_profile: profile.id.clone(),
             storage_mode,
@@ -360,12 +360,12 @@ impl AgentControl {
         // 根 agent 没有真实 sub_run_id，使用 agent_id 等价
         let sub_run_id = format!("root-{agent_id}");
         let handle = SubRunHandle {
-            sub_run_id: sub_run_id.clone(),
-            agent_id: agent_id.clone(),
-            session_id,
+            sub_run_id: sub_run_id.clone().into(),
+            agent_id: agent_id.clone().into(),
+            session_id: session_id.into(),
             child_session_id: None,
             depth: 0,
-            parent_turn_id: String::new(),
+            parent_turn_id: String::new().into(),
             parent_agent_id: None,
             parent_sub_run_id: None,
             lineage_kind: ChildSessionLineageKind::Spawn,
@@ -516,7 +516,7 @@ impl AgentControl {
         state
             .entries
             .values()
-            .find(|entry| entry.handle.depth == 0 && entry.handle.session_id == session_id)
+            .find(|entry| entry.handle.depth == 0 && entry.handle.session_id.as_str() == session_id)
             .map(|entry| entry.handle.clone())
     }
 
@@ -557,8 +557,8 @@ impl AgentControl {
         let next_id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         let new_sub_run_id = format!("subrun-{next_id}");
         let mut new_handle = old_handle.clone();
-        new_handle.sub_run_id = new_sub_run_id.clone();
-        new_handle.parent_turn_id = parent_turn_id.into();
+        new_handle.sub_run_id = new_sub_run_id.clone().into();
+        new_handle.parent_turn_id = parent_turn_id.into().into();
         new_handle.lineage_kind = ChildSessionLineageKind::Resume;
         new_handle.lifecycle = AgentLifecycleStatus::Running;
         new_handle.last_turn_outcome = None;
@@ -585,7 +585,7 @@ impl AgentControl {
         );
         state
             .agent_index
-            .insert(new_handle.agent_id.clone(), new_sub_run_id.clone());
+            .insert(new_handle.agent_id.to_string(), new_sub_run_id.clone());
 
         if let Some(parent_agent_id) = parent_agent_id {
             if let Some(parent_sub_run_id) = state.agent_index.get(&parent_agent_id).cloned() {
@@ -621,7 +621,7 @@ impl AgentControl {
         let mut roots = state
             .entries
             .values()
-            .filter(|entry| entry.handle.parent_turn_id == parent_turn_id)
+            .filter(|entry| entry.handle.parent_turn_id.as_str() == parent_turn_id)
             .filter(|entry| {
                 !entry
                     .parent_agent_id
@@ -631,7 +631,9 @@ impl AgentControl {
                             .agent_index
                             .get(parent_agent_id)
                             .and_then(|parent_sub_run_id| state.entries.get(parent_sub_run_id))
-                            .is_some_and(|parent| parent.handle.parent_turn_id == parent_turn_id)
+                            .is_some_and(|parent| {
+                                parent.handle.parent_turn_id.as_str() == parent_turn_id
+                            })
                     })
             })
             .map(|entry| entry.handle.sub_run_id.clone())

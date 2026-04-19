@@ -36,7 +36,7 @@ pub enum TurnStopCause {
 
 /// budget 驱动 auto-continue 的判断结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BudgetContinuationDecision {
+pub(crate) enum BudgetContinuationDecision {
     Continue,
     Stop(TurnStopCause),
     NotNeeded,

@@ -25,7 +25,6 @@
 //! 以便竞争者获取当前持有者信息并做出相应处理。
 
 pub mod config_store;
-pub mod core_port;
 pub mod mcp_settings_store;
 pub mod session;
 

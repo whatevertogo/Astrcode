@@ -29,7 +29,7 @@
 
 ### Requirement: 终端 transcript SHALL 以结构化 block 暴露稳定语义
 
-终端读模型 MUST 把 transcript 暴露为带稳定标识和显式类型的结构化 block，而不是要求客户端自己把细粒度 agent events 重新拼成 UI。block 类型至少 MUST 覆盖 user message、assistant message、thinking、tool call、tool stream、turn-scoped error、compact / system note 与 child handoff。
+终端读模型 MUST 把 transcript 暴露为带稳定标识和显式类型的结构化 block，而不是要求客户端自己把细粒度 agent events 重新拼成 UI。block 类型至少 MUST 覆盖 user message、assistant message、thinking、tool call、turn-scoped error、compact / system note 与 child handoff。工具展示相关语义 MUST 以后端聚合后的 tool call block 作为唯一主实体；stdout、stderr、终态、错误、duration、truncated 与子会话关联 MUST 作为该实体的稳定字段或稳定 patch 语义暴露，客户端 MUST NOT 依赖相邻 block regroup、原始 event 重放或 metadata 猜测来恢复工具展示真相。
 
 #### Scenario: thinking 与 assistant 内容属于不同 block 语义
 
@@ -37,11 +37,18 @@
 - **THEN** 读模型 SHALL 将两者表示为可区分的结构化 block
 - **AND** 客户端 MUST 能在不解析原始事件细节的情况下稳定渲染它们
 
-#### Scenario: tool stream 增量归属于同一 tool block
+#### Scenario: 工具输出增量补丁归属于同一 tool call block
 
 - **WHEN** 一个 tool call 在执行期间多次产出 stdout、stderr 或状态更新
-- **THEN** 读模型 SHALL 以稳定 block 标识把这些增量归属于同一 tool call
-- **AND** 在 tool 完成后该 block MUST 具备明确的终态
+- **THEN** 读模型 SHALL 以稳定 `tool_call_id` 把这些增量归属于同一 tool call block
+- **AND** 客户端 MUST 能仅通过该 block 的 patch 更新完成工具展示
+- **AND** MUST NOT 依赖相邻 transcript block 顺序来推断归属关系
+
+#### Scenario: tool call block 暴露完整终态字段
+
+- **WHEN** 某个 tool call 完成、失败或被截断
+- **THEN** 读模型 SHALL 在同一 tool call block 中暴露明确终态、错误、duration 与 truncated 语义
+- **AND** 客户端 MUST NOT 通过解析文本 summary 或额外本地推断来区分这些状态
 
 #### Scenario: 子智能体交接进入 transcript
 
@@ -85,19 +92,25 @@
 
 ### Requirement: conversation surface SHALL 成为终端前端的 authoritative read surface
 
-`conversation v1` 的 snapshot 与 stream MUST 是终端前端消费的 authoritative hydration / delta 合同。旧 `/view`、`/history` 与 `/events` 可以继续存在，但不得再被定义为终端前端的 hydration 或 live delta 来源。
+`conversation` surface 的 snapshot 与 stream MUST 是终端前端消费的 authoritative hydration / delta 合同。旧 `/view`、`/history` 与 `/events` 可以继续存在，但不得再被定义为终端前端的 hydration 或 live delta 来源。工具展示 contract MUST 由 `conversation` surface 直接暴露，客户端 MUST NOT 在本地把多个低层 block 或 replay/event 语义重新组合成工具展示结构。
 
 #### Scenario: 终端前端使用 conversation snapshot 进行 hydration
 
 - **WHEN** 终端客户端进入某个 session
 - **THEN** 它 SHALL 使用 conversation snapshot 作为 authoritative hydration 来源
-- **AND** MUST NOT 依赖 legacy `/view` 或 `/history` 来重建 terminal 初始状态
+- **AND** MUST NOT 依赖已删除的 `/view` 或 `/history` 来重建 terminal 初始状态
 
 #### Scenario: 终端前端使用 conversation stream 消费增量
 
 - **WHEN** 终端客户端需要消费 live delta
 - **THEN** 它 SHALL 订阅 conversation surface 暴露的专属 stream
-- **AND** MUST NOT 把 legacy `/events` 解释为 terminal block 语义
+- **AND** MUST NOT 把已删除的 `/events` 解释为 terminal block 语义
+
+#### Scenario: 工具展示直接消费 authoritative tool block
+
+- **WHEN** 客户端渲染某个 tool call 的 summary、stdout/stderr、失败态或子会话关联
+- **THEN** 它 SHALL 直接消费 conversation surface 返回的工具展示结构
+- **AND** MUST NOT 在本地执行相邻 regroup、tool stream 扫描或 metadata fallback 推断
 
 ### Requirement: 终端读模型 SHALL 提供会话导航与 child 摘要投影
 
@@ -114,3 +127,32 @@
 - **WHEN** 终端客户端请求当前 session 的 child agent / subagent 摘要
 - **THEN** 服务端 SHALL 返回 direct child 的标识、状态、最近输出摘要与父子关系信息
 - **AND** MUST 只暴露当前 session 有权观察到的 child
+
+### Requirement: conversation surface SHALL expose authoritative active-task panel facts
+
+`conversation` surface 的 hydration snapshot 与增量 stream MUST 直接暴露当前 session 的 active-task panel facts，通过 `ConversationControlStateDto.activeTasks: Option<Vec<TaskItemDto>>` 字段传递。该事实源 MUST 来自服务端 authoritative projection（`SessionState.active_tasks` → `terminal_control_facts()` → DTO 映射），客户端 MUST NOT 通过扫描 `taskWrite` tool history、metadata fallback 或本地 reducer 自行重建任务面板。
+
+#### Scenario: hydration snapshot includes current active tasks
+
+- **WHEN** 终端或前端首次打开一个 session，并且该 session 当前存在 active tasks
+- **THEN** 服务端 SHALL 在 conversation hydration 结果的 `activeTasks` 字段中返回当前 active-task panel facts
+- **AND** 客户端 MUST 能在不回放历史 tool result 的前提下直接渲染任务卡片
+
+#### Scenario: stream delta updates the task panel after taskWrite
+
+- **WHEN** 当前 session 成功写入新的 `taskWrite` snapshot
+- **THEN** conversation 增量流 SHALL 通过 `UpdateControlState` delta 推送更新后的 `activeTasks`
+- **AND** 客户端 MUST 能仅凭该 authoritative delta 更新任务卡片
+
+#### Scenario: task panel hides after tasks are cleared
+
+- **WHEN** 当前 session 的最新 task snapshot 为空或全部 completed
+- **THEN** `activeTasks` SHALL 为 `None`
+- **AND** 客户端 SHALL 隐藏 task 卡片
+
+#### Scenario: taskWrite tool calls appear as normal ToolCallBlocks
+
+- **WHEN** 模型在 transcript 中调用 `taskWrite`
+- **THEN** 该调用 SHALL 作为正常 `ToolCallBlock` 出现在消息列表中
+- **AND** 系统 SHALL NOT 抑制该工具调用（与 plan 工具被 `should_suppress_tool_call_block()` 抑制的行为不同）
+- **AND** `activeTasks` control state 与 transcript 中的 ToolCallBlock 是两个独立的 UI 表面

@@ -2,6 +2,12 @@ import type {
   AgentLifecycle,
   ChildSessionNotificationKind,
   ChildSessionNotificationMessage,
+  CompactMeta,
+  ConversationControlState,
+  ConversationPlanReference,
+  ConversationTaskItem,
+  ConversationTaskStatus,
+  LastCompactMeta,
   Message,
   ParentDelivery,
   Phase,
@@ -23,6 +29,7 @@ type ConversationRecord = Record<string, unknown>;
 export interface ConversationSnapshotState {
   cursor: string | null;
   phase: Phase;
+  control: ConversationControlState;
   blocks: ConversationRecord[];
   childSummaries: ConversationRecord[];
 }
@@ -30,6 +37,7 @@ export interface ConversationSnapshotState {
 export interface ConversationViewProjection {
   cursor: string | null;
   phase: Phase;
+  control: ConversationControlState;
   messages: Message[];
   messageTree: SubRunThreadTree;
   messageFingerprint: string;
@@ -76,6 +84,34 @@ function parseToolStatus(value: unknown): ToolStatus {
   }
 }
 
+function parseToolChildRef(value: unknown) {
+  const record = asRecord(value);
+  const agentId = pickString(record ?? {}, 'agentId');
+  const sessionId = pickString(record ?? {}, 'sessionId');
+  const subRunId = pickString(record ?? {}, 'subRunId');
+  const openSessionId = pickString(record ?? {}, 'openSessionId');
+  if (!agentId || !sessionId || !subRunId || !openSessionId) {
+    return undefined;
+  }
+
+  return {
+    agentId,
+    sessionId,
+    subRunId,
+    executionId: pickOptionalString(record ?? {}, 'executionId') ?? undefined,
+    parentAgentId: pickOptionalString(record ?? {}, 'parentAgentId') ?? undefined,
+    parentSubRunId: pickOptionalString(record ?? {}, 'parentSubRunId') ?? undefined,
+    lineageKind:
+      pickString(record ?? {}, 'lineageKind') === 'fork'
+        ? 'fork'
+        : pickString(record ?? {}, 'lineageKind') === 'resume'
+          ? 'resume'
+          : 'spawn',
+    status: parseAgentLifecycle(record?.status),
+    openSessionId,
+  } as const;
+}
+
 function buildConversationQueryString(options?: {
   cursor?: string | null;
   filter?: SessionEventFilterQuery;
@@ -105,6 +141,127 @@ function createProgressDelivery(
 
 function childSummaryNotificationKind(lifecycle: AgentLifecycle): ChildSessionNotificationKind {
   return lifecycle === 'idle' || lifecycle === 'terminated' ? 'delivered' : 'progress_summary';
+}
+
+function parseCompactTrigger(
+  value: unknown,
+  fallback: LastCompactMeta['trigger'] = 'manual'
+): LastCompactMeta['trigger'] {
+  switch (value) {
+    case 'auto':
+    case 'manual':
+    case 'deferred':
+      return value;
+    default:
+      return fallback;
+  }
+}
+
+function parseCompactMode(value: unknown): CompactMeta['mode'] {
+  switch (value) {
+    case 'full':
+    case 'incremental':
+    case 'retry_salvage':
+      return value;
+    default:
+      return 'full';
+  }
+}
+
+function parseCompactMeta(value: unknown): CompactMeta | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  return {
+    mode: parseCompactMode(record.mode),
+    instructionsPresent: record.instructionsPresent === true,
+    fallbackUsed: record.fallbackUsed === true,
+    retryCount: typeof record.retryCount === 'number' ? record.retryCount : 0,
+    inputUnits: typeof record.inputUnits === 'number' ? record.inputUnits : 0,
+    outputSummaryChars:
+      typeof record.outputSummaryChars === 'number' ? record.outputSummaryChars : 0,
+  };
+}
+
+function parsePreservedRecentTurns(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function parseLastCompactMeta(value: unknown): LastCompactMeta | undefined {
+  const record = asRecord(value);
+  const meta = parseCompactMeta(record?.meta ?? record);
+  if (!record || !meta) {
+    return undefined;
+  }
+  return {
+    trigger: parseCompactTrigger(record.trigger),
+    meta,
+  };
+}
+
+function parseTaskStatus(value: unknown): ConversationTaskStatus | undefined {
+  switch (value) {
+    case 'pending':
+    case 'in_progress':
+    case 'completed':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parsePlanReference(value: unknown): ConversationPlanReference | undefined {
+  const plan = asRecord(value);
+  const slug = pickString(plan ?? {}, 'slug');
+  const path = pickString(plan ?? {}, 'path');
+  const status = pickString(plan ?? {}, 'status');
+  const title = pickString(plan ?? {}, 'title');
+  if (!slug || !path || !status || !title) {
+    return undefined;
+  }
+  return { slug, path, status, title };
+}
+
+function parseActiveTasks(value: unknown): ConversationTaskItem[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const items = value
+    .map((entry): ConversationTaskItem | null => {
+      const task = asRecord(entry);
+      const content = pickString(task ?? {}, 'content');
+      const status = parseTaskStatus(task?.status);
+      if (!content || !status) {
+        return null;
+      }
+      const activeForm = pickOptionalString(task ?? {}, 'activeForm') ?? undefined;
+      return {
+        content,
+        status,
+        ...(activeForm ? { activeForm } : {}),
+      };
+    })
+    .filter((item): item is ConversationTaskItem => item !== null);
+  return items.length > 0 ? items : undefined;
+}
+
+function parseConversationControlState(record: ConversationRecord): ConversationControlState {
+  const controlRecord = asRecord(record.control);
+  const phase = parsePhase(controlRecord?.phase ?? record.phase);
+  const lastCompactMeta = parseLastCompactMeta(controlRecord?.lastCompactMeta);
+  return {
+    phase,
+    canSubmitPrompt: controlRecord?.canSubmitPrompt !== false,
+    canRequestCompact: controlRecord?.canRequestCompact !== false,
+    compactPending: controlRecord?.compactPending === true,
+    compacting: controlRecord?.compacting === true,
+    currentModeId: pickString(controlRecord ?? {}, 'currentModeId') ?? 'code',
+    activeTurnId: pickOptionalString(controlRecord ?? {}, 'activeTurnId') ?? undefined,
+    lastCompactMeta,
+    activePlan: parsePlanReference(controlRecord?.activePlan),
+    activeTasks: parseActiveTasks(controlRecord?.activeTasks),
+  };
 }
 
 function childSummaryToMessage(
@@ -183,9 +340,11 @@ function normalizeSnapshotState(payload: unknown): ConversationSnapshotState {
   if (!record) {
     throw new Error('invalid conversation snapshot response');
   }
+  const control = parseConversationControlState(record);
   return {
     cursor: pickOptionalString(record, 'cursor') ?? null,
-    phase: parsePhase(record.phase),
+    phase: control.phase,
+    control,
     blocks: Array.isArray(record.blocks)
       ? (record.blocks.filter(asRecord) as ConversationRecord[])
       : [],
@@ -256,8 +415,59 @@ function projectConversationMessages(
         });
         return;
 
+      case 'plan': {
+        const blockers = asRecord(block.blockers);
+        const review = asRecord(block.review);
+        messages.push({
+          id: `conversation-plan:${id}`,
+          kind: 'plan',
+          turnId,
+          toolCallId: pickString(block, 'toolCallId') ?? id,
+          eventKind:
+            pickString(block, 'eventKind') === 'review_pending'
+              ? 'review_pending'
+              : pickString(block, 'eventKind') === 'presented'
+                ? 'presented'
+                : 'saved',
+          title: pickString(block, 'title') ?? 'Session Plan',
+          planPath: pickString(block, 'planPath') ?? '',
+          summary: pickOptionalString(block, 'summary') ?? undefined,
+          status: pickOptionalString(block, 'status') ?? undefined,
+          slug: pickOptionalString(block, 'slug') ?? undefined,
+          updatedAt: pickOptionalString(block, 'updatedAt') ?? undefined,
+          content: pickOptionalString(block, 'content') ?? undefined,
+          review:
+            review &&
+            (pickString(review, 'kind') === 'revise_plan' ||
+              pickString(review, 'kind') === 'final_review')
+              ? {
+                  kind: pickString(review, 'kind') as 'revise_plan' | 'final_review',
+                  checklist: Array.isArray(review.checklist)
+                    ? review.checklist.filter((value): value is string => typeof value === 'string')
+                    : [],
+                }
+              : undefined,
+          blockers: {
+            missingHeadings: Array.isArray(blockers?.missingHeadings)
+              ? blockers.missingHeadings.filter(
+                  (value): value is string => typeof value === 'string'
+                )
+              : [],
+            invalidSections: Array.isArray(blockers?.invalidSections)
+              ? blockers.invalidSections.filter(
+                  (value): value is string => typeof value === 'string'
+                )
+              : [],
+          },
+          timestamp: index,
+        });
+        return;
+      }
+
       case 'tool_call': {
         const toolCallId = pickOptionalString(block, 'toolCallId') ?? id;
+        const streams = asRecord(block.streams);
+        const childRef = parseToolChildRef(block.childRef);
         messages.push({
           id: `conversation-tool:${toolCallId}`,
           kind: 'toolCall',
@@ -265,46 +475,56 @@ function projectConversationMessages(
           toolCallId,
           toolName: pickString(block, 'toolName') ?? 'tool',
           status: parseToolStatus(block.status),
-          args: null,
+          args: block.input ?? null,
           output: pickOptionalString(block, 'summary') || undefined,
+          error: pickOptionalString(block, 'error') || undefined,
+          metadata: block.metadata ?? undefined,
+          childRef,
+          childSessionId: childRef?.openSessionId,
+          streams: {
+            stdout: pickString(streams ?? {}, 'stdout') ?? '',
+            stderr: pickString(streams ?? {}, 'stderr') ?? '',
+          },
+          durationMs: (() => {
+            const value = block.durationMs;
+            return typeof value === 'number' ? value : undefined;
+          })(),
+          truncated: block.truncated === true,
           timestamp: index,
         });
         return;
       }
 
-      case 'tool_stream': {
-        const toolCallId = pickOptionalString(block, 'parentToolCallId');
-        const stream = pickString(block, 'stream');
-        if (!toolCallId || (stream !== 'stdout' && stream !== 'stderr')) {
-          return;
-        }
-        messages.push({
-          id: `conversation-tool-stream:${id}`,
-          kind: 'toolStream',
-          turnId,
-          toolCallId,
-          stream,
-          status: parseToolStatus(block.status),
-          content: pickString(block, 'content') ?? '',
-          timestamp: index,
-        });
-        return;
-      }
-
-      case 'system_note':
+      case 'system_note': {
         if (pickString(block, 'noteKind') !== 'compact') {
           return;
         }
+        const compactMetaRecord = asRecord(block.compactMeta);
+        const trigger = parseCompactTrigger(
+          compactMetaRecord?.trigger ??
+            pickString(block, 'compactTrigger') ??
+            pickString(block, 'trigger'),
+          state.control.lastCompactMeta?.trigger ?? 'manual'
+        );
         messages.push({
           id: `conversation-compact:${id}`,
           kind: 'compact',
           turnId,
-          trigger: 'manual',
+          trigger,
+          meta: parseCompactMeta(block.compactMeta) ?? {
+            mode: 'full',
+            instructionsPresent: false,
+            fallbackUsed: false,
+            retryCount: 0,
+            inputUnits: 0,
+            outputSummaryChars: (pickString(block, 'markdown') ?? '').length,
+          },
           summary: pickString(block, 'markdown') ?? '',
-          preservedRecentTurns: 0,
+          preservedRecentTurns: parsePreservedRecentTurns(block.preservedRecentTurns),
           timestamp: index,
         });
         return;
+      }
 
       case 'child_handoff': {
         const child = asRecord(block.child);
@@ -404,7 +624,8 @@ export function projectConversationState(
 
   return {
     cursor: state.cursor,
-    phase: state.phase,
+    phase: state.control.phase,
+    control: state.control,
     messages,
     messageTree,
     messageFingerprint: messageTree.rootStreamFingerprint,
@@ -451,15 +672,43 @@ function applyBlockPatch(block: ConversationRecord, patch: ConversationRecord): 
     }
     case 'append_tool_stream': {
       const chunk = pickString(patch, 'chunk') ?? '';
-      if (typeof block.content === 'string') {
-        block.content += chunk;
-      } else {
-        block.content = chunk;
+      const stream = pickString(patch, 'stream');
+      const streams = asRecord(block.streams) ?? {};
+      if (stream === 'stdout' || stream === 'stderr') {
+        const current = typeof streams[stream] === 'string' ? streams[stream] : '';
+        block.streams = {
+          ...streams,
+          [stream]: `${current}${chunk}`,
+        };
       }
       break;
     }
     case 'replace_summary':
       block.summary = pickOptionalString(patch, 'summary') ?? null;
+      break;
+    case 'replace_metadata':
+      block.metadata = patch.metadata;
+      break;
+    case 'replace_error':
+      block.error = pickOptionalString(patch, 'error') ?? null;
+      break;
+    case 'replace_duration': {
+      const durationMs = patch.durationMs;
+      if (typeof durationMs === 'number') {
+        block.durationMs = durationMs;
+      }
+      break;
+    }
+    case 'replace_child_ref': {
+      const childRef = parseToolChildRef(patch.childRef);
+      if (childRef) {
+        block.childRef = childRef;
+        block.childSessionId = childRef.openSessionId;
+      }
+      break;
+    }
+    case 'set_truncated':
+      block.truncated = patch.truncated === true;
       break;
     case 'set_status':
       block.status = pickString(patch, 'status') ?? block.status;
@@ -507,12 +756,27 @@ export function applyConversationEnvelope(
   if (!kind) {
     return;
   }
+  const envelopeCursor = pickOptionalString(envelope, 'cursor');
+  if (envelopeCursor) {
+    state.cursor = envelopeCursor;
+  }
 
   switch (kind) {
     case 'append_block': {
       const block = asRecord(envelope.block);
       if (block) {
-        state.blocks.push(block);
+        const blockId = pickString(block, 'id');
+        const existingIndex = blockId
+          ? state.blocks.findIndex((candidate) => pickString(candidate, 'id') === blockId)
+          : -1;
+        if (existingIndex >= 0) {
+          state.blocks[existingIndex] = {
+            ...state.blocks[existingIndex],
+            ...block,
+          };
+        } else {
+          state.blocks.push(block);
+        }
       }
       return;
     }
@@ -543,7 +807,19 @@ export function applyConversationEnvelope(
     case 'update_control_state': {
       const control = asRecord(envelope.control);
       if (control) {
-        state.phase = parsePhase(control.phase);
+        state.control = {
+          phase: parsePhase(control.phase),
+          canSubmitPrompt: control.canSubmitPrompt !== false,
+          canRequestCompact: control.canRequestCompact !== false,
+          compactPending: control.compactPending === true,
+          compacting: control.compacting === true,
+          currentModeId: pickString(control, 'currentModeId') ?? state.control.currentModeId,
+          activeTurnId: pickOptionalString(control, 'activeTurnId') ?? undefined,
+          lastCompactMeta: parseLastCompactMeta(control.lastCompactMeta),
+          activePlan: parsePlanReference(control.activePlan),
+          activeTasks: parseActiveTasks(control.activeTasks),
+        };
+        state.phase = state.control.phase;
       }
       return;
     }

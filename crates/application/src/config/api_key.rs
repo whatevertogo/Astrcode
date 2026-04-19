@@ -78,6 +78,9 @@ mod tests {
     #[test]
     fn literal_api_key_resolved() {
         let profile = test_profile(Some("literal:sk-123"));
-        assert_eq!(resolve_api_key(&profile).unwrap(), "sk-123");
+        assert_eq!(
+            resolve_api_key(&profile).expect("literal key should resolve"),
+            "sk-123"
+        );
     }
 }

@@ -11,7 +11,7 @@ import {
   expandableBody,
   ghostIconButton,
 } from '../../lib/styles';
-import { cn, calculateCacheHitRatePercent } from '../../lib/utils';
+import { calculateCacheHitRatePercent, calculatePromptReuseRatePercent, cn } from '../../lib/utils';
 
 interface AssistantMessageProps {
   message: AssistantMessageType;
@@ -208,21 +208,31 @@ function formatTokenCount(value?: number): string {
 }
 
 function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
-  const hitRate = calculateCacheHitRatePercent(metrics);
-  if (hitRate === null) {
-    return null;
+  const providerHitRate = calculateCacheHitRatePercent(metrics);
+  if (providerHitRate !== null) {
+    if (providerHitRate >= 80) {
+      return (
+        <span className="ml-2 font-medium text-cache-high">🟢 KV 缓存 {providerHitRate}%</span>
+      );
+    }
+    if (providerHitRate >= 30) {
+      return (
+        <span className="ml-2 font-medium text-cache-medium">🟡 KV 缓存 {providerHitRate}%</span>
+      );
+    }
+    if (providerHitRate > 0) {
+      return <span className="ml-2 font-medium text-cache-low">🟠 KV 缓存 {providerHitRate}%</span>;
+    }
+    return <span className="ml-2 font-semibold text-cache-none">🔴 KV 缓存 0%</span>;
   }
 
-  // 缓存命中率分级
-  if (hitRate >= 80) {
-    return <span className="ml-2 font-medium text-cache-high">🟢 缓存 {hitRate}%</span>;
-  } else if (hitRate >= 30) {
-    return <span className="ml-2 font-medium text-cache-medium">🟡 缓存 {hitRate}%</span>;
-  } else if (hitRate > 0) {
-    return <span className="ml-2 font-medium text-cache-low">🟠 缓存 {hitRate}%</span>;
-  } else {
-    return <span className="ml-2 font-semibold text-cache-none">🔴 无缓存</span>;
+  const promptReuseRate = calculatePromptReuseRatePercent(metrics);
+  if (promptReuseRate === null) {
+    return null;
   }
+  return (
+    <span className="ml-2 font-medium text-cache-medium">🧩 Prompt 复用 {promptReuseRate}%</span>
+  );
 }
 
 function AssistantMessage({

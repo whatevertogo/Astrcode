@@ -1,17 +1,23 @@
+//! Child turn 终态投递与父侧通知投影。
+//!
+//! 当子代理 turn 结束时，将终态结果（completed/failed/close_request）投影为
+//! `ChildSessionNotification`，通过 wake 机制投递到父侧 input queue 驱动父级决策。
+
 use std::time::Instant;
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
-    AgentTurnOutcome, ChildAgentRef, ChildSessionNotification, ChildSessionNotificationKind,
-    CloseRequestParentDeliveryPayload, CompletedParentDeliveryPayload, FailedParentDeliveryPayload,
-    ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
-    ProgressParentDeliveryPayload, StorageEventPayload, SubRunFailure, SubRunFailureCode,
-    SubRunHandoff, SubRunResult,
+    AgentTurnOutcome, ChildSessionNotification, ChildSessionNotificationKind,
+    CloseRequestParentDeliveryPayload, CompletedParentDeliveryPayload, CompletedSubRunOutcome,
+    FailedParentDeliveryPayload, FailedSubRunOutcome, ParentDelivery, ParentDeliveryOrigin,
+    ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload,
+    StorageEventPayload, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
+    SubRunStatus,
 };
 
 use super::{
     AgentOrchestrationError, AgentOrchestrationService, child_collaboration_artifacts,
-    child_open_session_id, subrun_event_context_for_parent_turn, terminal_notification_message,
+    subrun_event_context_for_parent_turn, terminal_notification_message,
 };
 
 /// child turn 终态投递到父侧的内部投影层。
@@ -29,6 +35,7 @@ struct ChildTerminalDeliveryProjection {
 /// 注意：这里显式携带 parent routing truth。
 /// `ChildAgentRef` 只用于 stable child reference / projection，
 /// 禁止再从 `child_ref.session_id` 反推父侧 notification 的落点。
+/// 所有 notification 必须通过显式传入的 `parent_session_id` + `parent_turn_id` 路由。
 pub(super) struct ChildTurnTerminalContext {
     child: astrcode_core::SubRunHandle,
     execution_session_id: String,
@@ -61,6 +68,10 @@ impl ChildTurnTerminalContext {
 }
 
 impl AgentOrchestrationService {
+    /// 启动后台 watcher 等待 child turn 结束后执行终态收口。
+    ///
+    /// 注册到 task_registry 以便在 shutdown 时统一 abort。
+    /// watcher 完成后执行：终态映射 → fallback delivery → 父级 reactivation。
     pub(super) fn spawn_child_turn_terminal_watcher(
         &self,
         child: astrcode_core::SubRunHandle,
@@ -101,6 +112,15 @@ impl AgentOrchestrationService {
         self.finalize_child_turn_with_outcome(watch, outcome).await
     }
 
+    /// Child turn 终态收口主流程。
+    ///
+    /// 1. 将 turn outcome 映射为 `SubRunResult`（TokenExceeded 视为完成而非失败）
+    /// 2. 原子更新 live tree 的 lifecycle 和 turn outcome
+    /// 3. 记录子代理执行指标
+    /// 4. 检查是否已有显式 terminal delivery（如 send_to_parent 产生的）， 如果有则跳过 fallback
+    ///    delivery
+    /// 5. 投影出 fallback `ChildSessionNotification` 并追加到父 session
+    /// 6. 触发父级 reactivation（wake）
     pub(super) async fn finalize_child_turn_with_outcome(
         &self,
         watch: ChildTurnTerminalContext,
@@ -121,7 +141,7 @@ impl AgentOrchestrationService {
             .await;
         self.metrics.record_subrun_execution(
             watch.started_at.elapsed().as_millis() as u64,
-            to_subrun_execution_outcome(outcome.outcome),
+            outcome.outcome,
             None,
             None,
             Some(watch.child.storage_mode),
@@ -139,29 +159,17 @@ impl AgentOrchestrationService {
         }
 
         let fallback_notification_id = child_terminal_notification_id(
-            &watch.child.sub_run_id,
+            watch.child.sub_run_id.as_str(),
             &watch.execution_turn_id,
-            result.lifecycle,
-            result.last_turn_outcome,
+            result.status(),
         );
         let delivery = project_child_terminal_delivery(&result, &fallback_notification_id);
         let notification_id = delivery.delivery.idempotency_key.clone();
         let notification = ChildSessionNotification {
-            notification_id: notification_id.clone(),
-            child_ref: ChildAgentRef {
-                agent_id: watch.child.agent_id.clone(),
-                // 这里继续保留现有 ChildAgentRef 读侧语义，不把它作为父侧路由真相使用。
-                session_id: watch.child.session_id.clone(),
-                sub_run_id: watch.child.sub_run_id.clone(),
-                parent_agent_id: watch.child.parent_agent_id.clone(),
-                parent_sub_run_id: watch.child.parent_sub_run_id.clone(),
-                lineage_kind: watch.child.lineage_kind,
-                status: delivery.status,
-                open_session_id: child_open_session_id(&watch.child),
-            },
+            notification_id: notification_id.clone().into(),
+            child_ref: watch.child.child_ref_with_status(delivery.status),
             kind: delivery.kind,
-            status: delivery.status,
-            source_tool_call_id: watch.source_tool_call_id,
+            source_tool_call_id: watch.source_tool_call_id.map(Into::into),
             delivery: Some(delivery.delivery),
         };
 
@@ -184,11 +192,16 @@ impl AgentOrchestrationService {
                 &watch.parent_session_id,
                 &watch.parent_turn_id,
             )
-            .parent_agent_id(watch.child.parent_agent_id.clone())
+            .parent_agent_id(watch.child.parent_agent_id.clone().map(|id| id.to_string()))
             .child(&watch.child)
             .delivery_id(notification.notification_id.clone())
             .summary(terminal_notification_message(&notification))
-            .source_tool_call_id(notification.source_tool_call_id.clone()),
+            .source_tool_call_id(
+                notification
+                    .source_tool_call_id
+                    .clone()
+                    .map(|id| id.to_string()),
+            ),
         )
         .await;
         self.reactivate_parent_agent_if_idle(
@@ -234,7 +247,7 @@ impl AgentOrchestrationService {
         Ok(stored.iter().any(|stored| match &stored.event.payload {
             StorageEventPayload::ChildSessionNotification { notification, .. } => {
                 notification.delivery.as_ref().is_some_and(|delivery| {
-                    notification.child_ref.agent_id == watch.child.agent_id
+                    notification.child_ref.agent_id() == &watch.child.agent_id
                         && delivery.origin == ParentDeliveryOrigin::Explicit
                         && delivery.terminal_semantics == ParentDeliveryTerminalSemantics::Terminal
                         && delivery.source_turn_id.as_deref()
@@ -258,18 +271,25 @@ fn build_child_subrun_result(
     outcome: &astrcode_session_runtime::ProjectedTurnOutcome,
 ) -> SubRunResult {
     match outcome.outcome {
-        AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded => SubRunResult {
-            lifecycle: AgentLifecycleStatus::Idle,
-            last_turn_outcome: Some(outcome.outcome),
-            handoff: Some(SubRunHandoff {
+        AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded => SubRunResult::Completed {
+            outcome: match outcome.outcome {
+                AgentTurnOutcome::Completed => CompletedSubRunOutcome::Completed,
+                AgentTurnOutcome::TokenExceeded => CompletedSubRunOutcome::TokenExceeded,
+                AgentTurnOutcome::Failed | AgentTurnOutcome::Cancelled => unreachable!(),
+            },
+            handoff: SubRunHandoff {
                 findings: Vec::new(),
                 artifacts: child_handoff_artifacts(child, parent_session_id),
                 delivery: Some(ParentDelivery {
                     idempotency_key: child_terminal_notification_id(
-                        &child.sub_run_id,
+                        child.sub_run_id.as_str(),
                         source_turn_id,
-                        AgentLifecycleStatus::Idle,
-                        Some(outcome.outcome),
+                        match outcome.outcome {
+                            AgentTurnOutcome::Completed => SubRunStatus::Completed,
+                            AgentTurnOutcome::TokenExceeded => SubRunStatus::TokenExceeded,
+                            AgentTurnOutcome::Failed => SubRunStatus::Failed,
+                            AgentTurnOutcome::Cancelled => SubRunStatus::Cancelled,
+                        },
                     ),
                     origin: ParentDeliveryOrigin::Fallback,
                     terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
@@ -280,14 +300,15 @@ fn build_child_subrun_result(
                         artifacts: child_handoff_artifacts(child, parent_session_id),
                     }),
                 }),
-            }),
-            failure: None,
+            },
         },
-        AgentTurnOutcome::Failed | AgentTurnOutcome::Cancelled => SubRunResult {
-            lifecycle: AgentLifecycleStatus::Idle,
-            last_turn_outcome: Some(outcome.outcome),
-            handoff: None,
-            failure: Some(SubRunFailure {
+        AgentTurnOutcome::Failed | AgentTurnOutcome::Cancelled => SubRunResult::Failed {
+            outcome: match outcome.outcome {
+                AgentTurnOutcome::Failed => FailedSubRunOutcome::Failed,
+                AgentTurnOutcome::Cancelled => FailedSubRunOutcome::Cancelled,
+                AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded => unreachable!(),
+            },
+            failure: SubRunFailure {
                 code: match outcome.outcome {
                     AgentTurnOutcome::Cancelled => SubRunFailureCode::Interrupted,
                     AgentTurnOutcome::Failed => SubRunFailureCode::Internal,
@@ -297,7 +318,7 @@ fn build_child_subrun_result(
                 display_message: outcome.summary.clone(),
                 technical_message: outcome.technical_message.clone(),
                 retryable: !matches!(outcome.outcome, AgentTurnOutcome::Cancelled),
-            }),
+            },
         },
     }
 }
@@ -309,51 +330,48 @@ fn child_handoff_artifacts(
     child_collaboration_artifacts(child, parent_session_id, true)
 }
 
-fn child_terminal_notification_id(
-    sub_run_id: &str,
-    turn_id: &str,
-    lifecycle: AgentLifecycleStatus,
-    outcome: Option<AgentTurnOutcome>,
-) -> String {
-    format!(
-        "child-terminal:{sub_run_id}:{turn_id}:{}",
-        status_label(lifecycle, outcome)
-    )
+fn child_terminal_notification_id(sub_run_id: &str, turn_id: &str, status: SubRunStatus) -> String {
+    format!("child-terminal:{sub_run_id}:{turn_id}:{}", status.label())
 }
 
 /// 从 `SubRunResult` 投影出 `ChildTerminalDeliveryProjection`。
+///
+/// 优先使用 result handoff 中携带的显式 delivery（由 send_to_parent 产生），
+/// 如果没有则构造 fallback delivery。Fallback 会根据终态类型生成
+/// 对应的 payload（Completed / Failed / CloseRequest）。
 fn project_child_terminal_delivery(
     result: &SubRunResult,
     fallback_notification_id: &str,
 ) -> ChildTerminalDeliveryProjection {
-    let (kind, status) = match result.last_turn_outcome {
-        Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded) => (
+    let status_projection = result.status();
+    let last_turn_outcome = status_projection.last_turn_outcome();
+    let (kind, status) = match status_projection {
+        SubRunStatus::Completed | SubRunStatus::TokenExceeded => (
             ChildSessionNotificationKind::Delivered,
             AgentLifecycleStatus::Idle,
         ),
-        Some(AgentTurnOutcome::Failed) => (
+        SubRunStatus::Failed => (
             ChildSessionNotificationKind::Failed,
             AgentLifecycleStatus::Idle,
         ),
-        Some(AgentTurnOutcome::Cancelled) => (
+        SubRunStatus::Cancelled => (
             ChildSessionNotificationKind::Closed,
             AgentLifecycleStatus::Idle,
         ),
-        None => (
+        SubRunStatus::Running => (
             ChildSessionNotificationKind::ProgressSummary,
-            result.lifecycle,
+            status_projection.lifecycle(),
         ),
     };
 
     let delivery = result
-        .handoff
-        .as_ref()
+        .handoff()
         .and_then(|handoff| handoff.delivery.as_ref())
         .cloned()
         .unwrap_or_else(|| ParentDelivery {
             idempotency_key: fallback_notification_id.to_string(),
             origin: ParentDeliveryOrigin::Fallback,
-            terminal_semantics: match result.last_turn_outcome {
+            terminal_semantics: match last_turn_outcome {
                 Some(AgentTurnOutcome::Completed)
                 | Some(AgentTurnOutcome::TokenExceeded)
                 | Some(AgentTurnOutcome::Failed)
@@ -361,16 +379,15 @@ fn project_child_terminal_delivery(
                 None => ParentDeliveryTerminalSemantics::NonTerminal,
             },
             source_turn_id: None,
-            payload: match result.last_turn_outcome {
+            payload: match last_turn_outcome {
                 Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded) => {
                     let message = result
-                        .handoff
-                        .as_ref()
+                        .handoff()
                         .and_then(|handoff| handoff.delivery.as_ref())
                         .map(|delivery| delivery.payload.message().trim())
                         .filter(|message| !message.is_empty())
                         .map(ToString::to_string)
-                        .unwrap_or_else(|| match result.last_turn_outcome {
+                        .unwrap_or_else(|| match last_turn_outcome {
                             Some(AgentTurnOutcome::Completed) => {
                                 "子 Agent 已完成，但没有返回可读总结。".to_string()
                             },
@@ -384,19 +401,17 @@ fn project_child_terminal_delivery(
                     ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
                         message,
                         findings: result
-                            .handoff
-                            .as_ref()
+                            .handoff()
                             .map(|handoff| handoff.findings.clone())
                             .unwrap_or_default(),
                         artifacts: result
-                            .handoff
-                            .as_ref()
+                            .handoff()
                             .map(|handoff| handoff.artifacts.clone())
                             .unwrap_or_default(),
                     })
                 },
                 Some(AgentTurnOutcome::Failed) => {
-                    let failure = result.failure.as_ref();
+                    let failure = result.failure();
                     let message = failure
                         .map(|failure| failure.display_message.trim())
                         .filter(|message| !message.is_empty())
@@ -430,40 +445,14 @@ fn project_child_terminal_delivery(
     }
 }
 
-fn to_subrun_execution_outcome(outcome: AgentTurnOutcome) -> astrcode_core::SubRunExecutionOutcome {
-    match outcome {
-        AgentTurnOutcome::Completed => astrcode_core::SubRunExecutionOutcome::Completed,
-        AgentTurnOutcome::Failed => astrcode_core::SubRunExecutionOutcome::Failed,
-        AgentTurnOutcome::Cancelled => astrcode_core::SubRunExecutionOutcome::Aborted,
-        AgentTurnOutcome::TokenExceeded => astrcode_core::SubRunExecutionOutcome::TokenExceeded,
-    }
-}
-
-fn status_label(
-    lifecycle: AgentLifecycleStatus,
-    outcome: Option<AgentTurnOutcome>,
-) -> &'static str {
-    match outcome {
-        Some(AgentTurnOutcome::Completed) => "completed",
-        Some(AgentTurnOutcome::Cancelled) => "cancelled",
-        Some(AgentTurnOutcome::Failed) => "failed",
-        Some(AgentTurnOutcome::TokenExceeded) => "token_exceeded",
-        None => match lifecycle {
-            AgentLifecycleStatus::Pending => "pending",
-            AgentLifecycleStatus::Running => "running",
-            AgentLifecycleStatus::Idle => "idle",
-            AgentLifecycleStatus::Terminated => "terminated",
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
     use astrcode_core::{
-        AgentEventContext, AgentLifecycleStatus, ChildSessionNotificationKind, Phase, SessionId,
-        StorageEvent, StorageEventPayload, SubRunStorageMode,
+        AgentEventContext, AgentLifecycleStatus, ChildAgentRef, ChildExecutionIdentity,
+        ChildSessionNotificationKind, ParentExecutionRef, Phase, SessionId, StorageEvent,
+        StorageEventPayload, SubRunStorageMode,
     };
     use astrcode_session_runtime::{append_and_broadcast, complete_session_execution};
 
@@ -541,7 +530,7 @@ mod tests {
                 parent.session_id.clone(),
                 Some(child.session_id.clone()),
                 "turn-parent".to_string(),
-                Some(root.agent_id.clone()),
+                Some(root.agent_id.to_string()),
                 SubRunStorageMode::IndependentSession,
             )
             .await
@@ -617,19 +606,19 @@ mod tests {
         assert!(
             parent_events.iter().any(|stored| matches!(
                 &stored.event.payload,
-                StorageEventPayload::AgentMailboxQueued { payload }
+                StorageEventPayload::AgentInputQueued { payload }
                     if payload.envelope.message == "子 Agent 总结"
             )),
-            "durable mailbox message should reuse child final excerpt"
+            "durable input queue message should reuse child final excerpt"
         );
         assert!(
             parent_events.iter().any(|stored| matches!(
                 &stored.event.payload,
-                StorageEventPayload::UserMessage { content, .. }
-                    if content.contains("delivery_id: child-terminal:")
-                        && content.contains("message: 子 Agent 总结")
+                StorageEventPayload::UserMessage { content, origin, .. }
+                    if *origin == astrcode_core::UserMessageOrigin::QueuedInput
+                        && content.contains("子 Agent 总结")
             )),
-            "wake prompt should consume the same delivery summary"
+            "wake turn should consume the same delivery summary as queued input"
         );
         let metrics = harness.metrics.snapshot();
         assert_eq!(
@@ -681,7 +670,7 @@ mod tests {
                 parent.session_id.clone(),
                 Some(child.session_id.clone()),
                 "turn-parent".to_string(),
-                Some(root.agent_id.clone()),
+                Some(root.agent_id.to_string()),
                 SubRunStorageMode::IndependentSession,
             )
             .await
@@ -751,15 +740,13 @@ mod tests {
                 artifacts: Vec::new(),
             }),
         };
-        let result = SubRunResult {
-            lifecycle: AgentLifecycleStatus::Idle,
-            last_turn_outcome: Some(AgentTurnOutcome::Completed),
-            handoff: Some(SubRunHandoff {
+        let result = SubRunResult::Completed {
+            outcome: CompletedSubRunOutcome::Completed,
+            handoff: SubRunHandoff {
                 findings: vec!["finding-1".to_string()],
                 artifacts: Vec::new(),
                 delivery: Some(explicit_delivery.clone()),
-            }),
-            failure: None,
+            },
         };
 
         let projection = project_child_terminal_delivery(
@@ -812,7 +799,7 @@ mod tests {
                 parent.session_id.clone(),
                 Some(child.session_id.clone()),
                 "turn-parent".to_string(),
-                Some(root.agent_id.clone()),
+                Some(root.agent_id.to_string()),
                 SubRunStorageMode::IndependentSession,
             )
             .await
@@ -825,20 +812,25 @@ mod tests {
                 &parent.session_id,
                 "turn-parent",
                 &ChildSessionNotification {
-                    notification_id: "child-terminal:subrun-test:turn-child:completed".to_string(),
+                    notification_id: "child-terminal:subrun-test:turn-child:completed"
+                        .to_string()
+                        .into(),
                     child_ref: ChildAgentRef {
-                        agent_id: child_handle.agent_id.clone(),
-                        // 故意写错：验证内部不再从 child_ref.session_id 反推父侧路由。
-                        session_id: wrong_parent.session_id.clone(),
-                        sub_run_id: child_handle.sub_run_id.clone(),
-                        parent_agent_id: child_handle.parent_agent_id.clone(),
-                        parent_sub_run_id: child_handle.parent_sub_run_id.clone(),
+                        identity: ChildExecutionIdentity {
+                            agent_id: child_handle.agent_id.clone(),
+                            // 故意写错：验证内部不再从 child_ref.session_id 反推父侧路由。
+                            session_id: wrong_parent.session_id.clone().into(),
+                            sub_run_id: child_handle.sub_run_id.clone(),
+                        },
+                        parent: ParentExecutionRef {
+                            parent_agent_id: child_handle.parent_agent_id.clone(),
+                            parent_sub_run_id: child_handle.parent_sub_run_id.clone(),
+                        },
                         lineage_kind: ChildSessionLineageKind::Spawn,
                         status: AgentLifecycleStatus::Idle,
-                        open_session_id: child.session_id.clone(),
+                        open_session_id: child.session_id.clone().into(),
                     },
                     kind: ChildSessionNotificationKind::Delivered,
-                    status: AgentLifecycleStatus::Idle,
                     source_tool_call_id: None,
                     delivery: Some(ParentDelivery {
                         idempotency_key: "child-terminal:subrun-test:turn-child:completed"
@@ -926,7 +918,7 @@ mod tests {
                 root_session.session_id.clone(),
                 Some(middle_session.session_id.clone()),
                 "turn-root".to_string(),
-                Some(root.agent_id.clone()),
+                Some(root.agent_id.to_string()),
                 SubRunStorageMode::IndependentSession,
             )
             .await
@@ -939,7 +931,7 @@ mod tests {
                 middle_session.session_id.clone(),
                 Some(leaf_session.session_id.clone()),
                 "turn-middle".to_string(),
-                Some(middle.agent_id.clone()),
+                Some(middle.agent_id.to_string()),
                 SubRunStorageMode::IndependentSession,
             )
             .await
@@ -993,7 +985,7 @@ mod tests {
             root_events.iter().any(|stored| matches!(
                 &stored.event.payload,
                 StorageEventPayload::ChildSessionNotification { notification, .. }
-                    if notification.child_ref.agent_id == middle.agent_id
+                    if notification.child_ref.agent_id() == &middle.agent_id
                         && notification.kind == ChildSessionNotificationKind::Delivered
             )),
             "middle should publish its own terminal delivery even when a descendant is still \

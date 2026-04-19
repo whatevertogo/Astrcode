@@ -20,9 +20,11 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    InvocationKind, LlmMessage, Phase, ReasoningContent, ToolCallRequest, UserMessageOrigin,
+    InvocationKind, LlmMessage, ModeId, Phase, ReasoningContent, ToolCallRequest,
+    UserMessageOrigin,
     event::{StorageEvent, StorageEventPayload},
     format_compact_summary, split_assistant_content,
 };
@@ -31,7 +33,7 @@ use crate::{
 ///
 /// 由事件流投影而来，包含完整的消息历史和当前阶段。
 /// 用于在 turn 之间保持上下文，以及断线重连后恢复状态。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentState {
     /// 会话 ID
     pub session_id: String,
@@ -41,6 +43,8 @@ pub struct AgentState {
     pub messages: Vec<LlmMessage>,
     /// 当前执行阶段
     pub phase: Phase,
+    /// 当前治理模式 ID。
+    pub mode_id: ModeId,
     /// 已完成的 turn 数量
     pub turn_count: usize,
     /// 最后一条 assistant 消息的时间戳。
@@ -56,6 +60,7 @@ impl Default for AgentState {
             working_dir: PathBuf::new(),
             messages: Vec::new(),
             phase: Phase::Idle,
+            mode_id: ModeId::default(),
             turn_count: 0,
             last_assistant_at: None,
         }
@@ -88,6 +93,15 @@ pub struct AgentStateProjector {
 }
 
 impl AgentStateProjector {
+    pub fn from_snapshot(state: AgentState) -> Self {
+        Self {
+            state,
+            pending_content: None,
+            pending_reasoning: None,
+            pending_tool_calls: Vec::new(),
+        }
+    }
+
     pub fn from_events(events: &[StorageEvent]) -> Self {
         let mut projector = Self::default();
         for event in events {
@@ -170,6 +184,7 @@ impl AgentStateProjector {
                 success,
                 error,
                 metadata,
+                child_ref,
                 duration_ms,
                 ..
             } => {
@@ -181,6 +196,7 @@ impl AgentStateProjector {
                     output: output.clone(),
                     error: error.clone(),
                     metadata: metadata.clone(),
+                    child_ref: child_ref.clone(),
                     duration_ms: *duration_ms,
                     truncated: false,
                 };
@@ -219,6 +235,10 @@ impl AgentStateProjector {
                 );
             },
 
+            StorageEventPayload::ModeChanged { to, .. } => {
+                self.state.mode_id = to.clone();
+            },
+
             StorageEventPayload::TurnDone { .. } => {
                 self.flush_pending_assistant();
                 self.state.phase = Phase::Idle;
@@ -233,10 +253,10 @@ impl AgentStateProjector {
             | StorageEventPayload::SubRunFinished { .. }
             | StorageEventPayload::ChildSessionNotification { .. }
             | StorageEventPayload::AgentCollaborationFact { .. }
-            | StorageEventPayload::AgentMailboxQueued { .. }
-            | StorageEventPayload::AgentMailboxBatchStarted { .. }
-            | StorageEventPayload::AgentMailboxBatchAcked { .. }
-            | StorageEventPayload::AgentMailboxDiscarded { .. }
+            | StorageEventPayload::AgentInputQueued { .. }
+            | StorageEventPayload::AgentInputBatchStarted { .. }
+            | StorageEventPayload::AgentInputBatchAcked { .. }
+            | StorageEventPayload::AgentInputDiscarded { .. }
             | StorageEventPayload::Error { .. } => {},
         }
     }
@@ -247,6 +267,11 @@ impl AgentStateProjector {
         clone.state
     }
 
+    /// 将累积中的 assistant 内容刷入消息历史。
+    ///
+    /// 在遇到 UserMessage / ToolResult / TurnDone / CompactApplied 时调用，
+    /// 确保前一轮 assistant 的文本和工具调用先落袋为安，
+    /// 再处理新消息类型的开始。
     fn flush_pending_assistant(&mut self) {
         if self.pending_content.is_some() || !self.pending_tool_calls.is_empty() {
             let content = self.pending_content.take().unwrap_or_default();
@@ -258,6 +283,13 @@ impl AgentStateProjector {
         }
     }
 
+    /// 应用上下文压缩：将旧消息前缀替换为摘要，保留最近 N 轮。
+    ///
+    /// 执行步骤：
+    /// 1. 确定裁剪位置（优先使用 `messages_removed` 精确回放，兼容旧日志回退到
+    ///    `preserved_recent_turns`）
+    /// 2. `split_off` 切分：前半段丢弃，后半段保留
+    /// 3. 在头部插入 compact summary 消息作为上下文衔接
     fn apply_compaction(
         &mut self,
         summary: &str,
@@ -300,7 +332,10 @@ impl AgentStateProjector {
 }
 
 /// 从消息列表末尾向前扫描，找到第 N 个 User-origin 消息的位置。
-/// 用途：定义"保留最近 N 轮"的裁剪边界，User-origin 消息视为 turn 起点。
+///
+/// 用于定义"保留最近 N 轮"的裁剪边界：
+/// 从末尾往前数第 `preserved_recent_turns` 个 User 消息即为保留起点。
+/// 如果不足 N 个 User 消息，返回第一个 User 消息的位置。
 fn recent_turn_start_index(
     messages: &[LlmMessage],
     preserved_recent_turns: usize,
@@ -327,8 +362,10 @@ fn recent_turn_start_index(
     last_index
 }
 
-/// Pure function: project an event sequence into an AgentState.
-/// No IO, no side effects.
+/// 纯函数：将事件序列投影为 AgentState。
+///
+/// 无 IO、无副作用——相同输入总是产生相同输出。
+/// 适用于冷启动恢复、`/history` 回放和状态快照获取。
 pub fn project(events: &[StorageEvent]) -> AgentState {
     AgentStateProjector::from_events(events).snapshot()
 }
@@ -339,7 +376,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentEventContext, CompactTrigger, StorageEvent, StorageEventPayload, SubRunStorageMode,
+        AgentEventContext, CompactAppliedMeta, CompactMode, CompactTrigger, StorageEvent,
+        StorageEventPayload, SubRunStorageMode,
     };
 
     fn ts() -> chrono::DateTime<chrono::Utc> {
@@ -358,7 +396,7 @@ mod tests {
             "subrun-1",
             None,
             SubRunStorageMode::IndependentSession,
-            Some(session_id.to_string()),
+            Some(session_id.into()),
         )
     }
 
@@ -460,6 +498,7 @@ mod tests {
                 success: true,
                 error: None,
                 metadata: None,
+                child_ref: None,
                 duration_ms,
             },
         )
@@ -476,7 +515,14 @@ mod tests {
             agent,
             StorageEventPayload::ToolResultReferenceApplied {
                 tool_call_id: tool_call_id.into(),
-                persisted_relative_path: "tool-results/sample.txt".to_string(),
+                persisted_output: crate::PersistedToolOutput {
+                    storage_kind: "toolResult".to_string(),
+                    absolute_path: "~/.astrcode/tool-results/sample.txt".to_string(),
+                    relative_path: "tool-results/sample.txt".to_string(),
+                    total_bytes: 120,
+                    preview_text: "preview".to_string(),
+                    preview_bytes: 7,
+                },
                 replacement: replacement.to_string(),
                 original_bytes: 120,
             },
@@ -523,6 +569,14 @@ mod tests {
             StorageEventPayload::CompactApplied {
                 trigger: CompactTrigger::Manual,
                 summary: summary.into(),
+                meta: CompactAppliedMeta {
+                    mode: CompactMode::Full,
+                    instructions_present: false,
+                    fallback_used: false,
+                    retry_count: 0,
+                    input_units: 3,
+                    output_summary_chars: 15,
+                },
                 preserved_recent_turns,
                 pre_tokens: 400,
                 post_tokens_estimate: 120,
@@ -885,8 +939,12 @@ mod tests {
                 None,
                 root_agent(),
                 "tc1",
-                "<persisted-output>\nOutput too large (120 bytes). Full output saved to: \
-                 tool-results/sample.txt\n</persisted-output>",
+                "<persisted-output>\nLarge tool output was saved to a file instead of being \
+                 inlined.\nPath: ~/.astrcode/tool-results/sample.txt\nBytes: 120\nRead the file \
+                 with `readFile`.\nIf you only need a section, read a smaller chunk instead of \
+                 the whole file.\nStart from the first chunk when you do not yet know the right \
+                 section.\nSuggested first read: { path: \"~/.astrcode/tool-results/sample.txt\", \
+                 charOffset: 0, maxChars: 20000 }\n</persisted-output>",
             ),
             turn_done(None, root_agent(), "completed"),
         ];
@@ -895,7 +953,7 @@ mod tests {
 
         assert!(matches!(
             &state.messages[2],
-            LlmMessage::Tool { content, .. } if content.contains("tool-results/sample.txt")
+            LlmMessage::Tool { content, .. } if content.contains("~/.astrcode/tool-results/sample.txt")
         ));
     }
 

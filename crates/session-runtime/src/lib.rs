@@ -5,8 +5,8 @@ use std::{
 
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentId, AgentLifecycleStatus, ChildSessionNode,
-    ChildSessionNotification, DeleteProjectResult, EventStore, MailboxBatchAckedPayload,
-    MailboxBatchStartedPayload, MailboxDiscardedPayload, MailboxQueuedPayload, Phase,
+    ChildSessionNotification, DeleteProjectResult, EventStore, InputBatchAckedPayload,
+    InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload, Phase,
     PromptFactsProvider, ResolvedRuntimeConfig, Result, RuntimeMetricsRecorder, SessionId,
     SessionMeta, StoredEvent, event::generate_session_id,
 };
@@ -16,45 +16,48 @@ use dashmap::DashMap;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
-pub mod actor;
-pub mod catalog;
-pub mod command;
-pub mod context;
-pub mod context_window;
-pub mod factory;
+mod actor;
+mod catalog;
+mod command;
+mod context_window;
 mod heuristics;
-pub mod observe;
-pub mod query;
-pub mod state;
-pub mod turn;
+mod observe;
+mod query;
+mod state;
+mod turn;
 
 use actor::SessionActor;
 pub use catalog::SessionCatalogEvent;
-pub use command::SessionCommands;
-pub use context::ResolvedContextSnapshot;
-use observe::SessionObserveSnapshot;
 pub use observe::{
-    SessionEventFilterSpec, SubRunEventScope, SubRunStatusSnapshot, SubRunStatusSource,
+    SessionEventFilterSpec, SessionObserveSnapshot, SubRunEventScope, SubRunStatusSnapshot,
+    SubRunStatusSource,
 };
 pub use query::{
-    AgentObserveSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot, SessionReplay,
-    SessionTranscriptSnapshot, TurnTerminalSnapshot, build_agent_observe_snapshot,
-    current_turn_messages, has_terminal_turn_signal, project_turn_outcome,
-    recoverable_parent_deliveries,
+    AgentObserveSnapshot, ConversationAssistantBlockFacts, ConversationBlockFacts,
+    ConversationBlockPatchFacts, ConversationBlockStatus, ConversationChildHandoffBlockFacts,
+    ConversationChildHandoffKind, ConversationDeltaFacts, ConversationDeltaFrameFacts,
+    ConversationDeltaProjector, ConversationErrorBlockFacts, ConversationPlanBlockFacts,
+    ConversationPlanBlockersFacts, ConversationPlanEventKind, ConversationPlanReviewFacts,
+    ConversationPlanReviewKind, ConversationSnapshotFacts, ConversationStreamProjector,
+    ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts, ConversationSystemNoteKind,
+    ConversationThinkingBlockFacts, ConversationTranscriptErrorKind, ConversationUserBlockFacts,
+    LastCompactMetaSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot,
+    SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
+    ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
 };
+pub(crate) use state::{InputQueueEventAppend, SessionStateEventSink, append_input_queue_event};
 pub use state::{
-    MailboxEventAppend, SessionSnapshot, SessionState, SessionStateEventSink, SessionWriter,
-    append_and_broadcast, append_batch_acked, append_batch_started, append_mailbox_discarded,
-    append_mailbox_event, append_mailbox_queued, complete_session_execution,
+    SessionSnapshot, SessionState, append_and_broadcast, complete_session_execution,
     display_name_from_working_dir, normalize_session_id, normalize_working_dir,
-    prepare_session_execution, recent_turn_event_tail, should_record_compaction_tail_event,
+    prepare_session_execution,
 };
 pub use turn::{
-    AgentPromptSubmission, TurnCollaborationSummary, TurnFinishReason, TurnOutcome, TurnRunRequest,
-    TurnRunResult, TurnSummary, run_turn,
+    AgentPromptSubmission, ForkPoint, ForkResult, TurnCollaborationSummary, TurnFinishReason,
+    TurnSummary,
 };
+pub(crate) use turn::{TurnOutcome, TurnRunResult, run_turn};
 
-const ROOT_AGENT_ID: &str = "root-agent";
+pub const ROOT_AGENT_ID: &str = "root-agent";
 
 #[derive(Debug)]
 struct LoadedSession {
@@ -256,7 +259,7 @@ impl SessionRuntime {
     /// 按需加载 session 并返回内部状态引用。
     ///
     /// 用于 agent 编排层需要直接操作 SessionState 的场景
-    /// （如 mailbox 追加、对话投影读取等）。
+    /// （如 input queue 追加、对话投影读取等）。
     pub async fn get_session_state(&self, session_id: &SessionId) -> Result<Arc<SessionState>> {
         self.query().session_state(session_id).await
     }
@@ -269,9 +272,38 @@ impl SessionRuntime {
         self.query().session_control_state(session_id).await
     }
 
+    pub async fn conversation_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<ConversationSnapshotFacts> {
+        self.query().conversation_snapshot(session_id).await
+    }
+
+    pub async fn conversation_stream_replay(
+        &self,
+        session_id: &str,
+        last_event_id: Option<&str>,
+    ) -> Result<ConversationStreamReplayFacts> {
+        self.query()
+            .conversation_stream_replay(session_id, last_event_id)
+            .await
+    }
+
     /// 返回当前 session durable 可见的 direct child lineage 节点。
     pub async fn session_child_nodes(&self, session_id: &str) -> Result<Vec<ChildSessionNode>> {
         self.query().session_child_nodes(session_id).await
+    }
+
+    pub async fn session_mode_state(&self, session_id: &str) -> Result<SessionModeSnapshot> {
+        self.query().session_mode_state(session_id).await
+    }
+
+    pub async fn active_task_snapshot(
+        &self,
+        session_id: &str,
+        owner: &str,
+    ) -> Result<Option<astrcode_core::TaskSnapshot>> {
+        self.query().active_task_snapshot(session_id, owner).await
     }
 
     /// 读取指定 session 的工作目录。
@@ -281,7 +313,7 @@ impl SessionRuntime {
 
     /// 回放指定 session 的全部持久化事件。
     ///
-    /// 用于 agent 编排层需要从 durable 事件中提取 mailbox 信封等场景。
+    /// 用于 agent 编排层需要从 durable 事件中提取 input queue 信封等场景。
     pub async fn replay_stored_events(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
         self.query().stored_events(session_id).await
     }
@@ -309,7 +341,7 @@ impl SessionRuntime {
             .await
     }
 
-    /// 读取指定 agent 当前 mailbox durable 投影中的待处理 delivery id。
+    /// 读取指定 agent 当前 input queue durable 投影中的待处理 delivery id。
     pub async fn pending_delivery_ids_for_agent(
         &self,
         session_id: &str,
@@ -320,51 +352,51 @@ impl SessionRuntime {
             .await
     }
 
-    pub async fn append_agent_mailbox_queued(
+    pub async fn append_agent_input_queued(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxQueuedPayload,
+        payload: InputQueuedPayload,
     ) -> Result<StoredEvent> {
         self.command()
-            .append_agent_mailbox_queued(session_id, turn_id, agent, payload)
+            .append_agent_input_queued(session_id, turn_id, agent, payload)
             .await
     }
 
-    pub async fn append_agent_mailbox_discarded(
+    pub async fn append_agent_input_discarded(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxDiscardedPayload,
+        payload: InputDiscardedPayload,
     ) -> Result<StoredEvent> {
         self.command()
-            .append_agent_mailbox_discarded(session_id, turn_id, agent, payload)
+            .append_agent_input_discarded(session_id, turn_id, agent, payload)
             .await
     }
 
-    pub async fn append_agent_mailbox_batch_started(
+    pub async fn append_agent_input_batch_started(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchStartedPayload,
+        payload: InputBatchStartedPayload,
     ) -> Result<StoredEvent> {
         self.command()
-            .append_agent_mailbox_batch_started(session_id, turn_id, agent, payload)
+            .append_agent_input_batch_started(session_id, turn_id, agent, payload)
             .await
     }
 
-    pub async fn append_agent_mailbox_batch_acked(
+    pub async fn append_agent_input_batch_acked(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchAckedPayload,
+        payload: InputBatchAckedPayload,
     ) -> Result<StoredEvent> {
         self.command()
-            .append_agent_mailbox_batch_acked(session_id, turn_id, agent, payload)
+            .append_agent_input_batch_acked(session_id, turn_id, agent, payload)
             .await
     }
 
@@ -394,7 +426,7 @@ impl SessionRuntime {
             .await
     }
 
-    /// 从 durable mailbox + child notification 中恢复仍可重试的父级 delivery。
+    /// 从 durable input queue + child notification 中恢复仍可重试的父级 delivery。
     pub async fn recoverable_parent_deliveries(
         &self,
         parent_session_id: &str,
@@ -457,8 +489,20 @@ impl SessionRuntime {
         &self,
         session_id: &str,
         runtime: ResolvedRuntimeConfig,
+        instructions: Option<String>,
     ) -> Result<bool> {
-        self.command().compact_session(session_id, &runtime).await
+        self.command()
+            .compact_session(session_id, &runtime, instructions.as_deref())
+            .await
+    }
+
+    pub async fn switch_mode(
+        &self,
+        session_id: &str,
+        from: astrcode_core::ModeId,
+        to: astrcode_core::ModeId,
+    ) -> Result<StoredEvent> {
+        self.command().switch_mode(session_id, from, to).await
     }
 
     async fn session_phase(&self, session_id: &SessionId) -> Result<Phase> {
@@ -489,13 +533,13 @@ impl SessionRuntime {
             .into_iter()
             .find(|meta| normalize_session_id(&meta.session_id) == session_id.as_str())
             .ok_or_else(|| SessionRuntimeError::SessionNotFound(session_id.to_string()))?;
-        let stored = self.event_store.replay(session_id).await?;
-        let actor = Arc::new(SessionActor::from_replay(
+        let recovered = self.event_store.recover_session(session_id).await?;
+        let actor = Arc::new(SessionActor::from_recovery(
             session_id.clone(),
             meta.working_dir,
             AgentId::from(ROOT_AGENT_ID.to_string()),
             Arc::clone(&self.event_store),
-            stored,
+            recovered,
         )?);
         let loaded = Arc::new(LoadedSession {
             actor: Arc::clone(&actor),

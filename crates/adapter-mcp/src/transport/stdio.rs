@@ -51,6 +51,27 @@ impl StdioTransport {
             env,
         }
     }
+
+    #[cfg(unix)]
+    fn send_unix_signal(child: &Child, signal: i32, signal_name: &str) {
+        let Some(pid) = child.id() else {
+            info!(
+                "skip sending {} to MCP server because the process id is unavailable",
+                signal_name
+            );
+            return;
+        };
+
+        // libc::kill 是 Unix 发送进程信号的底层系统调用，这里只在 unix 平台使用。
+        let result = unsafe { libc::kill(pid as i32, signal) };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            info!(
+                "failed to send {} to MCP server pid {}: {}",
+                signal_name, pid, error
+            );
+        }
+    }
 }
 
 #[async_trait]
@@ -184,29 +205,19 @@ impl McpTransport for StdioTransport {
                 use tokio::time::{Duration, timeout};
 
                 // SIGINT
-                unsafe {
-                    libc::kill(child.id() as i32, libc::SIGINT);
-                }
+                Self::send_unix_signal(&child, libc::SIGINT, "SIGINT");
 
-                match timeout(Duration::from_secs(5), child.wait()).await {
-                    Ok(Ok(_)) => {
-                        info!("MCP server exited gracefully after SIGINT");
-                        return Ok(());
-                    },
-                    _ => {},
+                if let Ok(Ok(_)) = timeout(Duration::from_secs(5), child.wait()).await {
+                    info!("MCP server exited gracefully after SIGINT");
+                    return Ok(());
                 }
 
                 // SIGTERM
-                unsafe {
-                    libc::kill(child.id() as i32, libc::SIGTERM);
-                }
+                Self::send_unix_signal(&child, libc::SIGTERM, "SIGTERM");
 
-                match timeout(Duration::from_secs(5), child.wait()).await {
-                    Ok(Ok(_)) => {
-                        info!("MCP server exited after SIGTERM");
-                        return Ok(());
-                    },
-                    _ => {},
+                if let Ok(Ok(_)) = timeout(Duration::from_secs(5), child.wait()).await {
+                    info!("MCP server exited after SIGTERM");
+                    return Ok(());
                 }
 
                 // SIGKILL

@@ -16,19 +16,21 @@ use anyhow::{Context, Result};
 use astrcode_client::{
     AstrcodeClient, AstrcodeClientError, AstrcodeClientTransport,
     AstrcodeConversationSlashCandidatesResponseDto, AstrcodeConversationSnapshotResponseDto,
+    AstrcodeCurrentModelInfoDto, AstrcodeModeSummaryDto, AstrcodeModelOptionDto,
     AstrcodePromptAcceptedResponse, AstrcodeReqwestTransport, AstrcodeSessionListItem,
-    ClientConfig, ConversationStreamItem,
+    AstrcodeSessionModeStateDto, ClientConfig, ConversationStreamItem,
 };
 use clap::Parser;
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+        Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+        MouseEventKind,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::backend::CrosstermBackend;
 use tokio::{
     sync::mpsc,
     task::JoinHandle,
@@ -36,11 +38,14 @@ use tokio::{
 };
 
 use crate::{
+    bottom_pane::{BottomPaneState, SurfaceLayout, render_bottom_pane},
     capability::TerminalCapabilities,
-    command::overlay_action,
+    chat::ChatSurfaceState,
+    command::{fuzzy_contains, palette_action},
     launcher::{LaunchOptions, Launcher, LauncherSession, SystemManagedServer},
-    render,
-    state::{CliState, OverlayState, PaneFocus, StreamRenderMode},
+    state::{CliState, PaletteState, PaneFocus, StreamRenderMode},
+    tui::TuiRuntime,
+    ui::{CodexTheme, overlay::render_browser_overlay},
 };
 
 #[derive(Debug, Parser)]
@@ -60,6 +65,12 @@ struct CliArgs {
 }
 
 #[derive(Debug)]
+struct SnapshotLoadedAction {
+    session_id: String,
+    result: Result<AstrcodeConversationSnapshotResponseDto, AstrcodeClientError>,
+}
+
+#[derive(Debug)]
 enum Action {
     Tick,
     Key(KeyEvent),
@@ -68,13 +79,11 @@ enum Action {
         width: u16,
         height: u16,
     },
+    Mouse(MouseEvent),
     Quit,
     SessionsRefreshed(Result<Vec<AstrcodeSessionListItem>, AstrcodeClientError>),
     SessionCreated(Result<AstrcodeSessionListItem, AstrcodeClientError>),
-    SnapshotLoaded {
-        session_id: String,
-        result: Result<AstrcodeConversationSnapshotResponseDto, AstrcodeClientError>,
-    },
+    SnapshotLoaded(Box<SnapshotLoadedAction>),
     StreamBatch {
         session_id: String,
         items: Vec<ConversationStreamItem>,
@@ -83,13 +92,33 @@ enum Action {
         query: String,
         result: Result<AstrcodeConversationSlashCandidatesResponseDto, AstrcodeClientError>,
     },
+    CurrentModelLoaded(Result<AstrcodeCurrentModelInfoDto, AstrcodeClientError>),
+    ModesLoaded(Result<Vec<AstrcodeModeSummaryDto>, AstrcodeClientError>),
+    ModelOptionsLoaded {
+        query: String,
+        result: Result<Vec<AstrcodeModelOptionDto>, AstrcodeClientError>,
+    },
     PromptSubmitted {
         session_id: String,
         result: Result<AstrcodePromptAcceptedResponse, AstrcodeClientError>,
     },
+    ModelSelectionSaved {
+        profile_name: String,
+        model: String,
+        result: Result<(), AstrcodeClientError>,
+    },
     CompactRequested {
         session_id: String,
         result: Result<astrcode_client::AstrcodeCompactSessionResponse, AstrcodeClientError>,
+    },
+    SessionModeLoaded {
+        session_id: String,
+        result: Result<AstrcodeSessionModeStateDto, AstrcodeClientError>,
+    },
+    ModeSwitched {
+        session_id: String,
+        requested_mode_id: String,
+        result: Result<AstrcodeSessionModeStateDto, AstrcodeClientError>,
     },
 }
 
@@ -131,10 +160,12 @@ async fn run_app(launcher_session: LauncherSession<SystemManagedServer>) -> Resu
             capabilities,
         ),
         debug_tap,
-        actions_tx.clone(),
-        actions_rx,
+        AppControllerChannels::new(actions_tx.clone(), actions_rx),
     );
 
+    controller.refresh_current_model().await;
+    controller.refresh_modes().await;
+    controller.refresh_model_options(String::new()).await;
     controller.bootstrap().await?;
 
     let terminal_result = run_terminal_loop(&mut controller, actions_tx.clone()).await;
@@ -151,65 +182,77 @@ async fn run_terminal_loop(
     controller: &mut AppController,
     actions_tx: mpsc::UnboundedSender<Action>,
 ) -> Result<()> {
-    enable_raw_mode().context("enable raw mode failed")?;
-    let mut stdout = io::stdout();
-    if controller.state.shell.capabilities.alt_screen {
-        execute!(stdout, EnterAlternateScreen).context("enter alternate screen failed")?;
-    }
-    if controller.state.shell.capabilities.mouse {
-        execute!(stdout, EnableMouseCapture).context("enable mouse capture failed")?;
-    }
-    if controller.state.shell.capabilities.bracketed_paste {
-        execute!(stdout, EnableBracketedPaste).context("enable bracketed paste failed")?;
-    }
+    let terminal_guard = TerminalRestoreGuard::enter(controller.state.shell.capabilities)?;
+    let stdout = io::stdout();
 
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).context("create terminal backend failed")?;
+    let mut runtime = TuiRuntime::with_backend(backend).context("create TUI runtime failed")?;
 
     let input_handle = InputHandle::spawn(actions_tx.clone());
     let tick_handle = spawn_tick_loop(actions_tx);
 
-    let loop_result = run_event_loop(controller, &mut terminal).await;
+    let loop_result = run_event_loop(controller, &mut runtime).await;
 
     input_handle.stop();
-    tick_handle.abort();
-
-    disable_raw_mode().context("disable raw mode failed")?;
-    if controller.state.shell.capabilities.bracketed_paste {
-        execute!(terminal.backend_mut(), DisableBracketedPaste)
-            .context("disable bracketed paste failed")?;
-    }
-    if controller.state.shell.capabilities.mouse {
-        execute!(terminal.backend_mut(), DisableMouseCapture)
-            .context("disable mouse capture failed")?;
-    }
-    if controller.state.shell.capabilities.alt_screen {
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)
-            .context("leave alternate screen failed")?;
-    }
-    terminal.show_cursor().context("show cursor failed")?;
+    tick_handle.stop().await;
+    runtime
+        .terminal_mut()
+        .show_cursor()
+        .context("show cursor failed")?;
+    drop(terminal_guard);
 
     loop_result
 }
 
 async fn run_event_loop(
     controller: &mut AppController,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    runtime: &mut TuiRuntime<CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
-    terminal
-        .draw(|frame| render::render(frame, &mut controller.state))
-        .context("initial draw failed")?;
+    redraw(controller, runtime).context("initial draw failed")?;
+    controller.state.render.take_frame_dirty();
 
     while let Some(action) = controller.actions_rx.recv().await {
         controller.handle_action(action).await?;
-        terminal
-            .draw(|frame| render::render(frame, &mut controller.state))
-            .context("redraw failed")?;
+        if controller.state.render.take_frame_dirty() {
+            redraw(controller, runtime).context("redraw failed")?;
+        }
         if controller.should_quit {
             break;
         }
     }
 
+    Ok(())
+}
+
+fn redraw(
+    controller: &mut AppController,
+    runtime: &mut TuiRuntime<CrosstermBackend<io::Stdout>>,
+) -> Result<()> {
+    let size = runtime.screen_size().context("read terminal size failed")?;
+    let theme = CodexTheme::new(controller.state.shell.capabilities);
+    let mut chat = controller
+        .chat_surface
+        .build_frame(&controller.state, &theme, size.width);
+    runtime.stage_history_lines(
+        std::mem::take(&mut chat.history_lines)
+            .into_iter()
+            .map(|line| crate::ui::history_line_to_ratatui(line, &theme)),
+    );
+    let pane = BottomPaneState::from_cli(&controller.state, &chat, &theme, size.width);
+    let layout = SurfaceLayout::new(size, controller.state.render.active_overlay, &pane);
+    runtime
+        .draw(
+            layout.viewport_height(),
+            controller.state.render.active_overlay.is_open(),
+            |frame, area| {
+                if controller.state.render.active_overlay.is_open() {
+                    render_browser_overlay(frame, &controller.state, &theme);
+                } else {
+                    render_bottom_pane(frame, area, &controller.state, &pane, &theme);
+                }
+            },
+        )
+        .context("draw CLI surface failed")?;
     Ok(())
 }
 
@@ -272,6 +315,7 @@ impl SharedStreamPacer {
 struct AppController<T = AstrcodeReqwestTransport> {
     client: AstrcodeClient<T>,
     state: CliState,
+    chat_surface: ChatSurfaceState,
     debug_tap: Option<crate::launcher::DebugLogTap>,
     actions_tx: mpsc::UnboundedSender<Action>,
     actions_rx: mpsc::UnboundedReceiver<Action>,
@@ -282,6 +326,43 @@ struct AppController<T = AstrcodeReqwestTransport> {
     should_quit: bool,
 }
 
+struct AppControllerChannels {
+    tx: mpsc::UnboundedSender<Action>,
+    rx: mpsc::UnboundedReceiver<Action>,
+}
+
+impl AppControllerChannels {
+    fn new(tx: mpsc::UnboundedSender<Action>, rx: mpsc::UnboundedReceiver<Action>) -> Self {
+        Self { tx, rx }
+    }
+}
+
+struct TerminalRestoreGuard {
+    capabilities: TerminalCapabilities,
+}
+
+impl TerminalRestoreGuard {
+    fn enter(capabilities: TerminalCapabilities) -> Result<Self> {
+        enable_raw_mode().context("enable raw mode failed")?;
+        let mut stdout = io::stdout();
+        if capabilities.bracketed_paste {
+            execute!(stdout, EnableBracketedPaste).context("enable bracketed paste failed")?;
+        }
+        Ok(Self { capabilities })
+    }
+}
+
+impl Drop for TerminalRestoreGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let mut stdout = io::stdout();
+        if self.capabilities.bracketed_paste {
+            let _ = execute!(stdout, DisableBracketedPaste);
+        }
+        let _ = execute!(stdout, DisableMouseCapture);
+    }
+}
+
 impl<T> AppController<T>
 where
     T: AstrcodeClientTransport + 'static,
@@ -290,15 +371,15 @@ where
         client: AstrcodeClient<T>,
         state: CliState,
         debug_tap: Option<crate::launcher::DebugLogTap>,
-        actions_tx: mpsc::UnboundedSender<Action>,
-        actions_rx: mpsc::UnboundedReceiver<Action>,
+        channels: AppControllerChannels,
     ) -> Self {
         Self {
             client,
             state,
+            chat_surface: ChatSurfaceState::default(),
             debug_tap,
-            actions_tx,
-            actions_rx,
+            actions_tx: channels.tx,
+            actions_rx: channels.rx,
             pending_session_id: None,
             pending_bootstrap_session_refresh: false,
             stream_task: None,
@@ -308,6 +389,7 @@ where
     }
 
     async fn bootstrap(&mut self) -> Result<()> {
+        // bootstrap 故意复用异步命令链路，避免在初始化阶段维护一套单独的 /new 创建路径。
         self.pending_bootstrap_session_refresh = true;
         self.execute_command(crate::command::Command::New).await;
         Ok(())
@@ -316,6 +398,13 @@ where
     fn stop_background_tasks(&mut self) {
         if let Some(stream_task) = self.stream_task.take() {
             stream_task.abort();
+        }
+    }
+
+    async fn consume_bootstrap_refresh(&mut self) {
+        if self.pending_bootstrap_session_refresh {
+            self.pending_bootstrap_session_refresh = false;
+            self.refresh_sessions().await;
         }
     }
 
@@ -329,15 +418,17 @@ where
                 }
                 let (mode, pending, oldest) = self.stream_pacer.update_mode();
                 self.state.set_stream_mode(mode, pending, oldest);
+                self.state.advance_thinking_playback();
             },
             Action::Quit => self.should_quit = true,
-            Action::Resize { width, height } => self.state.set_viewport_size(width, height),
+            Action::Resize { width, height } => self.state.note_terminal_resize(width, height),
+            Action::Mouse(mouse) => self.handle_mouse(mouse),
             Action::Key(key) => self.handle_key(key).await?,
             Action::Paste(text) => self.handle_paste(text).await?,
             Action::SessionsRefreshed(result) => match result {
                 Ok(sessions) => {
                     self.state.update_sessions(sessions);
-                    self.refresh_resume_overlay();
+                    self.refresh_resume_palette();
                 },
                 Err(error) => self.apply_status_error(error),
             },
@@ -353,35 +444,28 @@ where
                 },
                 Err(error) => {
                     self.apply_status_error(error);
-                    if self.pending_bootstrap_session_refresh {
-                        self.pending_bootstrap_session_refresh = false;
-                        self.refresh_sessions().await;
-                    }
+                    self.consume_bootstrap_refresh().await;
                 },
             },
-            Action::SnapshotLoaded { session_id, result } => {
+            Action::SnapshotLoaded(payload) => {
+                let SnapshotLoadedAction { session_id, result } = *payload;
                 if !self.pending_session_matches(session_id.as_str()) {
                     return Ok(());
                 }
                 match result {
                     Ok(snapshot) => {
                         self.pending_session_id = None;
+                        self.chat_surface.reset();
                         self.state.activate_snapshot(snapshot);
                         self.state
                             .set_status(format!("attached to session {}", session_id));
                         self.open_stream_for_active_session().await;
-                        if self.pending_bootstrap_session_refresh {
-                            self.pending_bootstrap_session_refresh = false;
-                            self.refresh_sessions().await;
-                        }
+                        self.consume_bootstrap_refresh().await;
                     },
                     Err(error) => {
                         self.pending_session_id = None;
                         self.apply_hydration_error(error);
-                        if self.pending_bootstrap_session_refresh {
-                            self.pending_bootstrap_session_refresh = false;
-                            self.refresh_sessions().await;
-                        }
+                        self.consume_bootstrap_refresh().await;
                     },
                 }
             },
@@ -399,7 +483,7 @@ where
                 self.state.set_stream_mode(mode, pending, oldest);
             },
             Action::SlashCandidatesLoaded { query, result } => {
-                let OverlayState::SlashPalette(palette) = &self.state.interaction.overlay else {
+                let PaletteState::Slash(palette) = &self.state.interaction.palette else {
                     return Ok(());
                 };
                 if palette.query != query {
@@ -408,22 +492,71 @@ where
 
                 match result {
                     Ok(candidates) => {
-                        self.state.set_slash_query(query, candidates.items);
+                        let items = slash_candidates_with_local_commands(
+                            &candidates.items,
+                            &self.state.shell.available_modes,
+                            query.as_str(),
+                        );
+                        self.state.set_slash_query(query, items);
                     },
                     Err(error) => self.apply_status_error(error),
                 }
+            },
+            Action::CurrentModelLoaded(result) => match result {
+                Ok(current_model) => self.state.update_current_model(current_model),
+                Err(error) => self.apply_status_error(error),
+            },
+            Action::ModesLoaded(result) => match result {
+                Ok(modes) => self.state.update_modes(modes),
+                Err(error) => self.apply_status_error(error),
+            },
+            Action::ModelOptionsLoaded { query, result } => match result {
+                Ok(model_options) => {
+                    self.state.update_model_options(model_options.clone());
+                    if let PaletteState::Model(palette) = &self.state.interaction.palette {
+                        if palette.query == query {
+                            self.state.set_model_query(
+                                query,
+                                filter_model_options(&model_options, palette.query.as_str()),
+                            );
+                        }
+                    }
+                },
+                Err(error) => self.apply_status_error(error),
             },
             Action::PromptSubmitted { session_id, result } => {
                 if !self.active_session_matches(session_id.as_str()) {
                     return Ok(());
                 }
                 match result {
-                    Ok(response) => {
-                        self.state
-                            .set_status(format!("prompt accepted: turn {}", response.turn_id));
-                    },
+                    Ok(_response) => self.state.set_status("ready"),
                     Err(error) => self.apply_status_error(error),
                 }
+            },
+            Action::ModelSelectionSaved {
+                profile_name,
+                model,
+                result,
+            } => match result {
+                Ok(()) => {
+                    let provider_kind = self
+                        .state
+                        .shell
+                        .model_options
+                        .iter()
+                        .find(|option| option.profile_name == profile_name && option.model == model)
+                        .map(|option| option.provider_kind.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    self.state
+                        .update_current_model(AstrcodeCurrentModelInfoDto {
+                            profile_name,
+                            model: model.clone(),
+                            provider_kind,
+                        });
+                    self.state.set_status(format!("ready · model {model}"));
+                    self.refresh_current_model().await;
+                },
+                Err(error) => self.apply_status_error(error),
             },
             Action::CompactRequested { session_id, result } => {
                 if !self.active_session_matches(session_id.as_str()) {
@@ -432,6 +565,52 @@ where
                 match result {
                     Ok(response) => {
                         self.state.set_status(response.message);
+                    },
+                    Err(error) => self.apply_status_error(error),
+                }
+            },
+            Action::SessionModeLoaded { session_id, result } => {
+                if !self.active_session_matches(session_id.as_str()) {
+                    return Ok(());
+                }
+                match result {
+                    Ok(mode) => {
+                        let available = self
+                            .state
+                            .shell
+                            .available_modes
+                            .iter()
+                            .map(|summary| summary.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if available.is_empty() {
+                            self.state
+                                .set_status(format!("mode {}", mode.current_mode_id));
+                        } else {
+                            self.state.set_status(format!(
+                                "mode {} · available: {}",
+                                mode.current_mode_id, available
+                            ));
+                        }
+                    },
+                    Err(error) => self.apply_status_error(error),
+                }
+            },
+            Action::ModeSwitched {
+                session_id,
+                requested_mode_id,
+                result,
+            } => {
+                if !self.active_session_matches(session_id.as_str()) {
+                    return Ok(());
+                }
+                match result {
+                    Ok(mode) => {
+                        self.state.set_status(format!(
+                            "mode {} · next turn will use {}",
+                            mode.current_mode_id, requested_mode_id
+                        ));
+                        self.refresh_modes().await;
                     },
                     Err(error) => self.apply_status_error(error),
                 }
@@ -452,74 +631,113 @@ where
             return Ok(());
         }
 
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('t')) {
+            self.state.toggle_browser();
+            return Ok(());
+        }
+
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('o')) {
+            return Ok(());
+        }
+
+        if self.state.interaction.browser.open {
+            match key.code {
+                KeyCode::Esc => {
+                    self.state.toggle_browser();
+                },
+                KeyCode::Home => self.state.browser_first(),
+                KeyCode::End => self.state.browser_last(),
+                KeyCode::Up => self.state.browser_prev(1),
+                KeyCode::Down => self.state.browser_next(1),
+                KeyCode::PageUp => self.state.browser_prev(5),
+                KeyCode::PageDown => self.state.browser_next(5),
+                KeyCode::Enter => self.state.toggle_selected_cell_expanded(),
+                _ => {},
+            }
+            return Ok(());
+        }
+
         match key.code {
-            KeyCode::F(2) => self.state.toggle_debug_overlay(),
-            KeyCode::Esc => self.state.close_overlay(),
+            KeyCode::Esc if self.state.interaction.has_palette() => {
+                self.state.close_palette();
+            },
+            KeyCode::Esc => {},
             KeyCode::Left => {
-                if !matches!(self.state.interaction.overlay, OverlayState::None) {
-                    return Ok(());
-                }
-                self.state.cycle_focus_backward();
+                self.state.move_cursor_left();
             },
             KeyCode::Right => {
-                if !matches!(self.state.interaction.overlay, OverlayState::None) {
+                self.state.move_cursor_right();
+            },
+            KeyCode::Home => {
+                self.state.move_cursor_home();
+            },
+            KeyCode::End => {
+                self.state.move_cursor_end();
+            },
+            KeyCode::BackTab => {
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
                     return Ok(());
                 }
-                self.state.cycle_focus_forward();
+                self.state.interaction.set_focus(PaneFocus::Composer);
+                self.state.render.mark_dirty();
             },
-            KeyCode::Up => {
-                if !matches!(self.state.interaction.overlay, OverlayState::None) {
-                    self.state.overlay_prev();
-                } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
-                    self.state.child_prev();
-                } else {
-                    self.state.scroll_up();
+            KeyCode::Tab => {
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
+                    return Ok(());
                 }
+                self.state.interaction.set_focus(PaneFocus::Composer);
+                self.state.render.mark_dirty();
             },
-            KeyCode::Down => {
-                if !matches!(self.state.interaction.overlay, OverlayState::None) {
-                    self.state.overlay_next();
-                } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
-                    self.state.child_next();
-                } else {
-                    self.state.scroll_down();
-                }
+            KeyCode::Up if !matches!(self.state.interaction.palette, PaletteState::Closed) => {
+                self.state.palette_prev();
             },
+            KeyCode::Up => {},
+            KeyCode::Down if !matches!(self.state.interaction.palette, PaletteState::Closed) => {
+                self.state.palette_next();
+            },
+            KeyCode::Down => {},
+            KeyCode::PageUp | KeyCode::PageDown => {},
             KeyCode::Enter => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    if matches!(self.state.interaction.overlay, OverlayState::None)
+                    if matches!(self.state.interaction.palette, PaletteState::Closed)
                         && matches!(self.state.interaction.pane_focus, PaneFocus::Composer)
                     {
                         self.state.insert_newline();
                     }
-                } else if let Some(selection) = self.state.selected_overlay() {
-                    self.execute_overlay_action(overlay_action(selection))
+                } else if let Some(selection) = self.state.selected_palette() {
+                    self.execute_palette_action(palette_action(selection))
                         .await?;
-                } else if matches!(self.state.interaction.pane_focus, PaneFocus::ChildPane) {
-                    self.state.toggle_child_focus();
                 } else {
-                    self.submit_current_input().await;
+                    match self.state.interaction.pane_focus {
+                        PaneFocus::Composer => self.submit_current_input().await,
+                        PaneFocus::Palette | PaneFocus::Browser => {},
+                    }
                 }
             },
             KeyCode::Backspace => {
-                if matches!(self.state.interaction.overlay, OverlayState::None) {
+                if matches!(self.state.interaction.palette, PaletteState::Closed) {
                     self.state.pop_input();
                 } else {
-                    self.state.overlay_query_pop();
-                    self.refresh_overlay_query().await;
+                    self.state.pop_input();
+                    self.refresh_palette_query().await;
                 }
             },
-            KeyCode::Tab => {
-                let query = self.slash_query_for_current_input();
-                self.open_slash_palette(query).await;
+            KeyCode::Delete => {
+                self.state.delete_input();
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
+                    self.refresh_palette_query().await;
+                }
             },
             KeyCode::Char(ch) => {
-                if matches!(self.state.interaction.overlay, OverlayState::None) {
-                    self.state.interaction.pane_focus = PaneFocus::Composer;
+                if !matches!(self.state.interaction.palette, PaletteState::Closed) {
                     self.state.push_input(ch);
+                    self.refresh_palette_query().await;
                 } else {
-                    self.state.overlay_query_push(ch);
-                    self.refresh_overlay_query().await;
+                    self.state.push_input(ch);
+                    if ch == '/' {
+                        let query = self.slash_query_for_current_input();
+                        self.open_slash_palette(query).await;
+                    }
                 }
             },
             _ => {},
@@ -529,14 +747,23 @@ where
     }
 
     async fn handle_paste(&mut self, text: String) -> Result<()> {
-        if matches!(self.state.interaction.overlay, OverlayState::None) {
-            self.state.interaction.pane_focus = PaneFocus::Composer;
-            self.state.append_input(text.as_str());
-        } else {
-            self.state.overlay_query_append(text.as_str());
-            self.refresh_overlay_query().await;
+        self.state.append_input(text.as_str());
+        if !matches!(self.state.interaction.palette, PaletteState::Closed) {
+            self.refresh_palette_query().await;
         }
         Ok(())
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {},
+            MouseEventKind::Down(_) => {
+                let _ = mouse;
+                self.state.interaction.set_focus(PaneFocus::Composer);
+                self.state.render.mark_dirty();
+            },
+            _ => {},
+        }
     }
 
     fn active_session_matches(&self, session_id: &str) -> bool {
@@ -571,6 +798,11 @@ impl InputHandle {
                                 break;
                             }
                         },
+                        Ok(CrosstermEvent::Mouse(mouse)) => {
+                            if actions_tx.send(Action::Mouse(mouse)).is_err() {
+                                break;
+                            }
+                        },
                         Ok(CrosstermEvent::Resize(width, height)) => {
                             if actions_tx.send(Action::Resize { width, height }).is_err() {
                                 break;
@@ -600,17 +832,44 @@ impl InputHandle {
     }
 }
 
-fn spawn_tick_loop(actions_tx: mpsc::UnboundedSender<Action>) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_millis(250));
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            if actions_tx.send(Action::Tick).is_err() {
-                break;
+fn spawn_tick_loop(actions_tx: mpsc::UnboundedSender<Action>) -> TickHandle {
+    TickHandle::spawn(actions_tx)
+}
+
+struct TickHandle {
+    stop: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl TickHandle {
+    fn spawn(actions_tx: mpsc::UnboundedSender<Action>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop);
+        let join = tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_millis(250));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if stop_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                if actions_tx.send(Action::Tick).is_err() {
+                    break;
+                }
             }
+        });
+        Self {
+            stop,
+            join: Some(join),
         }
-    })
+    }
+
+    async fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(join) = self.join.take() {
+            let _ = join.await;
+        }
+    }
 }
 
 fn resolve_working_dir(cli_value: Option<PathBuf>) -> Result<PathBuf> {
@@ -632,17 +891,18 @@ fn filter_resume_sessions(
     sessions: &[AstrcodeSessionListItem],
     query: &str,
 ) -> Vec<AstrcodeSessionListItem> {
-    let query = query.trim().to_lowercase();
     let mut items = sessions
         .iter()
         .filter(|session| {
-            if query.is_empty() {
-                return true;
-            }
-            session.session_id.to_lowercase().contains(&query)
-                || session.title.to_lowercase().contains(&query)
-                || session.display_name.to_lowercase().contains(&query)
-                || session.working_dir.to_lowercase().contains(&query)
+            fuzzy_contains(
+                query,
+                [
+                    session.session_id.clone(),
+                    session.title.clone(),
+                    session.display_name.clone(),
+                    session.working_dir.clone(),
+                ],
+            )
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -650,12 +910,144 @@ fn filter_resume_sessions(
     items
 }
 
+fn slash_candidates_with_local_commands(
+    candidates: &[astrcode_client::AstrcodeConversationSlashCandidateDto],
+    modes: &[astrcode_client::AstrcodeModeSummaryDto],
+    query: &str,
+) -> Vec<astrcode_client::AstrcodeConversationSlashCandidateDto> {
+    let mut merged = candidates.to_vec();
+    let model_candidate = astrcode_client::AstrcodeConversationSlashCandidateDto {
+        id: "model".to_string(),
+        title: "/model".to_string(),
+        description: "选择当前已配置的模型".to_string(),
+        keywords: vec!["model".to_string(), "profile".to_string()],
+        action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::ExecuteCommand,
+        action_value: "/model".to_string(),
+    };
+
+    if !merged
+        .iter()
+        .any(|candidate| candidate.id == model_candidate.id)
+        && fuzzy_contains(
+            query,
+            [
+                model_candidate.id.clone(),
+                model_candidate.title.clone(),
+                model_candidate.description.clone(),
+            ],
+        )
+    {
+        merged.push(model_candidate);
+    }
+
+    let mode_candidate = astrcode_client::AstrcodeConversationSlashCandidateDto {
+        id: "mode".to_string(),
+        title: "/mode".to_string(),
+        description: "查看或切换当前 session 的治理 mode".to_string(),
+        keywords: vec![
+            "mode".to_string(),
+            "governance".to_string(),
+            "plan".to_string(),
+            "review".to_string(),
+            "code".to_string(),
+        ],
+        action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::ExecuteCommand,
+        action_value: "/mode".to_string(),
+    };
+    if !merged
+        .iter()
+        .any(|candidate| candidate.id == mode_candidate.id)
+        && fuzzy_contains(
+            query,
+            [
+                mode_candidate.id.clone(),
+                mode_candidate.title.clone(),
+                mode_candidate.description.clone(),
+            ],
+        )
+    {
+        merged.push(mode_candidate);
+    }
+
+    for mode in modes {
+        let candidate = astrcode_client::AstrcodeConversationSlashCandidateDto {
+            id: format!("mode:{}", mode.id),
+            title: format!("/mode {}", mode.id),
+            description: format!("切换到 {} · {}", mode.name, mode.description),
+            keywords: vec![
+                "mode".to_string(),
+                "governance".to_string(),
+                mode.id.clone(),
+                mode.name.clone(),
+            ],
+            action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::ExecuteCommand,
+            action_value: format!("/mode {}", mode.id),
+        };
+        if !merged.iter().any(|existing| existing.id == candidate.id)
+            && fuzzy_contains(
+                query,
+                [
+                    candidate.id.clone(),
+                    candidate.title.clone(),
+                    candidate.description.clone(),
+                ],
+            )
+        {
+            merged.push(candidate);
+        }
+    }
+
+    merged
+}
+
+fn filter_model_options(
+    options: &[AstrcodeModelOptionDto],
+    query: &str,
+) -> Vec<AstrcodeModelOptionDto> {
+    let mut items = options
+        .iter()
+        .filter(|option| {
+            fuzzy_contains(
+                query,
+                [
+                    option.model.clone(),
+                    option.profile_name.clone(),
+                    option.provider_kind.clone(),
+                ],
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| left.model.cmp(&right.model));
+    items
+}
+
 fn slash_query_from_input(input: &str) -> String {
     let trimmed = input.trim();
-    if let Some(query) = trimmed.strip_prefix("/skill") {
-        return query.trim().to_string();
-    }
-    trimmed.trim_start_matches('/').trim().to_string()
+    let command = trimmed.trim_start_matches('/');
+    command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn resume_query_from_input(input: &str) -> String {
+    input
+        .trim()
+        .strip_prefix("/resume")
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn model_query_from_input(input: &str) -> String {
+    input
+        .trim()
+        .strip_prefix("/model")
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -706,6 +1098,18 @@ mod tests {
             mouse: false,
             bracketed_paste: false,
         }
+    }
+
+    #[test]
+    fn model_query_from_input_extracts_optional_filter() {
+        assert_eq!(super::model_query_from_input("/model"), "");
+        assert_eq!(super::model_query_from_input("/model claude"), "claude");
+    }
+
+    #[test]
+    fn slash_candidates_with_local_commands_includes_model_entry() {
+        let items = super::slash_candidates_with_local_commands(&[], &[], "model");
+        assert!(items.iter().any(|item| item.id == "model"));
     }
 
     #[derive(Debug)]
@@ -804,7 +1208,9 @@ mod tests {
                     "phase": "idle",
                     "canSubmitPrompt": true,
                     "canRequestCompact": true,
-                    "compactPending": false
+                    "compactPending": false,
+                    "compacting": false,
+                    "currentModeId": "default"
                 },
                 "blocks": [{
                     "kind": "assistant",
@@ -917,8 +1323,7 @@ mod tests {
                 ascii_capabilities(),
             ),
             None,
-            actions_tx,
-            actions_rx,
+            AppControllerChannels::new(actions_tx, actions_rx),
         );
         controller.state.update_sessions(vec![session(
             "session-old",
@@ -999,8 +1404,7 @@ mod tests {
                 ascii_capabilities(),
             ),
             None,
-            actions_tx,
-            actions_rx,
+            AppControllerChannels::new(actions_tx, actions_rx),
         );
         controller.state.update_sessions(vec![existing]);
 
@@ -1014,6 +1418,111 @@ mod tests {
         assert_eq!(controller.state.conversation.active_session_id, None);
         assert!(controller.state.interaction.status.is_error);
         assert_eq!(controller.state.interaction.status.message, "create failed");
+        transport.assert_consumed();
+    }
+
+    #[tokio::test]
+    async fn submitting_prompt_restores_transcript_tail_follow_mode() {
+        let transport = MockTransport::default();
+        transport.push(MockCall::Request {
+            expected: AstrcodeTransportRequest {
+                method: AstrcodeTransportMethod::Post,
+                url: "http://localhost:5529/api/sessions/session-1/prompts".to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: Some(json!({
+                    "text": "hello"
+                })),
+            },
+            result: Ok(AstrcodeTransportResponse {
+                status: 202,
+                body: json!({
+                    "sessionId": "session-1",
+                    "accepted": true,
+                    "turnId": "turn-1"
+                })
+                .to_string(),
+            }),
+        });
+
+        let (actions_tx, actions_rx) = mpsc::unbounded_channel();
+        let mut controller = AppController::new(
+            client_with_transport(transport.clone()),
+            CliState::new(
+                "http://localhost:5529".to_string(),
+                Some(PathBuf::from("D:/repo-a")),
+                ascii_capabilities(),
+            ),
+            None,
+            AppControllerChannels::new(actions_tx, actions_rx),
+        );
+        controller.state.conversation.active_session_id = Some("session-1".to_string());
+        controller.state.replace_input("hello");
+
+        controller.submit_current_input().await;
+
+        handle_next_action(&mut controller).await;
+        assert_eq!(controller.state.interaction.status.message, "ready");
+        transport.assert_consumed();
+    }
+
+    #[tokio::test]
+    async fn submitting_skill_slash_sends_structured_skill_invocation() {
+        let transport = MockTransport::default();
+        transport.push(MockCall::Request {
+            expected: AstrcodeTransportRequest {
+                method: AstrcodeTransportMethod::Post,
+                url: "http://localhost:5529/api/sessions/session-1/prompts".to_string(),
+                auth_token: Some("session-token".to_string()),
+                query: Vec::new(),
+                json_body: Some(json!({
+                    "text": "修复失败测试",
+                    "skillInvocation": {
+                        "skillId": "review",
+                        "userPrompt": "修复失败测试"
+                    }
+                })),
+            },
+            result: Ok(AstrcodeTransportResponse {
+                status: 202,
+                body: json!({
+                    "sessionId": "session-1",
+                    "accepted": true,
+                    "turnId": "turn-2"
+                })
+                .to_string(),
+            }),
+        });
+
+        let (actions_tx, actions_rx) = mpsc::unbounded_channel();
+        let mut controller = AppController::new(
+            client_with_transport(transport.clone()),
+            CliState::new(
+                "http://localhost:5529".to_string(),
+                Some(PathBuf::from("D:/repo-a")),
+                ascii_capabilities(),
+            ),
+            None,
+            AppControllerChannels::new(actions_tx, actions_rx),
+        );
+        controller.state.conversation.active_session_id = Some("session-1".to_string());
+        controller.state.conversation.slash_candidates =
+            vec![astrcode_client::AstrcodeConversationSlashCandidateDto {
+                id: "review".to_string(),
+                title: "Review".to_string(),
+                description: "review skill".to_string(),
+                keywords: vec!["review".to_string()],
+                action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::InsertText,
+                action_value: "/review".to_string(),
+            }];
+        controller
+            .state
+            .replace_input("/review 修复失败测试".to_string());
+
+        controller.submit_current_input().await;
+
+        handle_next_action(&mut controller).await;
+        assert_eq!(controller.state.interaction.status.message, "ready");
         transport.assert_consumed();
     }
 
@@ -1059,12 +1568,12 @@ mod tests {
                 status: 200,
                 body: json!({
                     "items": [{
-                        "id": "skill-review",
+                        "id": "review",
                         "title": "Review skill",
                         "description": "插入 review skill",
                         "keywords": ["review"],
                         "actionKind": "insert_text",
-                        "actionValue": "/skill review"
+                        "actionValue": "/review"
                     }]
                 })
                 .to_string(),
@@ -1138,8 +1647,7 @@ mod tests {
                 ascii_capabilities(),
             ),
             None,
-            actions_tx,
-            actions_rx,
+            AppControllerChannels::new(actions_tx, actions_rx),
         );
         controller
             .state
@@ -1159,13 +1667,10 @@ mod tests {
             "session one should hydrate one transcript block"
         );
 
-        controller
-            .execute_command(Command::Skill {
-                query: Some("review".to_string()),
-            })
-            .await;
+        controller.state.replace_input("/review".to_string());
+        controller.open_slash_palette("review".to_string()).await;
         handle_next_action(&mut controller).await;
-        let OverlayState::SlashPalette(palette) = &controller.state.interaction.overlay else {
+        let PaletteState::Slash(palette) = &controller.state.interaction.palette else {
             panic!("skill command should open slash palette");
         };
         assert_eq!(palette.query, "review");
@@ -1183,17 +1688,17 @@ mod tests {
                 query: Some("repo-b".to_string()),
             })
             .await;
-        let OverlayState::Resume(resume) = &controller.state.interaction.overlay else {
-            panic!("resume command should open resume overlay");
+        let PaletteState::Resume(resume) = &controller.state.interaction.palette else {
+            panic!("resume command should open resume palette");
         };
         assert_eq!(resume.query, "repo-b");
         handle_next_action(&mut controller).await;
         let selection = controller
             .state
-            .selected_overlay()
-            .expect("resume overlay should keep a selection");
+            .selected_palette()
+            .expect("resume palette should keep a selection");
         controller
-            .execute_overlay_action(overlay_action(selection))
+            .execute_palette_action(palette_action(selection))
             .await
             .expect("resume selection should switch session");
         handle_next_action(&mut controller).await;

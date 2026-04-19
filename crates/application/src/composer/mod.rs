@@ -3,24 +3,12 @@
 //! 提供 composer 输入候选列表的查询和过滤用例。
 //! 候选来源包括：命令、技能、能力（通过 `KernelGateway` 查询）。
 
+pub use astrcode_core::{ComposerOption, ComposerOptionActionKind, ComposerOptionKind};
 use astrcode_kernel::KernelGateway;
 
 // ============================================================
 // 业务模型
 // ============================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ComposerOptionKind {
-    Command,
-    Skill,
-    Capability,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ComposerOptionActionKind {
-    InsertText,
-    ExecuteCommand,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposerOptionsRequest {
@@ -37,19 +25,6 @@ impl Default for ComposerOptionsRequest {
             limit: 50,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ComposerOption {
-    pub kind: ComposerOptionKind,
-    pub id: String,
-    pub title: String,
-    pub description: String,
-    pub insert_text: String,
-    pub action_kind: ComposerOptionActionKind,
-    pub action_value: String,
-    pub badges: Vec<String>,
-    pub keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

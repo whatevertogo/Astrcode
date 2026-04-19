@@ -1,3 +1,12 @@
+//! `App` 依赖的 kernel 稳定端口。
+//!
+//! 定义 `AppKernelPort` trait，将应用层与 kernel 具体实现解耦。
+//! `App` 只需要一组稳定的 agent 控制与 capability 查询契约，
+//! 不直接绑定 `Kernel` 的内部结构。
+//!
+//! 同时提供 `Kernel` 对 `AppKernelPort` 的 blanket impl，
+//! 组合根在 `bootstrap_server_runtime()` 中只需一次 `Arc<Kernel>` 即可满足两个端口的约束。
+
 use astrcode_core::SubRunHandle;
 use astrcode_kernel::{
     AgentControlError, CloseSubtreeResult, Kernel, KernelGateway, SubRunStatusView,

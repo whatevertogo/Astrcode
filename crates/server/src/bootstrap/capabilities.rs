@@ -9,23 +9,28 @@
 
 use std::{path::Path, sync::Arc};
 
-use astrcode_adapter_skills::{SkillCatalog, SkillSpec, load_builtin_skills};
+use astrcode_adapter_skills::{LayeredSkillCatalog, load_builtin_skills};
 use astrcode_adapter_tools::{
     agent_tools::{CloseAgentTool, ObserveAgentTool, SendAgentTool, SpawnAgentTool},
     builtin_tools::{
         apply_patch::ApplyPatchTool,
         edit_file::EditFileTool,
+        enter_plan_mode::EnterPlanModeTool,
+        exit_plan_mode::ExitPlanModeTool,
         find_files::FindFilesTool,
         grep::GrepTool,
         list_dir::ListDirTool,
         read_file::ReadFileTool,
         shell::ShellTool,
         skill_tool::SkillTool,
+        task_write::TaskWriteTool,
         tool_search::{ToolSearchIndex, ToolSearchTool},
+        upsert_session_plan::UpsertSessionPlanTool,
         write_file::WriteFileTool,
     },
 };
 use astrcode_application::AgentOrchestrationService;
+use astrcode_core::{SkillCatalog, SkillSpec};
 
 use super::deps::{
     core::{CapabilityInvoker, Result, Tool},
@@ -39,7 +44,7 @@ use super::deps::{
 /// 因为它们依赖 `AgentOrchestrationService`，必须在更晚的组合根阶段装配。
 pub(crate) fn build_core_tool_invokers(
     tool_search_index: Arc<ToolSearchIndex>,
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<dyn SkillCatalog>,
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadFileTool),
@@ -50,8 +55,12 @@ pub(crate) fn build_core_tool_invokers(
         Arc::new(FindFilesTool),
         Arc::new(GrepTool),
         Arc::new(ShellTool),
+        Arc::new(EnterPlanModeTool),
+        Arc::new(ExitPlanModeTool),
+        Arc::new(TaskWriteTool),
         Arc::new(ToolSearchTool::new(tool_search_index)),
         Arc::new(SkillTool::new(skill_catalog)),
+        Arc::new(UpsertSessionPlanTool),
     ];
 
     let invokers = tools
@@ -75,10 +84,13 @@ pub(crate) fn build_core_tool_invokers(
 pub(crate) fn build_skill_catalog(
     home_dir: &Path,
     mut external_base_skills: Vec<SkillSpec>,
-) -> Arc<SkillCatalog> {
+) -> Arc<LayeredSkillCatalog> {
     let mut base_skills = load_builtin_skills();
     base_skills.append(&mut external_base_skills);
-    Arc::new(SkillCatalog::new_with_home_dir(base_skills, home_dir))
+    Arc::new(LayeredSkillCatalog::new_with_home_dir(
+        base_skills,
+        home_dir,
+    ))
 }
 
 /// 让 tool_search 索引与当前外部能力事实源保持同步。
@@ -203,7 +215,10 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
-    use super::{CapabilitySurfaceSync, build_stable_local_invokers};
+    use super::{
+        CapabilitySurfaceSync, build_core_tool_invokers, build_skill_catalog,
+        build_stable_local_invokers,
+    };
     use crate::bootstrap::{
         capabilities::sync_external_tool_search_index,
         deps::{
@@ -253,6 +268,7 @@ mod tests {
                 tool_name: self.name.to_string(),
                 ok: true,
                 output: String::new(),
+                child_ref: None,
                 error: None,
                 metadata: None,
                 duration_ms: 0,
@@ -293,6 +309,8 @@ mod tests {
             Ok(PromptBuildOutput {
                 system_prompt: "noop".to_string(),
                 system_prompt_blocks: Vec::new(),
+                prompt_cache_hints: Default::default(),
+                cache_metrics: Default::default(),
                 metadata: Value::Null,
             })
         }
@@ -418,5 +436,21 @@ mod tests {
         assert!(names.iter().any(|name| name == "read_file"));
         assert!(names.iter().any(|name| name == "spawn"));
         assert!(names.iter().any(|name| name == "mcp__demo__search"));
+    }
+
+    #[test]
+    fn build_core_tool_invokers_registers_task_write() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let tool_search_index = Arc::new(ToolSearchIndex::new());
+        let skill_catalog = build_skill_catalog(temp.path(), Vec::new());
+
+        let invokers = build_core_tool_invokers(tool_search_index, skill_catalog)
+            .expect("core tool invokers should build");
+        let names = invokers
+            .into_iter()
+            .map(|invoker| invoker.capability_spec().name.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(names.iter().any(|name| name == "taskWrite"));
     }
 }

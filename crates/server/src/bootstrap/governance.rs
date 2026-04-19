@@ -6,10 +6,10 @@
 use std::{path::PathBuf, sync::Arc};
 
 use astrcode_adapter_mcp::manager::McpConnectionManager;
-use astrcode_adapter_skills::{SkillCatalog, load_builtin_skills};
+use astrcode_adapter_skills::{LayeredSkillCatalog, load_builtin_skills};
 use astrcode_application::{
-    AppGovernance, ApplicationError, ConfigService, RuntimeGovernancePort,
-    RuntimeGovernanceSnapshot, RuntimeObservabilityCollector, RuntimeReloader, SessionInfoProvider,
+    AppGovernance, ApplicationError, ModeCatalog, RuntimeGovernancePort, RuntimeGovernanceSnapshot,
+    RuntimeObservabilityCollector, RuntimeReloader, SessionInfoProvider, config::ConfigService,
     lifecycle::TaskRegistry,
 };
 use astrcode_plugin::Supervisor;
@@ -33,11 +33,12 @@ pub(crate) struct GovernanceBuildInput {
     pub observability: Arc<RuntimeObservabilityCollector>,
     pub mcp_manager: Arc<McpConnectionManager>,
     pub capability_sync: CapabilitySurfaceSync,
-    pub skill_catalog: Arc<SkillCatalog>,
+    pub skill_catalog: Arc<LayeredSkillCatalog>,
     pub plugin_search_paths: Vec<PathBuf>,
     pub plugin_skill_root: PathBuf,
     pub plugin_supervisors: Vec<Arc<Supervisor>>,
     pub working_dir: PathBuf,
+    pub mode_catalog: Option<Arc<ModeCatalog>>,
 }
 
 pub(crate) fn build_app_governance(input: GovernanceBuildInput) -> Arc<AppGovernance> {
@@ -56,6 +57,7 @@ pub(crate) fn build_app_governance(input: GovernanceBuildInput) -> Arc<AppGovern
         plugin_search_paths: input.plugin_search_paths.clone(),
         plugin_skill_root: input.plugin_skill_root.clone(),
         working_dir: input.working_dir.clone(),
+        mode_catalog: input.mode_catalog,
     });
     let managed_components: Vec<Arc<dyn ManagedRuntimeComponent>> = input
         .plugin_supervisors
@@ -160,10 +162,11 @@ struct ServerRuntimeReloader {
     coordinator: Arc<RuntimeCoordinator>,
     mcp_manager: Arc<McpConnectionManager>,
     capability_sync: CapabilitySurfaceSync,
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<LayeredSkillCatalog>,
     plugin_search_paths: Vec<PathBuf>,
     plugin_skill_root: PathBuf,
     working_dir: PathBuf,
+    mode_catalog: Option<Arc<ModeCatalog>>,
 }
 
 impl std::fmt::Debug for ServerRuntimeReloader {
@@ -194,6 +197,11 @@ impl RuntimeReloader for ServerRuntimeReloader {
             let previous_base_skills = self.skill_catalog.base_skills();
             let mut next_base_skills = load_builtin_skills();
             next_base_skills.extend(plugin_bootstrap.skills.clone());
+            if let Some(mode_catalog) = &self.mode_catalog {
+                mode_catalog
+                    .replace_plugin_modes(plugin_bootstrap.modes.clone())
+                    .map_err(ApplicationError::from)?;
+            }
 
             let previous_capabilities = self.capability_sync.current_capabilities();
             let previous_plugins = self.coordinator.plugin_registry().snapshot();

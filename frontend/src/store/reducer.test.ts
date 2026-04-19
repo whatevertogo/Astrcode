@@ -101,6 +101,13 @@ describe('reducer', () => {
     const initial = makeSessionState();
     const messages = [
       {
+        id: 'user-1',
+        kind: 'user' as const,
+        turnId: 'turn-1',
+        text: '你好',
+        timestamp: 0,
+      },
+      {
         id: 'assistant-1',
         kind: 'assistant' as const,
         turnId: 'turn-1',
@@ -120,7 +127,11 @@ describe('reducer', () => {
     });
 
     const session = next.projects[0].sessions[0];
-    expect(session.messages).toEqual([expect.objectContaining(messages[0])]);
+    expect(session.messages).toEqual([
+      expect.objectContaining(messages[0]),
+      expect.objectContaining(messages[1]),
+    ]);
     expect(session.subRunThreadTree).toBe(projectedTree);
+    expect(session.title).toBe('你好');
   });
 });

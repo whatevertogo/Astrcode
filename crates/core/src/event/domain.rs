@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentEventContext, ChildSessionNotification, CompactTrigger, PromptMetricsPayload,
-    ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SubRunResult,
-    ToolExecutionResult, ToolOutputStream,
+    AgentEventContext, ChildSessionNotification, CompactAppliedMeta, CompactTrigger,
+    PromptMetricsPayload, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
+    SubRunResult, ToolExecutionResult, ToolOutputStream,
 };
 
 /// 会话阶段
@@ -120,6 +120,7 @@ pub enum AgentEvent {
         agent: AgentEventContext,
         trigger: CompactTrigger,
         summary: String,
+        meta: CompactAppliedMeta,
         preserved_recent_turns: u32,
     },
     /// 受控子会话开始。
@@ -150,33 +151,33 @@ pub enum AgentEvent {
         turn_id: String,
         agent: AgentEventContext,
     },
-    /// Durable mailbox 消息入队（前端可见，用于 UI 渲染）。
-    AgentMailboxQueued {
+    /// Durable input queue 消息入队（前端可见，用于 UI 渲染）。
+    AgentInputQueued {
         turn_id: Option<String>,
         agent: AgentEventContext,
         #[serde(flatten)]
-        payload: crate::MailboxQueuedPayload,
+        payload: crate::InputQueuedPayload,
     },
-    /// Mailbox 批次开始消费。
-    AgentMailboxBatchStarted {
+    /// input queue 批次开始消费。
+    AgentInputBatchStarted {
         turn_id: Option<String>,
         agent: AgentEventContext,
         #[serde(flatten)]
-        payload: crate::MailboxBatchStartedPayload,
+        payload: crate::InputBatchStartedPayload,
     },
-    /// Mailbox 批次确认完成。
-    AgentMailboxBatchAcked {
+    /// input queue 批次确认完成。
+    AgentInputBatchAcked {
         turn_id: Option<String>,
         agent: AgentEventContext,
         #[serde(flatten)]
-        payload: crate::MailboxBatchAckedPayload,
+        payload: crate::InputBatchAckedPayload,
     },
-    /// Mailbox 消息丢弃。
-    AgentMailboxDiscarded {
+    /// input queue 消息丢弃。
+    AgentInputDiscarded {
         turn_id: Option<String>,
         agent: AgentEventContext,
         #[serde(flatten)]
-        payload: crate::MailboxDiscardedPayload,
+        payload: crate::InputDiscardedPayload,
     },
     /// 错误事件
     Error {

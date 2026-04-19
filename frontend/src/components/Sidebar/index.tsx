@@ -29,8 +29,6 @@ interface SidebarProps {
   onDeleteSession: (projectId: string, sessionId: string) => void;
   onOpenSettings: () => void;
   onNewSession: () => void;
-  showDebugWorkbenchEntry?: boolean;
-  onOpenDebugWorkbench?: () => void;
 }
 
 export default function Sidebar({
@@ -48,8 +46,6 @@ export default function Sidebar({
   onDeleteSession,
   onOpenSettings,
   onNewSession,
-  showDebugWorkbenchEntry = false,
-  onOpenDebugWorkbench,
 }: SidebarProps) {
   const [showModal, setShowModal] = useState(false);
 
@@ -111,15 +107,6 @@ export default function Sidebar({
       </div>
 
       <div className="px-1 pt-4 border-t border-border shrink-0">
-        {showDebugWorkbenchEntry && onOpenDebugWorkbench ? (
-          <button
-            type="button"
-            className="mb-2 flex h-[38px] w-full items-center justify-center rounded-xl border border-border bg-surface text-sm font-semibold text-text-primary shadow-soft transition-[background-color,border-color,transform] duration-150 ease-out hover:border-border-strong hover:bg-white hover:-translate-y-px"
-            onClick={onOpenDebugWorkbench}
-          >
-            打开 Debug Workbench
-          </button>
-        ) : null}
         <div className="flex items-center gap-2">
           <button
             className="h-[38px] flex-1 rounded-xl border border-border bg-surface text-center text-sm font-semibold text-text-primary shadow-soft transition-[background-color,border-color,transform] duration-150 ease-out hover:border-border-strong hover:bg-white hover:-translate-y-px"

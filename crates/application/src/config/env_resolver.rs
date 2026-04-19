@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn literal_prefix_bypasses_env() {
         assert_eq!(
-            parse_env_value("literal:my-secret-key").unwrap(),
+            parse_env_value("literal:my-secret-key").expect("literal should parse"),
             ParsedEnvValue::Literal("my-secret-key")
         );
     }
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn env_prefix_parses() {
         assert_eq!(
-            parse_env_value("env:MY_KEY").unwrap(),
+            parse_env_value("env:MY_KEY").expect("env prefix should parse"),
             ParsedEnvValue::ExplicitEnv("MY_KEY")
         );
     }
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn bare_uppercase_with_underscore_is_optional_env() {
         assert_eq!(
-            parse_env_value("MY_API_KEY").unwrap(),
+            parse_env_value("MY_API_KEY").expect("uppercase with underscore should parse"),
             ParsedEnvValue::OptionalEnv("MY_API_KEY")
         );
     }
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn plain_text_is_literal() {
         assert_eq!(
-            parse_env_value("hello world").unwrap(),
+            parse_env_value("hello world").expect("plain text should parse"),
             ParsedEnvValue::Literal("hello world")
         );
     }

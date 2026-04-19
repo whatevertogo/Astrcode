@@ -306,7 +306,7 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
         .expect("subagent should launch");
 
     let artifacts = &result
-        .handoff
+        .handoff()
         .as_ref()
         .expect("handoff should exist")
         .artifacts;
@@ -491,7 +491,7 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
         .expect("subagent should launch");
 
     let child_agent_id = result
-        .handoff
+        .handoff()
         .as_ref()
         .expect("handoff should exist")
         .artifacts
@@ -522,11 +522,6 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
     let app = build_api_router().with_state(AppState {
         app: std::sync::Arc::clone(&reloaded_runtime.app),
         governance: std::sync::Arc::clone(&reloaded_runtime.governance),
-        #[cfg(feature = "debug-workbench")]
-        debug_workbench: std::sync::Arc::new(astrcode_debug_workbench::DebugWorkbenchService::new(
-            std::sync::Arc::clone(&reloaded_runtime.app),
-            std::sync::Arc::clone(&reloaded_runtime.governance),
-        )),
         auth_sessions,
         bootstrap_auth: BootstrapAuth::new(
             "browser-token".to_string(),

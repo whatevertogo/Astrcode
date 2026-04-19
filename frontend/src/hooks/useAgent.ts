@@ -24,9 +24,12 @@ import {
   createSession,
   deleteProject,
   deleteSession,
+  forkSession,
+  getSessionMode,
   interruptSession,
   listSessionsWithMeta,
   submitPrompt,
+  switchSessionMode,
 } from '../lib/api/sessions';
 import { getConfig, reloadConfig, saveActiveSelection } from '../lib/api/config';
 import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api/models';
@@ -37,6 +40,7 @@ import type {
   DeleteProjectResult,
   ExecutionControl,
   ModelOption,
+  SessionModeState,
   SessionMeta,
   TestResult,
 } from '../types';
@@ -366,6 +370,16 @@ export function useAgent() {
     return listSessionsWithMeta();
   }, []);
 
+  const handleForkSession = useCallback(
+    async (
+      sessionId: string,
+      options?: { turnId?: string; storageSeq?: number }
+    ): Promise<SessionMeta> => {
+      return forkSession(sessionId, options);
+    },
+    []
+  );
+
   const handleLoadConversationView = useCallback(
     async (
       sessionId: string,
@@ -410,9 +424,21 @@ export function useAgent() {
   const handleCompactSession = useCallback(
     async (
       sessionId: string,
-      control?: ExecutionControl
+      control?: ExecutionControl,
+      instructions?: string
     ): Promise<{ accepted: boolean; deferred: boolean; message: string }> => {
-      return compactSession(sessionId, control);
+      return compactSession(sessionId, control, instructions);
+    },
+    []
+  );
+
+  const handleGetSessionMode = useCallback(async (sessionId: string): Promise<SessionModeState> => {
+    return getSessionMode(sessionId);
+  }, []);
+
+  const handleSwitchSessionMode = useCallback(
+    async (sessionId: string, modeId: string): Promise<SessionModeState> => {
+      return switchSessionMode(sessionId, modeId);
     },
     []
   );
@@ -504,6 +530,7 @@ export function useAgent() {
 
   return {
     createSession: handleCreateSession,
+    forkSession: handleForkSession,
     listSessionsWithMeta: handleListSessionsWithMeta,
     loadConversationView: handleLoadConversationView,
     connectSession,
@@ -512,6 +539,8 @@ export function useAgent() {
     interrupt: handleInterrupt,
     cancelSubRun: handleCancelSubRun,
     compactSession: handleCompactSession,
+    getSessionMode: handleGetSessionMode,
+    switchSessionMode: handleSwitchSessionMode,
     deleteSession: handleDeleteSession,
     deleteProject: handleDeleteProject,
     listComposerOptions: handleListComposerOptions,

@@ -12,6 +12,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::{ChildAgentRef, ExecutionResultCommon};
+
 /// LLM 推理/思考内容。
 ///
 /// 用于支持扩展思考模型（如 Claude extended thinking），
@@ -73,6 +75,9 @@ pub struct ToolExecutionResult {
     /// 额外元数据（如 diff 信息、终端显示提示等）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// 工具结果关联的稳定 child reference。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_ref: Option<ChildAgentRef>,
     /// 执行耗时（毫秒）
     pub duration_ms: u64,
     /// 输出是否因大小限制被截断
@@ -110,10 +115,34 @@ pub struct ToolOutputDelta {
 }
 
 impl ToolExecutionResult {
+    /// 用公共执行结果字段一次性构造工具结果，避免先写占位值再二次覆盖。
+    pub fn from_common(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        ok: bool,
+        output: impl Into<String>,
+        child_ref: Option<ChildAgentRef>,
+        common: ExecutionResultCommon,
+    ) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            ok,
+            output: output.into(),
+            error: common.error,
+            metadata: common.metadata,
+            child_ref,
+            duration_ms: common.duration_ms,
+            truncated: common.truncated,
+        }
+    }
+
     /// 生成面向模型的工具结果内容。
     ///
     /// 成功时直接返回输出；失败时拼接错误信息和输出，
     /// 确保 LLM 能理解工具执行的结果。
+    /// 如果关联了子 agent（child_ref），追加精确引用提示，
+    /// 防止 LLM 自作主张改写 agentId。
     pub fn model_content(&self) -> String {
         let base = if self.ok {
             self.output.clone()
@@ -137,32 +166,31 @@ impl ToolExecutionResult {
     }
 
     fn child_agent_reference_hint(&self) -> Option<String> {
-        let metadata = self.metadata.as_ref()?.as_object()?;
-        let agent_ref = metadata.get("agentRef")?.as_object()?;
-        let agent_id = agent_ref.get("agentId")?.as_str()?;
+        let child_ref = self.child_ref.as_ref()?;
 
         let mut lines = vec![
             "Child agent reference:".to_string(),
-            format!("- agentId: {agent_id}"),
+            format!("- agentId: {}", child_ref.agent_id()),
         ];
 
-        if let Some(sub_run_id) = agent_ref.get("subRunId").and_then(Value::as_str) {
-            lines.push(format!("- subRunId: {sub_run_id}"));
-        }
-        if let Some(session_id) = agent_ref.get("sessionId").and_then(Value::as_str) {
-            lines.push(format!("- sessionId: {session_id}"));
-        }
-        if let Some(open_session_id) = agent_ref.get("openSessionId").and_then(Value::as_str) {
-            lines.push(format!("- openSessionId: {open_session_id}"));
-        }
-        if let Some(status) = agent_ref.get("status").and_then(Value::as_str) {
-            lines.push(format!("- status: {status}"));
-        }
+        lines.push(format!("- subRunId: {}", child_ref.sub_run_id()));
+        lines.push(format!("- sessionId: {}", child_ref.session_id()));
+        lines.push(format!("- openSessionId: {}", child_ref.open_session_id));
+        lines.push(format!("- status: {:?}", child_ref.status).to_lowercase());
 
         // 这里显式强调“精确复用原值”，避免模型把 `agent-1` 自作主张改写成
         // `agent-01` 之类的展示型编号，导致后续协作工具命中不存在的 agent。
         lines.push("Use this exact `agentId` value in later send/observe/close calls.".to_string());
         Some(lines.join("\n"))
+    }
+
+    pub fn common(&self) -> ExecutionResultCommon {
+        ExecutionResultCommon {
+            error: self.error.clone(),
+            metadata: self.metadata.clone(),
+            duration_ms: self.duration_ms,
+            truncated: self.truncated,
+        }
     }
 }
 
@@ -176,12 +204,18 @@ pub enum UserMessageOrigin {
     /// 用户直接输入
     #[default]
     User,
+    /// 从 durable 输入队列恢复并注入的内部输入。
+    QueuedInput,
     /// turn 内 budget 允许继续时注入的内部续写提示。
     AutoContinueNudge,
     /// assistant 输出被截断后，为同一 turn 续写而注入的内部提示。
     ContinuationPrompt,
     /// 子会话交付后用于唤醒父会话继续决策的内部提示。
     ReactivationPrompt,
+    /// compact 后为最近真实用户消息生成的极短目的摘要。
+    RecentUserContextDigest,
+    /// compact 后重新注入的最近真实用户消息原文。
+    RecentUserContext,
     /// 压缩摘要（上下文压缩后插入的摘要消息）
     CompactSummary,
 }
@@ -338,6 +372,7 @@ mod tests {
     use serde_json::json;
 
     use super::{ToolExecutionResult, split_assistant_content};
+    use crate::{AgentId, ExecutionResultCommon, SessionId, SubRunId};
 
     #[test]
     fn split_assistant_content_extracts_inline_thinking_blocks() {
@@ -354,16 +389,16 @@ mod tests {
     }
 
     #[test]
-    fn split_assistant_content_prefers_explicit_reasoning_and_strips_legacy_tags() {
+    fn split_assistant_content_prefers_explicit_reasoning_and_strips_inline_think_tags() {
         let parts = split_assistant_content(
-            "<think>legacy</think>\nvisible",
+            "<think>hidden</think>\nvisible",
             Some("persisted reasoning"),
         );
 
         assert_eq!(parts.visible_content, "visible");
         assert_eq!(
             parts.reasoning_content.as_deref(),
-            Some("persisted reasoning\n\nlegacy")
+            Some("persisted reasoning\n\nhidden")
         );
     }
 
@@ -376,22 +411,25 @@ mod tests {
     }
 
     #[test]
-    fn model_content_appends_exact_child_agent_reference_from_metadata() {
+    fn model_content_appends_exact_child_agent_reference_from_child_ref() {
         let result = ToolExecutionResult {
             tool_call_id: "call-1".to_string(),
             tool_name: "spawn".to_string(),
             ok: true,
             output: "spawn 已在后台启动。".to_string(),
             error: None,
-            metadata: Some(json!({
-                "agentRef": {
-                    "agentId": "agent-1",
-                    "subRunId": "subrun-1",
-                    "sessionId": "session-parent",
-                    "openSessionId": "session-parent",
-                    "status": "running"
-                }
-            })),
+            metadata: Some(json!({ "schema": "subRunResult" })),
+            child_ref: Some(crate::ChildAgentRef {
+                identity: crate::ChildExecutionIdentity {
+                    agent_id: AgentId::from("agent-1"),
+                    session_id: SessionId::from("session-parent"),
+                    sub_run_id: SubRunId::from("subrun-1"),
+                },
+                parent: crate::ParentExecutionRef::default(),
+                lineage_kind: crate::ChildSessionLineageKind::Spawn,
+                status: crate::AgentLifecycleStatus::Running,
+                open_session_id: SessionId::from("session-parent"),
+            }),
             duration_ms: 0,
             truncated: false,
         };
@@ -401,5 +439,28 @@ mod tests {
         assert!(content.contains("- agentId: agent-1"));
         assert!(content.contains("- subRunId: subrun-1"));
         assert!(content.contains("Use this exact `agentId` value"));
+    }
+
+    #[test]
+    fn from_common_preserves_failure_fields_without_placeholder_override() {
+        let result = ToolExecutionResult::from_common(
+            "call-1",
+            "spawn",
+            false,
+            "",
+            None,
+            ExecutionResultCommon::failure(
+                "spawn failed",
+                Some(json!({ "schema": "subRunResult" })),
+                17,
+                true,
+            ),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(result.error.as_deref(), Some("spawn failed"));
+        assert_eq!(result.metadata, Some(json!({ "schema": "subRunResult" })));
+        assert_eq!(result.duration_ms, 17);
+        assert!(result.truncated);
     }
 }

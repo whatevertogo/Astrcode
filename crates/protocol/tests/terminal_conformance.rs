@@ -18,6 +18,9 @@ fn fixture(name: &str) -> Value {
         "snapshot" => include_str!("fixtures/terminal/v1/snapshot.json"),
         "delta_append_block" => include_str!("fixtures/terminal/v1/delta_append_block.json"),
         "delta_patch_block" => include_str!("fixtures/terminal/v1/delta_patch_block.json"),
+        "delta_patch_tool_metadata" => {
+            include_str!("fixtures/terminal/v1/delta_patch_tool_metadata.json")
+        },
         "delta_patch_replace_markdown" => {
             include_str!("fixtures/terminal/v1/delta_patch_replace_markdown.json")
         },
@@ -88,7 +91,9 @@ fn terminal_snapshot_fixture_freezes_v1_hydration_shape() {
                 tool_call_id: Some("tool-call-1".to_string()),
                 tool_name: "shell_command".to_string(),
                 status: TerminalBlockStatusDto::Complete,
+                input: Some(json!({ "command": "rg terminal" })),
                 summary: Some("读取 protocol 上下文".to_string()),
+                metadata: None,
             }),
             TerminalBlockDto::ToolStream(TerminalToolStreamBlockDto {
                 id: "block-tool-stream-1".to_string(),
@@ -126,12 +131,12 @@ fn terminal_snapshot_fixture_freezes_v1_hydration_shape() {
                 action_value: "new_session".to_string(),
             },
             TerminalSlashCandidateDto {
-                id: "slash-skill".to_string(),
-                title: "/skill".to_string(),
-                description: "插入 skill 引用".to_string(),
-                keywords: vec!["skill".to_string(), "insert".to_string()],
+                id: "review".to_string(),
+                title: "/review".to_string(),
+                description: "调用 review skill".to_string(),
+                keywords: vec!["skill".to_string(), "review".to_string()],
                 action_kind: TerminalSlashActionKindDto::InsertText,
-                action_value: "/skill ".to_string(),
+                action_value: "/review".to_string(),
             },
         ],
         banner: Some(TerminalBannerDto {
@@ -200,6 +205,35 @@ fn terminal_delta_fixtures_freeze_append_patch_and_rehydrate_shapes() {
     assert_eq!(
         serde_json::to_value(&patch_decoded).expect("patch should encode"),
         patch_fixture
+    );
+
+    let tool_metadata_fixture = fixture("delta_patch_tool_metadata");
+    let tool_metadata_decoded: TerminalStreamEnvelopeDto =
+        serde_json::from_value(tool_metadata_fixture.clone())
+            .expect("tool metadata patch fixture should decode");
+    assert_eq!(
+        tool_metadata_decoded,
+        TerminalStreamEnvelopeDto {
+            session_id: "session-root".to_string(),
+            cursor: TerminalCursorDto("cursor:opaque:v1:session-root/44.5==".to_string()),
+            delta: TerminalDeltaDto::PatchBlock {
+                block_id: "block-tool-call-1".to_string(),
+                patch: TerminalBlockPatchDto::ReplaceMetadata {
+                    metadata: json!({
+                        "openSessionId": "session-child-1",
+                        "agentRef": {
+                            "agentId": "agent-child-1",
+                            "subRunId": "subrun-1",
+                            "openSessionId": "session-child-1"
+                        }
+                    }),
+                },
+            },
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&tool_metadata_decoded).expect("tool metadata patch should encode"),
+        tool_metadata_fixture
     );
 
     let replace_fixture = fixture("delta_patch_replace_markdown");

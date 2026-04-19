@@ -19,14 +19,14 @@
 
 use astrcode_core::{LlmMessage, LlmUsage, ModelLimits, UserMessageOrigin};
 
-use crate::heuristics::{MESSAGE_BASE_TOKENS, SUMMARY_RESERVE_TOKENS, TOOL_CALL_BASE_TOKENS};
+use crate::heuristics::{MESSAGE_BASE_TOKENS, TOOL_CALL_BASE_TOKENS};
 
 const REQUEST_ESTIMATE_PADDING_NUMERATOR: usize = 4;
 const REQUEST_ESTIMATE_PADDING_DENOMINATOR: usize = 3;
 
 /// Prompt token 使用快照。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PromptTokenSnapshot {
+pub(crate) struct PromptTokenSnapshot {
     /// 估算的上下文 token 数。
     pub context_tokens: usize,
     /// 已确认的预算 token 数（优先使用 Provider 报告值）。
@@ -37,6 +37,10 @@ pub struct PromptTokenSnapshot {
     pub effective_window: usize,
     /// 触发压缩的阈值 token 数。
     pub threshold_tokens: usize,
+    /// 剩余可用 token 数（已经扣除 compact 输出预留）。
+    pub remaining_context_tokens: usize,
+    /// 当剩余空间低于该值时应触发 compact。
+    pub reserved_context_size: usize,
 }
 
 /// Token 使用跟踪器。
@@ -44,7 +48,7 @@ pub struct PromptTokenSnapshot {
 /// 优先使用 Provider 报告的 usage 数据（最接近计费 Token），
 /// 若 Provider 未报告则回退到估算值。
 #[derive(Debug, Default, Clone, Copy)]
-pub struct TokenUsageTracker {
+pub(crate) struct TokenUsageTracker {
     anchored_budget_tokens: usize,
 }
 
@@ -76,27 +80,32 @@ pub fn build_prompt_snapshot(
     system_prompt: Option<&str>,
     limits: ModelLimits,
     threshold_percent: u8,
+    summary_reserve_tokens: usize,
+    reserved_context_size: usize,
 ) -> PromptTokenSnapshot {
     let context_tokens = estimate_request_tokens(messages, system_prompt);
+    let effective_window = effective_context_window(limits, summary_reserve_tokens);
     PromptTokenSnapshot {
         context_tokens,
         budget_tokens: tracker.budget_tokens(context_tokens),
         context_window: limits.context_window,
-        effective_window: effective_context_window(limits),
-        threshold_tokens: compact_threshold_tokens(limits, threshold_percent),
+        effective_window,
+        threshold_tokens: compact_threshold_tokens(effective_window, threshold_percent),
+        remaining_context_tokens: effective_window.saturating_sub(context_tokens),
+        reserved_context_size,
     }
 }
 
 /// 计算有效上下文窗口（扣除压缩预留）。
-pub fn effective_context_window(limits: ModelLimits) -> usize {
+pub fn effective_context_window(limits: ModelLimits, summary_reserve_tokens: usize) -> usize {
     limits
         .context_window
-        .saturating_sub(SUMMARY_RESERVE_TOKENS.min(limits.context_window))
+        .saturating_sub(summary_reserve_tokens.min(limits.context_window))
 }
 
 /// 计算压缩阈值 token 数。
-pub fn compact_threshold_tokens(limits: ModelLimits, threshold_percent: u8) -> usize {
-    effective_context_window(limits)
+pub fn compact_threshold_tokens(effective_window: usize, threshold_percent: u8) -> usize {
+    effective_window
         .saturating_mul(threshold_percent as usize)
         .saturating_div(100)
 }
@@ -104,6 +113,7 @@ pub fn compact_threshold_tokens(limits: ModelLimits, threshold_percent: u8) -> u
 /// 判断是否需要触发压缩。
 pub fn should_compact(snapshot: PromptTokenSnapshot) -> bool {
     snapshot.context_tokens >= snapshot.threshold_tokens
+        || snapshot.remaining_context_tokens <= snapshot.reserved_context_size
 }
 
 /// 估算完整 LLM 请求的 token 数（messages + system prompt）。
@@ -123,9 +133,12 @@ pub fn estimate_message_tokens(message: &LlmMessage) -> usize {
                 + estimate_text_tokens(content)
                 + match origin {
                     UserMessageOrigin::User => 0,
+                    UserMessageOrigin::QueuedInput => 8,
                     UserMessageOrigin::AutoContinueNudge => 6,
                     UserMessageOrigin::ContinuationPrompt => 10,
                     UserMessageOrigin::ReactivationPrompt => 8,
+                    UserMessageOrigin::RecentUserContextDigest => 8,
+                    UserMessageOrigin::RecentUserContext => 8,
                     UserMessageOrigin::CompactSummary => 16,
                 }
         },
@@ -207,8 +220,21 @@ mod tests {
             max_output_tokens: 8_000,
         };
 
-        assert_eq!(effective_context_window(limits), 80_000);
-        assert_eq!(compact_threshold_tokens(limits, 90), 72_000);
+        assert_eq!(effective_context_window(limits, 20_000), 80_000);
+        assert_eq!(compact_threshold_tokens(80_000, 90), 72_000);
+    }
+
+    #[test]
+    fn should_compact_when_remaining_context_is_below_reserved_size() {
+        assert!(should_compact(PromptTokenSnapshot {
+            context_tokens: 40_000,
+            budget_tokens: 40_000,
+            context_window: 100_000,
+            effective_window: 80_000,
+            threshold_tokens: 72_000,
+            remaining_context_tokens: 10_000,
+            reserved_context_size: 20_000,
+        }));
     }
 
     #[test]

@@ -28,7 +28,10 @@ pub use self::{
     domain::{AgentEvent, Phase},
     phase::{PhaseTracker, normalize_recovered_phase, target_phase as phase_of_storage_event},
     translate::{EventTranslator, replay_records},
-    types::{CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent},
+    types::{
+        CompactAppliedMeta, CompactMode, CompactTrigger, PromptMetricsPayload, StorageEvent,
+        StorageEventPayload, StoredEvent,
+    },
 };
 
 /// 生成全局唯一的会话 ID，格式为 `YYYY-MM-DDTHH-MM-SS-xxxxxxxx`。
@@ -43,6 +46,16 @@ pub fn generate_session_id() -> String {
     let uuid = Uuid::new_v4().simple().to_string();
     let short = &uuid[..8];
     format!("{dt}-{short}")
+}
+
+/// 生成全局唯一的 turn ID。
+///
+/// turn 会在极短时间内连续创建，单纯依赖毫秒时间戳会撞 ID，
+/// 从而让后续提交错误复用前一个 turn 的终态快照。
+pub fn generate_turn_id() -> String {
+    let uuid = Uuid::new_v4().simple().to_string();
+    let short = &uuid[..8];
+    format!("turn-{}-{short}", Utc::now().timestamp_millis())
 }
 
 /// 会话元数据

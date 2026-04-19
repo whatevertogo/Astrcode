@@ -2,14 +2,14 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::{
     capability::{ColorLevel, TerminalCapabilities},
-    state::WrappedLineStyle,
+    state::{WrappedLineStyle, WrappedSpanStyle},
 };
 
 pub trait ThemePalette {
     fn line_style(&self, style: WrappedLineStyle) -> Style;
+    fn span_style(&self, style: WrappedSpanStyle) -> Style;
     fn glyph(&self, unicode: &'static str, ascii: &'static str) -> &'static str;
     fn divider(&self) -> &'static str;
-    fn vertical_divider(&self) -> &'static str;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -22,61 +22,72 @@ impl CodexTheme {
         Self { capabilities }
     }
 
-    pub fn muted_block_style(self) -> Style {
+    pub fn menu_block_style(&self) -> Style {
+        Style::default().fg(self.text_primary())
+    }
+
+    fn surface_alt(&self) -> Color {
         match self.capabilities.color {
-            ColorLevel::TrueColor => Style::default().bg(Color::Rgb(26, 28, 33)),
-            ColorLevel::Ansi16 => Style::default().bg(Color::Black),
-            ColorLevel::None => Style::default(),
+            ColorLevel::TrueColor => Color::Rgb(56, 52, 48),
+            ColorLevel::Ansi16 => Color::DarkGray,
+            ColorLevel::None => Color::Reset,
         }
     }
 
-    pub fn overlay_border_style(self) -> Style {
+    fn accent(&self) -> Color {
         match self.capabilities.color {
-            ColorLevel::TrueColor => Style::default().fg(Color::Rgb(90, 96, 110)),
-            ColorLevel::Ansi16 => Style::default().fg(Color::DarkGray),
-            ColorLevel::None => Style::default(),
-        }
-    }
-
-    fn accent(self) -> Color {
-        match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(72, 196, 255),
-            _ => Color::Cyan,
-        }
-    }
-
-    fn magenta(self) -> Color {
-        match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(221, 183, 255),
-            _ => Color::Magenta,
-        }
-    }
-
-    fn dim(self) -> Color {
-        match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(123, 129, 142),
-            _ => Color::DarkGray,
-        }
-    }
-
-    fn warning(self) -> Color {
-        match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(245, 201, 104),
+            ColorLevel::TrueColor => Color::Rgb(224, 128, 82),
             _ => Color::Yellow,
         }
     }
 
-    fn error(self) -> Color {
+    fn accent_soft(&self) -> Color {
         match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(255, 122, 122),
+            ColorLevel::TrueColor => Color::Rgb(196, 124, 88),
+            _ => Color::Yellow,
+        }
+    }
+
+    fn thinking(&self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(241, 151, 104),
+            _ => Color::Yellow,
+        }
+    }
+
+    fn text_primary(&self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(237, 229, 219),
+            _ => Color::White,
+        }
+    }
+
+    fn text_secondary(&self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(196, 186, 173),
+            _ => Color::Gray,
+        }
+    }
+
+    fn text_muted(&self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(136, 126, 114),
+            _ => Color::DarkGray,
+        }
+    }
+
+    fn error(&self) -> Color {
+        match self.capabilities.color {
+            ColorLevel::TrueColor => Color::Rgb(227, 111, 111),
             _ => Color::Red,
         }
     }
 
-    fn success(self) -> Color {
+    fn selection(&self) -> Color {
         match self.capabilities.color {
-            ColorLevel::TrueColor => Color::Rgb(121, 214, 121),
-            _ => Color::Green,
+            ColorLevel::TrueColor => Color::Rgb(70, 65, 60),
+            ColorLevel::Ansi16 => Color::DarkGray,
+            ColorLevel::None => Color::Reset,
         }
     }
 }
@@ -86,42 +97,50 @@ impl ThemePalette for CodexTheme {
         let base = Style::default();
         if matches!(self.capabilities.color, ColorLevel::None) {
             return match style {
-                WrappedLineStyle::Accent
-                | WrappedLineStyle::Success
-                | WrappedLineStyle::Warning
-                | WrappedLineStyle::Error
-                | WrappedLineStyle::Selection
-                | WrappedLineStyle::Header => base.add_modifier(Modifier::BOLD),
-                WrappedLineStyle::Dim | WrappedLineStyle::Footer | WrappedLineStyle::Border => {
+                WrappedLineStyle::Plain
+                | WrappedLineStyle::ThinkingBody
+                | WrappedLineStyle::ToolBody
+                | WrappedLineStyle::Notice
+                | WrappedLineStyle::PaletteItem => base,
+                WrappedLineStyle::Selection
+                | WrappedLineStyle::PromptEcho
+                | WrappedLineStyle::ToolLabel
+                | WrappedLineStyle::ErrorText
+                | WrappedLineStyle::PaletteSelected => base.add_modifier(Modifier::BOLD),
+                WrappedLineStyle::ThinkingLabel => {
+                    base.add_modifier(Modifier::BOLD | Modifier::ITALIC)
+                },
+                WrappedLineStyle::Muted | WrappedLineStyle::ThinkingPreview => {
                     base.add_modifier(Modifier::DIM)
                 },
-                WrappedLineStyle::User => base.add_modifier(Modifier::REVERSED),
-                WrappedLineStyle::Plain => base,
             };
         }
 
         match style {
-            WrappedLineStyle::Plain => base.fg(Color::White),
-            WrappedLineStyle::Dim | WrappedLineStyle::Border => {
-                base.fg(self.dim()).add_modifier(Modifier::DIM)
+            WrappedLineStyle::Plain => base.fg(self.text_primary()),
+            WrappedLineStyle::Muted | WrappedLineStyle::ThinkingPreview => {
+                base.fg(self.text_muted())
             },
-            WrappedLineStyle::Footer => base.fg(self.dim()),
-            WrappedLineStyle::Accent => base.fg(self.accent()).add_modifier(Modifier::BOLD),
-            WrappedLineStyle::Success => base.fg(self.success()).add_modifier(Modifier::BOLD),
-            WrappedLineStyle::Warning => base.fg(self.warning()),
-            WrappedLineStyle::Error => base.fg(self.error()).add_modifier(Modifier::BOLD),
-            WrappedLineStyle::User => base.fg(Color::White).bg(match self.capabilities.color {
-                ColorLevel::TrueColor => Color::Rgb(35, 40, 52),
-                _ => Color::Black,
-            }),
             WrappedLineStyle::Selection => base
-                .fg(Color::White)
-                .bg(match self.capabilities.color {
-                    ColorLevel::TrueColor => Color::Rgb(34, 74, 99),
-                    _ => Color::DarkGray,
-                })
+                .fg(self.text_primary())
+                .bg(self.selection())
                 .add_modifier(Modifier::BOLD),
-            WrappedLineStyle::Header => base.fg(self.magenta()).add_modifier(Modifier::BOLD),
+            WrappedLineStyle::PromptEcho => base
+                .fg(self.text_primary())
+                .bg(self.surface_alt())
+                .add_modifier(Modifier::BOLD),
+            WrappedLineStyle::ThinkingLabel => base
+                .fg(self.thinking())
+                .add_modifier(Modifier::ITALIC | Modifier::BOLD),
+            WrappedLineStyle::ThinkingBody => base.fg(self.text_secondary()),
+            WrappedLineStyle::ToolLabel => base.fg(self.accent_soft()).add_modifier(Modifier::BOLD),
+            WrappedLineStyle::ToolBody => base.fg(self.text_secondary()),
+            WrappedLineStyle::Notice => base.fg(self.text_secondary()),
+            WrappedLineStyle::ErrorText => base.fg(self.error()).add_modifier(Modifier::BOLD),
+            WrappedLineStyle::PaletteItem => base.fg(self.text_secondary()),
+            WrappedLineStyle::PaletteSelected => {
+                base.fg(self.accent()).add_modifier(Modifier::BOLD)
+            },
         }
     }
 
@@ -137,7 +156,43 @@ impl ThemePalette for CodexTheme {
         self.glyph("─", "-")
     }
 
-    fn vertical_divider(&self) -> &'static str {
-        self.glyph("│", "|")
+    fn span_style(&self, style: WrappedSpanStyle) -> Style {
+        let base = Style::default();
+        if matches!(self.capabilities.color, ColorLevel::None) {
+            return match style {
+                WrappedSpanStyle::Strong
+                | WrappedSpanStyle::Heading
+                | WrappedSpanStyle::TableHeader => base.add_modifier(Modifier::BOLD),
+                WrappedSpanStyle::Emphasis => base.add_modifier(Modifier::ITALIC),
+                WrappedSpanStyle::Link => base.add_modifier(Modifier::UNDERLINED),
+                WrappedSpanStyle::InlineCode
+                | WrappedSpanStyle::CodeFence
+                | WrappedSpanStyle::CodeText
+                | WrappedSpanStyle::TextArt
+                | WrappedSpanStyle::TableBorder
+                | WrappedSpanStyle::ListMarker
+                | WrappedSpanStyle::QuoteMarker
+                | WrappedSpanStyle::HeadingRule => base.add_modifier(Modifier::DIM),
+            };
+        }
+
+        match style {
+            WrappedSpanStyle::Strong => base.add_modifier(Modifier::BOLD),
+            WrappedSpanStyle::Emphasis => base.add_modifier(Modifier::ITALIC),
+            WrappedSpanStyle::Heading => base.fg(self.accent()).add_modifier(Modifier::BOLD),
+            WrappedSpanStyle::HeadingRule => base.fg(self.text_muted()),
+            WrappedSpanStyle::TableBorder => base.fg(self.text_muted()),
+            WrappedSpanStyle::TableHeader => {
+                base.fg(self.accent_soft()).add_modifier(Modifier::BOLD)
+            },
+            WrappedSpanStyle::InlineCode => base.fg(self.accent_soft()),
+            WrappedSpanStyle::Link => base.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+            WrappedSpanStyle::ListMarker | WrappedSpanStyle::QuoteMarker => {
+                base.fg(self.accent_soft()).add_modifier(Modifier::BOLD)
+            },
+            WrappedSpanStyle::CodeFence => base.fg(self.text_muted()).add_modifier(Modifier::DIM),
+            WrappedSpanStyle::CodeText => base.fg(self.text_primary()),
+            WrappedSpanStyle::TextArt => base.fg(self.text_primary()),
+        }
     }
 }

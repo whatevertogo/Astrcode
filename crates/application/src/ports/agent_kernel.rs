@@ -1,3 +1,13 @@
+//! Agent 编排子域依赖的 kernel 稳定端口。
+//!
+//! `AgentKernelPort` 继承 `AppKernelPort`，扩展了 agent 编排所需的全部 kernel 操作：
+//! lifecycle 管理、子 agent spawn/resume/terminate、inbox 投递、parent delivery 队列。
+//!
+//! 为什么单独抽 trait：`AgentOrchestrationService` 需要的控制面明显大于 `App`，
+//! 避免 `AppKernelPort` 被动膨胀成新的大而全 façade。
+//!
+//! 同时提供 `Kernel` 对 `AgentKernelPort` 的 blanket impl。
+
 use astrcode_core::{
     AgentInboxEnvelope, AgentLifecycleStatus, AgentTurnOutcome, ChildSessionNotification,
     DelegationMetadata, SubRunHandle,
@@ -59,6 +69,7 @@ pub trait AgentKernelPort: AppKernelPort {
         &self,
         parent_session_id: &str,
     ) -> Option<Vec<PendingParentDelivery>>;
+    async fn pending_parent_delivery_count(&self, parent_session_id: &str) -> usize;
     async fn requeue_parent_delivery_batch(&self, parent_session_id: &str, delivery_ids: &[String]);
     async fn consume_parent_delivery_batch(
         &self,
@@ -181,6 +192,12 @@ impl AgentKernelPort for Kernel {
     ) -> Option<Vec<PendingParentDelivery>> {
         self.agent()
             .checkout_parent_delivery_batch(parent_session_id)
+            .await
+    }
+
+    async fn pending_parent_delivery_count(&self, parent_session_id: &str) -> usize {
+        self.agent_control()
+            .pending_parent_delivery_count(parent_session_id)
             .await
     }
 

@@ -7,8 +7,9 @@ mod branch;
 mod compaction_cycle;
 mod continuation_cycle;
 mod events;
+mod fork;
 mod interrupt;
-pub mod llm_cycle;
+pub(crate) mod llm_cycle;
 mod loop_control;
 pub(crate) mod manual_compact;
 mod replay;
@@ -18,25 +19,18 @@ mod submit;
 #[cfg(test)]
 pub(crate) mod test_support;
 // pub mod subagent;
-pub mod summary;
-pub mod tool_cycle;
+mod summary;
+pub(crate) mod tool_cycle;
 mod tool_result_budget;
 
-use astrcode_core::{SessionId, TurnId};
+pub use fork::{ForkPoint, ForkResult};
 pub use loop_control::{TurnLoopTransition, TurnStopCause};
 pub use submit::AgentPromptSubmission;
 pub use summary::{TurnCollaborationSummary, TurnFinishReason, TurnSummary};
 
-/// Turn 运行请求参数。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnRunRequest {
-    pub session_id: SessionId,
-    pub turn_id: TurnId,
-}
-
 /// Turn 结束原因。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TurnOutcome {
+pub(crate) enum TurnOutcome {
     /// LLM 返回纯文本（无 tool_calls），自然结束。
     Completed,
     /// 用户取消或 CancelToken 触发。
@@ -45,4 +39,4 @@ pub enum TurnOutcome {
     Error { message: String },
 }
 
-pub use runner::{TurnRunRequest as RunnerRequest, TurnRunResult, run_turn};
+pub(crate) use runner::{TurnRunRequest as RunnerRequest, TurnRunResult, run_turn};

@@ -40,7 +40,7 @@ use crate::{
 
 /// 工具执行周期的最终结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolCycleOutcome {
+pub(crate) enum ToolCycleOutcome {
     /// 所有工具调用均已完成。
     Completed,
     /// 工具执行被取消。
@@ -48,7 +48,7 @@ pub enum ToolCycleOutcome {
 }
 
 /// 工具执行周期的完整结果。
-pub struct ToolCycleResult {
+pub(crate) struct ToolCycleResult {
     pub outcome: ToolCycleOutcome,
     /// 工具结果消息，需要追加到对话历史。
     pub tool_messages: Vec<LlmMessage>,
@@ -59,13 +59,13 @@ pub struct ToolCycleResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolEventEmissionMode {
+pub(crate) enum ToolEventEmissionMode {
     Immediate,
     Buffered,
 }
 
 /// 工具执行周期的上下文参数，避免函数参数过多。
-pub struct ToolCycleContext<'a> {
+pub(crate) struct ToolCycleContext<'a> {
     pub gateway: &'a KernelGateway,
     pub session_state: &'a Arc<SessionState>,
     pub session_id: &'a str,
@@ -92,7 +92,7 @@ struct SingleToolInvocation<'a> {
     event_emission_mode: ToolEventEmissionMode,
 }
 
-pub struct BufferedToolExecutionRequest {
+pub(crate) struct BufferedToolExecutionRequest {
     pub gateway: KernelGateway,
     pub session_state: Arc<SessionState>,
     pub tool_call: ToolCallRequest,
@@ -104,8 +104,7 @@ pub struct BufferedToolExecutionRequest {
     pub tool_result_inline_limit: usize,
 }
 
-pub struct BufferedToolExecution {
-    pub tool_call: ToolCallRequest,
+pub(crate) struct BufferedToolExecution {
     pub result: ToolExecutionResult,
     pub events: Vec<StorageEvent>,
     pub started_at: Instant,
@@ -346,7 +345,6 @@ pub async fn execute_buffered_tool_call(
     .await;
     let finished_at = Instant::now();
     BufferedToolExecution {
-        tool_call,
         result,
         events,
         started_at,
@@ -397,6 +395,7 @@ async fn invoke_single_tool(
         "tool start",
     )
     .await;
+    broadcast_tool_start(&session_state, turn_id, agent, tool_call);
 
     // 构建工具上下文
     let tool_ctx = ToolContext::new(
@@ -416,6 +415,13 @@ async fn invoke_single_tool(
         tool_result_inline_limit,
     ))
     .with_tool_output_sender(tool_output_tx.clone());
+    let tool_ctx = match session_state.current_mode_id() {
+        Ok(current_mode_id) => tool_ctx.with_current_mode_id(current_mode_id),
+        Err(error) => {
+            log::warn!("failed to read current mode before tool execution: {error}");
+            tool_ctx
+        },
+    };
     let tool_ctx = if let Some(sink) = &event_sink {
         tool_ctx.with_event_sink(Arc::clone(sink))
     } else {
@@ -447,6 +453,15 @@ async fn invoke_single_tool(
         "tool result",
     )
     .await;
+    broadcast_tool_result(
+        &session_state,
+        turn_id,
+        agent,
+        &ToolExecutionResult {
+            duration_ms,
+            ..result.clone()
+        },
+    );
 
     let mut events = buffered_events
         .lock()
@@ -469,6 +484,34 @@ fn broadcast_tool_output_delta(
         tool_name: delta.tool_name,
         stream: delta.stream,
         delta: delta.delta,
+    });
+}
+
+fn broadcast_tool_start(
+    session_state: &SessionState,
+    turn_id: &str,
+    agent: &AgentEventContext,
+    tool_call: &ToolCallRequest,
+) {
+    session_state.broadcast_live_event(astrcode_core::AgentEvent::ToolCallStart {
+        turn_id: turn_id.to_string(),
+        agent: agent.clone(),
+        tool_call_id: tool_call.id.clone(),
+        tool_name: tool_call.name.clone(),
+        input: tool_call.args.clone(),
+    });
+}
+
+fn broadcast_tool_result(
+    session_state: &SessionState,
+    turn_id: &str,
+    agent: &AgentEventContext,
+    result: &ToolExecutionResult,
+) {
+    session_state.broadcast_live_event(astrcode_core::AgentEvent::ToolCallResult {
+        turn_id: turn_id.to_string(),
+        agent: agent.clone(),
+        result: result.clone(),
     });
 }
 
@@ -563,7 +606,11 @@ mod tests {
                 .expect("observed lock should work")
                 .push(ObservedToolContext {
                     turn_id: ctx.turn_id().map(ToString::to_string),
-                    agent_id: ctx.agent_context().agent_id.clone(),
+                    agent_id: ctx
+                        .agent_context()
+                        .agent_id
+                        .clone()
+                        .map(|id| id.to_string()),
                     agent_profile: ctx.agent_context().agent_profile.clone(),
                 });
             Ok(ToolExecutionResult {
@@ -573,6 +620,7 @@ mod tests {
                 output: "ok".to_string(),
                 error: None,
                 metadata: None,
+                child_ref: None,
                 duration_ms: 0,
                 truncated: false,
             })
@@ -637,6 +685,76 @@ mod tests {
                 output: "done".to_string(),
                 error: None,
                 metadata: None,
+                child_ref: None,
+                duration_ms: 0,
+                truncated: false,
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct StreamingStderrProbeTool;
+
+    #[async_trait]
+    impl Tool for StreamingStderrProbeTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "streaming_stderr_probe".to_string(),
+                description: "emits stderr probe events".to_string(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        fn capability_spec(
+            &self,
+        ) -> std::result::Result<
+            astrcode_core::CapabilitySpec,
+            astrcode_core::CapabilitySpecBuildError,
+        > {
+            astrcode_core::CapabilitySpec::builder("streaming_stderr_probe", CapabilityKind::Tool)
+                .description("emits stderr probe events")
+                .schema(json!({"type": "object"}), json!({"type": "string"}))
+                .build()
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _input: Value,
+            ctx: &ToolContext,
+        ) -> Result<ToolExecutionResult> {
+            let turn_id = ctx
+                .turn_id()
+                .expect("stderr probe should receive turn id")
+                .to_string();
+            let sink = ctx
+                .event_sink()
+                .expect("stderr probe should receive tool event sink");
+            sink.emit(crate::turn::events::tool_call_delta_event(
+                &turn_id,
+                ctx.agent_context(),
+                tool_call_id.clone(),
+                "streaming_stderr_probe".to_string(),
+                ToolOutputStream::Stderr,
+                "durable-stderr".to_string(),
+            ))
+            .await?;
+            assert!(
+                ctx.emit_stderr(
+                    tool_call_id.clone(),
+                    "streaming_stderr_probe",
+                    "live-stderr"
+                ),
+                "stderr probe should be able to emit live stderr"
+            );
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "streaming_stderr_probe".to_string(),
+                ok: false,
+                output: String::new(),
+                error: Some("stderr failure".to_string()),
+                metadata: None,
+                child_ref: None,
                 duration_ms: 0,
                 truncated: false,
             })
@@ -763,13 +881,35 @@ mod tests {
             "tool result should be durably recorded immediately"
         );
 
-        let live_event = timeout(Duration::from_secs(1), live_receiver.recv())
+        let live_start = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool start in time")
+            .expect("live receiver should stay open");
+        let live_delta = timeout(Duration::from_secs(1), live_receiver.recv())
             .await
             .expect("live receiver should get stdout delta in time")
             .expect("live receiver should stay open");
+        let live_result = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool result in time")
+            .expect("live receiver should stay open");
         assert!(
             matches!(
-                live_event,
+                live_start,
+                astrcode_core::AgentEvent::ToolCallStart {
+                    turn_id,
+                    tool_call_id,
+                    tool_name,
+                    ..
+                } if turn_id == "turn-live"
+                    && tool_call_id == "call-live"
+                    && tool_name == "streaming_probe"
+            ),
+            "tool start should go through the live channel immediately"
+        );
+        assert!(
+            matches!(
+                live_delta,
                 astrcode_core::AgentEvent::ToolCallDelta {
                     turn_id,
                     tool_call_id,
@@ -783,6 +923,17 @@ mod tests {
                     && delta == "live-stdout"
             ),
             "stdout delta should go through the live channel immediately"
+        );
+        assert!(
+            matches!(
+                live_result,
+                astrcode_core::AgentEvent::ToolCallResult { turn_id, result, .. }
+                    if turn_id == "turn-live"
+                        && result.tool_call_id == "call-live"
+                        && result.tool_name == "streaming_probe"
+                        && result.output == "done"
+            ),
+            "tool result should go through the live channel immediately"
         );
     }
 
@@ -847,13 +998,35 @@ mod tests {
             "buffered mode should not immediately append durable events"
         );
 
-        let live_event = timeout(Duration::from_secs(1), live_receiver.recv())
+        let live_start = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool start in time")
+            .expect("live receiver should stay open");
+        let live_delta = timeout(Duration::from_secs(1), live_receiver.recv())
             .await
             .expect("live receiver should get stdout delta in time")
             .expect("live receiver should stay open");
+        let live_result = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool result in time")
+            .expect("live receiver should stay open");
         assert!(
             matches!(
-                live_event,
+                live_start,
+                astrcode_core::AgentEvent::ToolCallStart {
+                    turn_id,
+                    tool_call_id,
+                    tool_name,
+                    ..
+                } if turn_id == "turn-buffered"
+                    && tool_call_id == "call-buffered"
+                    && tool_name == "streaming_probe"
+            ),
+            "buffered mode should still broadcast tool start live"
+        );
+        assert!(
+            matches!(
+                live_delta,
                 astrcode_core::AgentEvent::ToolCallDelta {
                     turn_id,
                     tool_call_id,
@@ -868,5 +1041,119 @@ mod tests {
             ),
             "buffered mode should keep live stdout forwarding"
         );
+        assert!(
+            matches!(
+                live_result,
+                astrcode_core::AgentEvent::ToolCallResult { turn_id, result, .. }
+                    if turn_id == "turn-buffered"
+                        && result.tool_call_id == "call-buffered"
+                        && result.tool_name == "streaming_probe"
+                        && result.output == "done"
+            ),
+            "buffered mode should still broadcast tool result live"
+        );
+    }
+
+    #[tokio::test]
+    async fn invoke_single_tool_forwards_stderr_to_durable_and_live_channels() {
+        let kernel = test_kernel_with_tool(Arc::new(StreamingStderrProbeTool), 8192);
+        let tool_call = ToolCallRequest {
+            id: "call-stderr".to_string(),
+            name: "streaming_stderr_probe".to_string(),
+            args: json!({}),
+        };
+        let agent = AgentEventContext::root_execution("root-agent:session-1", "default");
+        let session_state = test_session_state();
+        let mut live_receiver = session_state.subscribe_live();
+
+        let cancel = CancelToken::new();
+        let (result, fallback_events) = invoke_single_tool(SingleToolInvocation {
+            gateway: kernel.gateway(),
+            session_state: Arc::clone(&session_state),
+            tool_call: &tool_call,
+            session_id: "session-1",
+            working_dir: ".",
+            turn_id: "turn-stderr",
+            agent: &agent,
+            cancel: &cancel,
+            tool_result_inline_limit: 32 * 1024,
+            event_emission_mode: ToolEventEmissionMode::Immediate,
+        })
+        .await;
+
+        assert!(
+            !result.ok && result.error.as_deref() == Some("stderr failure"),
+            "stderr probe should surface failure result: {result:?}"
+        );
+        assert!(
+            fallback_events.is_empty(),
+            "immediate stderr event emission should avoid fallback buffering: {fallback_events:?}"
+        );
+
+        let stored = session_state
+            .snapshot_recent_stored_events()
+            .expect("snapshot recent stored events should work");
+        assert!(
+            stored.iter().any(|event| matches!(
+                &event.event.payload,
+                StorageEventPayload::ToolCallDelta {
+                    tool_call_id,
+                    tool_name,
+                    stream: ToolOutputStream::Stderr,
+                    delta,
+                    ..
+                } if tool_call_id == "call-stderr"
+                    && tool_name == "streaming_stderr_probe"
+                    && delta == "durable-stderr"
+            )),
+            "stderr durable delta should be recorded immediately"
+        );
+
+        let live_start = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool start in time")
+            .expect("live receiver should stay open");
+        let live_delta = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get stderr delta in time")
+            .expect("live receiver should stay open");
+        let live_result = timeout(Duration::from_secs(1), live_receiver.recv())
+            .await
+            .expect("live receiver should get tool result in time")
+            .expect("live receiver should stay open");
+
+        assert!(matches!(
+            live_start,
+            astrcode_core::AgentEvent::ToolCallStart {
+                turn_id,
+                tool_call_id,
+                tool_name,
+                ..
+            } if turn_id == "turn-stderr"
+                && tool_call_id == "call-stderr"
+                && tool_name == "streaming_stderr_probe"
+        ));
+        assert!(matches!(
+            live_delta,
+            astrcode_core::AgentEvent::ToolCallDelta {
+                turn_id,
+                tool_call_id,
+                tool_name,
+                stream: ToolOutputStream::Stderr,
+                delta,
+                ..
+            } if turn_id == "turn-stderr"
+                && tool_call_id == "call-stderr"
+                && tool_name == "streaming_stderr_probe"
+                && delta == "live-stderr"
+        ));
+        assert!(matches!(
+            live_result,
+            astrcode_core::AgentEvent::ToolCallResult { turn_id, result, .. }
+                if turn_id == "turn-stderr"
+                    && result.tool_call_id == "call-stderr"
+                    && result.tool_name == "streaming_stderr_probe"
+                    && result.error.as_deref() == Some("stderr failure")
+        ));
     }
 }

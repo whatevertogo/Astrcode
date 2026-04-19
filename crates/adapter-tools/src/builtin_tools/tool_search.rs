@@ -188,6 +188,7 @@ impl Tool for ToolSearchTool {
                 "returned": payload.len(),
                 "query": args.query,
             })),
+            child_ref: None,
             duration_ms: 0,
             truncated: false,
         })

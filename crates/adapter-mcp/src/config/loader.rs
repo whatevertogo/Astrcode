@@ -273,7 +273,8 @@ mod tests {
             }
         }"#;
 
-        let configs = McpConfigManager::load_from_json(json, McpConfigScope::Project).unwrap();
+        let configs = McpConfigManager::load_from_json(json, McpConfigScope::Project)
+            .expect("config should parse");
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "filesystem");
         assert!(matches!(
@@ -296,7 +297,8 @@ mod tests {
             }
         }"#;
 
-        let configs = McpConfigManager::load_from_json(json, McpConfigScope::Project).unwrap();
+        let configs = McpConfigManager::load_from_json(json, McpConfigScope::Project)
+            .expect("config should parse");
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "filesystem");
         assert!(matches!(
@@ -323,7 +325,7 @@ mod tests {
         assert!(result.is_err());
         assert!(
             result
-                .unwrap_err()
+                .expect_err("explicit stdio without command should fail")
                 .to_string()
                 .contains("declared as stdio but missing command")
         );
@@ -341,7 +343,8 @@ mod tests {
             }
         }"#;
 
-        let configs = McpConfigManager::load_from_json(json, McpConfigScope::User).unwrap();
+        let configs = McpConfigManager::load_from_json(json, McpConfigScope::User)
+            .expect("config should parse");
         assert_eq!(configs.len(), 1);
         assert!(matches!(
             configs[0].transport,
@@ -360,7 +363,8 @@ mod tests {
             }
         }"#;
 
-        let configs = McpConfigManager::load_from_json(json, McpConfigScope::Project).unwrap();
+        let configs = McpConfigManager::load_from_json(json, McpConfigScope::Project)
+            .expect("config should parse");
         assert_eq!(configs.len(), 1);
         assert!(!configs[0].enabled);
     }
@@ -374,7 +378,8 @@ mod tests {
             }
         }"#;
 
-        let configs = McpConfigManager::load_from_json(json, McpConfigScope::Project).unwrap();
+        let configs = McpConfigManager::load_from_json(json, McpConfigScope::Project)
+            .expect("config should parse");
         assert_eq!(configs.len(), 1); // 第二个被去重
         // HashMap 迭代顺序不确定，保留的是先遇到的那个
         assert!(configs[0].name == "fs1" || configs[0].name == "fs2");
@@ -390,7 +395,12 @@ mod tests {
 
         let result = McpConfigManager::load_from_json(json, McpConfigScope::Project);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("neither"));
+        assert!(
+            result
+                .expect_err("no command/url should fail")
+                .to_string()
+                .contains("neither")
+        );
     }
 
     #[test]
@@ -405,7 +415,7 @@ mod tests {
         assert!(result.is_err());
         assert!(
             result
-                .unwrap_err()
+                .expect_err("unknown transport type should fail")
                 .to_string()
                 .contains("unknown transport type")
         );
@@ -424,21 +434,21 @@ mod tests {
 
         let result = McpConfigManager::load_from_json(json, McpConfigScope::Project);
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let err = result.expect_err("missing env var should fail").to_string();
         assert!(err.contains("NONEXISTENT_VAR_12345"), "Error: {}", err);
     }
 
     #[test]
     fn test_expand_env_vars_with_existing_var() {
         std::env::set_var("TEST_MCP_HOME", "/test/path");
-        let result = expand_env_vars("${TEST_MCP_HOME}/server").unwrap();
+        let result = expand_env_vars("${TEST_MCP_HOME}/server").expect("env var should resolve");
         assert_eq!(result, "/test/path/server");
         std::env::remove_var("TEST_MCP_HOME");
     }
 
     #[test]
     fn test_expand_env_vars_no_vars() {
-        let result = expand_env_vars("plain-string").unwrap();
+        let result = expand_env_vars("plain-string").expect("plain string should resolve");
         assert_eq!(result, "plain-string");
     }
 

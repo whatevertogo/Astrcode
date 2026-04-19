@@ -114,13 +114,15 @@ function buildMessageFingerprint(message: Message): string {
       message.streaming ? 1 : 0
     }`;
   }
+  if (message.kind === 'plan') {
+    return `${message.id}:plan:${message.eventKind}:${message.title.length}:${message.planPath.length}:${message.content?.length ?? 0}:${message.review?.kind ?? ''}:${message.blockers.missingHeadings.length}:${message.blockers.invalidSections.length}`;
+  }
   if (message.kind === 'toolCall') {
     return `${message.id}:tool:${message.status}:${message.output?.length ?? 0}:${
       message.error?.length ?? 0
-    }`;
-  }
-  if (message.kind === 'toolStream') {
-    return `${message.id}:toolStream:${message.toolCallId}:${message.stream}:${message.status}:${message.content.length}`;
+    }:${message.streams?.stdout.length ?? 0}:${message.streams?.stderr.length ?? 0}:${
+      message.childRef?.subRunId ?? ''
+    }:${message.metadata === undefined ? '' : JSON.stringify(message.metadata)}`;
   }
   if (message.kind === 'promptMetrics') {
     return `${message.id}:promptMetrics:${message.stepIndex}:${message.estimatedTokens}:${
@@ -137,7 +139,7 @@ function buildMessageFingerprint(message: Message): string {
     return `${message.id}:subRunStart:${message.subRunId ?? 'unknown'}`;
   }
   if (message.kind === 'childSessionNotification') {
-    return `${message.id}:childNotification:${message.childRef.subRunId}:${message.notificationKind}:${message.status}:${message.delivery?.idempotencyKey ?? 'legacy'}`;
+    return `${message.id}:childNotification:${message.childRef.subRunId}:${message.notificationKind}:${message.status}:${message.delivery?.idempotencyKey ?? 'missing-delivery'}`;
   }
   return `${message.id}:subRunFinish:${message.subRunId ?? 'unknown'}:${message.result.status}`;
 }
@@ -155,7 +157,58 @@ function remapMessageReference(
   if (next.kind !== previous.kind) {
     return null;
   }
+  if (hasSubRunTopologyChange(previous, next)) {
+    return null;
+  }
   return next;
+}
+
+function sameSpawnedAgentRef(left: SpawnedAgentRef | null, right: SpawnedAgentRef | null): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.subRunId === right.subRunId &&
+    left.agentId === right.agentId &&
+    left.childSessionId === right.childSessionId
+  );
+}
+
+function sameChildRefTopology(
+  left: ChildSessionNotificationMessage['childRef'],
+  right: ChildSessionNotificationMessage['childRef']
+): boolean {
+  return (
+    left.agentId === right.agentId &&
+    left.subRunId === right.subRunId &&
+    left.parentAgentId === right.parentAgentId &&
+    left.parentSubRunId === right.parentSubRunId &&
+    left.openSessionId === right.openSessionId
+  );
+}
+
+function hasSubRunTopologyChange(previous: Message, next: Message): boolean {
+  if (
+    previous.subRunId !== next.subRunId ||
+    previous.agentId !== next.agentId ||
+    previous.parentSubRunId !== next.parentSubRunId ||
+    previous.childSessionId !== next.childSessionId
+  ) {
+    return true;
+  }
+
+  if (previous.kind === 'toolCall' && next.kind === 'toolCall') {
+    return !sameSpawnedAgentRef(pickSpawnedAgentRef(previous), pickSpawnedAgentRef(next));
+  }
+
+  if (previous.kind === 'childSessionNotification' && next.kind === 'childSessionNotification') {
+    return !sameChildRefTopology(previous.childRef, next.childRef);
+  }
+
+  return false;
 }
 
 function patchThreadItems(
@@ -216,43 +269,15 @@ function getOrCreateRecord(
   return created;
 }
 
-function pickStringField(value: unknown, ...keys: string[]): string | undefined {
-  if (typeof value !== 'object' || value === null) {
-    return undefined;
-  }
-
-  for (const key of keys) {
-    const candidate = (value as Record<string, unknown>)[key];
-    if (typeof candidate === 'string' && candidate.length > 0) {
-      return candidate;
-    }
-  }
-
-  return undefined;
-}
-
 function pickSpawnedAgentRef(message: Message): SpawnedAgentRef | null {
-  if (message.kind !== 'toolCall' || message.toolName !== 'spawn' || message.status !== 'ok') {
-    return null;
-  }
-
-  const metadata =
-    typeof message.metadata === 'object' && message.metadata !== null ? message.metadata : null;
-  const agentRef = metadata
-    ? ((metadata as Record<string, unknown>).agentRef ??
-      (metadata as Record<string, unknown>).agent_ref)
-    : null;
-  const subRunId = pickStringField(agentRef, 'subRunId', 'sub_run_id');
-  if (!subRunId) {
+  if (message.kind !== 'toolCall' || message.status !== 'ok' || !message.childRef) {
     return null;
   }
 
   return {
-    subRunId,
-    agentId: pickStringField(agentRef, 'agentId', 'agent_id'),
-    childSessionId:
-      pickStringField(agentRef, 'openSessionId', 'open_session_id') ??
-      pickStringField(metadata, 'openSessionId', 'open_session_id'),
+    subRunId: message.childRef.subRunId,
+    agentId: message.childRef.agentId,
+    childSessionId: message.childRef.openSessionId,
   };
 }
 
@@ -426,7 +451,7 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     record.ownBodyEntries.push({ index, message });
   });
 
-  rootEntries.forEach(({ index, message }) => {
+  messages.forEach((message, index) => {
     const spawnedAgentRef = pickSpawnedAgentRef(message);
     if (!spawnedAgentRef) {
       return;
@@ -442,6 +467,12 @@ function buildSubRunIndex(messages: Message[]): SubRunIndex {
     }
     if (!record.childSessionId && spawnedAgentRef.childSessionId) {
       record.childSessionId = spawnedAgentRef.childSessionId;
+    }
+    const parentSubRunId = message.subRunId
+      ? (aliases.get(message.subRunId) ?? message.subRunId)
+      : null;
+    if (!record.parentSubRunId && parentSubRunId && parentSubRunId !== canonicalSubRunId) {
+      record.parentSubRunId = parentSubRunId;
     }
   });
 

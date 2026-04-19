@@ -11,8 +11,7 @@ use std::{
 
 use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_llm::{
-    LlmClientConfig, ModelLimits as AdapterModelLimits, anthropic::AnthropicProvider,
-    openai::OpenAiProvider,
+    LlmClientConfig, ModelLimits, anthropic::AnthropicProvider, openai::OpenAiProvider,
 };
 use astrcode_adapter_mcp::{core_port::McpResourceProvider, manager::McpConnectionManager};
 use astrcode_adapter_prompt::{
@@ -20,17 +19,17 @@ use astrcode_adapter_prompt::{
 };
 use astrcode_adapter_storage::config_store::FileConfigStore;
 use astrcode_application::{
-    ApplicationError, ConfigService, ProfileResolutionService,
+    ApplicationError, ProfileResolutionService,
     config::{
-        api_key, resolve_anthropic_messages_api_url, resolve_openai_chat_completions_api_url,
+        ConfigService, api_key, resolve_anthropic_messages_api_url, resolve_current_model,
+        resolve_openai_chat_completions_api_url,
     },
     execution::ProfileProvider,
 };
 
 use super::deps::core::{
     AgentProfile, AstrError, LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelConfig,
-    ModelLimits, PromptProvider, ResolvedRuntimeConfig, ResourceProvider, Result,
-    resolve_runtime_config,
+    PromptProvider, ResolvedRuntimeConfig, ResourceProvider, Result, resolve_runtime_config,
 };
 
 pub(crate) fn build_llm_provider(
@@ -114,7 +113,7 @@ impl ConfigBackedLlmProvider {
         let config = self
             .config_service
             .load_overlayed_config(Some(self.working_dir.as_path()))?;
-        let selection = astrcode_application::resolve_current_model(&config)?;
+        let selection = resolve_current_model(&config)?;
         let profile = config
             .profiles
             .iter()
@@ -191,20 +190,14 @@ impl ConfigBackedLlmProvider {
                 spec.endpoint.clone(),
                 spec.api_key.clone(),
                 spec.model.clone(),
-                AdapterModelLimits {
-                    context_window: spec.limits.context_window,
-                    max_output_tokens: spec.limits.max_output_tokens,
-                },
+                spec.limits,
                 spec.client_config,
             )?),
             "anthropic" => Arc::new(AnthropicProvider::new(
                 spec.endpoint.clone(),
                 spec.api_key.clone(),
                 spec.model.clone(),
-                AdapterModelLimits {
-                    context_window: spec.limits.context_window,
-                    max_output_tokens: spec.limits.max_output_tokens,
-                },
+                spec.limits,
                 spec.client_config,
             )?),
             other => {

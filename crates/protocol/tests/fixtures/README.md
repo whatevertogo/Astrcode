@@ -2,7 +2,16 @@
 
 This directory records protocol fixture coverage used by conformance tests.
 
-## v4 Baseline Fixtures
+## v5 Baseline Fixtures
+
+- v5/initialize.json: Session initialize payload baseline.
+- v5/invoke.json: Tool invocation payload baseline.
+- v5/event_delta.json: Streaming delta payload baseline.
+- v5/cancel.json: Cancellation payload baseline.
+- v5/result_initialize.json: Successful initialize result payload baseline.
+- v5/result_error.json: Error result payload baseline.
+
+## Historical v4 Fixtures
 
 - v4/initialize.json: Session initialize payload baseline.
 - v4/invoke.json: Tool invocation payload baseline.
@@ -19,11 +28,11 @@ This directory records protocol fixture coverage used by conformance tests.
 - terminal/v1/delta_rehydrate_required.json: Cursor 失效后的 rehydrate-required delta baseline.
 - terminal/v1/error_envelope.json: Terminal banner/status error envelope baseline.
 
-## Legacy History Coverage Note
+## Historical History Coverage Note
 
-Legacy durable subrun lineage behavior is currently validated by runtime/server regression tests
+Historical durable subrun lineage behavior is currently validated by runtime/server regression tests
 that seed StorageEvent history directly. This fixture directory tracks wire-format payload samples;
-legacy lineage degradation semantics are tracked in:
+historical lineage degradation semantics are tracked in:
 
 - specs/001-runtime-boundary-refactor/quickstart.md (Scenario C)
 - crates/server/src/tests/runtime_routes_tests.rs

@@ -1,16 +1,30 @@
-/// ! 这是 App 的用例实现，不是 ports
+//! Session 用例（`App` 的 session 相关方法）。
+//!
+//! 用户直接发起的 session 操作：prompt 提交、compact、mode 切换、
+//! session 列表查询、快照查询等。这些方法组装治理面并委托到 session-runtime。
+
 use std::path::Path;
 
 use astrcode_core::{
-    AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, SessionMeta,
-    StoredEvent,
+    AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ModeId,
+    PromptDeclaration, SessionMeta, StoredEvent,
 };
 
 use crate::{
-    App, ApplicationError, CompactSessionAccepted, ExecutionControl, SessionControlStateSnapshot,
-    SessionReplay, SessionTranscriptSnapshot,
+    App, ApplicationError, CompactSessionAccepted, CompactSessionSummary, ExecutionControl,
+    ModeSummary, ProjectPlanArchiveDetail, ProjectPlanArchiveSummary, PromptAcceptedSummary,
+    PromptSkillInvocation, SessionControlStateSnapshot, SessionListSummary, SessionReplay,
+    SessionTranscriptSnapshot,
     agent::{
         IMPLICIT_ROOT_PROFILE_ID, implicit_session_root_agent_id, root_execution_event_context,
+    },
+    format_local_rfc3339,
+    governance_surface::{GovernanceBusyPolicy, SessionGovernanceInput},
+    session_plan::{
+        active_plan_requires_approval, build_plan_exit_declaration, build_plan_prompt_context,
+        build_plan_prompt_declarations, copy_session_plan_artifacts,
+        current_mode_requires_plan_context, list_project_plan_archives, load_session_plan_state,
+        mark_active_session_plan_approved, parse_plan_approval, read_project_plan_archive,
     },
 };
 
@@ -41,6 +55,46 @@ impl App {
             .map_err(ApplicationError::from)
     }
 
+    pub async fn fork_session(
+        &self,
+        session_id: &str,
+        fork_point: astrcode_session_runtime::ForkPoint,
+    ) -> Result<SessionMeta, ApplicationError> {
+        self.validate_non_empty("sessionId", session_id)?;
+        let source_working_dir = self
+            .session_runtime
+            .get_session_working_dir(session_id)
+            .await?;
+        let normalized_session_id = astrcode_session_runtime::normalize_session_id(session_id);
+        let result = self
+            .session_runtime
+            .fork_session(
+                &astrcode_core::SessionId::from(normalized_session_id),
+                fork_point,
+            )
+            .await
+            .map_err(ApplicationError::from)?;
+        let meta = self
+            .session_runtime
+            .list_session_metas()
+            .await
+            .map_err(ApplicationError::from)?
+            .into_iter()
+            .find(|meta| meta.session_id == result.new_session_id.as_str())
+            .ok_or_else(|| {
+                ApplicationError::Internal(format!(
+                    "forked session '{}' was created but metadata is unavailable",
+                    result.new_session_id
+                ))
+            })?;
+        copy_session_plan_artifacts(
+            session_id,
+            result.new_session_id.as_str(),
+            Path::new(&source_working_dir),
+        )?;
+        Ok(meta)
+    }
+
     pub async fn delete_project(
         &self,
         working_dir: &str,
@@ -51,12 +105,28 @@ impl App {
             .map_err(ApplicationError::from)
     }
 
+    pub fn list_project_plan_archives(
+        &self,
+        working_dir: &Path,
+    ) -> Result<Vec<ProjectPlanArchiveSummary>, ApplicationError> {
+        list_project_plan_archives(working_dir)
+    }
+
+    pub fn read_project_plan_archive(
+        &self,
+        working_dir: &Path,
+        archive_id: &str,
+    ) -> Result<Option<ProjectPlanArchiveDetail>, ApplicationError> {
+        self.validate_non_empty("archiveId", archive_id)?;
+        read_project_plan_archive(working_dir, archive_id)
+    }
+
     pub async fn submit_prompt(
         &self,
         session_id: &str,
         text: String,
     ) -> Result<ExecutionAccepted, ApplicationError> {
-        self.submit_prompt_with_control(session_id, text, None)
+        self.submit_prompt_with_options(session_id, text, None, None)
             .await
     }
 
@@ -66,7 +136,27 @@ impl App {
         text: String,
         control: Option<ExecutionControl>,
     ) -> Result<ExecutionAccepted, ApplicationError> {
-        self.validate_non_empty("prompt", &text)?;
+        self.submit_prompt_with_options(session_id, text, control, None)
+            .await
+    }
+
+    /// 带 skill 调用选项的 prompt 提交。
+    ///
+    /// 完整流程：
+    /// 1. 规范化文本（处理 skill invocation 与纯文本的交互）
+    /// 2. 校验 ExecutionControl 参数
+    /// 3. 加载 runtime 配置 + 确保 session root agent context
+    /// 4. 若有 skill invocation，解析 skill 并构建 prompt declaration
+    /// 5. 构建治理面（工具白名单、审批策略、协作指导等）
+    /// 6. 委托 session-runtime 提交 prompt
+    pub async fn submit_prompt_with_options(
+        &self,
+        session_id: &str,
+        text: String,
+        control: Option<ExecutionControl>,
+        skill_invocation: Option<PromptSkillInvocation>,
+    ) -> Result<ExecutionAccepted, ApplicationError> {
+        let text = normalize_submission_text(text, skill_invocation.as_ref())?;
         if let Some(control) = &control {
             control.validate()?;
         }
@@ -74,32 +164,96 @@ impl App {
             .session_runtime
             .get_session_working_dir(session_id)
             .await?;
-        let mut runtime = self
+        let runtime = self
             .config_service
             .load_resolved_runtime_config(Some(Path::new(&working_dir)))?;
-        if let Some(control) = control {
-            if control.manual_compact.is_some() {
-                return Err(ApplicationError::InvalidArgument(
-                    "manualCompact is not valid for prompt submission".to_string(),
-                ));
-            }
-            if let Some(max_steps) = control.max_steps {
-                runtime.max_steps = max_steps as usize;
-            }
-        }
         let root_agent = self.ensure_session_root_agent_context(session_id).await?;
+        let mut current_mode_id = self
+            .session_runtime
+            .session_mode_state(session_id)
+            .await
+            .map_err(ApplicationError::from)?
+            .current_mode_id;
+        let mut prompt_declarations = Vec::new();
+        let plan_state = load_session_plan_state(session_id, Path::new(&working_dir))?;
+        let plan_approval = parse_plan_approval(&text);
+
+        if active_plan_requires_approval(plan_state.as_ref()) && plan_approval.approved {
+            let approved_plan =
+                mark_active_session_plan_approved(session_id, Path::new(&working_dir))?;
+            if current_mode_id == ModeId::plan() {
+                self.switch_mode(session_id, ModeId::code()).await?;
+                current_mode_id = ModeId::code();
+            }
+            if let Some(summary) = approved_plan {
+                prompt_declarations.push(build_plan_exit_declaration(session_id, &summary));
+            }
+        } else if current_mode_id == ModeId::plan()
+            && current_mode_requires_plan_context(&current_mode_id)
+            && !plan_approval.approved
+        {
+            let context = build_plan_prompt_context(session_id, Path::new(&working_dir), &text)?;
+            prompt_declarations.extend(build_plan_prompt_declarations(session_id, &context));
+        }
+
+        if let Some(skill_invocation) = skill_invocation {
+            prompt_declarations.push(
+                self.build_submission_skill_declaration(
+                    Path::new(&working_dir),
+                    &skill_invocation,
+                )?,
+            );
+        }
+        let surface = self.governance_surface.session_surface(
+            self.kernel.as_ref(),
+            SessionGovernanceInput {
+                session_id: session_id.to_string(),
+                turn_id: astrcode_core::generate_turn_id(),
+                working_dir: working_dir.clone(),
+                profile: root_agent
+                    .agent_profile
+                    .clone()
+                    .unwrap_or_else(|| IMPLICIT_ROOT_PROFILE_ID.to_string()),
+                mode_id: current_mode_id,
+                runtime,
+                control,
+                extra_prompt_declarations: prompt_declarations,
+                busy_policy: GovernanceBusyPolicy::BranchOnBusy,
+            },
+        )?;
         self.session_runtime
             .submit_prompt_for_agent(
                 session_id,
                 text,
-                runtime,
-                astrcode_session_runtime::AgentPromptSubmission {
-                    agent: root_agent,
-                    ..Default::default()
-                },
+                surface.runtime.clone(),
+                surface.into_submission(root_agent, None),
             )
             .await
             .map_err(ApplicationError::from)
+    }
+
+    pub async fn submit_prompt_summary(
+        &self,
+        session_id: &str,
+        text: String,
+        control: Option<ExecutionControl>,
+        skill_invocation: Option<PromptSkillInvocation>,
+    ) -> Result<PromptAcceptedSummary, ApplicationError> {
+        let accepted_control = normalize_prompt_control(control)?;
+        let accepted = self
+            .submit_prompt_with_options(
+                session_id,
+                text,
+                accepted_control.clone(),
+                skill_invocation,
+            )
+            .await?;
+        Ok(PromptAcceptedSummary {
+            turn_id: accepted.turn_id.to_string(),
+            session_id: accepted.session_id.to_string(),
+            branched_from_session_id: accepted.branched_from_session_id,
+            accepted_control,
+        })
     }
 
     pub async fn interrupt_session(&self, session_id: &str) -> Result<(), ApplicationError> {
@@ -113,13 +267,24 @@ impl App {
         &self,
         session_id: &str,
     ) -> Result<CompactSessionAccepted, ApplicationError> {
-        self.compact_session_with_control(session_id, None).await
+        self.compact_session_with_options(session_id, None, None)
+            .await
     }
 
     pub async fn compact_session_with_control(
         &self,
         session_id: &str,
         control: Option<ExecutionControl>,
+    ) -> Result<CompactSessionAccepted, ApplicationError> {
+        self.compact_session_with_options(session_id, control, None)
+            .await
+    }
+
+    pub async fn compact_session_with_options(
+        &self,
+        session_id: &str,
+        control: Option<ExecutionControl>,
+        instructions: Option<String>,
     ) -> Result<CompactSessionAccepted, ApplicationError> {
         if let Some(control) = &control {
             control.validate()?;
@@ -143,10 +308,34 @@ impl App {
             .load_resolved_runtime_config(Some(Path::new(&working_dir)))?;
         let deferred = self
             .session_runtime
-            .compact_session(session_id, runtime)
+            .compact_session(session_id, runtime, instructions)
             .await
             .map_err(ApplicationError::from)?;
         Ok(CompactSessionAccepted { deferred })
+    }
+
+    pub async fn compact_session_summary(
+        &self,
+        session_id: &str,
+        control: Option<ExecutionControl>,
+        instructions: Option<String>,
+    ) -> Result<CompactSessionSummary, ApplicationError> {
+        let accepted = self
+            .compact_session_with_options(
+                session_id,
+                normalize_compact_control(control),
+                normalize_compact_instructions(instructions),
+            )
+            .await?;
+        Ok(CompactSessionSummary {
+            accepted: true,
+            deferred: accepted.deferred,
+            message: if accepted.deferred {
+                "手动 compact 已登记，会在当前 turn 完成后执行。".to_string()
+            } else {
+                "手动 compact 已执行。".to_string()
+            },
+        })
     }
 
     pub async fn session_transcript_snapshot(
@@ -165,6 +354,49 @@ impl App {
     ) -> Result<SessionControlStateSnapshot, ApplicationError> {
         self.session_runtime
             .session_control_state(session_id)
+            .await
+            .map_err(ApplicationError::from)
+    }
+
+    pub async fn list_modes(&self) -> Result<Vec<ModeSummary>, ApplicationError> {
+        Ok(self.mode_catalog.list())
+    }
+
+    pub async fn session_mode_state(
+        &self,
+        session_id: &str,
+    ) -> Result<astrcode_session_runtime::SessionModeSnapshot, ApplicationError> {
+        self.session_runtime
+            .session_mode_state(session_id)
+            .await
+            .map_err(ApplicationError::from)
+    }
+
+    pub async fn switch_mode(
+        &self,
+        session_id: &str,
+        target_mode_id: ModeId,
+    ) -> Result<astrcode_session_runtime::SessionModeSnapshot, ApplicationError> {
+        let current = self
+            .session_runtime
+            .session_mode_state(session_id)
+            .await
+            .map_err(ApplicationError::from)?;
+        if current.current_mode_id == target_mode_id {
+            return Ok(current);
+        }
+        crate::validate_mode_transition(
+            self.mode_catalog.as_ref(),
+            &current.current_mode_id,
+            &target_mode_id,
+        )
+        .map_err(ApplicationError::from)?;
+        self.session_runtime
+            .switch_mode(session_id, current.current_mode_id, target_mode_id)
+            .await
+            .map_err(ApplicationError::from)?;
+        self.session_runtime
+            .session_mode_state(session_id)
             .await
             .map_err(ApplicationError::from)
     }
@@ -210,6 +442,11 @@ impl App {
             .map_err(ApplicationError::from)
     }
 
+    /// 确保 session 存在一个 root agent context，如果没有则自动注册隐式 root agent。
+    ///
+    /// 查找逻辑：先通过 kernel 查找已有 handle，找不到则注册隐式 root agent
+    /// （ID 为 `root-agent:{session_id}`，profile 为 `default`）。
+    /// 这是 prompt 提交前的前置步骤，保证 session 总有一个可用的 agent context。
     pub(crate) async fn ensure_session_root_agent_context(
         &self,
         session_id: &str,
@@ -246,4 +483,105 @@ impl App {
             handle.agent_profile,
         ))
     }
+
+    fn build_submission_skill_declaration(
+        &self,
+        working_dir: &Path,
+        skill_invocation: &PromptSkillInvocation,
+    ) -> Result<PromptDeclaration, ApplicationError> {
+        let skill = self
+            .composer_skills
+            .resolve_skill(working_dir, &skill_invocation.skill_id)
+            .ok_or_else(|| {
+                ApplicationError::InvalidArgument(format!(
+                    "unknown skill slash command: /{}",
+                    skill_invocation.skill_id
+                ))
+            })?;
+        Ok(self
+            .governance_surface
+            .build_submission_skill_declaration(&skill, skill_invocation.user_prompt.as_deref()))
+    }
+}
+
+pub fn summarize_session_meta(meta: SessionMeta) -> SessionListSummary {
+    SessionListSummary {
+        session_id: meta.session_id,
+        working_dir: meta.working_dir,
+        display_name: meta.display_name,
+        title: meta.title,
+        created_at: format_local_rfc3339(meta.created_at),
+        updated_at: format_local_rfc3339(meta.updated_at),
+        parent_session_id: meta.parent_session_id,
+        parent_storage_seq: meta.parent_storage_seq,
+        phase: meta.phase,
+    }
+}
+
+fn normalize_prompt_control(
+    control: Option<ExecutionControl>,
+) -> Result<Option<ExecutionControl>, ApplicationError> {
+    if let Some(control) = &control {
+        control.validate()?;
+    }
+    Ok(control)
+}
+
+/// 规范化 prompt 提交文本，处理 skill invocation 与纯文本的交互。
+///
+/// - 纯文本提交：不允许空文本
+/// - Skill invocation：文本可以为空（由 skill prompt 填充）， 但如果同时提供了文本和 skill
+///   userPrompt，两者必须一致
+fn normalize_submission_text(
+    text: String,
+    skill_invocation: Option<&PromptSkillInvocation>,
+) -> Result<String, ApplicationError> {
+    let text = text.trim().to_string();
+    let Some(skill_invocation) = skill_invocation else {
+        if text.is_empty() {
+            return Err(ApplicationError::InvalidArgument(
+                "prompt must not be empty".to_string(),
+            ));
+        }
+        return Ok(text);
+    };
+
+    let skill_prompt = skill_invocation
+        .user_prompt
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if !text.is_empty() && !skill_prompt.is_empty() && text != skill_prompt {
+        return Err(ApplicationError::InvalidArgument(
+            "skillInvocation.userPrompt must match prompt text".to_string(),
+        ));
+    }
+
+    if !text.is_empty() {
+        Ok(text)
+    } else {
+        Ok(skill_prompt)
+    }
+}
+
+/// 为手动 compact 请求构建 ExecutionControl。
+///
+/// 强制设置 `manual_compact = true`（如果调用方未指定），
+/// 因为 compact 的语义要求这个标志。
+fn normalize_compact_control(control: Option<ExecutionControl>) -> Option<ExecutionControl> {
+    let mut control = control.unwrap_or(ExecutionControl {
+        max_steps: None,
+        manual_compact: None,
+    });
+    if control.manual_compact.is_none() {
+        control.manual_compact = Some(true);
+    }
+    Some(control)
+}
+
+fn normalize_compact_instructions(instructions: Option<String>) -> Option<String> {
+    instructions
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }

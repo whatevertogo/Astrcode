@@ -32,8 +32,8 @@ use crate::{
         request::AssemblePromptResult,
         runner::TurnExecutionRequestView,
         test_support::{
-            NoopPromptFactsProvider, assert_contains_compact_summary, assert_has_assistant_final,
-            assert_has_turn_done, root_compact_applied_event, test_gateway, test_session_state,
+            NoopPromptFactsProvider, assert_contains_compact_summary, assert_has_turn_done,
+            root_compact_applied_event, test_gateway, test_session_state,
         },
         tool_cycle::{ToolCycleOutcome, ToolCycleResult, ToolEventEmissionMode},
     },
@@ -144,8 +144,12 @@ fn assembled_prompt(messages: Vec<LlmMessage>) -> AssemblePromptResult {
                 context_window: 100,
                 effective_window: 90,
                 threshold_tokens: 80,
+                remaining_context_tokens: 80,
+                reserved_context_size: 20,
             },
             0,
+            Default::default(),
+            false,
         )],
         auto_compacted: false,
         tool_result_budget_stats: crate::turn::tool_result_budget::ToolResultBudgetStats::default(),
@@ -172,6 +176,7 @@ fn test_resources<'a>(
             cancel,
             agent,
             prompt_declarations: &[],
+            prompt_governance: None,
         },
     )
 }
@@ -216,6 +221,7 @@ impl Tool for StreamingSafeProbeTool {
             output: "streamed safe result".to_string(),
             error: None,
             metadata: None,
+            child_ref: None,
             duration_ms: 0,
             truncated: false,
         })
@@ -259,6 +265,7 @@ impl Tool for StreamingUnsafeProbeTool {
             output: "unsafe result".to_string(),
             error: None,
             metadata: None,
+            child_ref: None,
             duration_ms: 0,
             truncated: false,
         })
@@ -273,6 +280,7 @@ fn tool_result(tool_call_id: &str, tool_name: &str, output: &str) -> ToolExecuti
         output: output.to_string(),
         error: None,
         metadata: None,
+        child_ref: None,
         duration_ms: 0,
         truncated: false,
     }
@@ -387,7 +395,13 @@ async fn run_single_step_returns_cancelled_when_tool_cycle_interrupts() {
     ));
     assert_eq!(execution.step_index, 0);
     assert_eq!(driver.counts.tool_cycle.load(Ordering::SeqCst), 1);
-    assert_has_assistant_final(&execution.events);
+    assert!(
+        execution
+            .events
+            .iter()
+            .all(|event| !matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
+        "tool-only interrupted step should not persist an empty assistant final"
+    );
 }
 
 #[tokio::test]

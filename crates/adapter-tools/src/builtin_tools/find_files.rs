@@ -25,7 +25,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    check_cancel, json_output, resolve_path, session_dir_for_tool_results,
+    check_cancel, json_output, merge_persisted_tool_output_metadata, resolve_path,
+    session_dir_for_tool_results,
 };
 
 /// FindFiles 工具实现。
@@ -72,7 +73,7 @@ impl Tool for FindFilesTool {
                     },
                     "root": {
                         "type": "string",
-                        "description": "Root directory to search from (default: working directory)"
+                        "description": "Root directory to search from (default: current working directory)"
                     },
                     "maxResults": {
                         "type": "integer",
@@ -105,15 +106,15 @@ impl Tool for FindFilesTool {
                 ToolPromptMetadata::new(
                     "Find candidate files by glob when you know the filename pattern but not the \
                      exact path.",
-                    "Find files by glob pattern inside the workspace. Use this before `grep` when \
-                     you only know a filename, extension, or glob. Supported common glob forms \
-                     include `**/*.rs` (recursive), `*.toml` (current dir), and `*.{json,toml}` \
-                     (alternation). When using `root`, the glob pattern is relative to that root, \
-                     not the workspace root. Results are sorted by modification time.",
+                    "Find files by glob pattern under a known search root. Use this before `grep` \
+                     when you only know a filename, extension, or glob. Supported common glob \
+                     forms include `**/*.rs` (recursive), `*.toml` (current dir), and \
+                     `*.{json,toml}` (alternation). When using `root`, the glob pattern is \
+                     relative to that root. Results are sorted by modification time.",
                 )
                 .caveat(
-                    "Pattern must stay inside the workspace. Truncated at 200 results — narrow \
-                     with `root` or a more specific glob.",
+                    "Pattern must stay relative to the search root. Truncated at 200 results — \
+                     narrow with `root` or a more specific glob.",
                 )
                 .example(
                     "Find all Cargo.toml: { pattern: \"**/Cargo.toml\" }. Limit to ./crates/: { \
@@ -185,20 +186,25 @@ impl Tool for FindFilesTool {
             &output,
             ctx.resolved_inline_limit(),
         );
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("pattern".to_string(), json!(args.pattern));
+        metadata.insert("root".to_string(), json!(root.to_string_lossy()));
+        metadata.insert("count".to_string(), json!(paths.len()));
+        metadata.insert("truncated".to_string(), json!(truncated));
+        metadata.insert(
+            "respectGitignore".to_string(),
+            json!(args.respect_gitignore),
+        );
+        merge_persisted_tool_output_metadata(&mut metadata, final_output.persisted.as_ref());
 
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "findFiles".to_string(),
             ok: true,
-            output: final_output,
+            output: final_output.output,
             error: None,
-            metadata: Some(json!({
-                "pattern": args.pattern,
-                "root": root.to_string_lossy(),
-                "count": paths.len(),
-                "truncated": truncated,
-                "respectGitignore": args.respect_gitignore,
-            })),
+            metadata: Some(serde_json::Value::Object(metadata)),
+            child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated,
         })
@@ -294,7 +300,7 @@ fn collect_files_with_ignore(
 fn validate_glob_pattern(pattern: &str) -> Result<()> {
     if looks_like_windows_drive_relative_path(pattern) {
         return Err(AstrError::Validation(format!(
-            "glob pattern '{}' must stay within the working directory",
+            "glob pattern '{}' must stay relative to the search root",
             pattern
         )));
     }
@@ -302,7 +308,7 @@ fn validate_glob_pattern(pattern: &str) -> Result<()> {
     let path = Path::new(pattern);
     if path.is_absolute() {
         return Err(AstrError::Validation(format!(
-            "glob pattern '{}' must stay within the working directory",
+            "glob pattern '{}' must stay relative to the search root",
             pattern
         )));
     }
@@ -311,7 +317,7 @@ fn validate_glob_pattern(pattern: &str) -> Result<()> {
         match component {
             Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
                 return Err(AstrError::Validation(format!(
-                    "glob pattern '{}' must stay within the working directory",
+                    "glob pattern '{}' must stay relative to the search root",
                     pattern
                 )));
             },
@@ -466,7 +472,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("must stay within the working directory")
+                .contains("must stay relative to the search root")
         );
     }
 
@@ -577,6 +583,46 @@ mod tests {
         // 新文件应排在前面
         assert!(paths[0].ends_with("new.txt"));
         assert!(paths[1].ends_with("old.txt"));
+    }
+
+    #[tokio::test]
+    async fn find_files_allows_root_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        tokio::fs::create_dir_all(&outside)
+            .await
+            .expect("outside dir should be created");
+        tokio::fs::write(outside.join("found.txt"), "hello")
+            .await
+            .expect("outside file should be written");
+        let tool = FindFilesTool;
+
+        let result = tool
+            .execute(
+                "tc-find-outside".to_string(),
+                json!({
+                    "pattern": "*.txt",
+                    "root": "../outside"
+                }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("findFiles should succeed");
+
+        assert!(result.ok);
+        let paths: Vec<String> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            paths[0],
+            canonical_tool_path(outside.join("found.txt"))
+                .to_string_lossy()
+                .to_string()
+        );
     }
 
     #[test]

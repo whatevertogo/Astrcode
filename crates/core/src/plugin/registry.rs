@@ -14,7 +14,8 @@ use std::{collections::BTreeMap, sync::RwLock};
 use crate::{CapabilitySpec, PluginManifest};
 
 /// 插件生命周期状态。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PluginState {
     /// 已发现（清单已加载，但尚未初始化）
     Discovered,
@@ -28,7 +29,8 @@ pub enum PluginState {
 ///
 /// 与 `PluginState` 不同，健康状态反映运行时状况，
 /// 一个已初始化的插件可能因网络问题变为 `Degraded`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PluginHealth {
     /// 尚未检查
     Unknown,
@@ -188,8 +190,10 @@ impl PluginRegistry {
 
     /// 记录插件运行时失败事件。
     ///
-    /// 失败计数递增；连续失败 3 次及以上时健康状态降级为 `Unavailable`，
-    /// 否则标记为 `Degraded`。用于实现渐进式健康度评估。
+    /// 实现渐进式健康度评估：
+    /// - 1~2 次失败 → `Degraded`（降级但不完全禁用，后续成功可恢复）
+    /// - 3 次及以上 → `Unavailable`（完全禁用，需要人工或自动恢复机制介入）
+    /// - 非 Initialized 状态的插件 → 直接 `Unavailable`
     pub fn record_runtime_failure(
         &self,
         name: &str,

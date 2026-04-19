@@ -22,9 +22,10 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
+use astrcode_core::SkillCatalog as SkillCatalogPort;
 use log::debug;
 
 use crate::{
@@ -40,7 +41,7 @@ use crate::{
 /// Base skills 包含 builtin、plugin、mcp 来源的 skill，
 /// 在 runtime 装配时一次性构建。User 和 project skill 在每次解析时动态加载。
 #[derive(Debug, Clone)]
-pub struct SkillCatalog {
+pub struct LayeredSkillCatalog {
     /// Base skills（builtin + plugin + mcp），按优先级排序。
     /// 使用 RwLock 支持并发读取和原子替换。
     base_skills: Arc<RwLock<Vec<SkillSpec>>>,
@@ -51,7 +52,7 @@ pub struct SkillCatalog {
     user_home_dir: Option<PathBuf>,
 }
 
-impl SkillCatalog {
+impl LayeredSkillCatalog {
     /// 创建新的 SkillCatalog。
     ///
     /// `base_skills` 应按优先级从低到高排序（builtin < mcp < plugin），
@@ -84,13 +85,13 @@ impl SkillCatalog {
     /// 用于 runtime reload 场景，新的 base skills 会完全替换旧的。
     /// 调用方应确保 `new_base_skills` 已按优先级排序。
     pub fn replace_base_skills(&self, new_base_skills: Vec<SkillSpec>) {
-        let mut guard = self.base_skills.write().unwrap();
+        let mut guard = self.write_base_skills();
         *guard = normalize_base_skills(new_base_skills);
     }
 
     /// 获取当前 base skills 的快照。
     pub fn base_skills(&self) -> Vec<SkillSpec> {
-        let guard = self.base_skills.read().unwrap();
+        let guard = self.read_base_skills();
         guard.clone()
     }
 
@@ -105,11 +106,30 @@ impl SkillCatalog {
         let base = self.base_skills();
         resolve_skills(&base, self.user_home_dir.as_deref(), working_dir)
     }
+
+    fn read_base_skills(&self) -> RwLockReadGuard<'_, Vec<SkillSpec>> {
+        self.base_skills
+            .read()
+            .expect("skill catalog base_skills lock should not be poisoned")
+    }
+
+    fn write_base_skills(&self) -> RwLockWriteGuard<'_, Vec<SkillSpec>> {
+        self.base_skills
+            .write()
+            .expect("skill catalog base_skills lock should not be poisoned")
+    }
+}
+
+impl SkillCatalogPort for LayeredSkillCatalog {
+    fn resolve_for_working_dir(&self, working_dir: &str) -> Vec<SkillSpec> {
+        let base = self.base_skills();
+        resolve_skills(&base, self.user_home_dir.as_deref(), working_dir)
+    }
 }
 
 /// 合并 base skills、user skills 和 project skills。
 ///
-/// 这是 `SkillCatalog::resolve_for_working_dir` 的核心逻辑。
+/// 这是 `LayeredSkillCatalog::resolve_for_working_dir` 的核心逻辑。
 ///
 /// 保持为 crate 内部函数，避免外部调用方绕过 `SkillCatalog`
 /// 直接把 skill 解析重新分散到各处。
@@ -217,17 +237,20 @@ mod tests {
             make_skill("git-commit", SkillSource::Mcp),
             make_skill("git-commit", SkillSource::Plugin),
         ];
-        let catalog = SkillCatalog::new(base);
+        let catalog = LayeredSkillCatalog::new(base);
         // 这里只验证 base skill 的归一化顺序，避免测试受本机 user/project skill 目录污染。
         let normalized = catalog.base_skills();
         let git_skill = normalized.iter().find(|s| s.id == "git-commit");
         assert!(git_skill.is_some());
-        assert_eq!(git_skill.unwrap().source, SkillSource::Plugin);
+        assert_eq!(
+            git_skill.expect("git-commit skill should exist").source,
+            SkillSource::Plugin
+        );
     }
 
     #[test]
     fn test_catalog_replace_base_skills() {
-        let catalog = SkillCatalog::new(vec![make_skill("old-skill", SkillSource::Builtin)]);
+        let catalog = LayeredSkillCatalog::new(vec![make_skill("old-skill", SkillSource::Builtin)]);
         assert_eq!(catalog.base_skills().len(), 1);
 
         catalog.replace_base_skills(vec![
@@ -252,7 +275,7 @@ mod tests {
         )
         .expect("user skill file should be written");
 
-        let catalog = SkillCatalog::new_with_home_dir(Vec::new(), temp_home.path());
+        let catalog = LayeredSkillCatalog::new_with_home_dir(Vec::new(), temp_home.path());
         let resolved = catalog.resolve_for_working_dir(&temp_home.path().to_string_lossy());
 
         assert!(resolved.iter().any(|skill| skill.id == "clarify-first"));

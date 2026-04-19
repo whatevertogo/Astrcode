@@ -19,8 +19,6 @@ pub(crate) mod agents;
 pub(crate) mod composer;
 pub(crate) mod config;
 pub(crate) mod conversation;
-#[cfg(feature = "debug-workbench")]
-pub(crate) mod debug;
 pub(crate) mod logs;
 pub(crate) mod mcp;
 pub(crate) mod model;
@@ -51,11 +49,14 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// ### 会话
 /// - `POST /api/sessions` — 创建新会话
 /// - `GET /api/sessions` — 列出所有会话
+/// - `GET /api/modes` — 列出所有可用治理 mode
 /// - `GET /api/session-events` — 订阅会话目录事件（SSE）
 /// - `GET /api/sessions/:id/composer/options` — 获取输入框候选列表
 /// - `POST /api/sessions/:id/prompts` — 提交用户提示
 /// - `POST /api/sessions/:id/compact` — 压缩会话上下文
 /// - `POST /api/sessions/:id/interrupt` — 中断会话执行
+/// - `GET /api/sessions/:id/mode` — 查询当前 session mode
+/// - `POST /api/sessions/:id/mode` — 切换当前 session mode（下一 turn 生效）
 /// - `DELETE /api/sessions/:id` — 删除单个会话
 /// - `DELETE /api/projects` — 删除整个项目（级联删除所有会话）
 ///
@@ -83,13 +84,14 @@ use crate::{ApiError, AppState, bootstrap::serve_run_info};
 /// - `GET /api/v1/sessions/{id}/subruns/{sub_run_id}` — 查询子会话执行状态
 /// - `POST /api/v1/sessions/{id}/agents/{agent_id}/close` — 关闭 agent 及其子树
 pub(crate) fn build_api_router() -> Router<AppState> {
-    let router = Router::<AppState>::new()
+    Router::<AppState>::new()
         .route("/__astrcode__/run-info", get(serve_run_info))
         .route("/api/auth/exchange", post(exchange_auth))
         .route(
             "/api/sessions",
             post(sessions::create_session).get(sessions::list_sessions),
         )
+        .route("/api/modes", get(sessions::list_modes))
         .route("/api/session-events", get(sessions::session_catalog_events))
         .route(
             "/api/sessions/{id}/composer/options",
@@ -100,9 +102,14 @@ pub(crate) fn build_api_router() -> Router<AppState> {
             "/api/sessions/{id}/compact",
             post(sessions::compact_session),
         )
+        .route("/api/sessions/{id}/fork", post(sessions::fork_session))
         .route(
             "/api/sessions/{id}/interrupt",
             post(sessions::interrupt_session),
+        )
+        .route(
+            "/api/sessions/{id}/mode",
+            get(sessions::get_session_mode).post(sessions::switch_mode),
         )
         .route("/api/sessions/{id}", delete(sessions::delete_session))
         .route("/api/projects", delete(sessions::delete_project))
@@ -149,28 +156,7 @@ pub(crate) fn build_api_router() -> Router<AppState> {
         )
         .route("/api/mcp/server", post(mcp::upsert_mcp_server))
         .route("/api/mcp/server/remove", post(mcp::remove_mcp_server))
-        .route("/api/mcp/server/enabled", post(mcp::set_mcp_server_enabled));
-
-    #[cfg(feature = "debug-workbench")]
-    let router = router
-        .route(
-            "/api/debug/runtime/overview",
-            get(debug::get_runtime_overview),
-        )
-        .route(
-            "/api/debug/runtime/timeline",
-            get(debug::get_runtime_timeline),
-        )
-        .route(
-            "/api/debug/sessions/{id}/trace",
-            get(debug::get_session_trace),
-        )
-        .route(
-            "/api/debug/sessions/{id}/agents",
-            get(debug::get_session_agents),
-        );
-
-    router
+        .route("/api/mcp/server/enabled", post(mcp::set_mcp_server_enabled))
 }
 
 async fn exchange_auth(
@@ -181,10 +167,10 @@ async fn exchange_auth(
         return Err(ApiError::unauthorized());
     }
 
-    let issued = state.auth_sessions.issue_token();
+    let summary = state.auth_sessions.issue_exchange_summary();
     Ok(Json(AuthExchangeResponse {
-        ok: true,
-        token: issued.token,
-        expires_at_ms: issued.expires_at_ms,
+        ok: summary.ok,
+        token: summary.token,
+        expires_at_ms: summary.expires_at_ms,
     }))
 }

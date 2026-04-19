@@ -21,7 +21,9 @@ use crate::turn::{
         OUTPUT_CONTINUATION_PROMPT, OutputContinuationDecision, continuation_transition,
         decide_output_continuation,
     },
-    events::{assistant_final_event, turn_done_event, user_message_event},
+    events::{
+        apply_prompt_metrics_usage, assistant_final_event, turn_done_event, user_message_event,
+    },
     loop_control::{
         AUTO_CONTINUE_NUDGE, BudgetContinuationDecision, TurnLoopTransition, TurnStopCause,
         decide_budget_continuation,
@@ -73,6 +75,7 @@ async fn run_single_step_with(
 
     let llm_finished_at = Instant::now();
     record_llm_usage(execution, &output);
+    apply_prompt_metrics_usage(&mut execution.events, execution.step_index, output.usage);
     let has_tool_calls = append_assistant_output(execution, resources, &output);
     warn_if_output_truncated(resources, execution, &output);
 
@@ -170,6 +173,18 @@ fn append_assistant_output(
 ) -> bool {
     let content = output.content.trim().to_string();
     let has_tool_calls = !output.tool_calls.is_empty();
+    let reasoning_content = output
+        .reasoning
+        .as_ref()
+        .map(|reasoning| reasoning.content.clone());
+    let reasoning_signature = output
+        .reasoning
+        .as_ref()
+        .and_then(|reasoning| reasoning.signature.clone());
+    let has_persistable_assistant_output = !content.is_empty()
+        || reasoning_content
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
     execution.messages.push(LlmMessage::Assistant {
         content: content.clone(),
         tool_calls: output.tool_calls.clone(),
@@ -178,20 +193,16 @@ fn append_assistant_output(
     execution
         .micro_compact_state
         .record_assistant_activity(Instant::now());
-    execution.events.push(assistant_final_event(
-        resources.turn_id,
-        resources.agent,
-        content,
-        output
-            .reasoning
-            .as_ref()
-            .map(|reasoning| reasoning.content.clone()),
-        output
-            .reasoning
-            .as_ref()
-            .and_then(|reasoning| reasoning.signature.clone()),
-        Some(Utc::now()),
-    ));
+    if has_persistable_assistant_output {
+        execution.events.push(assistant_final_event(
+            resources.turn_id,
+            resources.agent,
+            content,
+            reasoning_content,
+            reasoning_signature,
+            Some(Utc::now()),
+        ));
+    }
     has_tool_calls
 }
 

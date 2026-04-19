@@ -4,45 +4,42 @@ use anyhow::Result;
 use astrcode_client::{
     AstrcodeClientTransport, AstrcodeCompactSessionRequest, AstrcodeConversationBannerErrorCodeDto,
     AstrcodeConversationErrorEnvelopeDto, AstrcodeCreateSessionRequest,
-    AstrcodeExecutionControlDto, AstrcodePromptRequest, ConversationStreamItem,
+    AstrcodeExecutionControlDto, AstrcodePromptRequest, AstrcodePromptSkillInvocation,
+    AstrcodeSaveActiveSelectionRequest, AstrcodeSwitchModeRequest, ConversationStreamItem,
 };
 
 use super::{
-    Action, AppController, filter_resume_sessions, required_working_dir, slash_query_from_input,
+    Action, AppController, SnapshotLoadedAction, filter_model_options, filter_resume_sessions,
+    model_query_from_input, required_working_dir, resume_query_from_input,
+    slash_candidates_with_local_commands, slash_query_from_input,
 };
 use crate::{
-    command::{Command, InputAction, OverlayAction, classify_input, filter_slash_candidates},
-    state::{OverlayState, StreamRenderMode},
+    command::{Command, InputAction, PaletteAction, classify_input, filter_slash_candidates},
+    state::{PaletteState, StreamRenderMode},
 };
 
 impl<T> AppController<T>
 where
     T: AstrcodeClientTransport + 'static,
 {
+    fn dispatch_async<F>(&self, operation: F)
+    where
+        F: std::future::Future<Output = Option<Action>> + Send + 'static,
+    {
+        let sender = self.actions_tx.clone();
+        tokio::spawn(async move {
+            if let Some(action) = operation.await {
+                let _ = sender.send(action);
+            }
+        });
+    }
+
     pub(super) async fn submit_current_input(&mut self) {
         let input = self.state.take_input();
-        match classify_input(input.as_str()) {
+        match classify_input(input, &self.state.conversation.slash_candidates) {
             InputAction::Empty => {},
             InputAction::SubmitPrompt { text } => {
-                let Some(session_id) = self.state.conversation.active_session_id.clone() else {
-                    self.state.set_error_status("no active session");
-                    return;
-                };
-                self.state.set_status("submitting prompt");
-                let client = self.client.clone();
-                let sender = self.actions_tx.clone();
-                tokio::spawn(async move {
-                    let result = client
-                        .submit_prompt(
-                            &session_id,
-                            AstrcodePromptRequest {
-                                text,
-                                control: None,
-                            },
-                        )
-                        .await;
-                    let _ = sender.send(Action::PromptSubmitted { session_id, result });
-                });
+                self.submit_prompt_request(text, None).await;
             },
             InputAction::RunCommand(command) => {
                 self.execute_command(command).await;
@@ -50,18 +47,25 @@ where
         }
     }
 
-    pub(super) async fn execute_overlay_action(&mut self, action: OverlayAction) -> Result<()> {
+    pub(super) async fn execute_palette_action(&mut self, action: PaletteAction) -> Result<()> {
         match action {
-            OverlayAction::SwitchSession { session_id } => {
-                self.state.close_overlay();
+            PaletteAction::SwitchSession { session_id } => {
+                self.state.close_palette();
                 self.begin_session_hydration(session_id).await;
             },
-            OverlayAction::ReplaceInput { text } => {
-                self.state.close_overlay();
+            PaletteAction::SelectModel {
+                profile_name,
+                model,
+            } => {
+                self.state.close_palette();
+                self.apply_model_selection(profile_name, model).await;
+            },
+            PaletteAction::ReplaceInput { text } => {
+                self.state.close_palette();
                 self.state.replace_input(text);
             },
-            OverlayAction::RunCommand(command) => {
-                self.state.close_overlay();
+            PaletteAction::RunCommand(command) => {
+                self.state.close_palette();
                 self.execute_command(command).await;
             },
         }
@@ -79,21 +83,90 @@ where
                     },
                 };
                 let client = self.client.clone();
-                let sender = self.actions_tx.clone();
                 self.state.set_status("creating session");
-                tokio::spawn(async move {
+                self.dispatch_async(async move {
                     let result = client
                         .create_session(AstrcodeCreateSessionRequest { working_dir })
                         .await;
-                    let _ = sender.send(Action::SessionCreated(result));
+                    Some(Action::SessionCreated(result))
                 });
             },
             Command::Resume { query } => {
                 let query = query.unwrap_or_default();
                 let items =
                     filter_resume_sessions(&self.state.conversation.sessions, query.as_str());
+                self.state.replace_input(if query.is_empty() {
+                    "/resume".to_string()
+                } else {
+                    format!("/resume {query}")
+                });
                 self.state.set_resume_query(query, items);
                 self.refresh_sessions().await;
+            },
+            Command::Model { query } => {
+                let query = query.unwrap_or_default();
+                let items = filter_model_options(&self.state.shell.model_options, query.as_str());
+                self.state.replace_input(if query.is_empty() {
+                    "/model".to_string()
+                } else {
+                    format!("/model {query}")
+                });
+                self.state.set_model_query(query.clone(), items);
+                self.refresh_model_options(query).await;
+            },
+            Command::Mode { query } => {
+                let query = query.unwrap_or_default();
+                if query.is_empty() {
+                    let Some(session_id) = self.state.conversation.active_session_id.clone() else {
+                        let available = self
+                            .state
+                            .shell
+                            .available_modes
+                            .iter()
+                            .map(|mode| mode.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if available.is_empty() {
+                            self.state.set_error_status("no active session");
+                        } else {
+                            self.state.set_error_status(format!(
+                                "no active session · available modes: {available}"
+                            ));
+                        }
+                        return;
+                    };
+                    let client = self.client.clone();
+                    self.state.set_status("loading mode state");
+                    self.dispatch_async(async move {
+                        let result = client.get_session_mode(&session_id).await;
+                        Some(Action::SessionModeLoaded { session_id, result })
+                    });
+                    return;
+                }
+
+                let Some(session_id) = self.state.conversation.active_session_id.clone() else {
+                    self.state.set_error_status("no active session");
+                    return;
+                };
+                let requested_mode_id = query;
+                let client = self.client.clone();
+                self.state
+                    .set_status(format!("switching mode to {requested_mode_id}"));
+                self.dispatch_async(async move {
+                    let result = client
+                        .switch_mode(
+                            &session_id,
+                            AstrcodeSwitchModeRequest {
+                                mode_id: requested_mode_id.clone(),
+                            },
+                        )
+                        .await;
+                    Some(Action::ModeSwitched {
+                        session_id,
+                        requested_mode_id,
+                        result,
+                    })
+                });
             },
             Command::Compact => {
                 let Some(session_id) = self.state.conversation.active_session_id.clone() else {
@@ -112,9 +185,8 @@ where
                     return;
                 }
                 let client = self.client.clone();
-                let sender = self.actions_tx.clone();
                 self.state.set_status("requesting compact");
-                tokio::spawn(async move {
+                self.dispatch_async(async move {
                     let result = client
                         .request_compact(
                             &session_id,
@@ -123,14 +195,23 @@ where
                                     max_steps: None,
                                     manual_compact: Some(true),
                                 }),
+                                instructions: None,
                             },
                         )
                         .await;
-                    let _ = sender.send(Action::CompactRequested { session_id, result });
+                    Some(Action::CompactRequested { session_id, result })
                 });
             },
-            Command::Skill { query } => {
-                self.open_slash_palette(query.unwrap_or_default()).await;
+            Command::SkillInvoke { skill_id, prompt } => {
+                let text = prompt.clone().unwrap_or_default();
+                self.submit_prompt_request(
+                    text,
+                    Some(AstrcodePromptSkillInvocation {
+                        skill_id,
+                        user_prompt: prompt,
+                    }),
+                )
+                .await;
             },
             Command::Unknown { raw } => {
                 self.state
@@ -148,10 +229,12 @@ where
         self.state
             .set_status(format!("hydrating session {}", session_id));
         let client = self.client.clone();
-        let sender = self.actions_tx.clone();
-        tokio::spawn(async move {
+        self.dispatch_async(async move {
             let result = client.fetch_conversation_snapshot(&session_id, None).await;
-            let _ = sender.send(Action::SnapshotLoaded { session_id, result });
+            Some(Action::SnapshotLoaded(Box::new(SnapshotLoadedAction {
+                session_id,
+                result,
+            })))
         });
     }
 
@@ -204,18 +287,56 @@ where
 
     pub(super) async fn refresh_sessions(&self) {
         let client = self.client.clone();
-        let sender = self.actions_tx.clone();
-        tokio::spawn(async move {
+        self.dispatch_async(async move {
             let result = client.list_sessions().await;
-            let _ = sender.send(Action::SessionsRefreshed(result));
+            Some(Action::SessionsRefreshed(result))
+        });
+    }
+
+    pub(super) async fn refresh_current_model(&self) {
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client.get_current_model().await;
+            Some(Action::CurrentModelLoaded(result))
+        });
+    }
+
+    pub(super) async fn refresh_modes(&self) {
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client.list_modes().await;
+            Some(Action::ModesLoaded(result))
+        });
+    }
+
+    pub(super) async fn refresh_model_options(&self, query: String) {
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client.list_models().await;
+            Some(Action::ModelOptionsLoaded { query, result })
         });
     }
 
     pub(super) async fn open_slash_palette(&mut self, query: String) {
+        if !self
+            .state
+            .interaction
+            .composer
+            .as_str()
+            .trim_start()
+            .starts_with('/')
+        {
+            self.state.replace_input("/".to_string());
+        }
+        let candidates = slash_candidates_with_local_commands(
+            &self.state.conversation.slash_candidates,
+            &self.state.shell.available_modes,
+            query.as_str(),
+        );
         let items = if query.trim().is_empty() {
-            self.state.conversation.slash_candidates.clone()
+            candidates
         } else {
-            filter_slash_candidates(&self.state.conversation.slash_candidates, &query)
+            filter_slash_candidates(&candidates, &query)
         };
         self.state.set_slash_query(query.clone(), items);
         self.refresh_slash_candidates(query).await;
@@ -226,34 +347,80 @@ where
             return;
         };
         let client = self.client.clone();
-        let sender = self.actions_tx.clone();
-        tokio::spawn(async move {
+        self.dispatch_async(async move {
             let result = client
                 .list_conversation_slash_candidates(&session_id, Some(query.as_str()))
                 .await;
-            let _ = sender.send(Action::SlashCandidatesLoaded { query, result });
+            Some(Action::SlashCandidatesLoaded { query, result })
         });
     }
 
-    pub(super) async fn refresh_overlay_query(&mut self) {
-        match &self.state.interaction.overlay {
-            OverlayState::Resume(resume) => {
-                let items = filter_resume_sessions(
-                    &self.state.conversation.sessions,
-                    resume.query.as_str(),
+    pub(super) async fn refresh_palette_query(&mut self) {
+        match &self.state.interaction.palette {
+            PaletteState::Resume(_) => {
+                if !self
+                    .state
+                    .interaction
+                    .composer
+                    .as_str()
+                    .trim_start()
+                    .starts_with("/resume")
+                {
+                    self.state.close_palette();
+                    return;
+                }
+                let query = resume_query_from_input(self.state.interaction.composer.as_str());
+                let items =
+                    filter_resume_sessions(&self.state.conversation.sessions, query.as_str());
+                self.state.set_resume_query(query, items);
+            },
+            PaletteState::Slash(_) => {
+                if !self
+                    .state
+                    .interaction
+                    .composer
+                    .as_str()
+                    .trim_start()
+                    .starts_with('/')
+                {
+                    self.state.close_palette();
+                    return;
+                }
+                let query = self.slash_query_for_current_input();
+                let candidates = slash_candidates_with_local_commands(
+                    &self.state.conversation.slash_candidates,
+                    &self.state.shell.available_modes,
+                    query.as_str(),
                 );
-                self.state.set_resume_query(resume.query.clone(), items);
+                self.state
+                    .set_slash_query(query.clone(), filter_slash_candidates(&candidates, &query));
+                self.refresh_slash_candidates(query).await;
             },
-            OverlayState::SlashPalette(palette) => {
-                self.refresh_slash_candidates(palette.query.clone()).await;
+            PaletteState::Model(_) => {
+                if !self
+                    .state
+                    .interaction
+                    .composer
+                    .as_str()
+                    .trim_start()
+                    .starts_with("/model")
+                {
+                    self.state.close_palette();
+                    return;
+                }
+                let query = model_query_from_input(self.state.interaction.composer.as_str());
+                self.state.set_model_query(
+                    query.clone(),
+                    filter_model_options(&self.state.shell.model_options, query.as_str()),
+                );
+                self.refresh_model_options(query).await;
             },
-            OverlayState::DebugLogs(_) => {},
-            OverlayState::None => {},
+            PaletteState::Closed => {},
         }
     }
 
-    pub(super) fn refresh_resume_overlay(&mut self) {
-        let OverlayState::Resume(resume) = &self.state.interaction.overlay else {
+    pub(super) fn refresh_resume_palette(&mut self) {
+        let PaletteState::Resume(resume) = &self.state.interaction.palette else {
             return;
         };
         let items =
@@ -298,6 +465,50 @@ where
     }
 
     pub(super) fn slash_query_for_current_input(&self) -> String {
-        slash_query_from_input(self.state.interaction.composer.input.as_str())
+        slash_query_from_input(self.state.interaction.composer.as_str())
+    }
+
+    async fn apply_model_selection(&mut self, profile_name: String, model: String) {
+        self.state.set_status(format!("switching model to {model}"));
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client
+                .save_active_selection(AstrcodeSaveActiveSelectionRequest {
+                    active_profile: profile_name.clone(),
+                    active_model: model.clone(),
+                })
+                .await;
+            Some(Action::ModelSelectionSaved {
+                profile_name,
+                model,
+                result,
+            })
+        });
+    }
+
+    async fn submit_prompt_request(
+        &mut self,
+        text: String,
+        skill_invocation: Option<AstrcodePromptSkillInvocation>,
+    ) {
+        let Some(session_id) = self.state.conversation.active_session_id.clone() else {
+            self.state.set_error_status("no active session");
+            return;
+        };
+        self.state.set_status("submitting prompt");
+        let client = self.client.clone();
+        self.dispatch_async(async move {
+            let result = client
+                .submit_prompt(
+                    &session_id,
+                    AstrcodePromptRequest {
+                        text,
+                        skill_invocation,
+                        control: None,
+                    },
+                )
+                .await;
+            Some(Action::PromptSubmitted { session_id, result })
+        });
     }
 }

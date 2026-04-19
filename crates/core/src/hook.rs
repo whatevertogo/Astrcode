@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{LlmMessage, Result, ToolDefinition, ToolExecutionResult};
+use crate::{CompactTrigger, LlmMessage, Result, ToolDefinition, ToolExecutionResult};
 
 /// 可被外部扩展拦截的生命周期事件。
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -35,15 +35,6 @@ pub enum HookEvent {
     PostToolUseFailure,
     PreCompact,
     PostCompact,
-}
-
-/// Hook 视角下的压缩触发原因。
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "camelCase")]
-pub enum HookCompactionReason {
-    Auto,
-    Reactive,
-    Manual,
 }
 
 /// 工具调用的公共上下文。
@@ -76,7 +67,7 @@ pub struct ToolHookResultContext {
 pub struct CompactionHookContext {
     pub session_id: String,
     pub working_dir: PathBuf,
-    pub reason: HookCompactionReason,
+    pub reason: CompactTrigger,
     pub keep_recent_turns: usize,
     pub message_count: usize,
     /// 当前对话中的消息（序列化形式）。

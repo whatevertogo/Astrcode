@@ -4,18 +4,22 @@
 //! 通过依赖倒置消费，避免上层再反向依赖具体实现 crate。
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    CancelToken, CapabilitySpec, Config, ConfigOverlay, DeleteProjectResult, LlmMessage,
-    ReasoningContent, Result, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
-    StoredEvent, SystemPromptBlock, SystemPromptLayer, ToolCallRequest, ToolDefinition, TurnId,
+    AgentState, CancelToken, CapabilitySpec, ChildSessionNode, Config, ConfigOverlay,
+    DeleteProjectResult, InputQueueProjection, LlmMessage, McpApprovalData, Phase,
+    ReasoningContent, Result, SessionId, SessionMeta, SessionTurnAcquireResult, SkillSpec,
+    StorageEvent, StoredEvent, SystemPromptBlock, SystemPromptLayer, TaskSnapshot, ToolCallRequest,
+    ToolDefinition, TurnId,
 };
 
 /// MCP 配置文件作用域。
@@ -33,6 +37,19 @@ pub trait EventStore: Send + Sync {
     async fn ensure_session(&self, session_id: &SessionId, working_dir: &Path) -> Result<()>;
     async fn append(&self, session_id: &SessionId, event: &StorageEvent) -> Result<StoredEvent>;
     async fn replay(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>>;
+    async fn recover_session(&self, session_id: &SessionId) -> Result<RecoveredSessionState> {
+        Ok(RecoveredSessionState {
+            checkpoint: None,
+            tail_events: self.replay(session_id).await?,
+        })
+    }
+    async fn checkpoint_session(
+        &self,
+        _session_id: &SessionId,
+        _checkpoint: &SessionRecoveryCheckpoint,
+    ) -> Result<()> {
+        Ok(())
+    }
     async fn try_acquire_turn(
         &self,
         session_id: &SessionId,
@@ -45,6 +62,33 @@ pub trait EventStore: Send + Sync {
         &self,
         working_dir: &str,
     ) -> Result<DeleteProjectResult>;
+}
+
+/// durable 恢复基线。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRecoveryCheckpoint {
+    pub agent_state: AgentState,
+    pub phase: Phase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_mode_changed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub child_nodes: HashMap<String, ChildSessionNode>,
+    #[serde(default)]
+    pub active_tasks: HashMap<String, TaskSnapshot>,
+    #[serde(default)]
+    pub input_queue_projection_index: HashMap<String, InputQueueProjection>,
+    pub checkpoint_storage_seq: u64,
+}
+
+/// 会话恢复结果：最近 checkpoint + checkpoint 之后的 tail events。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveredSessionState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<SessionRecoveryCheckpoint>,
+    #[serde(default)]
+    pub tail_events: Vec<StoredEvent>,
 }
 
 /// 模型能力限制。
@@ -80,6 +124,22 @@ pub enum LlmFinishReason {
     Other(String),
 }
 
+impl LlmFinishReason {
+    pub fn is_max_tokens(&self) -> bool {
+        matches!(self, Self::MaxTokens)
+    }
+
+    /// 从 OpenAI / Anthropic 返回的 finish reason 字符串解析统一枚举。
+    pub fn from_api_value(value: &str) -> Self {
+        match value {
+            "stop" | "end_turn" | "stop_sequence" => Self::Stop,
+            "max_tokens" | "length" => Self::MaxTokens,
+            "tool_calls" | "tool_use" => Self::ToolCalls,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
 /// 流式增量事件。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,6 +157,28 @@ pub enum LlmEvent {
 
 pub type LlmEventSink = Arc<dyn Fn(LlmEvent) + Send + Sync>;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptLayerFingerprints {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semi_stable: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCacheHints {
+    #[serde(default)]
+    pub layer_fingerprints: PromptLayerFingerprints,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unchanged_layers: Vec<SystemPromptLayer>,
+}
+
 /// 模型调用请求。
 #[derive(Debug, Clone)]
 pub struct LlmRequest {
@@ -105,6 +187,8 @@ pub struct LlmRequest {
     pub cancel: CancelToken,
     pub system_prompt: Option<String>,
     pub system_prompt_blocks: Vec<SystemPromptBlock>,
+    pub prompt_cache_hints: Option<PromptCacheHints>,
+    pub max_output_tokens_override: Option<usize>,
 }
 
 impl LlmRequest {
@@ -119,12 +203,31 @@ impl LlmRequest {
             cancel,
             system_prompt: None,
             system_prompt_blocks: Vec::new(),
+            prompt_cache_hints: None,
+            max_output_tokens_override: None,
         }
     }
 
     pub fn with_system(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
+    }
+
+    pub fn with_max_output_tokens_override(mut self, max_output_tokens: usize) -> Self {
+        self.max_output_tokens_override = Some(max_output_tokens.max(1));
+        self
+    }
+
+    pub fn from_model_request(request: crate::ModelRequest, cancel: CancelToken) -> Self {
+        Self {
+            messages: request.messages,
+            tools: request.tools.into(),
+            cancel,
+            system_prompt: request.system_prompt,
+            system_prompt_blocks: request.system_prompt_blocks,
+            prompt_cache_hints: None,
+            max_output_tokens_override: None,
+        }
     }
 }
 
@@ -151,18 +254,24 @@ pub trait LlmProvider: Send + Sync {
 /// Prompt 组装请求。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct PromptSkillSummary {
+pub struct PromptEntrySummary {
     pub id: String,
     pub description: String,
 }
 
-/// Prompt 侧的轻量 agent profile 摘要。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptAgentProfileSummary {
-    pub id: String,
-    pub description: String,
+impl PromptEntrySummary {
+    pub fn new(id: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            description: description.into(),
+        }
+    }
 }
+
+pub type PromptSkillSummary = PromptEntrySummary;
+
+/// Prompt 侧的轻量 agent profile 摘要。
+pub type PromptAgentProfileSummary = PromptEntrySummary;
 
 /// Prompt 声明来源。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -223,6 +332,23 @@ pub struct PromptDeclaration {
 /// Prompt 事实查询请求。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct PromptGovernanceContext {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_capability_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<crate::ModeId>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub approval_mode: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub policy_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_subrun_depth: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_spawn_per_turn: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptFactsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
@@ -231,6 +357,8 @@ pub struct PromptFactsRequest {
     pub working_dir: PathBuf,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_capability_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance: Option<PromptGovernanceContext>,
 }
 
 /// Prompt 组装前的已解析事实。
@@ -302,12 +430,26 @@ pub struct PromptBuildRequest {
 }
 
 /// Prompt 组装结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptBuildCacheMetrics {
+    pub reuse_hits: u32,
+    pub reuse_misses: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unchanged_layers: Vec<SystemPromptLayer>,
+}
+
+/// Prompt 组装结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptBuildOutput {
     pub system_prompt: String,
     #[serde(default)]
     pub system_prompt_blocks: Vec<SystemPromptBlock>,
+    #[serde(default)]
+    pub prompt_cache_hints: PromptCacheHints,
+    #[serde(default)]
+    pub cache_metrics: PromptBuildCacheMetrics,
     #[serde(default)]
     pub metadata: Value,
 }
@@ -350,6 +492,27 @@ pub trait ResourceProvider: Send + Sync {
         uri: &str,
         context: &ResourceRequestContext,
     ) -> Result<ResourceReadResult>;
+}
+
+/// Skill 查询端口。
+pub trait SkillCatalog: Send + Sync {
+    fn resolve_for_working_dir(&self, working_dir: &str) -> Vec<SkillSpec>;
+}
+
+/// MCP settings 持久化端口。
+pub trait McpSettingsStore: Send + Sync {
+    fn load_approvals(
+        &self,
+        project_path: &str,
+    ) -> std::result::Result<Vec<McpApprovalData>, String>;
+
+    fn save_approval(
+        &self,
+        project_path: &str,
+        data: &McpApprovalData,
+    ) -> std::result::Result<(), String>;
+
+    fn clear_approvals(&self, project_path: &str) -> std::result::Result<(), String>;
 }
 
 /// 配置存储端口。

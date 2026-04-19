@@ -1,240 +1,250 @@
-mod bottom_pane;
-mod cells;
-mod overlay;
+pub mod cells;
+pub mod composer;
+pub mod custom_terminal;
+pub mod insert_history;
+mod markdown;
+pub mod overlay;
+mod palette;
+mod text;
 mod theme;
 
-pub use bottom_pane::{BottomPaneView, ComposerPane};
-pub use cells::{RenderableCell, wrap_text};
-pub use overlay::{OverlayView, overlay_title};
+pub use palette::palette_lines;
 use ratatui::text::{Line, Span};
+pub use text::truncate_to_width;
 pub use theme::{CodexTheme, ThemePalette};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    capability::TerminalCapabilities,
-    state::{CliState, OverlayState, WrappedLine, WrappedLineStyle},
+    render::wrap::wrap_plain_text,
+    state::{WrappedLine, WrappedLineRewrapPolicy},
 };
 
-pub fn transcript_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
-    if state.conversation.transcript_cells.is_empty() {
-        return empty_state_lines(state, width);
-    }
-
-    let theme = CodexTheme::new(state.shell.capabilities);
-    let mut lines = Vec::new();
-    for cell in &state.conversation.transcript_cells {
-        lines.extend(cell.render_lines(
-            usize::from(width.max(18)),
-            state.shell.capabilities,
-            &theme,
-        ));
-    }
-    lines
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryLine {
+    pub line: Line<'static>,
+    pub rewrap_policy: WrappedLineRewrapPolicy,
 }
 
-pub fn child_pane_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
-    let theme = CodexTheme::new(state.shell.capabilities);
-    let width = usize::from(width.max(18));
-    let mut lines = vec![
-        WrappedLine {
-            style: WrappedLineStyle::Header,
-            content: "child sessions".to_string(),
-        },
-        WrappedLine {
-            style: WrappedLineStyle::Dim,
-            content: format!(
-                "{} active  ·  {} total",
-                state
-                    .conversation
-                    .child_summaries
-                    .iter()
-                    .filter(|child| {
-                        matches!(
-                            child.lifecycle,
-                            astrcode_client::AstrcodeConversationAgentLifecycleDto::Running
-                                | astrcode_client::AstrcodeConversationAgentLifecycleDto::Pending
-                        )
-                    })
-                    .count(),
-                state.conversation.child_summaries.len()
-            ),
-        },
-        WrappedLine {
-            style: WrappedLineStyle::Border,
-            content: theme.divider().repeat(width),
-        },
-    ];
+pub fn line_to_ratatui(line: &WrappedLine, theme: &CodexTheme) -> Line<'static> {
+    let base = theme.line_style(line.style);
+    let spans = if line.spans.is_empty() {
+        vec![Span::styled(String::new(), base)]
+    } else {
+        line.spans
+            .iter()
+            .map(|span| {
+                let style = span
+                    .style
+                    .map(|style| base.patch(theme.span_style(style)))
+                    .unwrap_or(base);
+                Span::styled(span.content.clone(), style)
+            })
+            .collect::<Vec<_>>()
+    };
+    Line::from(spans).style(base)
+}
 
-    for (index, child) in state.conversation.child_summaries.iter().enumerate() {
-        let focused = state
-            .interaction
-            .child_pane
-            .focused_child_session_id
-            .as_deref()
-            == Some(child.child_session_id.as_str());
-        let selected = index == state.interaction.child_pane.selected;
-        let marker = if focused {
-            theme.glyph("◆", "*")
-        } else if selected {
-            theme.glyph("›", ">")
-        } else {
-            " "
-        };
-        lines.push(WrappedLine {
-            style: if focused || selected {
-                WrappedLineStyle::Selection
-            } else {
-                WrappedLineStyle::Plain
-            },
-            content: format!(
-                "{marker} {}  [{}]",
-                child.title,
-                lifecycle_label(child.lifecycle)
-            ),
-        });
-        if let Some(summary) = child.latest_output_summary.as_deref() {
-            for line in wrap_text(
-                summary,
-                width.saturating_sub(2).max(8),
-                state.shell.capabilities,
-            ) {
-                lines.push(WrappedLine {
-                    style: WrappedLineStyle::Dim,
-                    content: format!("  {line}"),
-                });
+pub fn history_line_to_ratatui(line: WrappedLine, theme: &CodexTheme) -> HistoryLine {
+    HistoryLine {
+        rewrap_policy: line.rewrap_policy,
+        line: line_to_ratatui(&line, theme),
+    }
+}
+
+pub(crate) fn materialize_wrapped_line(
+    line: &WrappedLine,
+    width: usize,
+    theme: &CodexTheme,
+) -> Vec<Line<'static>> {
+    let history_line = history_line_to_ratatui(line.clone(), theme);
+    materialize_history_line(&history_line, width)
+}
+
+pub(crate) fn materialize_wrapped_lines(
+    lines: &[WrappedLine],
+    width: usize,
+    theme: &CodexTheme,
+) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .flat_map(|line| materialize_wrapped_line(line, width, theme))
+        .collect()
+}
+
+pub(crate) fn materialize_history_line(line: &HistoryLine, width: usize) -> Vec<Line<'static>> {
+    match line.rewrap_policy {
+        WrappedLineRewrapPolicy::Reflow => wrap_reflow_line(&line.line, width),
+        WrappedLineRewrapPolicy::PreserveAndCrop => vec![crop_line(&line.line, width.max(1))],
+    }
+}
+
+fn wrap_reflow_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let content = line.to_string();
+    let wrapped = wrap_plain_text(content.as_str(), width.max(1));
+    if line.spans.is_empty() {
+        return wrapped
+            .into_iter()
+            .map(|item| Line::from(item).style(line.style))
+            .collect();
+    }
+
+    let mut cursor = StyledGraphemeCursor::new(&line.spans);
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| {
+            if index > 0 && !starts_with_whitespace(item.as_str()) {
+                cursor.skip_boundary_whitespace();
             }
-        }
+            let spans = cursor.consume_text(item.as_str());
+            Line::from(spans).style(line.style)
+        })
+        .collect()
+}
+
+fn crop_line(line: &Line<'static>, width: usize) -> Line<'static> {
+    let width = width.max(1);
+    if line.width() <= width {
+        return line.clone();
     }
 
-    lines
-}
+    let ellipsis = if width == 1 { "" } else { "…" };
+    let budget = width.saturating_sub(display_width(ellipsis));
+    let mut visible = Vec::new();
+    let mut used = 0usize;
 
-pub fn header_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
-    let theme = CodexTheme::new(state.shell.capabilities);
-    let title = state
-        .conversation
-        .active_session_title
-        .as_deref()
-        .unwrap_or("Astrcode workspace");
-    let model = "gpt-5.4 medium";
-    let phase = phase_label(
-        state
-            .active_phase()
-            .unwrap_or(astrcode_client::AstrcodePhaseDto::Idle),
-    );
-    let working_dir = state
-        .shell
-        .working_dir
-        .as_deref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "~".to_string());
-
-    let meta = format!("model {model}  ·  phase {phase}  ·  {working_dir}");
-    let meta_width = usize::from(width.max(20)).saturating_sub(2);
-
-    vec![
-        WrappedLine {
-            style: WrappedLineStyle::Header,
-            content: title.to_string(),
-        },
-        WrappedLine {
-            style: WrappedLineStyle::Dim,
-            content: truncate_text(meta.as_str(), meta_width, state.shell.capabilities),
-        },
-        WrappedLine {
-            style: WrappedLineStyle::Border,
-            content: theme.divider().repeat(usize::from(width.max(1))),
-        },
-    ]
-}
-
-pub fn centered_overlay_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
-    let theme = CodexTheme::new(state.shell.capabilities);
-    match &state.interaction.overlay {
-        OverlayState::Resume(resume) => {
-            resume.lines(usize::from(width.max(20)), state.shell.capabilities, &theme)
-        },
-        OverlayState::DebugLogs(debug) => debug.lines(
-            usize::from(width.max(20)),
-            state.shell.capabilities,
-            &theme,
-            &state.debug,
-        ),
-        OverlayState::SlashPalette(_) | OverlayState::None => Vec::new(),
-    }
-}
-
-pub fn line_to_ratatui(line: &WrappedLine, capabilities: TerminalCapabilities) -> Line<'static> {
-    let theme = CodexTheme::new(capabilities);
-    Line::from(Span::styled(
-        line.content.clone(),
-        theme.line_style(line.style),
-    ))
-}
-
-pub fn phase_label(phase: astrcode_client::AstrcodePhaseDto) -> &'static str {
-    match phase {
-        astrcode_client::AstrcodePhaseDto::Idle => "idle",
-        astrcode_client::AstrcodePhaseDto::Thinking => "thinking",
-        astrcode_client::AstrcodePhaseDto::CallingTool => "calling_tool",
-        astrcode_client::AstrcodePhaseDto::Streaming => "streaming",
-        astrcode_client::AstrcodePhaseDto::Interrupted => "interrupted",
-        astrcode_client::AstrcodePhaseDto::Done => "done",
-    }
-}
-
-fn empty_state_lines(state: &CliState, width: u16) -> Vec<WrappedLine> {
-    let theme = CodexTheme::new(state.shell.capabilities);
-    let divider = theme.divider().repeat(usize::from(width.min(56)));
-    vec![
-        WrappedLine {
-            style: WrappedLineStyle::Header,
-            content: "OpenAI Codex style workspace".to_string(),
-        },
-        WrappedLine {
-            style: WrappedLineStyle::Dim,
-            content: "fresh session 已准备好。主区只显示会话语义内容，启动噪音已移出。".to_string(),
-        },
-        WrappedLine {
-            style: WrappedLineStyle::Accent,
-            content: "› 输入 prompt 开始；Tab 打开 commands；F2 查看 debug logs。".to_string(),
-        },
-        WrappedLine {
-            style: WrappedLineStyle::Border,
-            content: divider,
-        },
-    ]
-}
-
-fn lifecycle_label(
-    lifecycle: astrcode_client::AstrcodeConversationAgentLifecycleDto,
-) -> &'static str {
-    match lifecycle {
-        astrcode_client::AstrcodeConversationAgentLifecycleDto::Pending => "pending",
-        astrcode_client::AstrcodeConversationAgentLifecycleDto::Running => "running",
-        astrcode_client::AstrcodeConversationAgentLifecycleDto::Idle => "idle",
-        astrcode_client::AstrcodeConversationAgentLifecycleDto::Terminated => "terminated",
-    }
-}
-
-fn truncate_text(text: &str, width: usize, capabilities: TerminalCapabilities) -> String {
-    if width == 0 {
-        return String::new();
-    }
-
-    let mut out = String::new();
-    let mut current_width = 0;
-    for ch in text.chars() {
-        let ch = ch.to_string();
-        let ch_width = if capabilities.ascii_only() {
-            1
-        } else {
-            unicode_width::UnicodeWidthStr::width(ch.as_str()).max(1)
-        };
-        if current_width + ch_width > width {
+    for span in &line.spans {
+        let cropped = crop_span_to_width(span, budget.saturating_sub(used));
+        if cropped.content.is_empty() {
             break;
         }
-        current_width += ch_width;
-        out.push_str(ch.as_str());
+        used += display_width(cropped.content.as_ref());
+        visible.push(cropped);
+        if used >= budget {
+            break;
+        }
     }
-    out
+
+    if !ellipsis.is_empty() {
+        if let Some(last) = visible.last_mut() {
+            last.content = format!("{}{}", last.content, ellipsis).into();
+        } else {
+            visible.push(Span::raw(ellipsis.to_string()));
+        }
+    }
+
+    Line::from(visible).style(line.style)
+}
+
+fn crop_span_to_width(span: &Span<'static>, width: usize) -> Span<'static> {
+    if width == 0 {
+        return Span::styled(String::new(), span.style);
+    }
+
+    let mut content = String::new();
+    let mut used = 0usize;
+    for grapheme in UnicodeSegmentation::graphemes(span.content.as_ref(), true) {
+        let grapheme_width = display_width(grapheme);
+        if used + grapheme_width > width {
+            break;
+        }
+        content.push_str(grapheme);
+        used += grapheme_width;
+    }
+    Span::styled(content, span.style)
+}
+
+fn display_width(text: &str) -> usize {
+    UnicodeSegmentation::graphemes(text, true)
+        .map(unicode_width::UnicodeWidthStr::width)
+        .sum()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StyledGrapheme {
+    style: ratatui::style::Style,
+    text: String,
+}
+
+struct StyledGraphemeCursor {
+    graphemes: Vec<StyledGrapheme>,
+    index: usize,
+}
+
+impl StyledGraphemeCursor {
+    fn new(spans: &[Span<'static>]) -> Self {
+        let graphemes = spans
+            .iter()
+            .flat_map(|span| {
+                UnicodeSegmentation::graphemes(span.content.as_ref(), true).map(|grapheme| {
+                    StyledGrapheme {
+                        style: span.style,
+                        text: grapheme.to_string(),
+                    }
+                })
+            })
+            .collect();
+        Self {
+            graphemes,
+            index: 0,
+        }
+    }
+
+    fn consume_text(&mut self, text: &str) -> Vec<Span<'static>> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+
+        let mut spans = Vec::new();
+        let mut current_style = None;
+        let mut current_text = String::new();
+
+        for grapheme in UnicodeSegmentation::graphemes(text, true) {
+            let Some(next) = self.next_matching(grapheme) else {
+                return vec![Span::raw(text.to_string())];
+            };
+            match current_style {
+                Some(style) if style == next.style => current_text.push_str(next.text.as_str()),
+                Some(style) => {
+                    spans.push(Span::styled(std::mem::take(&mut current_text), style));
+                    current_text.push_str(next.text.as_str());
+                    current_style = Some(next.style);
+                },
+                None => {
+                    current_text.push_str(next.text.as_str());
+                    current_style = Some(next.style);
+                },
+            }
+        }
+
+        if let Some(style) = current_style {
+            spans.push(Span::styled(current_text, style));
+        }
+
+        spans
+    }
+
+    fn skip_boundary_whitespace(&mut self) {
+        while self
+            .graphemes
+            .get(self.index)
+            .is_some_and(|grapheme| grapheme.text.chars().all(char::is_whitespace))
+        {
+            self.index += 1;
+        }
+    }
+
+    fn next_matching(&mut self, expected: &str) -> Option<StyledGrapheme> {
+        let grapheme = self.graphemes.get(self.index)?.clone();
+        if grapheme.text == expected {
+            self.index += 1;
+            Some(grapheme)
+        } else {
+            None
+        }
+    }
+}
+
+fn starts_with_whitespace(text: &str) -> bool {
+    text.chars().next().is_some_and(char::is_whitespace)
 }

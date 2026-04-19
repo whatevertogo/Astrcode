@@ -19,8 +19,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::builtin_tools::fs_common::{
-    TextChangeReport, build_text_change_report, check_cancel, is_symlink, is_unc_path,
-    read_utf8_file, resolve_path, write_text_file,
+    TextChangeReport, build_text_change_report, check_cancel,
+    ensure_not_canonical_session_plan_write_target, is_symlink, is_unc_path, read_utf8_file,
+    resolve_path, write_text_file,
 };
 
 /// WriteFile 工具实现。
@@ -71,7 +72,7 @@ impl Tool for WriteFileTool {
         ToolCapabilityMetadata::builtin()
             .tags(["filesystem", "write"])
             .permission("filesystem.write")
-            .side_effect(SideEffect::Workspace)
+            .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
                     "Create or fully replace a text file when the whole target content is known.",
@@ -81,8 +82,8 @@ impl Tool for WriteFileTool {
                 )
                 .caveat(
                     "Overwrites the entire file. `createDirs` defaults to false — parent \
-                     directories must exist or set it to true. Path must stay inside the working \
-                     directory.",
+                     directories must exist or set it to true. Relative paths resolve from the \
+                     current working directory; absolute host paths are allowed.",
                 )
                 .caveat(
                     "For small edits to existing files, prefer `editFile` or `apply_patch` to \
@@ -109,6 +110,7 @@ impl Tool for WriteFileTool {
             .map_err(|e| AstrError::parse("invalid args for writeFile", e))?;
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
+        ensure_not_canonical_session_plan_write_target(ctx, &path, "writeFile")?;
 
         // UNC 路径检查：防止 Windows NTLM 凭据泄露
         if is_unc_path(&path) {
@@ -126,6 +128,7 @@ impl Tool for WriteFileTool {
                     "path": path.to_string_lossy(),
                     "uncPath": true,
                 })),
+                child_ref: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -139,14 +142,15 @@ impl Tool for WriteFileTool {
                 ok: false,
                 output: String::new(),
                 error: Some(format!(
-                    "refusing to write to symlink '{}' (symlinks may point outside working \
-                     directory)",
+                    "refusing to write to symlink '{}' (symlinks may point outside the intended \
+                     target path)",
                     path.display()
                 )),
                 metadata: Some(json!({
                     "path": path.to_string_lossy(),
                     "isSymlink": true,
                 })),
+                child_ref: None,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 truncated: false,
             });
@@ -199,6 +203,7 @@ impl Tool for WriteFileTool {
             output: report.summary,
             error: None,
             metadata: Some(metadata),
+            child_ref: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
             truncated: false,
         })
@@ -316,5 +321,62 @@ mod tests {
             .expect_err("writeFile should fail");
 
         assert!(err.to_string().contains("failed writing file"));
+    }
+
+    #[tokio::test]
+    async fn write_file_allows_relative_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside.txt");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        let tool = WriteFileTool;
+
+        let result = tool
+            .execute(
+                "tc-write-outside".to_string(),
+                json!({
+                    "path": "../outside.txt",
+                    "content": "outside"
+                }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("writeFile should execute");
+
+        assert!(result.ok);
+        let content = tokio::fs::read_to_string(&outside)
+            .await
+            .expect("outside file should be readable");
+        assert_eq!(content, "outside");
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_canonical_session_plan_targets() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let tool = WriteFileTool;
+        let target = temp
+            .path()
+            .join(".astrcode-test-state")
+            .join("sessions")
+            .join("session-test")
+            .join("plan")
+            .join("cleanup-crates.md");
+
+        let err = tool
+            .execute(
+                "tc-write-plan".to_string(),
+                json!({
+                    "path": target.to_string_lossy(),
+                    "content": "# Plan: Cleanup crates",
+                    "createDirs": true
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect_err("canonical plan writes should be rejected");
+
+        assert!(err.to_string().contains("upsertSessionPlan"));
     }
 }

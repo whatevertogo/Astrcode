@@ -3,26 +3,17 @@
 //! 定义 Agent profile 查询、执行、子执行域（sub-run）状态查询等接口的请求/响应结构。
 //! 这些 DTO 用于前端展示和管理 Agent 配置、触发 Agent 执行任务以及监控 sub-run 状态。
 
+pub use astrcode_core::{
+    AgentLifecycleStatus as AgentLifecycleDto, AgentProfile as AgentProfileDto,
+    AgentTurnOutcome as AgentTurnOutcomeDto, ChildSessionLineageKind as ChildSessionLineageKindDto,
+    ChildSessionNotificationKind as ChildSessionNotificationKindDto,
+    SubagentContextOverrides as SubagentContextOverridesDto,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::http::{
     ExecutionControlDto, ResolvedSubagentContextOverridesDto, SubRunResultDto, SubRunStorageModeDto,
 };
-
-/// 对外暴露的 Agent Profile 摘要。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentProfileDto {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub mode: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
-    // TODO: 未来可能需要添加更多 agent 级执行限制摘要
-}
 
 /// `POST /api/v1/agents/{id}/execute` 请求体。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,51 +42,6 @@ pub struct AgentExecuteResponseDto {
     pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SubagentContextOverridesDto {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage_mode: Option<SubRunStorageModeDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherit_system_instructions: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherit_project_instructions: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherit_working_dir: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherit_policy_upper_bound: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherit_cancel_token: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub include_compact_summary: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub include_recent_tail: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub include_recovery_refs: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub include_parent_findings: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fork_mode: Option<super::event::ForkModeDto>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentLifecycleDto {
-    Pending,
-    Running,
-    Idle,
-    Terminated,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentTurnOutcomeDto {
-    Completed,
-    Failed,
-    Cancelled,
-    TokenExceeded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,14 +88,6 @@ pub struct SubRunStatusDto {
     pub resolved_limits: Option<crate::http::ResolvedExecutionLimitsDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ChildSessionLineageKindDto {
-    Spawn,
-    Fork,
-    Resume,
-}
-
 /// 谱系来源快照 DTO，fork/resume 时记录来源上下文。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -173,29 +111,4 @@ pub struct ChildAgentRefDto {
     pub lineage_kind: ChildSessionLineageKindDto,
     pub status: AgentLifecycleDto,
     pub open_session_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ChildSessionNotificationKindDto {
-    Started,
-    ProgressSummary,
-    Delivered,
-    Waiting,
-    Resumed,
-    Closed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildSessionNotificationDto {
-    pub notification_id: String,
-    pub child_ref: ChildAgentRefDto,
-    pub kind: ChildSessionNotificationKindDto,
-    pub status: AgentLifecycleDto,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_tool_call_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<super::event::ParentDeliveryDto>,
 }

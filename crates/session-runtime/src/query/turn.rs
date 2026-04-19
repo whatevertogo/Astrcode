@@ -18,7 +18,7 @@ pub struct ProjectedTurnOutcome {
     pub technical_message: String,
 }
 
-pub fn has_terminal_turn_signal(events: &[StoredEvent]) -> bool {
+pub(crate) fn has_terminal_turn_signal(events: &[StoredEvent]) -> bool {
     events.iter().any(|stored| {
         matches!(
             stored.event.payload,
@@ -27,7 +27,7 @@ pub fn has_terminal_turn_signal(events: &[StoredEvent]) -> bool {
     })
 }
 
-pub fn project_turn_outcome(phase: Phase, events: &[StoredEvent]) -> ProjectedTurnOutcome {
+pub(crate) fn project_turn_outcome(phase: Phase, events: &[StoredEvent]) -> ProjectedTurnOutcome {
     let last_assistant = events
         .iter()
         .rev()

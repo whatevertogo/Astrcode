@@ -19,6 +19,48 @@ export interface ToolMetadataSummary {
   pills: string[];
 }
 
+export interface PersistedToolOutputMetadata {
+  storageKind: 'toolResult';
+  absolutePath: string;
+  relativePath: string;
+  totalBytes: number;
+  previewText: string;
+  previewBytes: number;
+}
+
+export interface SessionPlanExitMetadata {
+  schema: 'sessionPlanExit';
+  mode: {
+    fromModeId: string;
+    toModeId: string;
+    modeChanged: boolean;
+  };
+  plan: {
+    title: string;
+    status: string;
+    slug: string;
+    planPath: string;
+    content: string;
+    updatedAt?: string;
+  };
+}
+
+export interface SessionPlanExitReviewPendingMetadata {
+  schema: 'sessionPlanExitReviewPending' | 'sessionPlanExitBlocked';
+  plan: {
+    title: string;
+    planPath: string;
+  };
+  review?: {
+    kind: 'revise_plan' | 'final_review';
+    checklist: string[];
+  };
+  blockers: {
+    missingHeadings: string[];
+    invalidSections: string[];
+  };
+}
+
 export interface StructuredJsonOutput {
   value: UnknownRecord | unknown[];
   summary: string;
@@ -89,6 +131,137 @@ export function extractToolShellDisplay(metadata: unknown): ToolShellDisplayMeta
     shell: pickString(display, 'shell'),
     exitCode: pickNumber(display, 'exitCode'),
     segments: extractShellSegments(display.segments),
+  };
+}
+
+export function extractPersistedToolOutput(metadata: unknown): PersistedToolOutputMetadata | null {
+  const container = asRecord(metadata);
+  const persisted = asRecord(container?.persistedOutput);
+  if (!persisted) {
+    return null;
+  }
+
+  const absolutePath = pickString(persisted, 'absolutePath');
+  const relativePath = pickString(persisted, 'relativePath');
+  const totalBytes = pickNumber(persisted, 'totalBytes');
+  const previewText = pickString(persisted, 'previewText');
+  const previewBytes = pickNumber(persisted, 'previewBytes');
+
+  if (
+    persisted.storageKind !== 'toolResult' ||
+    !absolutePath ||
+    !relativePath ||
+    totalBytes === undefined ||
+    previewText === undefined ||
+    previewBytes === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    storageKind: 'toolResult',
+    absolutePath,
+    relativePath,
+    totalBytes,
+    previewText,
+    previewBytes,
+  };
+}
+
+export function extractSessionPlanExit(metadata: unknown): SessionPlanExitMetadata | null {
+  const container = asRecord(metadata);
+  const plan = asRecord(container?.plan);
+  const mode = asRecord(container?.mode);
+  const title = pickString(plan ?? {}, 'title');
+  const status = pickString(plan ?? {}, 'status');
+  const slug = pickString(plan ?? {}, 'slug');
+  const planPath = pickString(plan ?? {}, 'planPath');
+  const content = pickString(plan ?? {}, 'content');
+  const fromModeId = pickString(mode ?? {}, 'fromModeId');
+  const toModeId = pickString(mode ?? {}, 'toModeId');
+  const modeChanged = pickBoolean(mode ?? {}, 'modeChanged');
+
+  if (
+    container?.schema !== 'sessionPlanExit' ||
+    !title ||
+    !status ||
+    !slug ||
+    !planPath ||
+    !content ||
+    !fromModeId ||
+    !toModeId ||
+    modeChanged === undefined
+  ) {
+    return null;
+  }
+
+  return {
+    schema: 'sessionPlanExit',
+    mode: {
+      fromModeId,
+      toModeId,
+      modeChanged,
+    },
+    plan: {
+      title,
+      status,
+      slug,
+      planPath,
+      content,
+      updatedAt: pickString(plan ?? {}, 'updatedAt'),
+    },
+  };
+}
+
+export function extractSessionPlanExitReviewPending(
+  metadata: unknown
+): SessionPlanExitReviewPendingMetadata | null {
+  const container = asRecord(metadata);
+  const plan = asRecord(container?.plan);
+  const review = asRecord(container?.review);
+  const blockers = asRecord(container?.blockers);
+  const title = pickString(plan ?? {}, 'title');
+  const planPath = pickString(plan ?? {}, 'planPath');
+  const reviewKind = pickString(review ?? {}, 'kind');
+  const reviewChecklist = Array.isArray(review?.checklist)
+    ? review.checklist.filter((value): value is string => typeof value === 'string')
+    : [];
+  const missingHeadings = Array.isArray(blockers?.missingHeadings)
+    ? blockers.missingHeadings.filter((value): value is string => typeof value === 'string')
+    : [];
+  const invalidSections = Array.isArray(blockers?.invalidSections)
+    ? blockers.invalidSections.filter((value): value is string => typeof value === 'string')
+    : [];
+
+  if (
+    (container?.schema !== 'sessionPlanExitReviewPending' &&
+      container?.schema !== 'sessionPlanExitBlocked') ||
+    !title ||
+    !planPath
+  ) {
+    return null;
+  }
+
+  return {
+    schema:
+      container.schema === 'sessionPlanExitBlocked'
+        ? 'sessionPlanExitBlocked'
+        : 'sessionPlanExitReviewPending',
+    plan: {
+      title,
+      planPath,
+    },
+    review:
+      reviewKind === 'revise_plan' || reviewKind === 'final_review'
+        ? {
+            kind: reviewKind,
+            checklist: reviewChecklist,
+          }
+        : undefined,
+    blockers: {
+      missingHeadings,
+      invalidSections,
+    },
   };
 }
 
@@ -193,6 +366,13 @@ export function extractToolMetadataSummary(metadata: unknown): ToolMetadataSumma
 
   const pills: string[] = [];
   const message = pickString(container, 'message');
+  const persisted = extractPersistedToolOutput(container);
+  if (persisted) {
+    pills.push('persisted');
+    if (pickNumber(container, 'bytes') === undefined) {
+      pills.push(`${persisted.totalBytes} bytes`);
+    }
+  }
 
   pushNumberPill(pills, container, ['count'], (value) => `${value} items`);
   pushNumberPill(pills, container, ['returned'], (value) => `${value} returned`);

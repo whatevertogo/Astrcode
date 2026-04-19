@@ -1,8 +1,9 @@
 #[cfg(test)]
 use astrcode_core::ToolOutputStream;
 use astrcode_core::{
-    AgentEventContext, CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload,
-    ToolCallRequest, ToolExecutionResult, UserMessageOrigin,
+    AgentEventContext, CompactAppliedMeta, CompactTrigger, LlmUsage, PromptMetricsPayload,
+    StorageEvent, StorageEventPayload, ToolCallRequest, ToolExecutionResult, UserMessageOrigin,
+    ports::PromptBuildCacheMetrics,
 };
 use chrono::{DateTime, Utc};
 
@@ -13,6 +14,7 @@ fn saturating_u32(value: usize) -> u32 {
 }
 
 pub(crate) struct CompactAppliedStats {
+    pub meta: CompactAppliedMeta,
     pub preserved_recent_turns: usize,
     pub pre_tokens: usize,
     pub post_tokens_estimate: usize,
@@ -118,6 +120,7 @@ pub(crate) fn compact_applied_event(
         payload: StorageEventPayload::CompactApplied {
             trigger,
             summary,
+            meta: stats.meta,
             preserved_recent_turns: saturating_u32(stats.preserved_recent_turns),
             pre_tokens: saturating_u32(stats.pre_tokens),
             post_tokens_estimate: saturating_u32(stats.post_tokens_estimate),
@@ -134,6 +137,8 @@ pub(crate) fn prompt_metrics_event(
     step_index: usize,
     snapshot: PromptTokenSnapshot,
     truncated_tool_results: usize,
+    cache_metrics: PromptBuildCacheMetrics,
+    provider_cache_metrics_supported: bool,
 ) -> StorageEvent {
     StorageEvent {
         turn_id: Some(turn_id.to_string()),
@@ -150,12 +155,43 @@ pub(crate) fn prompt_metrics_event(
                 provider_output_tokens: None,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                provider_cache_metrics_supported: false,
-                prompt_cache_reuse_hits: 0,
-                prompt_cache_reuse_misses: 0,
+                provider_cache_metrics_supported,
+                prompt_cache_reuse_hits: cache_metrics.reuse_hits,
+                prompt_cache_reuse_misses: cache_metrics.reuse_misses,
+                prompt_cache_unchanged_layers: cache_metrics.unchanged_layers,
             },
         },
     }
+}
+
+pub(crate) fn apply_prompt_metrics_usage(
+    events: &mut [StorageEvent],
+    step_index: usize,
+    usage: Option<LlmUsage>,
+) {
+    let Some(usage) = usage else {
+        return;
+    };
+
+    let step_index = saturating_u32(step_index);
+    let Some(StorageEvent {
+        payload: StorageEventPayload::PromptMetrics { metrics },
+        ..
+    }) = events.iter_mut().rev().find(|event| {
+        matches!(
+            &event.payload,
+            StorageEventPayload::PromptMetrics { metrics }
+                if metrics.step_index == step_index
+        )
+    })
+    else {
+        return;
+    };
+
+    metrics.provider_input_tokens = Some(saturating_u32(usage.input_tokens));
+    metrics.provider_output_tokens = Some(saturating_u32(usage.output_tokens));
+    metrics.cache_creation_input_tokens = Some(saturating_u32(usage.cache_creation_input_tokens));
+    metrics.cache_read_input_tokens = Some(saturating_u32(usage.cache_read_input_tokens));
 }
 
 pub(crate) fn tool_call_event(
@@ -210,6 +246,7 @@ pub(crate) fn tool_result_event(
             success: result.ok,
             error: result.error.clone(),
             metadata: result.metadata.clone(),
+            child_ref: result.child_ref.clone(),
             duration_ms: result.duration_ms,
         },
     }
@@ -219,7 +256,7 @@ pub(crate) fn tool_result_reference_applied_event(
     turn_id: &str,
     agent: &AgentEventContext,
     tool_call_id: &str,
-    persisted_relative_path: &str,
+    persisted_output: &astrcode_core::PersistedToolOutput,
     replacement: &str,
     original_bytes: u64,
 ) -> StorageEvent {
@@ -228,7 +265,7 @@ pub(crate) fn tool_result_reference_applied_event(
         agent: agent.clone(),
         payload: StorageEventPayload::ToolResultReferenceApplied {
             tool_call_id: tool_call_id.to_string(),
-            persisted_relative_path: persisted_relative_path.to_string(),
+            persisted_output: persisted_output.clone(),
             replacement: replacement.to_string(),
             original_bytes,
         },
@@ -238,16 +275,18 @@ pub(crate) fn tool_result_reference_applied_event(
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        AgentEventContext, CompactTrigger, StorageEventPayload, ToolCallRequest,
-        ToolExecutionResult, ToolOutputStream, UserMessageOrigin,
+        AgentEventContext, CompactAppliedMeta, CompactMode, CompactTrigger, LlmUsage,
+        StorageEventPayload, ToolCallRequest, ToolExecutionResult, ToolOutputStream,
+        UserMessageOrigin, ports::PromptBuildCacheMetrics,
     };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
 
     use super::{
-        CompactAppliedStats, assistant_final_event, compact_applied_event, error_event,
-        prompt_metrics_event, session_start_event, tool_call_delta_event, tool_call_event,
-        tool_result_event, turn_done_event, user_message_event,
+        CompactAppliedStats, apply_prompt_metrics_usage, assistant_final_event,
+        compact_applied_event, error_event, prompt_metrics_event, session_start_event,
+        tool_call_delta_event, tool_call_event, tool_result_event, turn_done_event,
+        user_message_event,
     };
     use crate::context_window::token_usage::PromptTokenSnapshot;
 
@@ -392,6 +431,14 @@ mod tests {
             CompactTrigger::Auto,
             "condensed older work".to_string(),
             CompactAppliedStats {
+                meta: CompactAppliedMeta {
+                    mode: CompactMode::RetrySalvage,
+                    instructions_present: true,
+                    fallback_used: true,
+                    retry_count: u32::MAX,
+                    input_units: u32::MAX,
+                    output_summary_chars: u32::MAX,
+                },
                 preserved_recent_turns: usize::MAX,
                 pre_tokens: usize::MAX,
                 post_tokens_estimate: 512,
@@ -408,6 +455,7 @@ mod tests {
             StorageEventPayload::CompactApplied {
                 trigger,
                 summary,
+                meta,
                 preserved_recent_turns,
                 pre_tokens,
                 post_tokens_estimate,
@@ -416,6 +464,12 @@ mod tests {
                 timestamp: event_timestamp,
             } if trigger == CompactTrigger::Auto
                 && summary == "condensed older work"
+                && meta.mode == CompactMode::RetrySalvage
+                && meta.instructions_present
+                && meta.fallback_used
+                && meta.retry_count == u32::MAX
+                && meta.input_units == u32::MAX
+                && meta.output_summary_chars == u32::MAX
                 && preserved_recent_turns == u32::MAX
                 && pre_tokens == u32::MAX
                 && post_tokens_estimate == 512
@@ -438,8 +492,16 @@ mod tests {
                 context_window: 128_000,
                 effective_window: 108_000,
                 threshold_tokens: 97_200,
+                remaining_context_tokens: 95_655,
+                reserved_context_size: 20_000,
             },
             3,
+            PromptBuildCacheMetrics {
+                reuse_hits: 4,
+                reuse_misses: 1,
+                unchanged_layers: vec![astrcode_core::SystemPromptLayer::Stable],
+            },
+            true,
         );
 
         assert_eq!(event.turn_id.as_deref(), Some("turn-prompt-1"));
@@ -453,13 +515,57 @@ mod tests {
                     && metrics.effective_window == 108_000
                     && metrics.threshold_tokens == 97_200
                     && metrics.truncated_tool_results == 3
+                    && metrics.prompt_cache_unchanged_layers
+                        == vec![astrcode_core::SystemPromptLayer::Stable]
                     && metrics.provider_input_tokens.is_none()
                     && metrics.provider_output_tokens.is_none()
                     && metrics.cache_creation_input_tokens.is_none()
                     && metrics.cache_read_input_tokens.is_none()
-                    && !metrics.provider_cache_metrics_supported
-                    && metrics.prompt_cache_reuse_hits == 0
-                    && metrics.prompt_cache_reuse_misses == 0
+                    && metrics.provider_cache_metrics_supported
+                    && metrics.prompt_cache_reuse_hits == 4
+                    && metrics.prompt_cache_reuse_misses == 1
+        ));
+    }
+
+    #[test]
+    fn apply_prompt_metrics_usage_backfills_provider_cache_fields() {
+        let agent = AgentEventContext::root_execution("root-agent", "planner");
+        let mut events = vec![prompt_metrics_event(
+            "turn-prompt-1",
+            &agent,
+            2,
+            PromptTokenSnapshot {
+                context_tokens: 1_024,
+                budget_tokens: 900,
+                context_window: 128_000,
+                effective_window: 108_000,
+                threshold_tokens: 97_200,
+                remaining_context_tokens: 106_976,
+                reserved_context_size: 20_000,
+            },
+            0,
+            PromptBuildCacheMetrics::default(),
+            true,
+        )];
+
+        apply_prompt_metrics_usage(
+            &mut events,
+            2,
+            Some(LlmUsage {
+                input_tokens: 900,
+                output_tokens: 120,
+                cache_creation_input_tokens: 700,
+                cache_read_input_tokens: 650,
+            }),
+        );
+
+        assert!(matches!(
+            &events[0].payload,
+            StorageEventPayload::PromptMetrics { metrics }
+                if metrics.provider_input_tokens == Some(900)
+                    && metrics.provider_output_tokens == Some(120)
+                    && metrics.cache_creation_input_tokens == Some(700)
+                    && metrics.cache_read_input_tokens == Some(650)
         ));
     }
 
@@ -534,6 +640,7 @@ mod tests {
                 "path": "/workspace/src/lib.rs",
                 "truncated": true
             })),
+            child_ref: None,
             duration_ms: 88,
             truncated: true,
         };
@@ -550,6 +657,7 @@ mod tests {
                 success,
                 error,
                 metadata,
+                child_ref: _,
                 duration_ms,
             } if tool_call_id == "call-7"
                 && tool_name == "readFile"

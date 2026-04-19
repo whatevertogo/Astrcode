@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentId, AgentStateProjector, EventStore, EventTranslator, Phase, SessionId, StorageEvent,
-    StoredEvent, TurnId, normalize_recovered_phase, replay_records,
+    AgentId, AgentStateProjector, EventStore, EventTranslator, Phase, RecoveredSessionState,
+    SessionId, StorageEvent, StoredEvent, TurnId, normalize_recovered_phase, replay_records,
 };
 #[cfg(test)]
 use astrcode_core::{EventLogWriter, StoreResult};
@@ -37,26 +37,11 @@ pub struct SessionActor {
     state: Arc<SessionState>,
     session_id: SessionId,
     working_dir: String,
-    root_agent_id: AgentId,
 }
 
 impl SessionActor {
-    /// 创建 actor，包装一个已有的 live session state。
-    pub fn new(
-        session_id: SessionId,
-        working_dir: impl Into<String>,
-        root_agent_id: AgentId,
-        state: Arc<SessionState>,
-    ) -> Self {
-        Self {
-            state,
-            session_id,
-            working_dir: working_dir.into(),
-            root_agent_id,
-        }
-    }
-
     /// 创建一个带 durable writer 的 actor。
+    #[cfg(test)]
     pub async fn new_persistent(
         session_id: SessionId,
         working_dir: impl Into<String>,
@@ -78,7 +63,7 @@ impl SessionActor {
     pub async fn new_persistent_with_lineage(
         session_id: SessionId,
         working_dir: impl Into<String>,
-        root_agent_id: AgentId,
+        _root_agent_id: AgentId,
         event_store: Arc<dyn EventStore>,
         parent_session_id: Option<String>,
         parent_storage_seq: Option<u64>,
@@ -111,7 +96,6 @@ impl SessionActor {
             state: Arc::new(state),
             session_id,
             working_dir,
-            root_agent_id,
         })
     }
 
@@ -122,7 +106,7 @@ impl SessionActor {
     pub fn from_replay(
         session_id: SessionId,
         working_dir: impl Into<String>,
-        root_agent_id: AgentId,
+        _root_agent_id: AgentId,
         event_store: Arc<dyn EventStore>,
         stored_events: Vec<StoredEvent>,
     ) -> astrcode_core::Result<Self> {
@@ -149,7 +133,40 @@ impl SessionActor {
             state: Arc::new(state),
             session_id,
             working_dir,
-            root_agent_id,
+        })
+    }
+
+    pub fn from_recovery(
+        session_id: SessionId,
+        working_dir: impl Into<String>,
+        root_agent_id: AgentId,
+        event_store: Arc<dyn EventStore>,
+        recovered: RecoveredSessionState,
+    ) -> astrcode_core::Result<Self> {
+        let RecoveredSessionState {
+            checkpoint,
+            tail_events,
+        } = recovered;
+        let working_dir = working_dir.into();
+        let Some(checkpoint) = checkpoint else {
+            return Self::from_replay(
+                session_id,
+                working_dir,
+                root_agent_id,
+                event_store,
+                tail_events,
+            );
+        };
+        let writer = Arc::new(SessionWriter::from_event_store(
+            event_store,
+            session_id.clone(),
+        ));
+        let state = SessionState::from_recovery(writer, &checkpoint, tail_events)?;
+
+        Ok(Self {
+            state: Arc::new(state),
+            session_id,
+            working_dir,
         })
     }
 
@@ -160,7 +177,7 @@ impl SessionActor {
     pub fn new_idle(
         session_id: SessionId,
         working_dir: impl Into<String>,
-        root_agent_id: AgentId,
+        _root_agent_id: AgentId,
     ) -> Self {
         let writer = Arc::new(SessionWriter::new(Box::new(NopEventLogWriter)));
         let state = SessionState::new(
@@ -174,7 +191,6 @@ impl SessionActor {
             state: Arc::new(state),
             session_id,
             working_dir: working_dir.into(),
-            root_agent_id,
         }
     }
 
@@ -200,22 +216,8 @@ impl SessionActor {
         }
     }
 
-    /// 标记 turn 完成。
-    pub fn mark_turn_completed(&self, _turn_id: TurnId) {
-        // Turn 完成由 SessionState.complete_execution_state 驱动，
-        // 此处仅作为外部标记入口保留。
-    }
-
-    pub fn root_agent_id(&self) -> &AgentId {
-        &self.root_agent_id
-    }
-
     pub fn state(&self) -> &Arc<SessionState> {
         &self.state
-    }
-
-    pub fn session_id(&self) -> &SessionId {
-        &self.session_id
     }
 
     pub fn working_dir(&self) -> &str {
@@ -316,7 +318,7 @@ mod tests {
             "subrun-1",
             None,
             SubRunStorageMode::IndependentSession,
-            Some("session-child".to_string()),
+            Some("session-child".to_string().into()),
         );
         let event = StorageEvent {
             turn_id: Some("turn-child".to_string()),
@@ -350,10 +352,10 @@ mod tests {
             event: StorageEvent {
                 turn_id: Some("turn-child".to_string()),
                 agent: AgentEventContext {
-                    agent_id: Some("agent-child".to_string()),
-                    parent_turn_id: Some("turn-root".to_string()),
+                    agent_id: Some("agent-child".to_string().into()),
+                    parent_turn_id: Some("turn-root".to_string().into()),
                     agent_profile: Some("explore".to_string()),
-                    sub_run_id: Some("subrun-1".to_string()),
+                    sub_run_id: Some("subrun-1".to_string().into()),
                     parent_sub_run_id: None,
                     invocation_kind: Some(InvocationKind::SubRun),
                     storage_mode: Some(SubRunStorageMode::IndependentSession),

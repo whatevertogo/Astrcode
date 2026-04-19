@@ -8,8 +8,7 @@
 use std::{path::Path, sync::Arc};
 
 use astrcode_core::{
-    AgentMode, ExecutionAccepted, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
-    SubagentContextOverrides,
+    AgentMode, ExecutionAccepted, ModeId, ResolvedRuntimeConfig, SubagentContextOverrides,
 };
 
 use crate::{
@@ -19,6 +18,7 @@ use crate::{
     execution::{
         ExecutionControl, ProfileResolutionService, ensure_profile_mode, merge_task_with_context,
     },
+    governance_surface::{GovernanceSurfaceAssembler, RootGovernanceInput},
 };
 
 /// 根代理执行请求。
@@ -44,11 +44,11 @@ pub async fn execute_root_agent(
     kernel: &dyn AppKernelPort,
     session_runtime: &dyn AppSessionPort,
     profiles: &Arc<ProfileResolutionService>,
+    governance: &GovernanceSurfaceAssembler,
     request: RootExecutionRequest,
-    mut runtime_config: ResolvedRuntimeConfig,
+    runtime_config: ResolvedRuntimeConfig,
 ) -> Result<ExecutionAccepted, ApplicationError> {
     validate_root_request(&request)?;
-    apply_execution_control(&mut runtime_config, request.control.as_ref());
     validate_root_context_overrides_supported(request.context_overrides.as_ref())?;
 
     let profile = profiles.find_profile(Path::new(&request.working_dir), &request.agent_id)?;
@@ -68,10 +68,19 @@ pub async fn execute_root_agent(
         )
         .await
         .map_err(|e| ApplicationError::Internal(format!("failed to register root agent: {e}")))?;
-    let resolved_limits = ResolvedExecutionLimitsSnapshot {
-        allowed_tools: kernel.gateway().capabilities().tool_names(),
-        max_steps: Some(runtime_config.max_steps as u32),
-    };
+    let surface = governance.root_surface(
+        kernel,
+        RootGovernanceInput {
+            session_id: session.session_id.clone(),
+            turn_id: astrcode_core::generate_turn_id(),
+            working_dir: request.working_dir.clone(),
+            profile: profile_id.clone(),
+            mode_id: ModeId::default(),
+            runtime: runtime_config,
+            control: request.control.clone(),
+        },
+    )?;
+    let resolved_limits = surface.resolved_limits.clone();
     if kernel
         .set_resolved_limits(&handle.agent_id, resolved_limits.clone())
         .await
@@ -92,11 +101,11 @@ pub async fn execute_root_agent(
         .submit_prompt_for_agent(
             &session.session_id,
             merged_task,
-            runtime_config,
-            astrcode_session_runtime::AgentPromptSubmission {
-                agent: root_execution_event_context(handle.agent_id.clone(), profile_id),
-                ..Default::default()
-            },
+            surface.runtime.clone(),
+            surface.into_submission(
+                root_execution_event_context(handle.agent_id.clone(), profile_id),
+                None,
+            ),
         )
         .await
         .map_err(ApplicationError::from)?;
@@ -131,6 +140,10 @@ fn validate_root_request(request: &RootExecutionRequest) -> Result<(), Applicati
     Ok(())
 }
 
+/// 校验根执行请求不支持 context overrides。
+///
+/// 根执行没有"父上下文"可继承，任何显式 overrides 都不会真正改变执行输入。
+/// 宁可明确拒绝，也不要伪装成"已接受但生效未知"。
 fn validate_root_context_overrides_supported(
     overrides: Option<&SubagentContextOverrides>,
 ) -> Result<(), ApplicationError> {
@@ -155,18 +168,6 @@ fn ensure_root_profile_mode(profile: &astrcode_core::AgentProfile) -> Result<(),
         &[AgentMode::Primary, AgentMode::All],
         "root execution",
     )
-}
-
-fn apply_execution_control(
-    runtime_config: &mut ResolvedRuntimeConfig,
-    control: Option<&ExecutionControl>,
-) {
-    let Some(control) = control else {
-        return;
-    };
-    if let Some(max_steps) = control.max_steps {
-        runtime_config.max_steps = max_steps as usize;
-    }
 }
 
 #[cfg(test)]
@@ -257,20 +258,6 @@ mod tests {
     fn merge_skips_empty_context() {
         let merged = merge_task_with_context("main task", Some("  "));
         assert_eq!(merged, "main task");
-    }
-
-    #[test]
-    fn apply_execution_control_overrides_runtime_config() {
-        let mut runtime = ResolvedRuntimeConfig::default();
-        apply_execution_control(
-            &mut runtime,
-            Some(&ExecutionControl {
-                max_steps: Some(5),
-                manual_compact: None,
-            }),
-        );
-
-        assert_eq!(runtime.max_steps, 5);
     }
 
     #[test]

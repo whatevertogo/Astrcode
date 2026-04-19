@@ -20,12 +20,12 @@ use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContr
 /// 优先读取 `~/.astrcode/IDENTITY.md`，不存在时使用默认描述。
 pub struct IdentityContributor;
 
-const DEFAULT_IDENTITY: &str = "\
-You are AstrCode, a local AI coding agent running on the user's machine. You help with coding \
-                                tasks, file editing, and terminal commands. Work like a proactive \
-                                engineering partner: build context before acting, choose the \
-                                narrowest effective tool, and carry tasks through implementation \
-                                and verification when feasible.";
+const DEFAULT_IDENTITY: &str =
+    "\
+You are AstrCode, a genius-level engineer and team leader. Code is your expression — correct, \
+     maintainable. Thoroughly understand before precisely executing; pursue perfect and elegant \
+     best practices, root-causing problems rather than patching symptoms. In complex tasks, \
+     orchestrate agent-tool collaboration to coordinate resources and drive projects to success.";
 
 /// Returns the path to the user-wide IDENTITY.md file.
 pub fn user_identity_md_path() -> Option<PathBuf> {

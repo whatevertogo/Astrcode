@@ -14,6 +14,7 @@ use crate::{
         compaction::{CompactConfig, auto_compact},
         file_access::FileAccessTracker,
     },
+    state::compact_history_event_log_path,
     turn::{
         events::{CompactAppliedStats, compact_applied_event},
         request::{PromptOutputRequest, build_prompt_output},
@@ -27,6 +28,8 @@ pub(crate) struct ManualCompactRequest<'a> {
     pub session_id: &'a str,
     pub working_dir: &'a Path,
     pub runtime: &'a ResolvedRuntimeConfig,
+    pub trigger: astrcode_core::CompactTrigger,
+    pub instructions: Option<&'a str>,
 }
 
 pub(crate) async fn build_manual_compact_events(
@@ -47,7 +50,10 @@ pub(crate) async fn build_manual_compact_events(
         working_dir: request.working_dir,
         step_index: 0,
         messages: &projected.messages,
+        session_state: Some(request.session_state),
+        current_agent_id: None,
         submission_prompt_declarations: &[],
+        prompt_governance: None,
     })
     .await?;
 
@@ -57,7 +63,16 @@ pub(crate) async fn build_manual_compact_events(
         Some(&prompt_output.system_prompt),
         CompactConfig {
             keep_recent_turns: settings.compact_keep_recent_turns,
-            trigger: astrcode_core::CompactTrigger::Manual,
+            keep_recent_user_messages: settings.compact_keep_recent_user_messages,
+            trigger: request.trigger,
+            summary_reserve_tokens: settings.summary_reserve_tokens,
+            max_output_tokens: settings.compact_max_output_tokens,
+            max_retry_attempts: settings.compact_max_retry_attempts,
+            history_path: Some(compact_history_event_log_path(
+                request.session_id,
+                request.working_dir,
+            )?),
+            custom_instructions: request.instructions.map(str::to_string),
         },
         CancelToken::new(),
     )
@@ -69,9 +84,10 @@ pub(crate) async fn build_manual_compact_events(
     let mut events = vec![compact_applied_event(
         None,
         &AgentEventContext::default(),
-        astrcode_core::CompactTrigger::Manual,
-        compaction.summary,
+        request.trigger,
+        compaction.summary.clone(),
         CompactAppliedStats {
+            meta: compaction.meta,
             preserved_recent_turns: compaction.preserved_recent_turns,
             pre_tokens: compaction.pre_tokens,
             post_tokens_estimate: compaction.post_tokens_estimate,
@@ -80,6 +96,29 @@ pub(crate) async fn build_manual_compact_events(
         },
         compaction.timestamp,
     )];
+
+    if let Some(digest) = compaction.recent_user_context_digest {
+        events.push(StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::UserMessage {
+                content: digest,
+                origin: astrcode_core::UserMessageOrigin::RecentUserContextDigest,
+                timestamp: compaction.timestamp,
+            },
+        });
+    }
+    for content in compaction.recent_user_context_messages {
+        events.push(StorageEvent {
+            turn_id: None,
+            agent: AgentEventContext::default(),
+            payload: StorageEventPayload::UserMessage {
+                content,
+                origin: astrcode_core::UserMessageOrigin::RecentUserContext,
+                timestamp: compaction.timestamp,
+            },
+        });
+    }
 
     for message in file_access_tracker.build_recovery_messages(settings.file_recovery_config()) {
         let astrcode_core::LlmMessage::User { content, origin } = message else {
@@ -104,10 +143,10 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::{
-        EventTranslator, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits, Phase,
-        PromptBuildOutput, PromptBuildRequest, PromptFactsProvider, PromptFactsRequest,
-        PromptProvider, ResourceProvider, ResourceReadResult, ResourceRequestContext, Result,
-        SessionId, StorageEventPayload, UserMessageOrigin,
+        CompactMode, EventTranslator, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
+        ModelLimits, Phase, PromptBuildOutput, PromptBuildRequest, PromptFactsProvider,
+        PromptFactsRequest, PromptProvider, ResourceProvider, ResourceReadResult,
+        ResourceRequestContext, Result, SessionId, StorageEventPayload, UserMessageOrigin,
     };
     use astrcode_kernel::Kernel;
     use async_trait::async_trait;
@@ -167,6 +206,8 @@ mod tests {
             Ok(PromptBuildOutput {
                 system_prompt: "noop".to_string(),
                 system_prompt_blocks: Vec::new(),
+                prompt_cache_hints: Default::default(),
+                cache_metrics: Default::default(),
                 metadata: serde_json::Value::Null,
             })
         }
@@ -257,6 +298,8 @@ mod tests {
             session_id: "session-1",
             working_dir: Path::new("."),
             runtime: &ResolvedRuntimeConfig::default(),
+            trigger: astrcode_core::CompactTrigger::Manual,
+            instructions: Some("保留错误和文件路径"),
         })
         .await
         .expect("manual compact should succeed")
@@ -264,7 +307,11 @@ mod tests {
 
         assert!(matches!(
             &events[0].payload,
-            StorageEventPayload::CompactApplied { summary, .. } if summary == "manual compact summary"
+            StorageEventPayload::CompactApplied { summary, meta, .. }
+                if summary.contains("manual compact summary")
+                    && summary.contains("session-1.jsonl")
+                    && meta.mode == CompactMode::Full
+                    && meta.instructions_present
         ));
     }
 }

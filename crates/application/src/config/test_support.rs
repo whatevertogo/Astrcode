@@ -1,3 +1,7 @@
+//! 配置服务测试桩。
+//!
+//! 提供内存实现的 `ConfigStore`，用于配置相关单元测试。
+
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,

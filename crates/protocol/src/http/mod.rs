@@ -19,7 +19,6 @@ mod auth;
 mod composer;
 mod config;
 pub mod conversation;
-mod debug;
 mod event;
 mod model;
 mod runtime;
@@ -30,7 +29,7 @@ mod tool;
 
 pub use agent::{
     AgentExecuteRequestDto, AgentExecuteResponseDto, AgentLifecycleDto, AgentProfileDto,
-    AgentTurnOutcomeDto, ChildAgentRefDto, ChildSessionLineageKindDto, ChildSessionNotificationDto,
+    AgentTurnOutcomeDto, ChildAgentRefDto, ChildSessionLineageKindDto,
     ChildSessionNotificationKindDto, LineageSnapshotDto, SubRunStatusDto, SubRunStatusSourceDto,
     SubagentContextOverridesDto,
 };
@@ -48,26 +47,23 @@ pub use conversation::v1::{
     ConversationBlockDto, ConversationBlockPatchDto, ConversationBlockStatusDto,
     ConversationChildHandoffBlockDto, ConversationChildHandoffKindDto, ConversationChildSummaryDto,
     ConversationControlStateDto, ConversationCursorDto, ConversationDeltaDto,
-    ConversationErrorBlockDto, ConversationErrorEnvelopeDto, ConversationSlashActionKindDto,
-    ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto,
-    ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto,
-    ConversationSystemNoteKindDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
-    ConversationToolStreamBlockDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
-};
-pub use debug::{
-    DebugAgentNodeKindDto, RuntimeDebugOverviewDto, RuntimeDebugTimelineDto,
-    RuntimeDebugTimelineSampleDto, SessionDebugAgentNodeDto, SessionDebugAgentsDto,
-    SessionDebugTraceDto, SessionDebugTraceItemDto, SessionDebugTraceItemKindDto,
+    ConversationErrorBlockDto, ConversationErrorEnvelopeDto, ConversationLastCompactMetaDto,
+    ConversationPlanBlockDto, ConversationPlanBlockersDto, ConversationPlanEventKindDto,
+    ConversationPlanReferenceDto, ConversationPlanReviewDto, ConversationPlanReviewKindDto,
+    ConversationSlashActionKindDto, ConversationSlashCandidateDto,
+    ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
+    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
+    ConversationTaskItemDto, ConversationTaskStatusDto, ConversationThinkingBlockDto,
+    ConversationToolCallBlockDto, ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto,
+    ConversationUserBlockDto,
 };
 pub use event::{
-    AgentContextDto, AgentEventEnvelope, AgentEventPayload, ArtifactRefDto,
-    CloseRequestParentDeliveryPayloadDto, CompactTriggerDto, CompletedParentDeliveryPayloadDto,
-    ExecutionControlDto, FailedParentDeliveryPayloadDto, ForkModeDto, InvocationKindDto,
-    MailboxBatchDto, MailboxDiscardedDto, MailboxQueuedDto, PROTOCOL_VERSION, ParentDeliveryDto,
-    ParentDeliveryOriginDto, ParentDeliveryPayloadDto, ParentDeliveryTerminalSemanticsDto,
-    PhaseDto, ProgressParentDeliveryPayloadDto, ResolvedExecutionLimitsDto,
-    ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto, SubRunFailureDto, SubRunHandoffDto,
-    SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto, ToolCallResultDto,
+    ArtifactRefDto, CloseRequestParentDeliveryPayloadDto, CompletedParentDeliveryPayloadDto,
+    ExecutionControlDto, FailedParentDeliveryPayloadDto, ForkModeDto, PROTOCOL_VERSION,
+    ParentDeliveryDto, ParentDeliveryOriginDto, ParentDeliveryPayloadDto,
+    ParentDeliveryTerminalSemanticsDto, PhaseDto, ProgressParentDeliveryPayloadDto,
+    ResolvedExecutionLimitsDto, ResolvedSubagentContextOverridesDto, SubRunFailureCodeDto,
+    SubRunFailureDto, SubRunHandoffDto, SubRunOutcomeDto, SubRunResultDto, SubRunStorageModeDto,
     ToolOutputStreamDto,
 };
 pub use model::{CurrentModelInfoDto, ModelOptionDto};
@@ -78,7 +74,8 @@ pub use runtime::{
 };
 pub use session::{
     CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
-    PromptAcceptedResponse, PromptRequest, SessionListItem,
+    ForkSessionRequest, ModeSummaryDto, PromptAcceptedResponse, PromptRequest,
+    PromptSkillInvocation, SessionListItem, SessionModeStateDto, SwitchModeRequest,
 };
 pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};
 pub use terminal::v1::{

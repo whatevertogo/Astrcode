@@ -11,7 +11,6 @@ import { useComposerActions, type ConfirmDialogState } from './hooks/app/useComp
 import { useSessionCoordinator } from './hooks/app/useSessionCoordinator';
 import { useSubRunNavigation } from './hooks/app/useSubRunNavigation';
 import { forgetProject } from './lib/knownProjects';
-import { isDebugWorkbenchEnabled } from './lib/debugWorkbench';
 import { logger } from './lib/logger';
 import { buildSessionViewLocationHref, readSessionViewLocation } from './lib/sessionView';
 import { cn } from './lib/utils';
@@ -24,6 +23,7 @@ export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, makeInitialState);
   const [showSettings, setShowSettings] = useState(false);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
+  const [activeModeId, setActiveModeId] = useState<string | null>(null);
   // 确认对话框状态（替代 window.confirm）
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const activeSessionIdRef = useRef<string | null>(state.activeSessionId);
@@ -64,6 +64,7 @@ export default function App() {
 
   const {
     createSession,
+    forkSession,
     listSessionsWithMeta,
     loadConversationView,
     connectSession,
@@ -72,6 +73,7 @@ export default function App() {
     interrupt,
     cancelSubRun,
     compactSession,
+    getSessionMode,
     deleteSession,
     deleteProject,
     listComposerOptions,
@@ -81,13 +83,19 @@ export default function App() {
     setModel,
     getCurrentModel,
     listAvailableModels,
+    switchSessionMode,
     testConnection,
     openConfigInEditor,
     selectDirectory,
     hostBridge,
   } = useAgent();
 
-  const { activeSubRunChildren, loadAndActivateSession, refreshSessions } = useSessionCoordinator({
+  const {
+    activeSubRunChildren,
+    activeConversationControl,
+    loadAndActivateSession,
+    refreshSessions,
+  } = useSessionCoordinator({
     dispatch,
     activeSessionIdRef,
     activeSubRunPathRef,
@@ -125,8 +133,40 @@ export default function App() {
     state.projects.find((project) => project.id === state.activeProjectId) ?? null;
   const activeSession =
     activeProject?.sessions.find((session) => session.id === state.activeSessionId) ?? null;
-  const debugWorkbenchEnabled = isDebugWorkbenchEnabled();
   const activeSubRunThreadTree = activeSession?.subRunThreadTree ?? null;
+
+  useEffect(() => {
+    const sessionId = activeSession?.id;
+    if (!sessionId) {
+      setActiveModeId(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const mode = await getSessionMode(sessionId);
+        if (!cancelled) {
+          setActiveModeId(mode.currentModeId);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          logger.warn('App', 'Failed to load session mode:', error);
+          setActiveModeId(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSession?.id, getSessionMode]);
+
+  useEffect(() => {
+    if (activeConversationControl?.currentModeId) {
+      setActiveModeId(activeConversationControl.currentModeId);
+    }
+  }, [activeConversationControl?.currentModeId]);
 
   useEffect(() => {
     if (!activeSubRunThreadTree) {
@@ -194,6 +234,22 @@ export default function App() {
     [refreshSessions]
   );
 
+  const handleForkFromTurn = useCallback(
+    async (turnId: string) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) {
+        return;
+      }
+      try {
+        const forked = await forkSession(sessionId, { turnId });
+        await refreshSessions({ preferredSessionId: forked.sessionId });
+      } catch (error) {
+        logger.error('App', 'Failed to fork session:', error);
+      }
+    },
+    [forkSession, refreshSessions]
+  );
+
   useSessionCatalogEvents({
     onEvent: handleSessionCatalogEvent,
     onResync: () => {
@@ -210,6 +266,22 @@ export default function App() {
       }
     },
     [loadAndActivateSession]
+  );
+
+  const handleSwitchMode = useCallback(
+    async (modeId: string) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) {
+        return;
+      }
+      try {
+        const mode = await switchSessionMode(sessionId, modeId);
+        setActiveModeId(mode.currentModeId);
+      } catch (error) {
+        logger.error('App', 'Failed to switch session mode:', error);
+      }
+    },
+    [switchSessionMode]
   );
 
   const { handleOpenSubRun, handleCloseSubRun, handleNavigateSubRunPath, handleOpenChildSession } =
@@ -250,9 +322,13 @@ export default function App() {
       projectName: activeProject?.name ?? null,
       sessionId: activeSession?.id ?? null,
       sessionTitle: activeSession?.title ?? null,
+      // Why: mode 切换 API 会立即返回新 mode，但 conversation control 流可能稍后才追上。
+      // 这里优先使用本地已确认的 activeModeId，避免右上角 badge 被旧的流式快照短暂覆盖。
+      currentModeId: activeModeId ?? activeConversationControl?.currentModeId ?? null,
       isChildSession: activeSession?.parentSessionId !== undefined,
       workingDir: activeProject?.workingDir ?? '',
       phase: state.phase,
+      conversationControl: activeConversationControl,
       activeSubRunPath: state.activeSubRunPath,
       activeSubRunTitle: activeSubRunView?.title ?? null,
       activeSubRunBreadcrumbs,
@@ -262,7 +338,9 @@ export default function App() {
       onCloseSubRun: handleCloseSubRun,
       onNavigateSubRunPath: handleNavigateSubRunPath,
       onOpenChildSession: handleOpenChildSession,
+      onForkFromTurn: handleForkFromTurn,
       onSubmitPrompt: handleSubmit,
+      onSwitchMode: handleSwitchMode,
       onInterrupt: handleInterrupt,
       onCancelSubRun: cancelSubRun,
       listComposerOptions,
@@ -274,6 +352,8 @@ export default function App() {
     [
       activeProject?.name,
       activeProject?.workingDir,
+      activeConversationControl,
+      activeModeId,
       activeSession?.id,
       activeSession?.parentSessionId,
       activeSession?.title,
@@ -285,8 +365,10 @@ export default function App() {
       handleInterrupt,
       handleNavigateSubRunPath,
       handleOpenChildSession,
+      handleForkFromTurn,
       handleOpenSubRun,
       handleSubmit,
+      handleSwitchMode,
       isSidebarOpen,
       listAvailableModels,
       listComposerOptions,
@@ -331,22 +413,6 @@ export default function App() {
                 handleDeleteSession(sessionId);
               }}
               onOpenSettings={() => setShowSettings(true)}
-              showDebugWorkbenchEntry={debugWorkbenchEnabled && hostBridge.canOpenDebugWorkbench}
-              onOpenDebugWorkbench={() => {
-                void hostBridge.openDebugWorkbench(activeSession?.id ?? null).catch((error) => {
-                  const message = error instanceof Error ? error.message : String(error);
-                  logger.error('App', 'Failed to open Debug Workbench:', error);
-                  setConfirmDialog({
-                    title: '无法打开 Debug Workbench',
-                    message,
-                    confirmLabel: '知道了',
-                    cancelLabel: '关闭',
-                    onConfirm: () => {
-                      setConfirmDialog(null);
-                    },
-                  });
-                });
-              }}
               onNewSession={() => {
                 void handleNewSession();
               }}

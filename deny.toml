@@ -32,16 +32,17 @@ multiple-versions = "allow"
 
 deny = [
   { name = "tokio", wrappers = [
+      "astrcode-application",
+      "astrcode-cli",
+      "astrcode-client",
       "astrcode-core",
+      "astrcode-kernel",
       "astrcode-example-plugin",
       "astrcode-plugin",
-      "astrcode-runtime",
-      "astrcode-runtime-agent-control",
-      "astrcode-runtime-agent-loop",
-      "astrcode-runtime-config",
       "astrcode-adapter-llm",
-      "astrcode-runtime-registry",
-      "astrcode-runtime-session",
+      "astrcode-adapter-mcp",
+      "astrcode-adapter-storage",
+      "astrcode-session-runtime",
       "astrcode-server",
       "axum",
       "hyper",

@@ -2,7 +2,7 @@
 //!
 //! 提供所有文件工具共享的基础设施：
 //!
-//! - **路径沙箱**: `resolve_path` 确保所有路径操作不逃逸工作目录
+//! - **路径解析**: `resolve_path` 将相对路径锚定到工作目录，并允许访问宿主机绝对路径
 //! - **取消检查**: `check_cancel` 在长操作的关键节点检查用户取消
 //! - **文件 I/O**: `read_utf8_file` / `write_text_file` 统一 UTF-8 读写
 //! - **Diff 生成**: `build_text_change_report` 手工实现 unified diff
@@ -24,7 +24,10 @@ use std::{
     time::SystemTime,
 };
 
-use astrcode_core::{AstrError, CancelToken, Result, ToolContext, project::project_dir};
+use astrcode_core::{
+    AstrError, CancelToken, PersistedToolOutput, PersistedToolResult, Result, ToolContext,
+    project::project_dir,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -77,19 +80,34 @@ pub fn is_symlink(path: &Path) -> Result<bool> {
     }
 }
 
-/// 将路径解析为工作目录内的绝对路径，拒绝逃逸路径。
+/// 将路径解析为宿主机上的绝对路径。
 ///
-/// **为什么使用 `resolve_for_boundary_check` 而非 `fs::canonicalize`**:
+/// 相对路径始终锚定到当前工具上下文的工作目录；绝对路径直接保留并解析。
+///
+/// **为什么使用 `resolve_for_host_access` 而非 `fs::canonicalize`**:
 /// canonicalize 要求路径在磁盘上存在，但 writeFile/editFile 经常操作
-/// 尚不存在的文件。resolve_for_boundary_check 从路径尾部向上找到第一个
+/// 尚不存在的文件。resolve_for_host_access 从路径尾部向上找到第一个
 /// 存在的祖先进行 canonicalize，再拼回缺失部分。
 pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
-    resolve_path_with_root(
+    let canonical_working_dir = canonicalize_path(
         ctx.working_dir(),
-        path,
-        "working directory",
-        "failed to canonicalize working directory",
-    )
+        &format!(
+            "failed to canonicalize working directory '{}'",
+            ctx.working_dir().display()
+        ),
+    )?;
+    let base = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        canonical_working_dir.join(path)
+    };
+    resolve_for_host_access(&normalize_lexically(&base))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedReadTarget {
+    pub path: PathBuf,
+    pub persisted_relative_path: Option<String>,
 }
 
 /// 读取工具额外允许访问当前会话下的持久化结果目录。
@@ -98,20 +116,79 @@ pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
 /// 供后续 `readFile` 读取。这里仅对 `tool-results/**` 相对路径开放额外根目录，
 /// 避免把工作区外的任意文件都暴露给只读工具。
 pub fn resolve_read_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
+    Ok(resolve_read_target(ctx, path)?.path)
+}
+
+pub fn resolve_read_target(ctx: &ToolContext, path: &Path) -> Result<ResolvedReadTarget> {
+    if let Some(target) = resolve_session_tool_results_target(ctx, path)? {
+        return Ok(target);
+    }
+
+    Ok(ResolvedReadTarget {
+        path: resolve_path(ctx, path)?,
+        persisted_relative_path: None,
+    })
+}
+
+fn resolve_session_tool_results_target(
+    ctx: &ToolContext,
+    path: &Path,
+) -> Result<Option<ResolvedReadTarget>> {
+    let session_root = session_dir_for_tool_results(ctx)?;
+    let tool_results_root = session_root.join(TOOL_RESULTS_DIR);
+
+    if path.is_absolute() {
+        if !tool_results_root.exists() {
+            return Ok(None);
+        }
+
+        let canonical_tool_results_root = canonicalize_path(
+            &tool_results_root,
+            &format!(
+                "failed to canonicalize session tool-results directory '{}'",
+                tool_results_root.display()
+            ),
+        )?;
+        let canonical_session_root = canonicalize_path(
+            &session_root,
+            &format!(
+                "failed to canonicalize session directory '{}'",
+                session_root.display()
+            ),
+        )?;
+        let resolved = resolve_for_host_access(&normalize_lexically(path))?;
+        if !is_path_within_root(&resolved, &canonical_tool_results_root) {
+            return Ok(None);
+        }
+
+        let relative_path = resolved
+            .strip_prefix(&canonical_session_root)
+            .unwrap_or(&resolved)
+            .to_string_lossy()
+            .replace('\\', "/");
+        return Ok(Some(ResolvedReadTarget {
+            path: resolved,
+            persisted_relative_path: Some(relative_path),
+        }));
+    }
+
     if should_use_session_tool_results_root(path) {
-        let session_root = session_dir_for_tool_results(ctx)?;
         let session_candidate = session_root.join(path);
         if session_candidate.exists() {
-            return resolve_path_with_root(
+            let resolved = resolve_path_with_root(
                 &session_root,
                 path,
                 "session tool-results directory",
                 "failed to canonicalize session tool-results directory",
-            );
+            )?;
+            return Ok(Some(ResolvedReadTarget {
+                path: resolved,
+                persisted_relative_path: Some(path.to_string_lossy().replace('\\', "/")),
+            }));
         }
     }
 
-    resolve_path(ctx, path)
+    Ok(None)
 }
 
 /// 读取文件内容为 UTF-8 字符串。
@@ -161,6 +238,41 @@ pub fn session_dir_for_tool_results(ctx: &ToolContext) -> Result<PathBuf> {
         ))
     })?;
     Ok(project_dir.join("sessions").join(ctx.session_id()))
+}
+
+/// 拒绝通用文件写工具直接修改 canonical session plan。
+///
+/// session plan 的正式写入口必须统一走 `upsertSessionPlan`，否则会让 `state.json`
+/// 与 markdown artifact 脱节，并污染 conversation 对 canonical plan 的投影语义。
+pub fn ensure_not_canonical_session_plan_write_target(
+    ctx: &ToolContext,
+    path: &Path,
+    tool_name: &str,
+) -> Result<()> {
+    let plan_dir = resolve_for_host_access(&normalize_lexically(
+        &session_dir_for_tool_results(ctx)?.join("plan"),
+    ))?;
+    if !is_path_within_root(path, &plan_dir) {
+        return Ok(());
+    }
+
+    let is_canonical_plan_file = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("md"))
+        || path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("state.json"));
+    if !is_canonical_plan_file {
+        return Ok(());
+    }
+
+    Err(AstrError::Validation(format!(
+        "`{tool_name}` cannot modify canonical session plan artifacts under '{}'; use \
+         upsertSessionPlan instead",
+        plan_dir.display()
+    )))
 }
 
 /// 文件观察快照。
@@ -498,7 +610,7 @@ fn resolve_path_with_root(
         canonical_root.join(path)
     };
 
-    let resolved = resolve_for_boundary_check(&normalize_lexically(&base))?;
+    let resolved = resolve_for_host_access(&normalize_lexically(&base))?;
     if is_path_within_root(&resolved, &canonical_root) {
         return Ok(resolved);
     }
@@ -515,7 +627,7 @@ fn resolve_path_with_root(
 ///
 /// 当路径尾部组件尚不存在时（如 writeFile 创建新文件），
 /// 向上找到第一个存在的祖先 canonicalize 后拼回缺失部分。
-fn resolve_for_boundary_check(path: &Path) -> Result<PathBuf> {
+fn resolve_for_host_access(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return canonicalize_path(
             path,
@@ -528,13 +640,13 @@ fn resolve_for_boundary_check(path: &Path) -> Result<PathBuf> {
     while !current.exists() {
         let Some(name) = current.file_name() else {
             return Err(AstrError::Validation(format!(
-                "path '{}' cannot be resolved under the working directory",
+                "path '{}' cannot be resolved on the host filesystem",
                 path.display()
             )));
         };
         let Some(parent) = current.parent() else {
             return Err(AstrError::Validation(format!(
-                "path '{}' cannot be resolved under the working directory",
+                "path '{}' cannot be resolved on the host filesystem",
                 path.display()
             )));
         };
@@ -614,9 +726,12 @@ pub fn maybe_persist_large_tool_result(
     tool_call_id: &str,
     content: &str,
     force_inline: bool,
-) -> String {
+) -> PersistedToolResult {
     if force_inline {
-        return content.to_string();
+        return PersistedToolResult {
+            output: content.to_string(),
+            persisted: None,
+        };
     }
     astrcode_core::tool_result_persist::maybe_persist_tool_result(
         session_dir,
@@ -624,6 +739,17 @@ pub fn maybe_persist_large_tool_result(
         content,
         TOOL_RESULT_INLINE_LIMIT,
     )
+}
+
+pub fn merge_persisted_tool_output_metadata(
+    metadata: &mut serde_json::Map<String, Value>,
+    persisted_output: Option<&PersistedToolOutput>,
+) {
+    let Some(persisted_output) = persisted_output else {
+        return;
+    };
+
+    metadata.insert("persistedOutput".to_string(), json!(persisted_output));
 }
 
 #[cfg(test)]
@@ -647,11 +773,12 @@ mod tests {
         fs::create_dir_all(&working_dir).expect("workspace should be created");
         let ctx = test_tool_context_for(&working_dir);
 
-        let err = resolve_path(&ctx, Path::new("../outside.txt"))
-            .expect_err("escaping path should be rejected");
+        let resolved =
+            resolve_path(&ctx, Path::new("../outside.txt")).expect("outside path should resolve");
+        let expected = resolve_path(&ctx, Path::new("../outside.txt"))
+            .expect("outside path should resolve consistently");
 
-        assert!(matches!(err, AstrError::Validation(_)));
-        assert!(err.to_string().contains("escapes working directory"));
+        assert_eq!(resolved, expected);
     }
 
     #[test]
@@ -664,6 +791,20 @@ mod tests {
         let resolved = resolve_path(&ctx, &file).expect("path should resolve");
 
         assert_eq!(resolved, canonical_tool_path(&file));
+    }
+
+    #[test]
+    fn resolve_path_allows_absolute_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside.txt");
+        fs::create_dir_all(&workspace).expect("workspace should be created");
+        fs::write(&outside, "hello").expect("outside file should be created");
+        let ctx = test_tool_context_for(&workspace);
+
+        let resolved = resolve_path(&ctx, &outside).expect("absolute host path should resolve");
+
+        assert_eq!(resolved, canonical_tool_path(&outside));
     }
 
     #[test]
@@ -718,6 +859,31 @@ mod tests {
             .expect("workspace tool-results path should still resolve");
 
         assert_eq!(resolved, canonical_tool_path(&workspace_file));
+    }
+
+    #[test]
+    fn resolve_read_target_allows_absolute_session_tool_results_path() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let ctx = test_tool_context_for(temp.path());
+        let session_dir =
+            session_dir_for_tool_results(&ctx).expect("session tool-results dir should resolve");
+        let persisted = session_dir.join(TOOL_RESULTS_DIR).join("absolute.txt");
+        fs::create_dir_all(
+            persisted
+                .parent()
+                .expect("persisted file should have a parent"),
+        )
+        .expect("tool-results dir should be created");
+        fs::write(&persisted, "persisted").expect("persisted output should be written");
+
+        let resolved = resolve_read_target(&ctx, &canonical_tool_path(&persisted))
+            .expect("absolute persisted path should resolve");
+
+        assert_eq!(resolved.path, canonical_tool_path(&persisted));
+        assert_eq!(
+            resolved.persisted_relative_path.as_deref(),
+            Some("tool-results/absolute.txt")
+        );
     }
 
     #[test]

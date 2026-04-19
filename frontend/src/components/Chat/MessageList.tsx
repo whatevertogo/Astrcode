@@ -1,12 +1,19 @@
 import React, { Component, useCallback, useEffect, useRef } from 'react';
 import type { Message, SubRunViewData, ThreadItem } from '../../types';
-import { emptyStateSurface, errorSurface } from '../../lib/styles';
+import {
+  contextMenu as contextMenuClass,
+  emptyStateSurface,
+  errorSurface,
+  menuItem,
+} from '../../lib/styles';
 import { cn } from '../../lib/utils';
+import { useContextMenu } from '../../hooks/useContextMenu';
+import { resolveForkTurnIdFromMessage } from '../../lib/sessionFork';
 import AssistantMessage from './AssistantMessage';
 import CompactMessage from './CompactMessage';
+import PlanMessage from './PlanMessage';
 import SubRunBlock from './SubRunBlock';
 import ToolCallBlock from './ToolCallBlock';
-import ToolStreamBlock from './ToolStreamBlock';
 import UserMessage from './UserMessage';
 import { useChatScreenContext } from './ChatScreenContext';
 import { logger } from '../../lib/logger';
@@ -63,22 +70,22 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
                 2
               )}
             </pre>
-          ) : message.kind === 'toolStream' ? (
+          ) : message.kind === 'compact' ? (
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
+              {message.summary}
+            </pre>
+          ) : message.kind === 'plan' ? (
             <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
               {JSON.stringify(
                 {
                   toolCallId: message.toolCallId,
-                  stream: message.stream,
-                  status: message.status,
-                  contentLength: message.content.length,
+                  eventKind: message.eventKind,
+                  title: message.title,
+                  planPath: message.planPath,
                 },
                 null,
                 2
               )}
-            </pre>
-          ) : message.kind === 'compact' ? (
-            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
-              {message.summary}
             </pre>
           ) : message.kind === 'promptMetrics' ? (
             <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
@@ -147,13 +154,56 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
 }
 
 function isAssistantLike(message: Message): boolean {
-  return (
-    message.kind === 'assistant' || message.kind === 'toolCall' || message.kind === 'toolStream'
-  );
+  return message.kind === 'assistant' || message.kind === 'plan' || message.kind === 'toolCall';
 }
 
 function isRowNested(options?: { nested?: boolean }): boolean {
   return options?.nested === true;
+}
+
+function ForkableRow({
+  message,
+  nested,
+  children,
+}: {
+  message: Message;
+  nested?: boolean;
+  children: React.ReactNode;
+}) {
+  const { activeSubRunPath, conversationControl, onForkFromTurn } = useChatScreenContext();
+  const { contextMenu, menuRef, openMenu, closeMenu } = useContextMenu();
+  const turnId =
+    activeSubRunPath.length === 0 && !nested
+      ? resolveForkTurnIdFromMessage(message, conversationControl)
+      : null;
+
+  if (!turnId) {
+    return <>{children}</>;
+  }
+
+  return (
+    <>
+      <div onContextMenu={openMenu}>{children}</div>
+      {contextMenu && (
+        <div
+          ref={menuRef}
+          className={contextMenuClass}
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+        >
+          <button
+            className={menuItem}
+            type="button"
+            onClick={() => {
+              void onForkFromTurn(turnId);
+              closeMenu();
+            }}
+          >
+            从此处 fork
+          </button>
+        </div>
+      )}
+    </>
+  );
 }
 
 export default function MessageList({
@@ -244,11 +294,11 @@ export default function MessageList({
           />
         );
       }
+      if (msg.kind === 'plan') {
+        return <PlanMessage message={msg} />;
+      }
       if (msg.kind === 'toolCall') {
         return <ToolCallBlock message={msg} />;
-      }
-      if (msg.kind === 'toolStream') {
-        return <ToolStreamBlock message={msg} />;
       }
       if (msg.kind === 'promptMetrics') {
         return null;
@@ -284,18 +334,21 @@ export default function MessageList({
           : undefined);
 
       return (
-        <div
-          key={options?.key ?? msg.id}
-          className={cn(
-            isRowNested(options) ? 'w-full' : 'mx-auto w-[min(100%,var(--chat-content-max-width))]',
-            'min-w-0 transition-[margin-top] duration-200 ease-out',
-            isContinuation && '-mt-4'
-          )}
-        >
-          <MessageBoundary message={msg}>
-            {renderMessageContent(msg, isContinuation, metricsToAttach, options)}
-          </MessageBoundary>
-        </div>
+        <ForkableRow key={options?.key ?? msg.id} message={msg} nested={options?.nested}>
+          <div
+            className={cn(
+              isRowNested(options)
+                ? 'w-full'
+                : 'mx-auto w-[min(100%,var(--chat-content-max-width))]',
+              'min-w-0 transition-[margin-top] duration-200 ease-out',
+              isContinuation && '-mt-4'
+            )}
+          >
+            <MessageBoundary message={msg}>
+              {renderMessageContent(msg, isContinuation, metricsToAttach, options)}
+            </MessageBoundary>
+          </div>
+        </ForkableRow>
       );
     },
     [renderMessageContent]
@@ -307,8 +360,11 @@ export default function MessageList({
       options?: {
         nested?: boolean;
       }
-    ): React.ReactNode[] =>
-      items.map((item, index) => {
+    ): React.ReactNode[] => {
+      const rendered: React.ReactNode[] = [];
+
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
         if (item.kind === 'message') {
           const previousItem = items[index - 1];
           const nextItem = items[index + 1];
@@ -316,7 +372,7 @@ export default function MessageList({
           const nextMessage = nextItem?.kind === 'message' ? nextItem.message : null;
 
           if (item.message.kind === 'promptMetrics') {
-            return null;
+            continue;
           }
 
           let metricsToAttach: Message | undefined;
@@ -365,21 +421,24 @@ export default function MessageList({
             }
           }
 
-          return renderMessageRow(
-            item.message,
-            previousMessage,
-            nextMessage,
-            {
-              key: item.message.id,
-              nested: options?.nested,
-            },
-            metricsToAttach
+          rendered.push(
+            renderMessageRow(
+              item.message,
+              previousMessage,
+              nextMessage,
+              {
+                key: item.message.id,
+                nested: options?.nested,
+              },
+              metricsToAttach
+            )
           );
+          continue;
         }
 
         const subRunView = subRunViews.get(item.subRunId);
         if (!subRunView) {
-          return (
+          rendered.push(
             <div
               key={`subrun-missing-${item.subRunId}`}
               className={
@@ -394,6 +453,7 @@ export default function MessageList({
               </div>
             </div>
           );
+          continue;
         }
 
         const boundaryMessage =
@@ -420,7 +480,7 @@ export default function MessageList({
           />
         );
 
-        return (
+        rendered.push(
           <div key={`subrun-${subRunView.subRunId}`} className={rowClass}>
             {boundaryMessage ? (
               <MessageBoundary message={boundaryMessage}>{subRunBlock}</MessageBoundary>
@@ -429,7 +489,10 @@ export default function MessageList({
             )}
           </div>
         );
-      }),
+      }
+
+      return rendered;
+    },
     [onCancelSubRun, onOpenChildSession, onOpenSubRun, renderMessageRow, sessionId, subRunViews]
   );
 

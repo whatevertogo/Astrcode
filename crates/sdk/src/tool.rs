@@ -22,7 +22,7 @@
 //! struct MyTool;
 //!
 //! impl ToolHandler<MyInput, MyOutput> for MyTool {
-//!     fn descriptor(&self) -> CapabilityDescriptor { /* ... */ }
+//!     fn descriptor(&self) -> CapabilitySpec { /* ... */ }
 //!
 //!     fn execute(&self, input: MyInput, context: PluginContext, stream: StreamWriter) -> ToolFuture<'_, MyOutput> {
 //!         Box::pin(async move {
@@ -37,7 +37,7 @@
 
 use std::{future::Future, pin::Pin};
 
-use astrcode_protocol::plugin::CapabilityDescriptor;
+use astrcode_core::CapabilitySpec;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -78,7 +78,7 @@ pub trait ToolHandler<I = Value, O = Value>: Send + Sync {
     ///
     /// 描述包含工具名称、文档、副作用级别等元数据，
     /// 用于 LLM 决定是否调用此工具，以及前端如何渲染工具卡片。
-    fn descriptor(&self) -> CapabilityDescriptor;
+    fn descriptor(&self) -> CapabilitySpec;
 
     /// 执行工具逻辑。
     ///
@@ -103,7 +103,7 @@ impl<T, I, O> ToolHandler<I, O> for Box<T>
 where
     T: ToolHandler<I, O> + ?Sized,
 {
-    fn descriptor(&self) -> CapabilityDescriptor {
+    fn descriptor(&self) -> CapabilitySpec {
         (**self).descriptor()
     }
 
@@ -124,7 +124,7 @@ where
 /// 无法统一存储。类型擦除后所有工具都实现同一个 trait，可放入同一集合。
 pub trait DynToolHandler: Send + Sync {
     /// 返回工具的能力描述。
-    fn descriptor(&self) -> CapabilityDescriptor;
+    fn descriptor(&self) -> CapabilitySpec;
 
     /// 以 `Value` 作为输入/输出执行工具。
     ///
@@ -167,7 +167,7 @@ where
     I: DeserializeOwned + Send + 'static,
     O: Serialize + Send + 'static,
 {
-    fn descriptor(&self) -> CapabilityDescriptor {
+    fn descriptor(&self) -> CapabilitySpec {
         ToolHandler::<I, O>::descriptor(&self.inner)
     }
 
@@ -177,8 +177,8 @@ where
         context: PluginContext,
         stream: StreamWriter,
     ) -> ToolFuture<'_, Value> {
-        let descriptor = ToolHandler::<I, O>::descriptor(&self.inner);
-        let capability_name = descriptor.name;
+        let capability_spec = ToolHandler::<I, O>::descriptor(&self.inner);
+        let capability_name = capability_spec.name.to_string();
         let typed_input = serde_json::from_value::<I>(input).map_err(|source| SdkError::Serde {
             capability: capability_name.clone(),
             stage: ToolSerdeStage::DecodeInput,
@@ -219,7 +219,7 @@ where
 /// 将泛型 `ToolHandler<I, O>` 转换为 `dyn DynToolHandler`，
 /// 使运行时可用统一接口调用所有工具。
 pub struct ToolRegistration {
-    descriptor: CapabilityDescriptor,
+    descriptor: CapabilitySpec,
     handler: Box<dyn DynToolHandler>,
 }
 
@@ -253,7 +253,7 @@ impl ToolRegistration {
     ///
     /// 运行时用此信息向 LLM 暴露工具列表，
     /// 前端用此信息渲染工具卡片。
-    pub fn descriptor(&self) -> &CapabilityDescriptor {
+    pub fn descriptor(&self) -> &CapabilitySpec {
         &self.descriptor
     }
 

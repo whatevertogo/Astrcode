@@ -9,19 +9,20 @@
 //!
 //! ## 事实源
 //!
-//! 唯一事实源为 `SkillCatalog`（adapter-skills），
+//! 唯一事实源为 `SkillCatalog` 端口，
 //! SkillTool 不做独立缓存或发现。
 
 use std::sync::Arc;
 
-use astrcode_adapter_skills::{SKILL_TOOL_NAME, SkillCatalog, SkillSpec, normalize_skill_name};
 use astrcode_core::{
-    Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+    Result, SideEffect, SkillCatalog, SkillSpec, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolExecutionResult, ToolPromptMetadata, normalize_skill_name,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+const SKILL_TOOL_NAME: &str = "Skill";
 
 /// Skill 工具的输入参数。
 #[derive(Debug, Deserialize)]
@@ -39,11 +40,11 @@ struct SkillToolInput {
 /// 每次执行时基于当前 working dir 查询 catalog，
 /// 确保 surface 替换后不会残留旧 skill。
 pub struct SkillTool {
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<dyn SkillCatalog>,
 }
 
 impl SkillTool {
-    pub fn new(skill_catalog: Arc<SkillCatalog>) -> Self {
+    pub fn new(skill_catalog: Arc<dyn SkillCatalog>) -> Self {
         Self { skill_catalog }
     }
 }
@@ -127,6 +128,7 @@ impl Tool for SkillTool {
             output: render_skill_content(skill, parsed_input.args.as_deref(), ctx.session_id()),
             error: None,
             metadata: None,
+            child_ref: None,
             duration_ms: 0,
             truncated: false,
         })
@@ -141,6 +143,7 @@ fn skill_error(tool_call_id: String, error: String) -> ToolExecutionResult {
         output: String::new(),
         error: Some(error),
         metadata: None,
+        child_ref: None,
         duration_ms: 0,
         truncated: false,
     }
@@ -199,13 +202,42 @@ fn normalize_skill_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
-    use astrcode_adapter_skills::{SkillCatalog, SkillSource, SkillSpec};
-    use astrcode_core::{CancelToken, ToolContext};
+    use astrcode_core::{CancelToken, SkillCatalog, SkillSource, SkillSpec, ToolContext};
     use serde_json::json;
 
     use super::*;
+
+    #[derive(Default)]
+    struct FakeSkillCatalog {
+        skills: RwLock<Vec<SkillSpec>>,
+    }
+
+    impl FakeSkillCatalog {
+        fn new(skills: Vec<SkillSpec>) -> Self {
+            Self {
+                skills: RwLock::new(skills),
+            }
+        }
+
+        fn replace_base_skills(&self, skills: Vec<SkillSpec>) {
+            let mut guard = self
+                .skills
+                .write()
+                .expect("fake skill catalog lock should not be poisoned");
+            *guard = skills;
+        }
+    }
+
+    impl SkillCatalog for FakeSkillCatalog {
+        fn resolve_for_working_dir(&self, _working_dir: &str) -> Vec<SkillSpec> {
+            self.skills
+                .read()
+                .expect("fake skill catalog lock should not be poisoned")
+                .clone()
+        }
+    }
 
     fn tool_context() -> ToolContext {
         ToolContext::new("session-1".into(), std::env::temp_dir(), CancelToken::new())
@@ -226,7 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn loads_and_expands_skill_content() {
-        let catalog = Arc::new(SkillCatalog::new(vec![sample_skill()]));
+        let catalog = Arc::new(FakeSkillCatalog::new(vec![sample_skill()]));
         let tool = SkillTool::new(catalog);
 
         let result = tool
@@ -250,7 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_unknown_skills() {
-        let catalog = Arc::new(SkillCatalog::new(vec![sample_skill()]));
+        let catalog = Arc::new(FakeSkillCatalog::new(vec![sample_skill()]));
         let tool = SkillTool::new(catalog);
 
         let result = tool
@@ -273,8 +305,8 @@ mod tests {
 
     #[tokio::test]
     async fn reads_latest_skill_catalog_without_stale_cache() {
-        let catalog = Arc::new(SkillCatalog::new(vec![sample_skill()]));
-        let tool = SkillTool::new(Arc::clone(&catalog));
+        let catalog = Arc::new(FakeSkillCatalog::new(vec![sample_skill()]));
+        let tool = SkillTool::new(catalog.clone());
 
         catalog.replace_base_skills(vec![SkillSpec {
             id: "repo-search".to_string(),

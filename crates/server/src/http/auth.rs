@@ -73,6 +73,14 @@ pub(crate) struct IssuedAuthToken {
     pub expires_at_ms: i64,
 }
 
+/// auth exchange 的共享摘要输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthExchangeSummary {
+    pub ok: bool,
+    pub token: String,
+    pub expires_at_ms: i64,
+}
+
 /// API 会话 token 管理器。
 ///
 /// 维护一个线程安全的 token 映射，支持签发和验证。
@@ -88,6 +96,15 @@ impl AuthSessionManager {
     /// 使用随机生成的 token，有效期为 `API_SESSION_TTL_HOURS`（8 小时）。
     pub(crate) fn issue_token(&self) -> IssuedAuthToken {
         self.issue_named_token(random_hex_token(), API_SESSION_TTL_HOURS)
+    }
+
+    pub(crate) fn issue_exchange_summary(&self) -> AuthExchangeSummary {
+        let issued = self.issue_token();
+        AuthExchangeSummary {
+            ok: true,
+            token: issued.token,
+            expires_at_ms: issued.expires_at_ms,
+        }
     }
 
     /// 验证 token 是否有效且未过期。

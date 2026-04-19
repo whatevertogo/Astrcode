@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { groupSessionsByProject } from './utils';
+import {
+  deriveSessionTitleFromMessages,
+  groupSessionsByProject,
+  replaceSessionMessages,
+} from './utils';
 import type { SessionMeta } from '../types';
+import { buildSubRunThreadTree, createEmptySubRunThreadTree } from '../lib/subRunView';
 
 function buildMeta(overrides: Partial<SessionMeta>): SessionMeta {
   return {
@@ -63,5 +68,64 @@ describe('groupSessionsByProject', () => {
       'session-parent',
       'session-child',
     ]);
+  });
+
+  it('derives the session title from the first user message', () => {
+    const title = deriveSessionTitleFromMessages([
+      {
+        id: 'user-1',
+        kind: 'user',
+        text: '你好！这是新的会话标题候选',
+        timestamp: 1,
+      },
+    ]);
+
+    expect(title).toBe('你好！这是新的会话标题候选');
+  });
+
+  it('replaces session messages and refreshes the derived title', () => {
+    const projects = [
+      {
+        id: 'project-1',
+        name: 'Repo',
+        workingDir: 'D:\\Repo',
+        isExpanded: true,
+        sessions: [
+          {
+            id: 'session-1',
+            projectId: 'project-1',
+            title: '新会话',
+            createdAt: 1,
+            messages: [],
+            subRunThreadTree: createEmptySubRunThreadTree(),
+          },
+        ],
+      },
+    ];
+    const messages = [
+      {
+        id: 'user-1',
+        kind: 'user' as const,
+        text: '你好',
+        timestamp: 1,
+      },
+      {
+        id: 'assistant-1',
+        kind: 'assistant' as const,
+        text: '你好！有什么我可以帮你的吗？',
+        reasoningText: '',
+        streaming: false,
+        timestamp: 2,
+      },
+    ];
+
+    const next = replaceSessionMessages(
+      projects,
+      'session-1',
+      messages,
+      buildSubRunThreadTree(messages)
+    );
+
+    expect(next[0]?.sessions[0]?.title).toBe('你好');
   });
 });

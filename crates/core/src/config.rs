@@ -18,7 +18,7 @@ const ENV_REFERENCE_PREFIX: &str = "env:";
 /// 默认受控子会话最大深度。
 pub const DEFAULT_MAX_SUBRUN_DEPTH: usize = 2;
 /// 默认单轮最多新建的子代理数量。
-pub const DEFAULT_MAX_SPAWN_PER_TURN: usize = 3;
+pub const DEFAULT_MAX_SPAWN_PER_TURN: usize = 6;
 
 /// 默认最大安全工具并发数。
 pub const DEFAULT_MAX_TOOL_CONCURRENCY: usize = 10;
@@ -32,9 +32,12 @@ pub const DEFAULT_LLM_READ_TIMEOUT_SECS: u64 = 90;
 pub const DEFAULT_LLM_MAX_RETRIES: u32 = 2;
 pub const DEFAULT_LLM_RETRY_BASE_DELAY_MS: u64 = 250;
 pub const DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS: u8 = 3;
+pub const DEFAULT_RESERVED_CONTEXT_SIZE: usize = 20_000;
 pub const DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS: u8 = 3;
 pub const DEFAULT_MAX_CONTINUATIONS: u8 = 3;
 pub const DEFAULT_SUMMARY_RESERVE_TOKENS: usize = 20_000;
+pub const DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES: u8 = 8;
+pub const DEFAULT_COMPACT_MAX_OUTPUT_TOKENS: usize = 20_000;
 pub const DEFAULT_MAX_TRACKED_FILES: usize = 10;
 pub const DEFAULT_MAX_RECOVERED_FILES: usize = 5;
 pub const DEFAULT_RECOVERY_TOKEN_BUDGET: usize = 50_000;
@@ -105,6 +108,8 @@ pub struct RuntimeConfig {
     pub tool_result_max_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_keep_recent_turns: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_keep_recent_user_messages: Option<u8>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentConfig>,
@@ -126,13 +131,17 @@ pub struct RuntimeConfig {
     pub llm_retry_base_delay_ms: Option<u64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_reactive_compact_attempts: Option<u8>,
+    pub compact_max_retry_attempts: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserved_context_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_continuation_attempts: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_continuations: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary_reserve_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_max_output_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tracked_files: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,7 +171,6 @@ pub struct RuntimeConfig {
     pub micro_compact_gap_threshold_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub micro_compact_keep_recent_results: Option<usize>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_session_ttl_hours: Option<i64>,
 }
@@ -206,6 +214,7 @@ pub struct ResolvedRuntimeConfig {
     pub compact_threshold_percent: u8,
     pub tool_result_max_bytes: usize,
     pub compact_keep_recent_turns: u8,
+    pub compact_keep_recent_user_messages: u8,
     pub agent: ResolvedAgentConfig,
     pub max_consecutive_failures: usize,
     pub recovery_truncate_bytes: usize,
@@ -214,10 +223,12 @@ pub struct ResolvedRuntimeConfig {
     pub llm_read_timeout_secs: u64,
     pub llm_max_retries: u32,
     pub llm_retry_base_delay_ms: u64,
-    pub max_reactive_compact_attempts: u8,
+    pub compact_max_retry_attempts: u8,
+    pub reserved_context_size: usize,
     pub max_output_continuation_attempts: u8,
     pub max_continuations: u8,
     pub summary_reserve_tokens: usize,
+    pub compact_max_output_tokens: usize,
     pub max_tracked_files: usize,
     pub max_recovered_files: usize,
     pub recovery_token_budget: usize,
@@ -268,6 +279,7 @@ impl Default for ResolvedRuntimeConfig {
             compact_threshold_percent: DEFAULT_COMPACT_THRESHOLD_PERCENT,
             tool_result_max_bytes: DEFAULT_TOOL_RESULT_MAX_BYTES,
             compact_keep_recent_turns: DEFAULT_COMPACT_KEEP_RECENT_TURNS,
+            compact_keep_recent_user_messages: DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES,
             agent: ResolvedAgentConfig::default(),
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
             recovery_truncate_bytes: DEFAULT_RECOVERY_TRUNCATE_BYTES,
@@ -276,10 +288,12 @@ impl Default for ResolvedRuntimeConfig {
             llm_read_timeout_secs: DEFAULT_LLM_READ_TIMEOUT_SECS,
             llm_max_retries: DEFAULT_LLM_MAX_RETRIES,
             llm_retry_base_delay_ms: DEFAULT_LLM_RETRY_BASE_DELAY_MS,
-            max_reactive_compact_attempts: DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
+            compact_max_retry_attempts: DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
+            reserved_context_size: DEFAULT_RESERVED_CONTEXT_SIZE,
             max_output_continuation_attempts: DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
             max_continuations: DEFAULT_MAX_CONTINUATIONS,
             summary_reserve_tokens: DEFAULT_SUMMARY_RESERVE_TOKENS,
+            compact_max_output_tokens: DEFAULT_COMPACT_MAX_OUTPUT_TOKENS,
             max_tracked_files: DEFAULT_MAX_TRACKED_FILES,
             max_recovered_files: DEFAULT_MAX_RECOVERED_FILES,
             recovery_token_budget: DEFAULT_RECOVERY_TOKEN_BUDGET,
@@ -372,19 +386,41 @@ pub struct ActiveSelection {
 }
 
 /// 运行时当前将使用的有效模型信息。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CurrentModelSelection {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSelection {
     pub profile_name: String,
     pub model: String,
     pub provider_kind: String,
 }
 
+impl ModelSelection {
+    pub fn new(
+        profile_name: impl Into<String>,
+        model: impl Into<String>,
+        provider_kind: impl Into<String>,
+    ) -> Self {
+        Self {
+            profile_name: profile_name.into(),
+            model: model.into(),
+            provider_kind: provider_kind.into(),
+        }
+    }
+}
+
+pub type CurrentModelSelection = ModelSelection;
+
 /// 扁平化的模型选项。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelOption {
-    pub profile_name: String,
+pub type ModelOption = ModelSelection;
+
+/// 模型连通性测试结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TestConnectionResult {
+    pub success: bool,
+    pub provider: String,
     pub model: String,
-    pub provider_kind: String,
+    pub error: Option<String>,
 }
 
 impl fmt::Debug for Config {
@@ -407,6 +443,10 @@ impl fmt::Debug for RuntimeConfig {
             .field("compact_threshold_percent", &self.compact_threshold_percent)
             .field("tool_result_max_bytes", &self.tool_result_max_bytes)
             .field("compact_keep_recent_turns", &self.compact_keep_recent_turns)
+            .field(
+                "compact_keep_recent_user_messages",
+                &self.compact_keep_recent_user_messages,
+            )
             .field("agent", &self.agent)
             .field("max_consecutive_failures", &self.max_consecutive_failures)
             .field("recovery_truncate_bytes", &self.recovery_truncate_bytes)
@@ -415,15 +455,17 @@ impl fmt::Debug for RuntimeConfig {
             .field("llm_read_timeout_secs", &self.llm_read_timeout_secs)
             .field("llm_max_retries", &self.llm_max_retries)
             .field(
-                "max_reactive_compact_attempts",
-                &self.max_reactive_compact_attempts,
+                "compact_max_retry_attempts",
+                &self.compact_max_retry_attempts,
             )
+            .field("reserved_context_size", &self.reserved_context_size)
             .field(
                 "max_output_continuation_attempts",
                 &self.max_output_continuation_attempts,
             )
             .field("max_continuations", &self.max_continuations)
             .field("summary_reserve_tokens", &self.summary_reserve_tokens)
+            .field("compact_max_output_tokens", &self.compact_max_output_tokens)
             .field("max_tracked_files", &self.max_tracked_files)
             .field("max_recovered_files", &self.max_recovered_files)
             .field("recovery_token_budget", &self.recovery_token_budget)
@@ -569,6 +611,10 @@ pub fn max_tool_concurrency() -> usize {
         .max(1)
 }
 
+/// 从 `Option<AgentConfig>` 解析出完整的 `ResolvedAgentConfig`。
+///
+/// 逐字段用用户配置覆盖默认值，缺失字段使用默认值。
+/// 所有数值型字段都有 `.max(1)` 保护，防止配置为 0 导致除零或无限循环。
 pub fn resolve_agent_config(agent: Option<&AgentConfig>) -> ResolvedAgentConfig {
     let defaults = ResolvedAgentConfig::default();
     ResolvedAgentConfig {
@@ -598,6 +644,10 @@ pub fn resolve_agent_config(agent: Option<&AgentConfig>) -> ResolvedAgentConfig 
     }
 }
 
+/// 从 `RuntimeConfig` 解析出完整的 `ResolvedRuntimeConfig`。
+///
+/// 与 `resolve_agent_config` 类似，逐字段覆盖 + 默认值兜底 + 下界保护。
+/// `compact_threshold_percent` 额外 `.clamp(1, 100)` 防止百分比越界。
 pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig {
     let defaults = ResolvedRuntimeConfig::default();
     ResolvedRuntimeConfig {
@@ -619,6 +669,10 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
         compact_keep_recent_turns: runtime
             .compact_keep_recent_turns
             .unwrap_or(defaults.compact_keep_recent_turns)
+            .max(1),
+        compact_keep_recent_user_messages: runtime
+            .compact_keep_recent_user_messages
+            .unwrap_or(defaults.compact_keep_recent_user_messages)
             .max(1),
         agent: resolve_agent_config(runtime.agent.as_ref()),
         max_consecutive_failures: runtime
@@ -643,9 +697,13 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
             .llm_retry_base_delay_ms
             .unwrap_or(defaults.llm_retry_base_delay_ms)
             .max(1),
-        max_reactive_compact_attempts: runtime
-            .max_reactive_compact_attempts
-            .unwrap_or(defaults.max_reactive_compact_attempts)
+        compact_max_retry_attempts: runtime
+            .compact_max_retry_attempts
+            .unwrap_or(defaults.compact_max_retry_attempts)
+            .max(1),
+        reserved_context_size: runtime
+            .reserved_context_size
+            .unwrap_or(defaults.reserved_context_size)
             .max(1),
         max_output_continuation_attempts: runtime
             .max_output_continuation_attempts
@@ -658,6 +716,10 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
         summary_reserve_tokens: runtime
             .summary_reserve_tokens
             .unwrap_or(defaults.summary_reserve_tokens),
+        compact_max_output_tokens: runtime
+            .compact_max_output_tokens
+            .unwrap_or(defaults.compact_max_output_tokens)
+            .max(1),
         max_tracked_files: runtime
             .max_tracked_files
             .unwrap_or(defaults.max_tracked_files)
@@ -732,6 +794,14 @@ mod tests {
         assert_eq!(
             resolved.tool_result_inline_limit,
             DEFAULT_TOOL_RESULT_INLINE_LIMIT
+        );
+        assert_eq!(
+            resolved.compact_keep_recent_user_messages,
+            DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES
+        );
+        assert_eq!(
+            resolved.compact_max_output_tokens,
+            DEFAULT_COMPACT_MAX_OUTPUT_TOKENS
         );
     }
 

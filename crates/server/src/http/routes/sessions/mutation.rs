@@ -1,7 +1,7 @@
-use astrcode_application::ExecutionAccepted;
 use astrcode_protocol::http::{
     CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
-    ExecutionControlDto, PromptAcceptedResponse, PromptRequest, SessionListItem,
+    ForkSessionRequest, PromptAcceptedResponse, PromptRequest, SessionListItem,
+    SessionModeStateDto, SwitchModeRequest,
 };
 use axum::{
     Json,
@@ -14,26 +14,6 @@ use crate::{
     ApiError, AppState, auth::require_auth, mapper::to_session_list_item,
     routes::sessions::validate_session_path_id,
 };
-
-fn to_execution_control(
-    control: Option<ExecutionControlDto>,
-) -> Option<astrcode_application::ExecutionControl> {
-    control.map(|control| astrcode_application::ExecutionControl {
-        max_steps: control.max_steps,
-        manual_compact: control.manual_compact,
-    })
-}
-
-fn normalize_compact_control(control: Option<ExecutionControlDto>) -> ExecutionControlDto {
-    let mut control = control.unwrap_or(ExecutionControlDto {
-        max_steps: None,
-        manual_compact: None,
-    });
-    if control.manual_compact.is_none() {
-        control.manual_compact = Some(true);
-    }
-    control
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +32,9 @@ pub(crate) async fn create_session(
         .create_session(request.working_dir)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(to_session_list_item(meta)))
+    Ok(Json(to_session_list_item(
+        astrcode_application::summarize_session_meta(meta),
+    )))
 }
 
 pub(crate) async fn submit_prompt(
@@ -63,22 +45,28 @@ pub(crate) async fn submit_prompt(
 ) -> Result<(StatusCode, Json<PromptAcceptedResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
-    let accepted: ExecutionAccepted = state
+    let summary = state
         .app
-        .submit_prompt_with_control(
+        .submit_prompt_summary(
             &session_id,
             request.text,
-            to_execution_control(request.control.clone()),
+            request.control,
+            request.skill_invocation.map(|invocation| {
+                astrcode_application::PromptSkillInvocation {
+                    skill_id: invocation.skill_id,
+                    user_prompt: invocation.user_prompt,
+                }
+            }),
         )
         .await
         .map_err(ApiError::from)?;
     Ok((
         StatusCode::ACCEPTED,
         Json(PromptAcceptedResponse {
-            turn_id: accepted.turn_id.to_string(),
-            session_id: accepted.session_id.to_string(),
-            branched_from_session_id: accepted.branched_from_session_id,
-            accepted_control: request.control,
+            turn_id: summary.turn_id,
+            session_id: summary.session_id,
+            branched_from_session_id: summary.branched_from_session_id,
+            accepted_control: summary.accepted_control,
         }),
     ))
 }
@@ -106,22 +94,81 @@ pub(crate) async fn compact_session(
 ) -> Result<(StatusCode, Json<CompactSessionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
-    let control = normalize_compact_control(request.and_then(|request| request.0.control));
-    let accepted = state
+    let request = request.map(|request| request.0);
+    let summary = state
         .app
-        .compact_session_with_control(&session_id, to_execution_control(Some(control)))
+        .compact_session_summary(
+            &session_id,
+            request.as_ref().and_then(|request| request.control.clone()),
+            request.and_then(|request| request.instructions),
+        )
         .await
         .map_err(ApiError::from)?;
     Ok((
         StatusCode::ACCEPTED,
         Json(CompactSessionResponse {
-            accepted: true,
-            deferred: accepted.deferred,
-            message: if accepted.deferred {
-                "手动 compact 已登记，会在当前 turn 完成后执行。".to_string()
-            } else {
-                "手动 compact 已执行。".to_string()
-            },
+            accepted: summary.accepted,
+            deferred: summary.deferred,
+            message: summary.message,
+        }),
+    ))
+}
+
+pub(crate) async fn fork_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    request: Option<Json<ForkSessionRequest>>,
+) -> Result<Json<SessionListItem>, ApiError> {
+    require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
+    let request = request
+        .map(|request| request.0)
+        .unwrap_or(ForkSessionRequest {
+            turn_id: None,
+            storage_seq: None,
+        });
+    if request.turn_id.is_some() && request.storage_seq.is_some() {
+        return Err(ApiError::bad_request(
+            "turnId and storageSeq are mutually exclusive".to_string(),
+        ));
+    }
+    let fork_point = match (request.turn_id, request.storage_seq) {
+        (Some(turn_id), None) => astrcode_session_runtime::ForkPoint::TurnEnd(turn_id),
+        (None, Some(storage_seq)) => astrcode_session_runtime::ForkPoint::StorageSeq(storage_seq),
+        (None, None) => astrcode_session_runtime::ForkPoint::Latest,
+        (Some(_), Some(_)) => unreachable!("validated above"),
+    };
+    let meta = state
+        .app
+        .fork_session(&session_id, fork_point)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(to_session_list_item(
+        astrcode_application::summarize_session_meta(meta),
+    )))
+}
+
+pub(crate) async fn switch_mode(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<SwitchModeRequest>,
+) -> Result<(StatusCode, Json<SessionModeStateDto>), ApiError> {
+    require_auth(&state, &headers, None)?;
+    let session_id = validate_session_path_id(&session_id)?;
+    let mode = state
+        .app
+        .switch_mode(&session_id, request.mode_id.into())
+        .await
+        .map_err(ApiError::from)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SessionModeStateDto {
+            current_mode_id: mode.current_mode_id.to_string(),
+            last_mode_changed_at: mode
+                .last_mode_changed_at
+                .map(astrcode_application::format_local_rfc3339),
         }),
     ))
 }
@@ -152,8 +199,5 @@ pub(crate) async fn delete_project(
         .delete_project(&query.working_dir)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(DeleteProjectResultDto {
-        success_count: result.success_count,
-        failed_session_ids: result.failed_session_ids,
-    }))
+    Ok(Json(result))
 }

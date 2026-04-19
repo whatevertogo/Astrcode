@@ -20,4 +20,5 @@ log.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+astrcode-core = { path = "../core", features = ["test-support"] }
 tempfile.workspace = true

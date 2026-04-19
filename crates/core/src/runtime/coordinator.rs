@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     AstrError, CapabilitySpec, ManagedRuntimeComponent, PluginRegistry, Result, RuntimeHandle,
-    plugin::PluginEntry,
+    plugin::PluginEntry, support,
 };
 
 /// 运行时协调器。
@@ -68,10 +68,11 @@ impl RuntimeCoordinator {
         self,
         managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     ) -> Self {
-        *self
-            .managed_components
-            .write()
-            .expect("runtime coordinator managed components lock poisoned") = managed_components;
+        support::with_write_lock_recovery(
+            &self.managed_components,
+            "runtime coordinator managed components",
+            |components| *components = managed_components,
+        );
         self
     }
 
@@ -87,26 +88,29 @@ impl RuntimeCoordinator {
 
     /// 获取当前可用能力描述符列表的副本。
     pub fn capabilities(&self) -> Vec<CapabilitySpec> {
-        self.capabilities
-            .read()
-            .expect("runtime coordinator capabilities lock poisoned")
-            .iter()
-            .cloned()
-            .collect()
+        support::with_read_lock_recovery(
+            &self.capabilities,
+            "runtime coordinator capabilities",
+            |capabilities| capabilities.iter().cloned().collect(),
+        )
     }
 
     pub fn managed_components(&self) -> Vec<Arc<dyn ManagedRuntimeComponent>> {
-        self.managed_components
-            .read()
-            .expect("runtime coordinator managed components lock poisoned")
-            .clone()
+        support::with_read_lock_recovery(
+            &self.managed_components,
+            "runtime coordinator managed components",
+            Clone::clone,
+        )
     }
 
-    /// 原子替换运行时表面。
+    /// 原子替换运行时表面（插件热重载核心方法）。
     ///
-    /// 一次性更新插件注册表快照、能力列表和托管组件列表，
-    /// 用于插件热重载或运行时切换。返回旧的托管组件列表，
-    /// 调用方负责关闭这些旧组件。
+    /// 一次性替换三样东西：插件注册表快照、能力描述符列表、托管组件列表。
+    /// 返回旧的托管组件列表，调用方负责逐个关闭它们。
+    ///
+    /// 为什么需要原子替换：如果逐项更新，中间状态会导致：
+    /// - 新插件已注册但旧能力描述符还在 → 路由找不到能力
+    /// - 旧插件已清空但旧组件还在引用 → 悬垂引用
     pub fn replace_runtime_surface(
         &self,
         plugin_entries: Vec<PluginEntry>,
@@ -114,21 +118,23 @@ impl RuntimeCoordinator {
         managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     ) -> Vec<Arc<dyn ManagedRuntimeComponent>> {
         self.plugin_registry.replace_snapshot(plugin_entries);
-        *self
-            .capabilities
-            .write()
-            .expect("runtime coordinator capabilities lock poisoned") = Arc::from(capabilities);
-        let mut guard = self
-            .managed_components
-            .write()
-            .expect("runtime coordinator managed components lock poisoned");
-        std::mem::replace(&mut *guard, managed_components)
+        support::with_write_lock_recovery(
+            &self.capabilities,
+            "runtime coordinator capabilities",
+            |current_capabilities| *current_capabilities = Arc::from(capabilities),
+        );
+        support::with_write_lock_recovery(
+            &self.managed_components,
+            "runtime coordinator managed components",
+            |current_components| std::mem::replace(current_components, managed_components),
+        )
     }
 
     /// 关闭运行时和所有托管组件。
     ///
-    /// 按确定顺序执行：先关闭运行时句柄，再逐个关闭托管组件。
-    /// 所有失败会被收集并合并为单个错误返回。
+    /// 关闭顺序是确定性的：先关闭运行时句柄（停止接收新请求），
+    /// 再逐个关闭托管组件（释放资源）。所有失败会被收集并合并
+    /// 为单个错误返回——即使某个组件关闭失败，仍会尝试关闭剩余组件。
     pub async fn shutdown(&self, timeout_secs: u64) -> Result<()> {
         let mut failures = Vec::new();
 
@@ -148,11 +154,11 @@ impl RuntimeCoordinator {
 
         // Keep the shutdown order deterministic so tests and operational logs can explain
         // exactly which managed component was closed after the runtime stopped accepting work.
-        let managed_components = self
-            .managed_components
-            .read()
-            .expect("runtime coordinator managed components lock poisoned")
-            .clone();
+        let managed_components = support::with_read_lock_recovery(
+            &self.managed_components,
+            "runtime coordinator managed components",
+            Clone::clone,
+        );
 
         for component in managed_components {
             if let Err(error) = component.shutdown_component().await {

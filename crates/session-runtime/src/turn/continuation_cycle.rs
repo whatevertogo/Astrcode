@@ -13,7 +13,7 @@ pub const OUTPUT_CONTINUATION_PROMPT: &str = "Continue from the exact point wher
                                               apologize.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputContinuationDecision {
+pub(crate) enum OutputContinuationDecision {
     Continue,
     Stop(TurnStopCause),
     NotNeeded,

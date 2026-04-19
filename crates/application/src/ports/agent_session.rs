@@ -1,16 +1,25 @@
+//! Agent 编排子域依赖的 session 稳定端口。
+//!
+//! `AgentSessionPort` 继承 `AppSessionPort`，扩展了 agent 协作编排所需的全部 session 操作：
+//! child session 建立、prompt 提交（带 turn id）、durable input queue 管理、
+//! collaboration fact 追加、observe 快照、turn 终态等待。
+//!
+//! 先按职责分组在一个端口中表达完整协作流程，未来根据演化决定是否继续瘦身。
+//!
+//! 同时提供 `SessionRuntime` 对 `AgentSessionPort` 的 blanket impl。
+
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, ExecutionAccepted,
-    MailboxBatchAckedPayload, MailboxBatchStartedPayload, MailboxDiscardedPayload,
-    MailboxQueuedPayload, ResolvedRuntimeConfig, SessionMeta, StoredEvent, TurnId,
+    InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
+    ResolvedRuntimeConfig, SessionMeta, StoredEvent, TurnId,
 };
 use astrcode_kernel::PendingParentDelivery;
 use astrcode_session_runtime::{
-    AgentObserveSnapshot, AgentPromptSubmission, ProjectedTurnOutcome, SessionRuntime,
-    TurnTerminalSnapshot,
+    AgentObserveSnapshot, ProjectedTurnOutcome, SessionRuntime, TurnTerminalSnapshot,
 };
 use async_trait::async_trait;
 
-use super::AppSessionPort;
+use super::{AppAgentPromptSubmission, AppSessionPort};
 
 /// Agent 编排子域依赖的 session 稳定端口。
 ///
@@ -29,7 +38,7 @@ pub trait AgentSessionPort: AppSessionPort {
         session_id: &str,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<ExecutionAccepted>;
     async fn try_submit_prompt_for_agent_with_turn_id(
         &self,
@@ -37,37 +46,45 @@ pub trait AgentSessionPort: AppSessionPort {
         turn_id: TurnId,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
+    ) -> astrcode_core::Result<Option<ExecutionAccepted>>;
+    async fn submit_queued_inputs_for_agent_with_turn_id(
+        &self,
+        session_id: &str,
+        turn_id: TurnId,
+        queued_inputs: Vec<String>,
+        runtime: ResolvedRuntimeConfig,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<Option<ExecutionAccepted>>;
 
-    // Durable mailbox / collaboration 事件追加。
-    async fn append_agent_mailbox_queued(
+    // Durable input queue / collaboration 事件追加。
+    async fn append_agent_input_queued(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxQueuedPayload,
+        payload: InputQueuedPayload,
     ) -> astrcode_core::Result<StoredEvent>;
-    async fn append_agent_mailbox_discarded(
+    async fn append_agent_input_discarded(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxDiscardedPayload,
+        payload: InputDiscardedPayload,
     ) -> astrcode_core::Result<StoredEvent>;
-    async fn append_agent_mailbox_batch_started(
+    async fn append_agent_input_batch_started(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchStartedPayload,
+        payload: InputBatchStartedPayload,
     ) -> astrcode_core::Result<StoredEvent>;
-    async fn append_agent_mailbox_batch_acked(
+    async fn append_agent_input_batch_acked(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchAckedPayload,
+        payload: InputBatchAckedPayload,
     ) -> astrcode_core::Result<StoredEvent>;
     async fn append_child_session_notification(
         &self,
@@ -131,9 +148,9 @@ impl AgentSessionPort for SessionRuntime {
         session_id: &str,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<ExecutionAccepted> {
-        self.submit_prompt_for_agent_with_submission(session_id, text, runtime, submission)
+        self.submit_prompt_for_agent_with_submission(session_id, text, runtime, submission.into())
             .await
     }
 
@@ -143,56 +160,78 @@ impl AgentSessionPort for SessionRuntime {
         turn_id: TurnId,
         text: String,
         runtime: ResolvedRuntimeConfig,
-        submission: AgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
         self.try_submit_prompt_for_agent_with_turn_id(
-            session_id, turn_id, text, runtime, submission,
+            session_id,
+            turn_id,
+            text,
+            runtime,
+            submission.into(),
         )
         .await
     }
 
-    // Durable mailbox / collaboration 事件追加。
-    async fn append_agent_mailbox_queued(
+    async fn submit_queued_inputs_for_agent_with_turn_id(
+        &self,
+        session_id: &str,
+        turn_id: TurnId,
+        queued_inputs: Vec<String>,
+        runtime: ResolvedRuntimeConfig,
+        submission: AppAgentPromptSubmission,
+    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+        self.submit_queued_inputs_for_agent_with_turn_id(
+            session_id,
+            turn_id,
+            queued_inputs,
+            runtime,
+            submission.into(),
+        )
+        .await
+    }
+
+    // Durable input queue / collaboration 事件追加。
+    async fn append_agent_input_queued(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxQueuedPayload,
+        payload: InputQueuedPayload,
     ) -> astrcode_core::Result<StoredEvent> {
-        self.append_agent_mailbox_queued(session_id, turn_id, agent, payload)
+        self.append_agent_input_queued(session_id, turn_id, agent, payload)
             .await
     }
 
-    async fn append_agent_mailbox_discarded(
+    async fn append_agent_input_discarded(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxDiscardedPayload,
+        payload: InputDiscardedPayload,
     ) -> astrcode_core::Result<StoredEvent> {
-        self.append_agent_mailbox_discarded(session_id, turn_id, agent, payload)
+        self.append_agent_input_discarded(session_id, turn_id, agent, payload)
             .await
     }
 
-    async fn append_agent_mailbox_batch_started(
+    async fn append_agent_input_batch_started(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchStartedPayload,
+        payload: InputBatchStartedPayload,
     ) -> astrcode_core::Result<StoredEvent> {
-        self.append_agent_mailbox_batch_started(session_id, turn_id, agent, payload)
+        self.append_agent_input_batch_started(session_id, turn_id, agent, payload)
             .await
     }
 
-    async fn append_agent_mailbox_batch_acked(
+    async fn append_agent_input_batch_acked(
         &self,
         session_id: &str,
         turn_id: &str,
         agent: AgentEventContext,
-        payload: MailboxBatchAckedPayload,
+        payload: InputBatchAckedPayload,
     ) -> astrcode_core::Result<StoredEvent> {
-        self.append_agent_mailbox_batch_acked(session_id, turn_id, agent, payload)
+        self.append_agent_input_batch_acked(session_id, turn_id, agent, payload)
             .await
     }
 
