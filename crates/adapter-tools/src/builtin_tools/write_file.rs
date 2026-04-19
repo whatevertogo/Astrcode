@@ -71,7 +71,7 @@ impl Tool for WriteFileTool {
         ToolCapabilityMetadata::builtin()
             .tags(["filesystem", "write"])
             .permission("filesystem.write")
-            .side_effect(SideEffect::Workspace)
+            .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
                     "Create or fully replace a text file when the whole target content is known.",
@@ -81,8 +81,8 @@ impl Tool for WriteFileTool {
                 )
                 .caveat(
                     "Overwrites the entire file. `createDirs` defaults to false — parent \
-                     directories must exist or set it to true. Path must stay inside the working \
-                     directory.",
+                     directories must exist or set it to true. Relative paths resolve from the \
+                     current working directory; absolute host paths are allowed.",
                 )
                 .caveat(
                     "For small edits to existing files, prefer `editFile` or `apply_patch` to \
@@ -140,8 +140,8 @@ impl Tool for WriteFileTool {
                 ok: false,
                 output: String::new(),
                 error: Some(format!(
-                    "refusing to write to symlink '{}' (symlinks may point outside working \
-                     directory)",
+                    "refusing to write to symlink '{}' (symlinks may point outside the intended \
+                     target path)",
                     path.display()
                 )),
                 metadata: Some(json!({
@@ -319,5 +319,34 @@ mod tests {
             .expect_err("writeFile should fail");
 
         assert!(err.to_string().contains("failed writing file"));
+    }
+
+    #[tokio::test]
+    async fn write_file_allows_relative_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside.txt");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        let tool = WriteFileTool;
+
+        let result = tool
+            .execute(
+                "tc-write-outside".to_string(),
+                json!({
+                    "path": "../outside.txt",
+                    "content": "outside"
+                }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("writeFile should execute");
+
+        assert!(result.ok);
+        let content = tokio::fs::read_to_string(&outside)
+            .await
+            .expect("outside file should be readable");
+        assert_eq!(content, "outside");
     }
 }

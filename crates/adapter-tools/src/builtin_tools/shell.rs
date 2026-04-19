@@ -398,8 +398,8 @@ impl Tool for ShellTool {
                          inspection commands. Prefer dedicated tools instead of `shell` for file \
                          reading (`readFile`), code search (`grep`/`findFiles`), and structured \
                          file edits (`editFile`/`apply_patch`). Keep commands scoped to the \
-                         workspace, explain risky commands before running them, and prefer \
-                         read-only inspection before mutation."
+                         intended host paths, explain risky commands before running them, and \
+                         prefer read-only inspection before mutation."
                     ),
                 )
                 .caveat(
@@ -892,6 +892,49 @@ mod tests {
         assert!(read_result.output.len() >= 1024);
         let read_metadata = read_result.metadata.expect("metadata should exist");
         assert_eq!(read_metadata["persistedRead"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn shell_allows_cwd_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        tokio::fs::create_dir_all(&outside)
+            .await
+            .expect("outside dir should be created");
+        let tool = ShellTool;
+        let args = if cfg!(windows) {
+            json!({
+                "command": "(Get-Location).Path",
+                "shell": "pwsh",
+                "cwd": outside.to_string_lossy()
+            })
+        } else {
+            json!({
+                "command": "pwd",
+                "shell": "sh",
+                "cwd": outside.to_string_lossy()
+            })
+        };
+
+        let result = tool
+            .execute(
+                "tc-shell-cwd-outside".to_string(),
+                args,
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("shell tool should execute");
+
+        assert!(result.ok);
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(
+            metadata["cwd"],
+            json!(outside.to_string_lossy().to_string())
+        );
     }
 
     #[tokio::test]

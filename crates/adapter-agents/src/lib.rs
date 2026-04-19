@@ -254,10 +254,6 @@ fn builtin_agents() -> &'static [BuiltinAgent] {
             content: include_str!("builtin_agents/explore.md"),
         },
         BuiltinAgent {
-            path: "builtin://plan.md",
-            content: include_str!("builtin_agents/plan.md"),
-        },
-        BuiltinAgent {
             path: "builtin://reviewer.md",
             content: include_str!("builtin_agents/reviewer.md"),
         },

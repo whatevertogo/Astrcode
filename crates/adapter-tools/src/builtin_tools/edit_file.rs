@@ -143,7 +143,7 @@ impl Tool for EditFileTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path to edit (relative to workspace or absolute)."
+                        "description": "File path to edit (relative to the current working directory or absolute)."
                     },
                     "oldStr": {
                         "type": "string",
@@ -183,7 +183,7 @@ impl Tool for EditFileTool {
         ToolCapabilityMetadata::builtin()
             .tags(["filesystem", "write", "edit"])
             .permission("filesystem.write")
-            .side_effect(SideEffect::Workspace)
+            .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
                     "Apply a narrow, safety-checked string replacement inside an existing file.",
@@ -306,7 +306,8 @@ impl Tool for EditFileTool {
                 ok: false,
                 output: String::new(),
                 error: Some(format!(
-                    "refusing to edit symlink '{}' (symlinks may point outside working directory)",
+                    "refusing to edit symlink '{}' (symlinks may point outside the intended \
+                     target path)",
                     path.display()
                 )),
                 metadata: Some(json!({
@@ -904,6 +905,39 @@ mod tests {
         // 验证 metadata 包含编辑数量
         let meta = result.metadata.expect("metadata should exist");
         assert_eq!(meta["editsApplied"], json!(2));
+    }
+
+    #[tokio::test]
+    async fn edit_file_allows_relative_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside.txt");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        tokio::fs::write(&outside, "alpha beta")
+            .await
+            .expect("outside file should be written");
+        let tool = EditFileTool;
+
+        let result = tool
+            .execute(
+                "tc-edit-outside".to_string(),
+                json!({
+                    "path": "../outside.txt",
+                    "oldStr": "alpha",
+                    "newStr": "omega"
+                }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("editFile should execute");
+
+        assert!(result.ok);
+        let content = tokio::fs::read_to_string(&outside)
+            .await
+            .expect("outside file should be readable");
+        assert_eq!(content, "omega beta");
     }
 
     #[tokio::test]

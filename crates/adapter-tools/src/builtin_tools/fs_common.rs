@@ -2,7 +2,7 @@
 //!
 //! 提供所有文件工具共享的基础设施：
 //!
-//! - **路径沙箱**: `resolve_path` 确保所有路径操作不逃逸工作目录
+//! - **路径解析**: `resolve_path` 将相对路径锚定到工作目录，并允许访问宿主机绝对路径
 //! - **取消检查**: `check_cancel` 在长操作的关键节点检查用户取消
 //! - **文件 I/O**: `read_utf8_file` / `write_text_file` 统一 UTF-8 读写
 //! - **Diff 生成**: `build_text_change_report` 手工实现 unified diff
@@ -80,19 +80,28 @@ pub fn is_symlink(path: &Path) -> Result<bool> {
     }
 }
 
-/// 将路径解析为工作目录内的绝对路径，拒绝逃逸路径。
+/// 将路径解析为宿主机上的绝对路径。
 ///
-/// **为什么使用 `resolve_for_boundary_check` 而非 `fs::canonicalize`**:
+/// 相对路径始终锚定到当前工具上下文的工作目录；绝对路径直接保留并解析。
+///
+/// **为什么使用 `resolve_for_host_access` 而非 `fs::canonicalize`**:
 /// canonicalize 要求路径在磁盘上存在，但 writeFile/editFile 经常操作
-/// 尚不存在的文件。resolve_for_boundary_check 从路径尾部向上找到第一个
+/// 尚不存在的文件。resolve_for_host_access 从路径尾部向上找到第一个
 /// 存在的祖先进行 canonicalize，再拼回缺失部分。
 pub fn resolve_path(ctx: &ToolContext, path: &Path) -> Result<PathBuf> {
-    resolve_path_with_root(
+    let canonical_working_dir = canonicalize_path(
         ctx.working_dir(),
-        path,
-        "working directory",
-        "failed to canonicalize working directory",
-    )
+        &format!(
+            "failed to canonicalize working directory '{}'",
+            ctx.working_dir().display()
+        ),
+    )?;
+    let base = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        canonical_working_dir.join(path)
+    };
+    resolve_for_host_access(&normalize_lexically(&base))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,7 +156,7 @@ fn resolve_session_tool_results_target(
                 session_root.display()
             ),
         )?;
-        let resolved = resolve_for_boundary_check(&normalize_lexically(path))?;
+        let resolved = resolve_for_host_access(&normalize_lexically(path))?;
         if !is_path_within_root(&resolved, &canonical_tool_results_root) {
             return Ok(None);
         }
@@ -566,7 +575,7 @@ fn resolve_path_with_root(
         canonical_root.join(path)
     };
 
-    let resolved = resolve_for_boundary_check(&normalize_lexically(&base))?;
+    let resolved = resolve_for_host_access(&normalize_lexically(&base))?;
     if is_path_within_root(&resolved, &canonical_root) {
         return Ok(resolved);
     }
@@ -583,7 +592,7 @@ fn resolve_path_with_root(
 ///
 /// 当路径尾部组件尚不存在时（如 writeFile 创建新文件），
 /// 向上找到第一个存在的祖先 canonicalize 后拼回缺失部分。
-fn resolve_for_boundary_check(path: &Path) -> Result<PathBuf> {
+fn resolve_for_host_access(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return canonicalize_path(
             path,
@@ -596,13 +605,13 @@ fn resolve_for_boundary_check(path: &Path) -> Result<PathBuf> {
     while !current.exists() {
         let Some(name) = current.file_name() else {
             return Err(AstrError::Validation(format!(
-                "path '{}' cannot be resolved under the working directory",
+                "path '{}' cannot be resolved on the host filesystem",
                 path.display()
             )));
         };
         let Some(parent) = current.parent() else {
             return Err(AstrError::Validation(format!(
-                "path '{}' cannot be resolved under the working directory",
+                "path '{}' cannot be resolved on the host filesystem",
                 path.display()
             )));
         };
@@ -729,11 +738,13 @@ mod tests {
         fs::create_dir_all(&working_dir).expect("workspace should be created");
         let ctx = test_tool_context_for(&working_dir);
 
-        let err = resolve_path(&ctx, Path::new("../outside.txt"))
-            .expect_err("escaping path should be rejected");
+        let resolved =
+            resolve_path(&ctx, Path::new("../outside.txt")).expect("outside path should resolve");
 
-        assert!(matches!(err, AstrError::Validation(_)));
-        assert!(err.to_string().contains("escapes working directory"));
+        assert_eq!(
+            resolved,
+            canonical_tool_path(parent.path().join("outside.txt"))
+        );
     }
 
     #[test]
@@ -746,6 +757,20 @@ mod tests {
         let resolved = resolve_path(&ctx, &file).expect("path should resolve");
 
         assert_eq!(resolved, canonical_tool_path(&file));
+    }
+
+    #[test]
+    fn resolve_path_allows_absolute_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside.txt");
+        fs::create_dir_all(&workspace).expect("workspace should be created");
+        fs::write(&outside, "hello").expect("outside file should be created");
+        let ctx = test_tool_context_for(&workspace);
+
+        let resolved = resolve_path(&ctx, &outside).expect("absolute host path should resolve");
+
+        assert_eq!(resolved, canonical_tool_path(&outside));
     }
 
     #[test]

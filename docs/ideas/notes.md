@@ -14,3 +14,5 @@
 8. 更好的compact功能
 9. 多agent共享任务列表
 10. draft → test → review → improve → repeat
+11. 更安全更自由的权限，让agent能操控工作区以外的文件
+    - TODO: v1 先默认全局放开文件工具对工作区的围栏，后续再补 Claude Code 风格的目录白名单、危险模式、审批规则与受保护路径。

@@ -73,7 +73,7 @@ impl Tool for FindFilesTool {
                     },
                     "root": {
                         "type": "string",
-                        "description": "Root directory to search from (default: working directory)"
+                        "description": "Root directory to search from (default: current working directory)"
                     },
                     "maxResults": {
                         "type": "integer",
@@ -106,15 +106,15 @@ impl Tool for FindFilesTool {
                 ToolPromptMetadata::new(
                     "Find candidate files by glob when you know the filename pattern but not the \
                      exact path.",
-                    "Find files by glob pattern inside the workspace. Use this before `grep` when \
-                     you only know a filename, extension, or glob. Supported common glob forms \
-                     include `**/*.rs` (recursive), `*.toml` (current dir), and `*.{json,toml}` \
-                     (alternation). When using `root`, the glob pattern is relative to that root, \
-                     not the workspace root. Results are sorted by modification time.",
+                    "Find files by glob pattern under a known search root. Use this before `grep` \
+                     when you only know a filename, extension, or glob. Supported common glob \
+                     forms include `**/*.rs` (recursive), `*.toml` (current dir), and \
+                     `*.{json,toml}` (alternation). When using `root`, the glob pattern is \
+                     relative to that root. Results are sorted by modification time.",
                 )
                 .caveat(
-                    "Pattern must stay inside the workspace. Truncated at 200 results — narrow \
-                     with `root` or a more specific glob.",
+                    "Pattern must stay relative to the search root. Truncated at 200 results — \
+                     narrow with `root` or a more specific glob.",
                 )
                 .example(
                     "Find all Cargo.toml: { pattern: \"**/Cargo.toml\" }. Limit to ./crates/: { \
@@ -300,7 +300,7 @@ fn collect_files_with_ignore(
 fn validate_glob_pattern(pattern: &str) -> Result<()> {
     if looks_like_windows_drive_relative_path(pattern) {
         return Err(AstrError::Validation(format!(
-            "glob pattern '{}' must stay within the working directory",
+            "glob pattern '{}' must stay relative to the search root",
             pattern
         )));
     }
@@ -308,7 +308,7 @@ fn validate_glob_pattern(pattern: &str) -> Result<()> {
     let path = Path::new(pattern);
     if path.is_absolute() {
         return Err(AstrError::Validation(format!(
-            "glob pattern '{}' must stay within the working directory",
+            "glob pattern '{}' must stay relative to the search root",
             pattern
         )));
     }
@@ -317,7 +317,7 @@ fn validate_glob_pattern(pattern: &str) -> Result<()> {
         match component {
             Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
                 return Err(AstrError::Validation(format!(
-                    "glob pattern '{}' must stay within the working directory",
+                    "glob pattern '{}' must stay relative to the search root",
                     pattern
                 )));
             },
@@ -472,7 +472,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("must stay within the working directory")
+                .contains("must stay relative to the search root")
         );
     }
 
@@ -583,6 +583,46 @@ mod tests {
         // 新文件应排在前面
         assert!(paths[0].ends_with("new.txt"));
         assert!(paths[1].ends_with("old.txt"));
+    }
+
+    #[tokio::test]
+    async fn find_files_allows_root_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        tokio::fs::create_dir_all(&outside)
+            .await
+            .expect("outside dir should be created");
+        tokio::fs::write(outside.join("found.txt"), "hello")
+            .await
+            .expect("outside file should be written");
+        let tool = FindFilesTool;
+
+        let result = tool
+            .execute(
+                "tc-find-outside".to_string(),
+                json!({
+                    "pattern": "*.txt",
+                    "root": "../outside"
+                }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("findFiles should succeed");
+
+        assert!(result.ok);
+        let paths: Vec<String> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            paths[0],
+            canonical_tool_path(outside.join("found.txt"))
+                .to_string_lossy()
+                .to_string()
+        );
     }
 
     #[test]

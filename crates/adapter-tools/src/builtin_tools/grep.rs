@@ -148,7 +148,7 @@ impl Tool for GrepTool {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Optional. File or directory to search in (defaults to current working directory)"
+                        "description": "Optional. File or directory to search in (defaults to the current working directory)"
                     },
                     "recursive": {
                         "type": "boolean",
@@ -250,8 +250,7 @@ impl Tool for GrepTool {
             .map_err(|e| AstrError::parse(explain_grep_args_error(&e), e))?;
         let path = match &args.path {
             Some(p) => resolve_path(ctx, p)?,
-            None => std::env::current_dir()
-                .map_err(|e| AstrError::io("failed to get current directory", e))?,
+            None => ctx.working_dir().to_path_buf(),
         };
         let started_at = Instant::now();
         let regex = RegexBuilder::new(&args.pattern)
@@ -1446,6 +1445,38 @@ mod tests {
         // .log 文件应被 .gitignore 排除
         assert_eq!(matches.len(), 1);
         assert!(matches[0].file.ends_with("main.rs"));
+    }
+
+    #[tokio::test]
+    async fn grep_allows_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside.txt");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        tokio::fs::write(&outside, "needle outside\n")
+            .await
+            .expect("outside file should be written");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-outside".to_string(),
+                json!({
+                    "pattern": "needle",
+                    "path": "../outside.txt"
+                }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("grep should succeed");
+
+        assert!(result.ok);
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].file.ends_with("outside.txt"));
     }
 
     #[tokio::test]

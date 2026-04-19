@@ -1042,6 +1042,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_file_allows_relative_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside.txt");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        tokio::fs::write(&outside, "outside")
+            .await
+            .expect("outside file should be written");
+        let tool = ReadFileTool;
+
+        let result = tool
+            .execute(
+                "tc-read-outside".to_string(),
+                json!({
+                    "path": "../outside.txt",
+                    "lineNumbers": false
+                }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("readFile should succeed");
+
+        assert!(result.ok);
+        assert_eq!(result.output, "outside");
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(
+            metadata["path"],
+            json!(canonical_tool_path(&outside).to_string_lossy().to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn read_file_reads_first_persisted_chunk_by_absolute_path() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let ctx = test_tool_context_for(temp.path());

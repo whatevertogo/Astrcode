@@ -80,7 +80,7 @@ impl Tool for ListDirTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute or relative directory path. Defaults to working directory if omitted."
+                        "description": "Absolute or relative directory path. Defaults to the current working directory if omitted."
                     },
                     "maxEntries": {
                         "type": "integer",
@@ -424,5 +424,37 @@ mod tests {
         assert!(entries.is_empty());
         let metadata = result.metadata.expect("metadata should exist");
         assert_eq!(metadata["message"], json!("Directory is empty."));
+    }
+
+    #[tokio::test]
+    async fn list_dir_allows_relative_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir should be created");
+        let workspace = parent.path().join("workspace");
+        let outside = parent.path().join("outside");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        tokio::fs::create_dir_all(&outside)
+            .await
+            .expect("outside dir should be created");
+        tokio::fs::write(outside.join("note.txt"), "hello")
+            .await
+            .expect("outside file should be created");
+        let tool = ListDirTool;
+
+        let result = tool
+            .execute(
+                "tc-list-outside".to_string(),
+                json!({"path": "../outside"}),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("listDir should succeed");
+
+        assert!(result.ok);
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["name"], "note.txt");
     }
 }

@@ -540,10 +540,13 @@ async fn apply_file_patch(file_patch: &FilePatch, ctx: &ToolContext) -> FileChan
             path: target_path_str.clone(),
             applied: false,
             summary: format!(
-                "refusing to patch symlink '{}' (symlinks may point outside working directory)",
+                "refusing to patch symlink '{}' (symlinks may point outside the intended target \
+                 path)",
                 target_path.display()
             ),
-            error: Some("refusing to patch symlink (may point outside working directory)".into()),
+            error: Some(
+                "refusing to patch symlink (may point outside the intended target path)".into(),
+            ),
         };
     }
 
@@ -716,7 +719,7 @@ impl Tool for ApplyPatchTool {
         ToolCapabilityMetadata::builtin()
             .tags(["filesystem", "write", "patch", "diff"])
             .permission("filesystem.write")
-            .side_effect(SideEffect::Workspace)
+            .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
                     "Apply a unified diff patch across one or more files.",
@@ -1126,6 +1129,33 @@ mod tests {
         assert!(result.ok, "should succeed: {}", result.output);
         let content = tokio::fs::read_to_string(&file).await.expect("readable");
         assert_eq!(content, "fn foo() {\r\n    new();\r\n}\r\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_allows_relative_path_outside_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let workspace = parent.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace)
+            .await
+            .expect("workspace should be created");
+        let tool = ApplyPatchTool;
+
+        let patch = "--- /dev/null\n+++ b/../outside.txt\n@@ -0,0 +1,1 @@\n+outside patch\n";
+
+        let result = tool
+            .execute(
+                "tc-patch-outside".into(),
+                json!({ "patch": patch }),
+                &test_tool_context_for(&workspace),
+            )
+            .await
+            .expect("should execute");
+
+        assert!(result.ok, "should succeed: {}", result.output);
+        let content = tokio::fs::read_to_string(parent.path().join("outside.txt"))
+            .await
+            .expect("outside file should be readable");
+        assert_eq!(content, "outside patch");
     }
 
     #[tokio::test]
