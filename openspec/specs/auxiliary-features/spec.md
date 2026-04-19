@@ -1,29 +1,30 @@
 ## Requirements
 
-### Requirement: 工具模糊搜索
+### Requirement: 工具发现通过 ComposerService 和 Capability Surface
 
-server SHALL 支持按名称或描述模糊搜索已注册的工具。
+server SHALL 通过 `ComposerService` 的 `list_options` 方法支持按名称、描述或关键字过滤已注册的工具和能力。
 
-#### Scenario: 按名称搜索
+#### Scenario: 按关键字过滤工具
 
-- **WHEN** 调用 `search_tools("read")`
-- **THEN** 返回名称或描述中包含 "read" 的所有工具，按相关度排序
+- **WHEN** `ComposerOptionsRequest` 携带 `query` 参数
+- **THEN** `ComposerService.list_options` 返回 id、title、description 或 keywords 包含查询关键词的候选项
+- **AND** 结果按 kind 过滤和 limit 截断
 
 #### Scenario: 无匹配结果
 
-- **WHEN** 搜索关键词不匹配任何工具
+- **WHEN** 搜索关键词不匹配任何工具或能力
 - **THEN** 返回空列表
 
 ---
 
-### Requirement: Skill Tool 命令
+### Requirement: Skill 工具按需加载
 
-adapter-tools SHALL 提供 `/skill` 工具，允许 agent 从 skill catalog 查找并执行 skill。
+adapter-tools SHALL 提供 `Skill` 工具（`SKILL_TOOL_NAME = "Skill"`），允许 agent 从 `SkillCatalog` 按需加载 skill 的完整指令和资源路径。
 
-#### Scenario: 查找 skill
+#### Scenario: 加载 skill
 
-- **WHEN** agent 调用 skill tool 指定 skill 名称
-- **THEN** 系统从 skill catalog 查找匹配的 skill，返回其内容
+- **WHEN** agent 调用 `Skill` 工具并指定 `skill` 名称（kebab-case）
+- **THEN** 系统从 `SkillCatalog` 查找匹配的 skill，返回其完整内容
 
 #### Scenario: skill 不存在
 
@@ -50,14 +51,14 @@ server SHALL 支持从 plugin 和 MCP server 动态注册外部工具。
 
 ### Requirement: 配置连接测试
 
-application ConfigService SHALL 支持测试 LLM provider 的连接是否正常。
+application `ConfigService` SHALL 支持测试 LLM provider 的连接是否正常。
 
 #### Scenario: 测试成功
 
-- **WHEN** 调用 `test_connection(profile_name)` 且 provider 可达
-- **THEN** 返回 `TestConnectionResult::Success` 含模型信息
+- **WHEN** 调用 `test_connection(profile_name, model)` 且 profile 存在且 model 在该 profile 中已配置
+- **THEN** 返回 `TestConnectionResult { success: true, provider, model, error: None }`
 
 #### Scenario: 测试失败
 
-- **WHEN** 调用 `test_connection` 且 provider 不可达
-- **THEN** 返回 `TestConnectionResult::Failed` 含错误原因
+- **WHEN** 调用 `test_connection` 且 profile 不存在或 model 未配置
+- **THEN** 返回 `TestConnectionResult { success: false, provider, model, error: Some(...) }`

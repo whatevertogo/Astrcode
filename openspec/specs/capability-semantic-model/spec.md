@@ -8,22 +8,25 @@
 
 `astrcode-core` SHALL 定义 `CapabilitySpec`，作为运行时内部唯一能力语义模型。`CapabilitySpec` SHALL 不依赖 `astrcode-protocol`。
 
-`CapabilitySpec` SHALL 至少包含以下语义字段：
+`CapabilitySpec` SHALL 包含以下语义字段：
 
-- `name`
-- `kind`
-- `description`
-- `input_schema`
-- `output_schema`
-- `invocation_mode`
-- `concurrency_safe`
-- `compact_clearable`
-- `profiles`
-- `tags`
-- `permissions`
-- `side_effect`
-- `stability`
-- `max_result_inline_size`
+- `name: CapabilityName` — 能力名称（newtype，非裸字符串）
+- `kind: CapabilityKind` — 能力类型枚举
+- `description: String` — 能力描述
+- `input_schema: Value` — 输入 JSON Schema
+- `output_schema: Value` — 输出 JSON Schema
+- `invocation_mode: InvocationMode` — 调用模式枚举（`Unary` | `Streaming`）
+- `concurrency_safe: bool` — 是否并发安全
+- `compact_clearable: bool` — 压缩时是否可清除
+- `profiles: Vec<String>` — 能力适用的 profile 列表
+- `tags: Vec<String>` — 标签列表
+- `permissions: Vec<PermissionSpec>` — 权限声明列表
+- `side_effect: SideEffect` — 副作用级别（`None` | `Local` | `Workspace` | `External`）
+- `stability: Stability` — 稳定性级别（`Experimental` | `Stable` | `Deprecated`）
+- `metadata: Value` — 自定义元数据
+- `max_result_inline_size: Option<usize>` — 最大内联结果大小
+
+`CapabilitySpec` 通过 `CapabilitySpecBuilder` 构建器模式创建，构建时自动校验所有必填字段和格式约束。
 
 #### Scenario: core 可以独立于 protocol 编译
 
@@ -43,17 +46,35 @@
 
 能力语义 SHALL 使用枚举或 newtype 表达，不依赖裸字符串约定。
 
-#### Scenario: `CapabilityKind` 与 `InvocationMode` 为枚举
+#### Scenario: `CapabilityKind` 为枚举
 
 - **WHEN** 检查能力语义定义
-- **THEN** `CapabilityKind` 与 `InvocationMode` 均为 `enum`
-- **AND** 运行时内部不通过字符串比较决定能力行为
+- **THEN** `CapabilityKind` 为枚举，包含 `Tool`, `Agent`, `ContextProvider`, `MemoryProvider`, `PolicyHook`, `Renderer`, `Resource`, `Prompt`, `Custom(String)` 变体
+- **AND** 支持通过 `From<&str>` / `From<String>` 从字符串解析
+- **AND** `is_tool()` 方法判断是否为 Tool 类型
 
-#### Scenario: 流式语义不再用 `streaming: bool`
+#### Scenario: `InvocationMode` 为枚举
 
-- **WHEN** 一个能力支持流式返回
-- **THEN** `CapabilitySpec.invocation_mode == InvocationMode::Streaming`
-- **AND** 不再以传输层布尔字段表达运行时调用语义
+- **WHEN** 检查调用模式定义
+- **THEN** `InvocationMode` 为枚举，包含 `Unary` 和 `Streaming` 变体
+- **AND** 流式语义不再用 `streaming: bool`
+
+#### Scenario: `CapabilityName` 为 newtype
+
+- **WHEN** 检查能力名称定义
+- **THEN** `CapabilityName` 为 newtype 包装 `String`
+- **AND** 提供 `as_str()` 和 `into_string()` 方法
+
+#### Scenario: `SideEffect` 和 `Stability` 为枚举
+
+- **WHEN** 检查副作用和稳定性定义
+- **THEN** `SideEffect` 包含 `None`, `Local`, `Workspace`, `External` 变体
+- **AND** `Stability` 包含 `Experimental`, `Stable`, `Deprecated` 变体
+
+#### Scenario: `PermissionSpec` 包含名称和理由
+
+- **WHEN** 检查权限声明定义
+- **THEN** `PermissionSpec` 包含 `name: String` 和 `rationale: Option<String>`
 
 ---
 
@@ -65,6 +86,8 @@
 - `compact_clearable`
 - `max_result_inline_size`
 - `invocation_mode`
+- `side_effect`
+- `stability`
 
 #### Scenario: prompt / loop / plugin 基于 CapabilitySpec 决策
 
@@ -92,18 +115,17 @@
 
 ### Requirement: Tool 与 Registry 接口返回 `CapabilitySpec`
 
-`ToolCapabilityMetadata`、`Tool` trait 的能力描述接口，以及 `CapabilityInvoker` trait SHALL 返回 `CapabilitySpec`。
+`Tool` trait 的能力描述接口，以及 `CapabilityInvoker` trait SHALL 返回 `CapabilitySpec`。
 
 #### Scenario: Tool 能力描述返回 CapabilitySpec
 
 - **WHEN** 检查 `core/tool.rs`
-- **THEN** 默认能力描述构建逻辑返回 `CapabilitySpec`
+- **THEN** `Tool::capability_spec()` 方法返回 `Result<CapabilitySpec>`
 
 #### Scenario: CapabilityInvoker 主接口返回 CapabilitySpec
 
-- **WHEN** 检查 `core/registry/router.rs`
-- **THEN** 公共接口返回 `CapabilitySpec`
-- **AND** 不再以 `descriptor()` 作为主语义接口
+- **WHEN** 检查 `kernel/registry/router.rs` 或 `core/registry/router.rs`
+- **THEN** `CapabilityInvoker::capability_spec()` 返回 `CapabilitySpec`
 
 ---
 

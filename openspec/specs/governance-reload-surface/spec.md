@@ -1,7 +1,8 @@
 # governance-reload-surface Specification
 
 ## Purpose
-TBD - created by archiving change unify-governance-and-reload-surface. Update Purpose after archive.
+
+定义治理级 reload 的统一入口，确保 builtin、MCP、plugin 三类能力来源的 reload 通过单一治理路径完成原子替换，在存在运行中 session 时拒绝 reload。
 ## Requirements
 ### Requirement: Governance reload SHALL unify all capability sources
 

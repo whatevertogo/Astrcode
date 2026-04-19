@@ -73,20 +73,7 @@ pub(crate) fn child_notification_event(
         StorageEventPayload::ChildSessionNotification {
             notification: ChildSessionNotification {
                 notification_id: format!("child:{kind:?}").into(),
-                child_ref: ChildAgentRef {
-                    identity: ChildExecutionIdentity {
-                        agent_id: "agent-child".into(),
-                        session_id: "session-parent".into(),
-                        sub_run_id: "subrun-1".into(),
-                    },
-                    parent: ParentExecutionRef {
-                        parent_agent_id: Some("agent-parent".into()),
-                        parent_sub_run_id: Some("subrun-parent".into()),
-                    },
-                    lineage_kind: ChildSessionLineageKind::Spawn,
-                    status,
-                    open_session_id: "session-child".into(),
-                },
+                child_ref: sample_spawn_child_ref(status),
                 kind,
                 source_tool_call_id: Some("call-1".into()),
                 delivery: Some(astrcode_core::ParentDelivery {
@@ -116,6 +103,23 @@ pub(crate) fn child_notification_event(
             timestamp: Some(chrono::Utc::now()),
         },
     )
+}
+
+pub(crate) fn sample_spawn_child_ref(status: AgentLifecycleStatus) -> ChildAgentRef {
+    ChildAgentRef {
+        identity: ChildExecutionIdentity {
+            agent_id: "agent-child".into(),
+            session_id: "session-parent".into(),
+            sub_run_id: "subrun-1".into(),
+        },
+        parent: ParentExecutionRef {
+            parent_agent_id: Some("agent-parent".into()),
+            parent_sub_run_id: Some("subrun-parent".into()),
+        },
+        lineage_kind: ChildSessionLineageKind::Spawn,
+        status,
+        open_session_id: "session-child".into(),
+    }
 }
 
 pub(crate) fn root_task_tool_result_event(

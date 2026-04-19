@@ -40,6 +40,17 @@ pub struct SubagentExecutionRequest {
     pub source_tool_call_id: Option<String>,
 }
 
+/// 子代理启动成功后的稳定真相。
+///
+/// `accepted` 来自 session submit，描述 child session/turn 已入队；
+/// `handle` 来自 kernel 控制树，承载稳定 agent/subRun 身份。
+/// 上层必须基于同一份 `handle` 记录 accepted fact、构造 handoff 与启动 watcher，
+/// 不能再回头二次查询 handle 并容忍缺失。
+pub struct LaunchedSubagent {
+    pub accepted: ExecutionAccepted,
+    pub handle: astrcode_core::SubRunHandle,
+}
+
 /// 启动子代理执行。
 ///
 /// 完整流程：
@@ -55,7 +66,7 @@ pub async fn launch_subagent(
     request: SubagentExecutionRequest,
     runtime_config: ResolvedRuntimeConfig,
     metrics: &Arc<dyn RuntimeMetricsRecorder>,
-) -> Result<ExecutionAccepted, ApplicationError> {
+) -> Result<LaunchedSubagent, ApplicationError> {
     validate_subagent_request(&request)?;
     ensure_subagent_profile_mode(&request.profile)?;
     let surface = governance
@@ -131,8 +142,8 @@ pub async fn launch_subagent(
         .await
         .map_err(ApplicationError::from)?;
     metrics.record_child_spawned();
-    accepted.agent_id = Some(handle.agent_id);
-    Ok(accepted)
+    accepted.agent_id = Some(handle.agent_id.clone());
+    Ok(LaunchedSubagent { accepted, handle })
 }
 
 fn validate_subagent_request(request: &SubagentExecutionRequest) -> Result<(), ApplicationError> {

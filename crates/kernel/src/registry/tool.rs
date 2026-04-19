@@ -79,6 +79,7 @@ impl CapabilityInvoker for ToolCapabilityInvoker {
                     result.tool_name,
                     result.ok,
                     Value::String(result.output),
+                    result.child_ref,
                     common,
                 ))
             },
@@ -215,13 +216,20 @@ fn default_tool_capability_profile_context(working_dir: &std::path::Path) -> Val
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, sync::Arc};
 
-    use astrcode_core::{ExecutionOwner, InvocationKind, ToolContext};
+    use astrcode_core::{
+        AgentLifecycleStatus, CapabilityInvoker, ChildExecutionIdentity, ChildSessionLineageKind,
+        ExecutionOwner, InvocationKind, ParentExecutionRef, Tool, ToolContext, ToolDefinition,
+        ToolExecutionResult,
+    };
+    use async_trait::async_trait;
+    use serde_json::{Value, json};
 
     use super::{
-        capability_context_from_tool_context, default_tool_capability_profile,
-        default_tool_capability_profile_context, tool_context_from_capability_context,
+        ToolCapabilityInvoker, capability_context_from_tool_context,
+        default_tool_capability_profile, default_tool_capability_profile_context,
+        tool_context_from_capability_context,
     };
 
     #[test]
@@ -288,6 +296,97 @@ mod tests {
         assert_eq!(
             bridged_tool_ctx.agent_context().agent_id.as_deref(),
             Some("agent-2")
+        );
+    }
+
+    struct ChildRefTool;
+
+    #[async_trait]
+    impl Tool for ChildRefTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "spawn".to_string(),
+                description: "returns child ref".to_string(),
+                parameters: json!({"type": "object"}),
+            }
+        }
+
+        fn capability_spec(
+            &self,
+        ) -> std::result::Result<
+            astrcode_core::CapabilitySpec,
+            astrcode_core::CapabilitySpecBuildError,
+        > {
+            astrcode_core::CapabilitySpec::builder("spawn", astrcode_core::CapabilityKind::Tool)
+                .description("returns child ref")
+                .schema(json!({"type": "object"}), json!({"type": "string"}))
+                .build()
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _input: Value,
+            _ctx: &ToolContext,
+        ) -> astrcode_core::Result<ToolExecutionResult> {
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "spawn".to_string(),
+                ok: true,
+                output: "spawn accepted".to_string(),
+                error: None,
+                metadata: Some(json!({ "schema": "subRunResult" })),
+                child_ref: Some(astrcode_core::ChildAgentRef {
+                    identity: ChildExecutionIdentity {
+                        agent_id: "agent-child".into(),
+                        session_id: "session-parent".into(),
+                        sub_run_id: "subrun-1".into(),
+                    },
+                    parent: ParentExecutionRef {
+                        parent_agent_id: Some("agent-parent".into()),
+                        parent_sub_run_id: Some("subrun-parent".into()),
+                    },
+                    lineage_kind: ChildSessionLineageKind::Spawn,
+                    status: AgentLifecycleStatus::Running,
+                    open_session_id: "session-child".into(),
+                }),
+                duration_ms: 0,
+                truncated: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_capability_invoker_preserves_child_ref_in_capability_result() {
+        let invoker =
+            ToolCapabilityInvoker::new(Arc::new(ChildRefTool)).expect("tool invoker should build");
+        let tool_ctx = ToolContext::new(
+            "session-3".into(),
+            PathBuf::from("/workspace"),
+            astrcode_core::CancelToken::new(),
+        )
+        .with_tool_call_id("call-3");
+        let capability_ctx =
+            capability_context_from_tool_context(&tool_ctx, Some("call-3".to_string()));
+
+        let result = invoker
+            .invoke(json!({}), &capability_ctx)
+            .await
+            .expect("invocation should succeed");
+
+        assert_eq!(
+            result
+                .child_ref
+                .as_ref()
+                .map(|child_ref| child_ref.agent_id().as_str()),
+            Some("agent-child")
+        );
+        assert_eq!(
+            result
+                .child_ref
+                .as_ref()
+                .map(|child_ref| child_ref.open_session_id.as_str()),
+            Some("session-child")
         );
     }
 }
