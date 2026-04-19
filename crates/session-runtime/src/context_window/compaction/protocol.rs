@@ -37,6 +37,7 @@ pub(super) fn render_compact_system_prompt(
     effective_max_output_tokens: usize,
     recent_user_context_messages: &[RecentUserContextMessage],
     custom_instructions: Option<&str>,
+    contract_repair_feedback: Option<&str>,
 ) -> String {
     let incremental_block = match mode {
         CompactPromptMode::Fresh => String::new(),
@@ -56,12 +57,23 @@ pub(super) fn render_compact_system_prompt(
             )
         })
         .unwrap_or_default();
+    let contract_repair_block = contract_repair_feedback
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            format!(
+                "\n## Contract Repair\nThe previous compact response violated the required XML \
+                 contract.\nReturn all three XML blocks exactly as specified and do not add any \
+                 preamble, explanation, or Markdown fence.\nViolation details:\n{value}"
+            )
+        })
+        .unwrap_or_default();
     let recent_user_context_block =
         render_recent_user_context_candidates(recent_user_context_messages);
 
     BASE_COMPACT_PROMPT_TEMPLATE
         .replace("{{INCREMENTAL_MODE}}", incremental_block.trim())
         .replace("{{CUSTOM_INSTRUCTIONS}}", custom_instruction_block.trim())
+        .replace("{{CONTRACT_REPAIR}}", contract_repair_block.trim())
         .replace(
             "{{COMPACT_OUTPUT_TOKEN_CAP}}",
             &effective_max_output_tokens.to_string(),
@@ -84,6 +96,7 @@ pub(super) struct ParsedCompactOutput {
     pub(super) summary: String,
     pub(super) recent_user_context_digest: Option<String>,
     pub(super) has_analysis: bool,
+    pub(super) has_recent_user_context_digest_block: bool,
     pub(super) used_fallback: bool,
 }
 

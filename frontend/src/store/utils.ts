@@ -22,6 +22,19 @@ function getDirectoryName(path: string): string {
   return parts[parts.length - 1] || '默认项目';
 }
 
+export function deriveSessionTitleFromMessages(
+  messages: Message[],
+  fallbackTitle = '新会话'
+): string {
+  const firstUserMessage = messages.find((message) => message.kind === 'user');
+  if (!firstUserMessage) {
+    return fallbackTitle;
+  }
+
+  const title = firstUserMessage.text.slice(0, 20).trim();
+  return title || fallbackTitle;
+}
+
 export function groupSessionsByProject(
   sessionMetas: SessionMeta[],
   knownWorkingDirs: string[] = [],
@@ -111,7 +124,14 @@ export function replaceSessionMessages(
   return projects.map((project) => ({
     ...project,
     sessions: project.sessions.map((session) =>
-      session.id === sessionId ? { ...session, messages, subRunThreadTree } : session
+      session.id === sessionId
+        ? {
+            ...session,
+            title: deriveSessionTitleFromMessages(messages, session.title),
+            messages,
+            subRunThreadTree,
+          }
+        : session
     ),
   }));
 }

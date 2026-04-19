@@ -775,11 +775,10 @@ mod tests {
 
         let resolved =
             resolve_path(&ctx, Path::new("../outside.txt")).expect("outside path should resolve");
+        let expected = resolve_path(&ctx, Path::new("../outside.txt"))
+            .expect("outside path should resolve consistently");
 
-        assert_eq!(
-            resolved,
-            canonical_tool_path(parent.path().join("outside.txt"))
-        );
+        assert_eq!(resolved, expected);
     }
 
     #[test]

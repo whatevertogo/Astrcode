@@ -283,6 +283,7 @@ impl ConversationDeltaProjector {
                 trigger,
                 summary,
                 meta,
+                preserved_recent_turns,
                 ..
             } if source.is_durable() => {
                 let block_id = format!(
@@ -298,6 +299,7 @@ impl ConversationDeltaProjector {
                     summary,
                     Some(*trigger),
                     Some(meta.clone()),
+                    Some(*preserved_recent_turns),
                 )
             },
             AgentEvent::ChildSessionNotification { notification, .. } => {
@@ -661,6 +663,7 @@ impl ConversationDeltaProjector {
         markdown: &str,
         compact_trigger: Option<CompactTrigger>,
         compact_meta: Option<CompactAppliedMeta>,
+        compact_preserved_recent_turns: Option<u32>,
     ) -> Vec<ConversationDeltaFacts> {
         if self.block_index.contains_key(block_id) {
             return Vec::new();
@@ -672,6 +675,7 @@ impl ConversationDeltaProjector {
                 markdown: markdown.to_string(),
                 compact_trigger,
                 compact_meta,
+                compact_preserved_recent_turns,
             },
         ))
     }

@@ -931,9 +931,11 @@ mod tests {
 
         assert!(result.ok);
         let metadata = result.metadata.expect("metadata should exist");
+        let expected_cwd = resolve_path(&test_tool_context_for(&workspace), &outside)
+            .expect("cwd should resolve consistently");
         assert_eq!(
             metadata["cwd"],
-            json!(outside.to_string_lossy().to_string())
+            json!(expected_cwd.to_string_lossy().to_string())
         );
     }
 

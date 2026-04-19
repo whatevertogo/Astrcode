@@ -121,6 +121,35 @@ struct PreparedCompactInput {
     input_units: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompactContractViolation {
+    detail: String,
+}
+
+impl CompactContractViolation {
+    fn from_parsed_output(parsed: &ParsedCompactOutput) -> Option<Self> {
+        if parsed.used_fallback {
+            return Some(Self {
+                detail: "response did not contain a strict <summary> XML block and required \
+                         fallback parsing"
+                    .to_string(),
+            });
+        }
+        if !parsed.has_analysis {
+            return Some(Self {
+                detail: "response omitted the required <analysis> block".to_string(),
+            });
+        }
+        if !parsed.has_recent_user_context_digest_block {
+            return Some(Self {
+                detail: "response omitted the required <recent_user_context_digest> block"
+                    .to_string(),
+            });
+        }
+        None
+    }
+}
+
 /// 执行自动压缩。
 ///
 /// 通过 `gateway` 调用 LLM 对历史前缀生成摘要，替换为压缩后的消息。
@@ -150,7 +179,9 @@ pub async fn auto_compact(
         .max_output_tokens
         .min(gateway.model_limits().max_output_tokens)
         .max(1);
-    let mut attempts = 0usize;
+    let mut salvage_attempts = 0usize;
+    let mut contract_retry_count = 0usize;
+    let mut contract_repair_feedback: Option<String> = None;
     let (parsed_output, prepared_input) = loop {
         if !trim_prefix_until_compact_request_fits(
             &mut split.prefix,
@@ -176,12 +207,34 @@ pub async fn auto_compact(
                 effective_max_output_tokens,
                 &recent_user_context_messages,
                 config.custom_instructions.as_deref(),
+                contract_repair_feedback.as_deref(),
             ))
             .with_max_output_tokens_override(effective_max_output_tokens);
         match gateway.call_llm(request, None).await {
-            Ok(output) => break (parse_compact_output(&output.content)?, prepared_input),
-            Err(error) if is_prompt_too_long(&error) && attempts < config.max_retry_attempts => {
-                attempts += 1;
+            Ok(output) => match parse_compact_output(&output.content) {
+                Ok(parsed_output) => {
+                    if let Some(violation) =
+                        CompactContractViolation::from_parsed_output(&parsed_output)
+                    {
+                        if contract_retry_count < config.max_retry_attempts {
+                            contract_retry_count += 1;
+                            contract_repair_feedback = Some(violation.detail);
+                            continue;
+                        }
+                    }
+                    break (parsed_output, prepared_input);
+                },
+                Err(error) if contract_retry_count < config.max_retry_attempts => {
+                    contract_retry_count += 1;
+                    contract_repair_feedback = Some(error.to_string());
+                    continue;
+                },
+                Err(error) => return Err(error),
+            },
+            Err(error)
+                if is_prompt_too_long(&error) && salvage_attempts < config.max_retry_attempts =>
+            {
+                salvage_attempts += 1;
                 if !drop_oldest_compaction_unit(&mut split.prefix) {
                     return Err(AstrError::Internal(error.to_string()));
                 }
@@ -230,13 +283,13 @@ pub async fn auto_compact(
         tokens_freed: pre_tokens.saturating_sub(post_tokens_estimate),
         timestamp: Utc::now(),
         meta: CompactAppliedMeta {
-            mode: prepared_input.prompt_mode.compact_mode(attempts),
+            mode: prepared_input.prompt_mode.compact_mode(salvage_attempts),
             instructions_present: config
                 .custom_instructions
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty()),
-            fallback_used: parsed_output.used_fallback || attempts > 0,
-            retry_count: attempts.min(u32::MAX as usize) as u32,
+            fallback_used: parsed_output.used_fallback || salvage_attempts > 0,
+            retry_count: salvage_attempts.min(u32::MAX as usize) as u32,
             input_units: prepared_input.input_units.min(u32::MAX as usize) as u32,
             output_summary_chars,
         },
@@ -372,6 +425,7 @@ fn trim_prefix_until_compact_request_fits(
                 .max(1),
             recent_user_context_messages,
             config.custom_instructions.as_deref(),
+            None,
         );
         if compact_request_fits_window(
             &prepared_input.messages,

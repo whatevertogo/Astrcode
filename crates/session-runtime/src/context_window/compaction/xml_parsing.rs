@@ -3,6 +3,8 @@ use super::*;
 pub(super) fn parse_compact_output(content: &str) -> Result<ParsedCompactOutput> {
     let normalized = strip_outer_markdown_code_fence(content);
     let has_analysis = extract_xml_block(&normalized, "analysis").is_some();
+    let recent_user_context_digest = extract_xml_block(&normalized, "recent_user_context_digest");
+    let has_recent_user_context_digest_block = recent_user_context_digest.is_some();
     if !has_analysis {
         log::warn!("compact: missing <analysis> block in LLM response");
     }
@@ -46,9 +48,9 @@ pub(super) fn parse_compact_output(content: &str) -> Result<ParsedCompactOutput>
 
     Ok(ParsedCompactOutput {
         summary,
-        recent_user_context_digest: extract_xml_block(&normalized, "recent_user_context_digest")
-            .map(str::to_string),
+        recent_user_context_digest: recent_user_context_digest.map(str::to_string),
         has_analysis,
+        has_recent_user_context_digest_block,
         used_fallback,
     })
 }

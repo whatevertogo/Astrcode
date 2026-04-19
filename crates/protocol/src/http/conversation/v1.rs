@@ -315,6 +315,8 @@ pub struct ConversationSystemNoteBlockDto {
     pub markdown: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_meta: Option<ConversationLastCompactMetaDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserved_recent_turns: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

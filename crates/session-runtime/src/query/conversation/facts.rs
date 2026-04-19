@@ -136,6 +136,7 @@ pub struct ConversationSystemNoteBlockFacts {
     pub markdown: String,
     pub compact_trigger: Option<CompactTrigger>,
     pub compact_meta: Option<CompactAppliedMeta>,
+    pub compact_preserved_recent_turns: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

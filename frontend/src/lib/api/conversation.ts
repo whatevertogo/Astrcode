@@ -184,6 +184,10 @@ function parseCompactMeta(value: unknown): CompactMeta | undefined {
   };
 }
 
+function parsePreservedRecentTurns(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
 function parseLastCompactMeta(value: unknown): LastCompactMeta | undefined {
   const record = asRecord(value);
   const meta = parseCompactMeta(record?.meta ?? record);
@@ -516,7 +520,7 @@ function projectConversationMessages(
             outputSummaryChars: (pickString(block, 'markdown') ?? '').length,
           },
           summary: pickString(block, 'markdown') ?? '',
-          preservedRecentTurns: 0,
+          preservedRecentTurns: parsePreservedRecentTurns(block.preservedRecentTurns),
           timestamp: index,
         });
         return;

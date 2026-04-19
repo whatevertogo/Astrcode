@@ -10,11 +10,11 @@ import {
   findToolCallMessageIndex,
   findUserMessageIndex,
   mapProject,
-  mapSession,
   moveUpdatedMessageToTail,
   upsertAssistantTurnMessage,
 } from './reducerHelpers';
 import { handleProjectedMessageAction } from './reducerMessageProjection';
+import { replaceSessionMessages } from './utils';
 
 export {
   findAssistantMessageIndex,
@@ -113,11 +113,15 @@ function handleCatalogAction(state: AppState, action: Action): AppState | null {
         isExpanded: !project.isExpanded,
       }));
     case 'REPLACE_SESSION_MESSAGES':
-      return mapSession(state, action.sessionId, (session) => ({
-        ...session,
-        messages: action.messages,
-        subRunThreadTree: action.subRunThreadTree,
-      }));
+      return {
+        ...state,
+        projects: replaceSessionMessages(
+          state.projects,
+          action.sessionId,
+          action.messages,
+          action.subRunThreadTree
+        ),
+      };
     default:
       return null;
   }

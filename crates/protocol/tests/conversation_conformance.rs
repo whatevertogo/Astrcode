@@ -1,10 +1,12 @@
+use astrcode_core::{CompactAppliedMeta, CompactMode, CompactTrigger};
 use astrcode_protocol::http::{
     AgentLifecycleDto, ChildAgentRefDto, ChildSessionLineageKindDto,
     ConversationBannerErrorCodeDto, ConversationBlockDto, ConversationBlockPatchDto,
     ConversationBlockStatusDto, ConversationControlStateDto, ConversationCursorDto,
-    ConversationDeltaDto, ConversationErrorEnvelopeDto, ConversationPlanBlockDto,
-    ConversationPlanBlockersDto, ConversationPlanEventKindDto, ConversationPlanReviewDto,
-    ConversationPlanReviewKindDto, ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto,
+    ConversationDeltaDto, ConversationErrorEnvelopeDto, ConversationLastCompactMetaDto,
+    ConversationPlanBlockDto, ConversationPlanBlockersDto, ConversationPlanEventKindDto,
+    ConversationPlanReviewDto, ConversationPlanReviewKindDto, ConversationSnapshotResponseDto,
+    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
     ConversationTaskItemDto, ConversationTaskStatusDto, ConversationToolCallBlockDto,
     ConversationToolStreamsDto, PhaseDto,
 };
@@ -188,4 +190,33 @@ fn conversation_plan_block_round_trips_with_review_details() {
     assert_eq!(decoded, block);
     assert_eq!(encoded["kind"], "plan");
     assert_eq!(encoded["eventKind"], "review_pending");
+}
+
+#[test]
+fn conversation_system_note_round_trips_preserved_recent_turns() {
+    let block = ConversationBlockDto::SystemNote(ConversationSystemNoteBlockDto {
+        id: "system-compact-1".to_string(),
+        note_kind: ConversationSystemNoteKindDto::Compact,
+        markdown: "压缩摘要".to_string(),
+        compact_meta: Some(ConversationLastCompactMetaDto {
+            trigger: CompactTrigger::Auto,
+            meta: CompactAppliedMeta {
+                mode: CompactMode::Incremental,
+                instructions_present: false,
+                fallback_used: false,
+                retry_count: 0,
+                input_units: 3,
+                output_summary_chars: 42,
+            },
+        }),
+        preserved_recent_turns: Some(4),
+    });
+
+    let encoded = serde_json::to_value(&block).expect("system note should encode");
+    let decoded: ConversationBlockDto =
+        serde_json::from_value(encoded.clone()).expect("system note should decode");
+
+    assert_eq!(decoded, block);
+    assert_eq!(encoded["kind"], "system_note");
+    assert_eq!(encoded["preservedRecentTurns"], 4);
 }

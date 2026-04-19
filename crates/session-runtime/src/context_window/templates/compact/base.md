@@ -29,6 +29,8 @@ Your summary will be placed at the start of a continuing session so another agen
 
 {{CUSTOM_INSTRUCTIONS}}
 
+{{CONTRACT_REPAIR}}
+
 ## Recently Preserved Real User Messages
 These messages will be preserved verbatim after compaction. Do not restate them in full inside the main summary.
 

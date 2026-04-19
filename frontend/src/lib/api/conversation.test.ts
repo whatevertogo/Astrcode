@@ -488,6 +488,7 @@ describe('projectConversationState', () => {
             inputUnits: 4,
             outputSummaryChars: 12,
           },
+          preservedRecentTurns: 4,
         },
       ],
       control: {
@@ -513,6 +514,7 @@ describe('projectConversationState', () => {
     expect(projection.messages[0]).toMatchObject({
       kind: 'compact',
       trigger: 'auto',
+      preservedRecentTurns: 4,
       meta: {
         mode: 'incremental',
         inputUnits: 4,
@@ -539,6 +541,7 @@ describe('projectConversationState', () => {
             inputUnits: 7,
             outputSummaryChars: 24,
           },
+          preservedRecentTurns: 2,
         },
       ],
       control: {
@@ -564,6 +567,7 @@ describe('projectConversationState', () => {
     expect(projection.messages[0]).toMatchObject({
       kind: 'compact',
       trigger: 'auto',
+      preservedRecentTurns: 2,
     });
   });
 

@@ -207,23 +207,17 @@ impl McpTransport for StdioTransport {
                 // SIGINT
                 Self::send_unix_signal(&child, libc::SIGINT, "SIGINT");
 
-                match timeout(Duration::from_secs(5), child.wait()).await {
-                    Ok(Ok(_)) => {
-                        info!("MCP server exited gracefully after SIGINT");
-                        return Ok(());
-                    },
-                    _ => {},
+                if let Ok(Ok(_)) = timeout(Duration::from_secs(5), child.wait()).await {
+                    info!("MCP server exited gracefully after SIGINT");
+                    return Ok(());
                 }
 
                 // SIGTERM
                 Self::send_unix_signal(&child, libc::SIGTERM, "SIGTERM");
 
-                match timeout(Duration::from_secs(5), child.wait()).await {
-                    Ok(Ok(_)) => {
-                        info!("MCP server exited after SIGTERM");
-                        return Ok(());
-                    },
-                    _ => {},
+                if let Ok(Ok(_)) = timeout(Duration::from_secs(5), child.wait()).await {
+                    info!("MCP server exited after SIGTERM");
+                    return Ok(());
                 }
 
                 // SIGKILL

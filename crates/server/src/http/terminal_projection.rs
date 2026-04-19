@@ -323,6 +323,7 @@ fn project_block(
                             meta: meta.clone(),
                         })
                 }),
+                preserved_recent_turns: block.compact_preserved_recent_turns,
             })
         },
         ConversationBlockFacts::ChildHandoff(block) => {

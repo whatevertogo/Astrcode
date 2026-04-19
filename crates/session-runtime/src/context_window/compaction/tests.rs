@@ -15,7 +15,8 @@ fn test_compact_config() -> CompactConfig {
 
 #[test]
 fn render_compact_system_prompt_keeps_do_not_continue_instruction_intact() {
-    let prompt = render_compact_system_prompt(None, CompactPromptMode::Fresh, 20_000, &[], None);
+    let prompt =
+        render_compact_system_prompt(None, CompactPromptMode::Fresh, 20_000, &[], None, None);
 
     assert!(
         prompt.contains("**Do NOT continue the conversation.**"),
@@ -32,6 +33,7 @@ fn render_compact_system_prompt_renders_incremental_block() {
         },
         20_000,
         &[],
+        None,
         None,
     );
 
@@ -51,12 +53,28 @@ fn render_compact_system_prompt_includes_output_cap_and_recent_user_context_mess
             content: "保留这条约束".to_string(),
         }],
         None,
+        None,
     );
 
     assert!(prompt.contains("12345"));
     assert!(prompt.contains("Recently Preserved Real User Messages"));
     assert!(prompt.contains("保留这条约束"));
     assert!(prompt.contains("<recent_user_context_digest>"));
+}
+
+#[test]
+fn render_compact_system_prompt_includes_contract_repair_feedback() {
+    let prompt = render_compact_system_prompt(
+        None,
+        CompactPromptMode::Fresh,
+        12_345,
+        &[],
+        None,
+        Some("missing <recent_user_context_digest>"),
+    );
+
+    assert!(prompt.contains("## Contract Repair"));
+    assert!(prompt.contains("missing <recent_user_context_digest>"));
 }
 
 #[test]
@@ -96,6 +114,7 @@ fn parse_compact_output_prefers_summary_block() {
     assert_eq!(parsed.summary, "Section");
     assert_eq!(parsed.recent_user_context_digest.as_deref(), Some("(none)"));
     assert!(parsed.has_analysis);
+    assert!(parsed.has_recent_user_context_digest_block);
 }
 
 #[test]
@@ -109,6 +128,7 @@ fn parse_compact_output_accepts_case_insensitive_summary_block() {
     assert_eq!(parsed.summary, "Section");
     assert_eq!(parsed.recent_user_context_digest.as_deref(), Some("digest"));
     assert!(parsed.has_analysis);
+    assert!(parsed.has_recent_user_context_digest_block);
 }
 
 #[test]
@@ -118,6 +138,7 @@ fn parse_compact_output_falls_back_to_plain_text_summary() {
 
     assert_eq!(parsed.summary, "## Goal\n- preserve current task");
     assert!(!parsed.has_analysis);
+    assert!(!parsed.has_recent_user_context_digest_block);
 }
 
 #[test]
@@ -128,6 +149,21 @@ fn parse_compact_output_strips_outer_code_fence_before_parsing() {
 
     assert_eq!(parsed.summary, "Section");
     assert!(parsed.has_analysis);
+    assert!(!parsed.has_recent_user_context_digest_block);
+}
+
+#[test]
+fn compact_contract_violation_flags_missing_digest_block() {
+    let violation = CompactContractViolation::from_parsed_output(&ParsedCompactOutput {
+        summary: "Section".to_string(),
+        recent_user_context_digest: None,
+        has_analysis: true,
+        has_recent_user_context_digest_block: false,
+        used_fallback: false,
+    })
+    .expect("missing digest block should violate contract");
+
+    assert!(violation.detail.contains("recent_user_context_digest"));
 }
 
 #[test]
