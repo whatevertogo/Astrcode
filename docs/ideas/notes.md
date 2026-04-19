@@ -13,3 +13,4 @@
 7. pending messages(完成部分)
 8. 更好的compact功能
 9. 多agent共享任务列表
+10. draft → test → review → improve → repeat
