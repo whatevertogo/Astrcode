@@ -25,6 +25,7 @@ use std::{
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
+use astrcode_core::SkillCatalog as SkillCatalogPort;
 use log::debug;
 
 use crate::{
@@ -40,7 +41,7 @@ use crate::{
 /// Base skills 包含 builtin、plugin、mcp 来源的 skill，
 /// 在 runtime 装配时一次性构建。User 和 project skill 在每次解析时动态加载。
 #[derive(Debug, Clone)]
-pub struct SkillCatalog {
+pub struct LayeredSkillCatalog {
     /// Base skills（builtin + plugin + mcp），按优先级排序。
     /// 使用 RwLock 支持并发读取和原子替换。
     base_skills: Arc<RwLock<Vec<SkillSpec>>>,
@@ -51,7 +52,7 @@ pub struct SkillCatalog {
     user_home_dir: Option<PathBuf>,
 }
 
-impl SkillCatalog {
+impl LayeredSkillCatalog {
     /// 创建新的 SkillCatalog。
     ///
     /// `base_skills` 应按优先级从低到高排序（builtin < mcp < plugin），
@@ -119,9 +120,16 @@ impl SkillCatalog {
     }
 }
 
+impl SkillCatalogPort for LayeredSkillCatalog {
+    fn resolve_for_working_dir(&self, working_dir: &str) -> Vec<SkillSpec> {
+        let base = self.base_skills();
+        resolve_skills(&base, self.user_home_dir.as_deref(), working_dir)
+    }
+}
+
 /// 合并 base skills、user skills 和 project skills。
 ///
-/// 这是 `SkillCatalog::resolve_for_working_dir` 的核心逻辑。
+/// 这是 `LayeredSkillCatalog::resolve_for_working_dir` 的核心逻辑。
 ///
 /// 保持为 crate 内部函数，避免外部调用方绕过 `SkillCatalog`
 /// 直接把 skill 解析重新分散到各处。
@@ -229,7 +237,7 @@ mod tests {
             make_skill("git-commit", SkillSource::Mcp),
             make_skill("git-commit", SkillSource::Plugin),
         ];
-        let catalog = SkillCatalog::new(base);
+        let catalog = LayeredSkillCatalog::new(base);
         // 这里只验证 base skill 的归一化顺序，避免测试受本机 user/project skill 目录污染。
         let normalized = catalog.base_skills();
         let git_skill = normalized.iter().find(|s| s.id == "git-commit");
@@ -242,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_catalog_replace_base_skills() {
-        let catalog = SkillCatalog::new(vec![make_skill("old-skill", SkillSource::Builtin)]);
+        let catalog = LayeredSkillCatalog::new(vec![make_skill("old-skill", SkillSource::Builtin)]);
         assert_eq!(catalog.base_skills().len(), 1);
 
         catalog.replace_base_skills(vec![
@@ -267,7 +275,7 @@ mod tests {
         )
         .expect("user skill file should be written");
 
-        let catalog = SkillCatalog::new_with_home_dir(Vec::new(), temp_home.path());
+        let catalog = LayeredSkillCatalog::new_with_home_dir(Vec::new(), temp_home.path());
         let resolved = catalog.resolve_for_working_dir(&temp_home.path().to_string_lossy());
 
         assert!(resolved.iter().any(|skill| skill.id == "clarify-first"));

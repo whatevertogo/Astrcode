@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_adapter_mcp::config::{McpApprovalData, McpSettingsStore};
+use astrcode_core::{McpApprovalData, McpSettingsStore};
 use serde::{Deserialize, Serialize};
 
 /// 基于 JSON 文件的 MCP 审批设置存储。
@@ -116,7 +116,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_adapter_mcp::config::McpApprovalStatus;
+    use astrcode_core::McpApprovalStatus;
 
     use super::*;
 

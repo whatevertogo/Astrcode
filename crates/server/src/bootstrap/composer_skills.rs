@@ -1,15 +1,15 @@
 use std::{path::Path, sync::Arc};
 
-use astrcode_adapter_skills::SkillCatalog;
 use astrcode_application::{ComposerResolvedSkill, ComposerSkillPort, ComposerSkillSummary};
+use astrcode_core::SkillCatalog;
 
 #[derive(Clone)]
 pub(crate) struct RuntimeComposerSkillPort {
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<dyn SkillCatalog>,
 }
 
 impl RuntimeComposerSkillPort {
-    pub(crate) fn new(skill_catalog: Arc<SkillCatalog>) -> Self {
+    pub(crate) fn new(skill_catalog: Arc<dyn SkillCatalog>) -> Self {
         Self { skill_catalog }
     }
 }

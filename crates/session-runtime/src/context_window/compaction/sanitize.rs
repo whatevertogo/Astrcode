@@ -1,61 +1,106 @@
 use super::*;
 
+type RegexAccessor = fn() -> &'static Regex;
+
+#[derive(Clone, Copy)]
+struct ReplacementRule {
+    regex: RegexAccessor,
+    replacement: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct RouteKeyRule {
+    key: &'static str,
+    replacement: &'static str,
+}
+
+const SANITIZE_REPLACEMENT_RULES: &[ReplacementRule] = &[
+    ReplacementRule {
+        regex: direct_child_validation_regex,
+        replacement: "direct-child validation rejected a stale child reference; use the live \
+                      direct-child snapshot or the latest live tool result instead.",
+    },
+    ReplacementRule {
+        regex: child_agent_reference_block_regex,
+        replacement: "Child agent reference metadata existed earlier, but compacted history is \
+                      not an authoritative routing source.",
+    },
+    ReplacementRule {
+        regex: exact_agent_instruction_regex,
+        replacement: "Use only the latest live child snapshot or tool result for agent routing.",
+    },
+    ReplacementRule {
+        regex: raw_root_agent_id_regex,
+        replacement: "<agent-id>",
+    },
+    ReplacementRule {
+        regex: raw_agent_id_regex,
+        replacement: "<agent-id>",
+    },
+    ReplacementRule {
+        regex: raw_subrun_id_regex,
+        replacement: "<subrun-id>",
+    },
+    ReplacementRule {
+        regex: raw_session_id_regex,
+        replacement: "<session-id>",
+    },
+];
+
+const ROUTE_KEY_RULES: &[RouteKeyRule] = &[
+    RouteKeyRule {
+        key: "agentId",
+        replacement: "${key}<latest-direct-child-agentId>",
+    },
+    RouteKeyRule {
+        key: "childAgentId",
+        replacement: "${key}<latest-direct-child-agentId>",
+    },
+    RouteKeyRule {
+        key: "parentAgentId",
+        replacement: "${key}<parent-agentId>",
+    },
+    RouteKeyRule {
+        key: "subRunId",
+        replacement: "${key}<direct-child-subRunId>",
+    },
+    RouteKeyRule {
+        key: "parentSubRunId",
+        replacement: "${key}<parent-subRunId>",
+    },
+    RouteKeyRule {
+        key: "sessionId",
+        replacement: "${key}<session-id>",
+    },
+    RouteKeyRule {
+        key: "childSessionId",
+        replacement: "${key}<child-session-id>",
+    },
+    RouteKeyRule {
+        key: "openSessionId",
+        replacement: "${key}<child-session-id>",
+    },
+];
+
+struct CompiledRouteKeyRule {
+    replacement: &'static str,
+    regex: Regex,
+}
+
 pub(super) fn sanitize_compact_summary(summary: &str) -> String {
     let had_route_sensitive_content = summary_has_route_sensitive_content(summary);
     let mut sanitized = summary.trim().to_string();
-    sanitized = direct_child_validation_regex()
-        .replace_all(
-            &sanitized,
-            "direct-child validation rejected a stale child reference; use the live direct-child \
-             snapshot or the latest live tool result instead.",
-        )
-        .into_owned();
-    sanitized = child_agent_reference_block_regex()
-        .replace_all(
-            &sanitized,
-            "Child agent reference metadata existed earlier, but compacted history is not an \
-             authoritative routing source.",
-        )
-        .into_owned();
-    for (regex, replacement) in [
-        (
-            route_key_regex("agentId"),
-            "${key}<latest-direct-child-agentId>",
-        ),
-        (
-            route_key_regex("childAgentId"),
-            "${key}<latest-direct-child-agentId>",
-        ),
-        (route_key_regex("parentAgentId"), "${key}<parent-agentId>"),
-        (route_key_regex("subRunId"), "${key}<direct-child-subRunId>"),
-        (route_key_regex("parentSubRunId"), "${key}<parent-subRunId>"),
-        (route_key_regex("sessionId"), "${key}<session-id>"),
-        (
-            route_key_regex("childSessionId"),
-            "${key}<child-session-id>",
-        ),
-        (route_key_regex("openSessionId"), "${key}<child-session-id>"),
-    ] {
-        sanitized = regex.replace_all(&sanitized, replacement).into_owned();
+    for rule in SANITIZE_REPLACEMENT_RULES {
+        sanitized = (rule.regex)()
+            .replace_all(&sanitized, rule.replacement)
+            .into_owned();
     }
-    sanitized = exact_agent_instruction_regex()
-        .replace_all(
-            &sanitized,
-            "Use only the latest live child snapshot or tool result for agent routing.",
-        )
-        .into_owned();
-    sanitized = raw_root_agent_id_regex()
-        .replace_all(&sanitized, "<agent-id>")
-        .into_owned();
-    sanitized = raw_agent_id_regex()
-        .replace_all(&sanitized, "<agent-id>")
-        .into_owned();
-    sanitized = raw_subrun_id_regex()
-        .replace_all(&sanitized, "<subrun-id>")
-        .into_owned();
-    sanitized = raw_session_id_regex()
-        .replace_all(&sanitized, "<session-id>")
-        .into_owned();
+    for rule in route_key_rules() {
+        sanitized = rule
+            .regex
+            .replace_all(&sanitized, rule.replacement)
+            .into_owned();
+    }
     sanitized = collapse_compaction_whitespace(&sanitized);
     if had_route_sensitive_content {
         ensure_compact_boundary_section(&sanitized)
@@ -81,25 +126,12 @@ fn ensure_compact_boundary_section(summary: &str) -> String {
 }
 
 fn summary_has_route_sensitive_content(summary: &str) -> bool {
-    direct_child_validation_regex().is_match(summary)
-        || child_agent_reference_block_regex().is_match(summary)
-        || exact_agent_instruction_regex().is_match(summary)
-        || raw_root_agent_id_regex().is_match(summary)
-        || raw_agent_id_regex().is_match(summary)
-        || raw_subrun_id_regex().is_match(summary)
-        || raw_session_id_regex().is_match(summary)
-        || [
-            route_key_regex("agentId"),
-            route_key_regex("childAgentId"),
-            route_key_regex("parentAgentId"),
-            route_key_regex("subRunId"),
-            route_key_regex("parentSubRunId"),
-            route_key_regex("sessionId"),
-            route_key_regex("childSessionId"),
-            route_key_regex("openSessionId"),
-        ]
-        .into_iter()
-        .any(|regex| regex.is_match(summary))
+    SANITIZE_REPLACEMENT_RULES
+        .iter()
+        .any(|rule| (rule.regex)().is_match(summary))
+        || route_key_rules()
+            .iter()
+            .any(|rule| rule.regex.is_match(summary))
 }
 
 fn child_agent_reference_block_regex() -> &'static Regex {
@@ -118,32 +150,24 @@ fn direct_child_validation_regex() -> &'static Regex {
     })
 }
 
-fn route_key_regex(key: &str) -> &'static Regex {
-    static AGENT_ID: OnceLock<Regex> = OnceLock::new();
-    static CHILD_AGENT_ID: OnceLock<Regex> = OnceLock::new();
-    static PARENT_AGENT_ID: OnceLock<Regex> = OnceLock::new();
-    static SUB_RUN_ID: OnceLock<Regex> = OnceLock::new();
-    static PARENT_SUB_RUN_ID: OnceLock<Regex> = OnceLock::new();
-    static SESSION_ID: OnceLock<Regex> = OnceLock::new();
-    static CHILD_SESSION_ID: OnceLock<Regex> = OnceLock::new();
-    static OPEN_SESSION_ID: OnceLock<Regex> = OnceLock::new();
-    let slot = match key {
-        "agentId" => &AGENT_ID,
-        "childAgentId" => &CHILD_AGENT_ID,
-        "parentAgentId" => &PARENT_AGENT_ID,
-        "subRunId" => &SUB_RUN_ID,
-        "parentSubRunId" => &PARENT_SUB_RUN_ID,
-        "sessionId" => &SESSION_ID,
-        "childSessionId" => &CHILD_SESSION_ID,
-        "openSessionId" => &OPEN_SESSION_ID,
-        other => panic!("unsupported route key regex: {other}"),
-    };
-    slot.get_or_init(|| {
-        Regex::new(&format!(
-            r"(?i)(?P<key>`?{key}`?\s*[:=]\s*`?)[^`\s,;\])]+`?"
-        ))
-        .expect("route key regex should compile")
+fn route_key_rules() -> &'static [CompiledRouteKeyRule] {
+    static RULES: OnceLock<Vec<CompiledRouteKeyRule>> = OnceLock::new();
+    RULES.get_or_init(|| {
+        ROUTE_KEY_RULES
+            .iter()
+            .map(|rule| CompiledRouteKeyRule {
+                replacement: rule.replacement,
+                regex: compile_route_key_regex(rule.key),
+            })
+            .collect()
     })
+}
+
+fn compile_route_key_regex(key: &str) -> Regex {
+    Regex::new(&format!(
+        r"(?i)(?P<key>`?{key}`?\s*[:=]\s*`?)[^`\s,;\])]+`?"
+    ))
+    .expect("route key regex should compile")
 }
 
 fn exact_agent_instruction_regex() -> &'static Regex {

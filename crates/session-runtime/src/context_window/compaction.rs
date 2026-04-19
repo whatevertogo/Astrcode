@@ -13,7 +13,7 @@
 //! 如果压缩请求本身超出上下文窗口，会逐步丢弃最旧的 compact unit 并重试，
 //! 最多重试 3 次。
 
-use std::sync::OnceLock;
+use std::{collections::HashSet, sync::OnceLock};
 
 use astrcode_core::{
     AstrError, CancelToken, CompactAppliedMeta, CompactMode, CompactSummaryEnvelope, LlmMessage,
@@ -150,6 +150,31 @@ impl CompactContractViolation {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CompactRetryState {
+    salvage_attempts: usize,
+    contract_retry_count: usize,
+    contract_repair_feedback: Option<String>,
+}
+
+impl CompactRetryState {
+    fn schedule_contract_retry(&mut self, detail: String) {
+        self.contract_retry_count = self.contract_retry_count.saturating_add(1);
+        self.contract_repair_feedback = Some(detail);
+    }
+
+    fn note_salvage_attempt(&mut self) {
+        self.salvage_attempts = self.salvage_attempts.saturating_add(1);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CompactExecutionResult {
+    parsed_output: ParsedCompactOutput,
+    prepared_input: PreparedCompactInput,
+    retry_state: CompactRetryState,
+}
+
 /// 执行自动压缩。
 ///
 /// 通过 `gateway` 调用 LLM 对历史前缀生成摘要，替换为压缩后的消息。
@@ -179,73 +204,22 @@ pub async fn auto_compact(
         .max_output_tokens
         .min(gateway.model_limits().max_output_tokens)
         .max(1);
-    let mut salvage_attempts = 0usize;
-    let mut contract_retry_count = 0usize;
-    let mut contract_repair_feedback: Option<String> = None;
-    let (parsed_output, prepared_input) = loop {
-        if !trim_prefix_until_compact_request_fits(
-            &mut split.prefix,
-            compact_prompt_context,
-            gateway.model_limits(),
-            &config,
-            &recent_user_context_messages,
-        ) {
-            return Err(AstrError::Internal(
-                "compact request could not fit within summarization window".to_string(),
-            ));
-        }
-
-        let prepared_input = prepare_compact_input(&split.prefix);
-        if prepared_input.messages.is_empty() {
-            return Ok(None);
-        }
-
-        let request = LlmRequest::new(prepared_input.messages.clone(), Vec::new(), cancel.clone())
-            .with_system(render_compact_system_prompt(
-                compact_prompt_context,
-                prepared_input.prompt_mode.clone(),
-                effective_max_output_tokens,
-                &recent_user_context_messages,
-                config.custom_instructions.as_deref(),
-                contract_repair_feedback.as_deref(),
-            ))
-            .with_max_output_tokens_override(effective_max_output_tokens);
-        match gateway.call_llm(request, None).await {
-            Ok(output) => match parse_compact_output(&output.content) {
-                Ok(parsed_output) => {
-                    if let Some(violation) =
-                        CompactContractViolation::from_parsed_output(&parsed_output)
-                    {
-                        if contract_retry_count < config.max_retry_attempts {
-                            contract_retry_count += 1;
-                            contract_repair_feedback = Some(violation.detail);
-                            continue;
-                        }
-                    }
-                    break (parsed_output, prepared_input);
-                },
-                Err(error) if contract_retry_count < config.max_retry_attempts => {
-                    contract_retry_count += 1;
-                    contract_repair_feedback = Some(error.to_string());
-                    continue;
-                },
-                Err(error) => return Err(error),
-            },
-            Err(error)
-                if is_prompt_too_long(&error) && salvage_attempts < config.max_retry_attempts =>
-            {
-                salvage_attempts += 1;
-                if !drop_oldest_compaction_unit(&mut split.prefix) {
-                    return Err(AstrError::Internal(error.to_string()));
-                }
-                split.keep_start = split.prefix.len();
-            },
-            Err(error) => return Err(AstrError::Internal(error.to_string())),
-        }
+    let Some(execution) = execute_compact_request_with_retries(
+        gateway,
+        &mut split,
+        compact_prompt_context,
+        &config,
+        &recent_user_context_messages,
+        effective_max_output_tokens,
+        cancel,
+    )
+    .await?
+    else {
+        return Ok(None);
     };
 
     let summary = {
-        let summary = sanitize_compact_summary(&parsed_output.summary);
+        let summary = sanitize_compact_summary(&execution.parsed_output.summary);
         if let Some(history_path) = config.history_path.as_deref() {
             CompactSummaryEnvelope::new(summary)
                 .with_history_path(history_path)
@@ -254,12 +228,12 @@ pub async fn auto_compact(
             summary
         }
     };
-    let recent_user_context_digest = parsed_output
+    let recent_user_context_digest = execution
+        .parsed_output
         .recent_user_context_digest
         .as_deref()
         .map(sanitize_recent_user_context_digest)
         .filter(|value| !value.is_empty());
-    let output_summary_chars = summary.chars().count().min(u32::MAX as usize) as u32;
     let compacted_messages = compacted_messages(
         &summary,
         recent_user_context_digest.as_deref(),
@@ -267,33 +241,18 @@ pub async fn auto_compact(
         split.keep_start,
         split.suffix,
     );
-    let post_tokens_estimate = estimate_request_tokens(&compacted_messages, compact_prompt_context);
-    Ok(Some(CompactResult {
-        messages: compacted_messages,
+    Ok(Some(build_compact_result(
+        compacted_messages,
         summary,
         recent_user_context_digest,
-        recent_user_context_messages: recent_user_context_messages
-            .iter()
-            .map(|message| message.content.clone())
-            .collect(),
+        recent_user_context_messages,
         preserved_recent_turns,
         pre_tokens,
-        post_tokens_estimate,
-        messages_removed: split.keep_start,
-        tokens_freed: pre_tokens.saturating_sub(post_tokens_estimate),
-        timestamp: Utc::now(),
-        meta: CompactAppliedMeta {
-            mode: prepared_input.prompt_mode.compact_mode(salvage_attempts),
-            instructions_present: config
-                .custom_instructions
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty()),
-            fallback_used: parsed_output.used_fallback || salvage_attempts > 0,
-            retry_count: salvage_attempts.min(u32::MAX as usize) as u32,
-            input_units: prepared_input.input_units.min(u32::MAX as usize) as u32,
-            output_summary_chars,
-        },
-    }))
+        split.keep_start,
+        compact_prompt_context,
+        &config,
+        execution,
+    )))
 }
 
 #[derive(Debug, Clone)]
@@ -442,6 +401,155 @@ fn trim_prefix_until_compact_request_fits(
     }
 }
 
+async fn execute_compact_request_with_retries(
+    gateway: &KernelGateway,
+    split: &mut CompactionSplit,
+    compact_prompt_context: Option<&str>,
+    config: &CompactConfig,
+    recent_user_context_messages: &[RecentUserContextMessage],
+    effective_max_output_tokens: usize,
+    cancel: CancelToken,
+) -> Result<Option<CompactExecutionResult>> {
+    let mut retry_state = CompactRetryState::default();
+    loop {
+        if !trim_prefix_until_compact_request_fits(
+            &mut split.prefix,
+            compact_prompt_context,
+            gateway.model_limits(),
+            config,
+            recent_user_context_messages,
+        ) {
+            return Err(AstrError::Internal(
+                "compact request could not fit within summarization window".to_string(),
+            ));
+        }
+
+        let prepared_input = prepare_compact_input(&split.prefix);
+        if prepared_input.messages.is_empty() {
+            return Ok(None);
+        }
+
+        let request = build_compact_request(
+            prepared_input.messages.clone(),
+            compact_prompt_context,
+            &prepared_input.prompt_mode,
+            effective_max_output_tokens,
+            recent_user_context_messages,
+            config.custom_instructions.as_deref(),
+            retry_state.contract_repair_feedback.as_deref(),
+            cancel.clone(),
+        );
+
+        match gateway.call_llm(request, None).await {
+            Ok(output) => match parse_compact_output(&output.content) {
+                Ok(parsed_output) => {
+                    if let Some(violation) =
+                        CompactContractViolation::from_parsed_output(&parsed_output)
+                    {
+                        if retry_state.contract_retry_count < config.max_retry_attempts {
+                            retry_state.schedule_contract_retry(violation.detail);
+                            continue;
+                        }
+                    }
+                    return Ok(Some(CompactExecutionResult {
+                        parsed_output,
+                        prepared_input,
+                        retry_state,
+                    }));
+                },
+                Err(error) if retry_state.contract_retry_count < config.max_retry_attempts => {
+                    retry_state.schedule_contract_retry(error.to_string());
+                    continue;
+                },
+                Err(error) => return Err(error),
+            },
+            Err(error)
+                if is_prompt_too_long(&error)
+                    && retry_state.salvage_attempts < config.max_retry_attempts =>
+            {
+                retry_state.note_salvage_attempt();
+                if !drop_oldest_compaction_unit(&mut split.prefix) {
+                    return Err(AstrError::Internal(error.to_string()));
+                }
+                split.keep_start = split.prefix.len();
+            },
+            Err(error) => return Err(AstrError::Internal(error.to_string())),
+        }
+    }
+}
+
+fn build_compact_request(
+    messages: Vec<LlmMessage>,
+    compact_prompt_context: Option<&str>,
+    prompt_mode: &CompactPromptMode,
+    effective_max_output_tokens: usize,
+    recent_user_context_messages: &[RecentUserContextMessage],
+    custom_instructions: Option<&str>,
+    contract_repair_feedback: Option<&str>,
+    cancel: CancelToken,
+) -> LlmRequest {
+    LlmRequest::new(messages, Vec::new(), cancel)
+        .with_system(render_compact_system_prompt(
+            compact_prompt_context,
+            prompt_mode.clone(),
+            effective_max_output_tokens,
+            recent_user_context_messages,
+            custom_instructions,
+            contract_repair_feedback,
+        ))
+        .with_max_output_tokens_override(effective_max_output_tokens)
+}
+
+fn build_compact_result(
+    compacted_messages: Vec<LlmMessage>,
+    summary: String,
+    recent_user_context_digest: Option<String>,
+    recent_user_context_messages: Vec<RecentUserContextMessage>,
+    preserved_recent_turns: usize,
+    pre_tokens: usize,
+    messages_removed: usize,
+    compact_prompt_context: Option<&str>,
+    config: &CompactConfig,
+    execution: CompactExecutionResult,
+) -> CompactResult {
+    let CompactExecutionResult {
+        parsed_output,
+        prepared_input,
+        retry_state,
+    } = execution;
+    let post_tokens_estimate = estimate_request_tokens(&compacted_messages, compact_prompt_context);
+    let output_summary_chars = summary.chars().count().min(u32::MAX as usize) as u32;
+
+    CompactResult {
+        messages: compacted_messages,
+        summary,
+        recent_user_context_digest,
+        recent_user_context_messages: recent_user_context_messages
+            .into_iter()
+            .map(|message| message.content)
+            .collect(),
+        preserved_recent_turns,
+        pre_tokens,
+        post_tokens_estimate,
+        messages_removed,
+        tokens_freed: pre_tokens.saturating_sub(post_tokens_estimate),
+        timestamp: Utc::now(),
+        meta: CompactAppliedMeta {
+            mode: prepared_input
+                .prompt_mode
+                .compact_mode(retry_state.salvage_attempts),
+            instructions_present: config
+                .custom_instructions
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            fallback_used: parsed_output.used_fallback || retry_state.salvage_attempts > 0,
+            retry_count: retry_state.salvage_attempts.min(u32::MAX as usize) as u32,
+            input_units: prepared_input.input_units.min(u32::MAX as usize) as u32,
+            output_summary_chars,
+        },
+    }
+}
+
 fn compact_request_fits_window(
     request_messages: &[LlmMessage],
     system_prompt: &str,
@@ -459,6 +567,10 @@ fn compacted_messages(
     keep_start: usize,
     suffix: Vec<LlmMessage>,
 ) -> Vec<LlmMessage> {
+    let recent_user_context_indices = recent_user_context_messages
+        .iter()
+        .map(|message| message.index)
+        .collect::<HashSet<_>>();
     let mut messages = vec![LlmMessage::User {
         content: format_compact_summary(summary),
         origin: UserMessageOrigin::CompactSummary,
@@ -480,15 +592,15 @@ fn compacted_messages(
             .into_iter()
             .enumerate()
             .filter(|(offset, message)| {
-                !matches!(
+                let is_reinjected_real_user_message = matches!(
                     message,
                     LlmMessage::User {
                         origin: UserMessageOrigin::User,
                         ..
-                    } if recent_user_context_messages
-                        .iter()
-                        .any(|recent| recent.index == keep_start + offset)
-                )
+                    }
+                ) && recent_user_context_indices
+                    .contains(&(keep_start + offset));
+                !is_reinjected_real_user_message
             })
             .map(|(_, message)| message),
     );

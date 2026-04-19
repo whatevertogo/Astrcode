@@ -9,7 +9,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use astrcode_adapter_skills::{SkillCatalog, SkillSpec, load_builtin_skills};
+use astrcode_adapter_skills::{LayeredSkillCatalog, load_builtin_skills};
 use astrcode_adapter_tools::{
     agent_tools::{CloseAgentTool, ObserveAgentTool, SendAgentTool, SpawnAgentTool},
     builtin_tools::{
@@ -30,6 +30,7 @@ use astrcode_adapter_tools::{
     },
 };
 use astrcode_application::AgentOrchestrationService;
+use astrcode_core::{SkillCatalog, SkillSpec};
 
 use super::deps::{
     core::{CapabilityInvoker, Result, Tool},
@@ -43,7 +44,7 @@ use super::deps::{
 /// 因为它们依赖 `AgentOrchestrationService`，必须在更晚的组合根阶段装配。
 pub(crate) fn build_core_tool_invokers(
     tool_search_index: Arc<ToolSearchIndex>,
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<dyn SkillCatalog>,
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadFileTool),
@@ -83,10 +84,13 @@ pub(crate) fn build_core_tool_invokers(
 pub(crate) fn build_skill_catalog(
     home_dir: &Path,
     mut external_base_skills: Vec<SkillSpec>,
-) -> Arc<SkillCatalog> {
+) -> Arc<LayeredSkillCatalog> {
     let mut base_skills = load_builtin_skills();
     base_skills.append(&mut external_base_skills);
-    Arc::new(SkillCatalog::new_with_home_dir(base_skills, home_dir))
+    Arc::new(LayeredSkillCatalog::new_with_home_dir(
+        base_skills,
+        home_dir,
+    ))
 }
 
 /// 让 tool_search 索引与当前外部能力事实源保持同步。

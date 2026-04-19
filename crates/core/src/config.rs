@@ -171,7 +171,6 @@ pub struct RuntimeConfig {
     pub micro_compact_gap_threshold_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub micro_compact_keep_recent_results: Option<usize>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_session_ttl_hours: Option<i64>,
 }

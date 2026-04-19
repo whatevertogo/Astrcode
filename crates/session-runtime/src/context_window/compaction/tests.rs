@@ -325,6 +325,7 @@ fn normalize_compaction_tool_content_removes_exact_child_identifiers() {
     assert!(!normalized.contains("session-child"));
 }
 
+
 #[test]
 fn sanitize_compact_summary_replaces_stale_route_identifiers_with_boundary_guidance() {
     let sanitized = sanitize_compact_summary(

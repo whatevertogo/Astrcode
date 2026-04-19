@@ -16,9 +16,10 @@ use serde_json::Value;
 
 use crate::{
     AgentState, CancelToken, CapabilitySpec, ChildSessionNode, Config, ConfigOverlay,
-    DeleteProjectResult, InputQueueProjection, LlmMessage, Phase, ReasoningContent, Result,
-    SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent, StoredEvent, SystemPromptBlock,
-    SystemPromptLayer, TaskSnapshot, ToolCallRequest, ToolDefinition, TurnId,
+    DeleteProjectResult, InputQueueProjection, LlmMessage, McpApprovalData, Phase,
+    ReasoningContent, Result, SessionId, SessionMeta, SessionTurnAcquireResult, SkillSpec,
+    StorageEvent, StoredEvent, SystemPromptBlock, SystemPromptLayer, TaskSnapshot, ToolCallRequest,
+    ToolDefinition, TurnId,
 };
 
 /// MCP 配置文件作用域。
@@ -491,6 +492,27 @@ pub trait ResourceProvider: Send + Sync {
         uri: &str,
         context: &ResourceRequestContext,
     ) -> Result<ResourceReadResult>;
+}
+
+/// Skill 查询端口。
+pub trait SkillCatalog: Send + Sync {
+    fn resolve_for_working_dir(&self, working_dir: &str) -> Vec<SkillSpec>;
+}
+
+/// MCP settings 持久化端口。
+pub trait McpSettingsStore: Send + Sync {
+    fn load_approvals(
+        &self,
+        project_path: &str,
+    ) -> std::result::Result<Vec<McpApprovalData>, String>;
+
+    fn save_approval(
+        &self,
+        project_path: &str,
+        data: &McpApprovalData,
+    ) -> std::result::Result<(), String>;
+
+    fn clear_approvals(&self, project_path: &str) -> std::result::Result<(), String>;
 }
 
 /// 配置存储端口。

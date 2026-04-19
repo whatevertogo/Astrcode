@@ -221,7 +221,6 @@ dependencies = [
 name = "astrcode-adapter-storage"
 version = "0.1.0"
 dependencies = [
- "astrcode-adapter-mcp",
  "astrcode-core",
  "async-trait",
  "chrono",
@@ -239,7 +238,6 @@ dependencies = [
 name = "astrcode-adapter-tools"
 version = "0.1.0"
 dependencies = [
- "astrcode-adapter-skills",
  "astrcode-core",
  "async-trait",
  "base64 0.22.1",

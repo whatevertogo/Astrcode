@@ -6,7 +6,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use astrcode_adapter_mcp::manager::McpConnectionManager;
-use astrcode_adapter_skills::{SkillCatalog, load_builtin_skills};
+use astrcode_adapter_skills::{LayeredSkillCatalog, load_builtin_skills};
 use astrcode_application::{
     AppGovernance, ApplicationError, ModeCatalog, RuntimeGovernancePort, RuntimeGovernanceSnapshot,
     RuntimeObservabilityCollector, RuntimeReloader, SessionInfoProvider, config::ConfigService,
@@ -33,7 +33,7 @@ pub(crate) struct GovernanceBuildInput {
     pub observability: Arc<RuntimeObservabilityCollector>,
     pub mcp_manager: Arc<McpConnectionManager>,
     pub capability_sync: CapabilitySurfaceSync,
-    pub skill_catalog: Arc<SkillCatalog>,
+    pub skill_catalog: Arc<LayeredSkillCatalog>,
     pub plugin_search_paths: Vec<PathBuf>,
     pub plugin_skill_root: PathBuf,
     pub plugin_supervisors: Vec<Arc<Supervisor>>,
@@ -162,7 +162,7 @@ struct ServerRuntimeReloader {
     coordinator: Arc<RuntimeCoordinator>,
     mcp_manager: Arc<McpConnectionManager>,
     capability_sync: CapabilitySurfaceSync,
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<LayeredSkillCatalog>,
     plugin_search_paths: Vec<PathBuf>,
     plugin_skill_root: PathBuf,
     working_dir: PathBuf,

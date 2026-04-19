@@ -249,21 +249,7 @@ pub(super) fn normalize_compaction_tool_content(content: &str) -> String {
     if is_persisted_output(&collapsed) {
         return summarize_persisted_tool_output(&collapsed);
     }
-
-    const MAX_COMPACTION_TOOL_CHARS: usize = 1_600;
-    let char_count = collapsed.chars().count();
-    if char_count <= MAX_COMPACTION_TOOL_CHARS {
-        return collapsed;
-    }
-
-    let preview = collapsed
-        .chars()
-        .take(MAX_COMPACTION_TOOL_CHARS)
-        .collect::<String>();
-    format!(
-        "{preview}\n\n[tool output truncated for compaction; preserve only the conclusion, key \
-         errors, important file paths, and referenced IDs]"
-    )
+    collapsed
 }
 
 pub(super) fn sanitize_compact_summary(summary: &str) -> String {

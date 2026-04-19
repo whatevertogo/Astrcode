@@ -10,8 +10,8 @@ use std::{
 
 use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_mcp::manager::McpConnectionManager;
-use astrcode_adapter_skills::SkillCatalog;
 use astrcode_application::config::{ConfigService, resolve_current_model};
+use astrcode_core::SkillCatalog;
 use async_trait::async_trait;
 
 use super::deps::core::{
@@ -22,7 +22,7 @@ use super::deps::core::{
 
 pub(crate) fn build_prompt_facts_provider(
     config_service: Arc<ConfigService>,
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<dyn SkillCatalog>,
     mcp_manager: Arc<McpConnectionManager>,
     agent_loader: AgentProfileLoader,
 ) -> Result<Arc<dyn PromptFactsProvider>> {
@@ -36,7 +36,7 @@ pub(crate) fn build_prompt_facts_provider(
 
 struct RuntimePromptFactsProvider {
     config_service: Arc<ConfigService>,
-    skill_catalog: Arc<SkillCatalog>,
+    skill_catalog: Arc<dyn SkillCatalog>,
     agent_loader: AgentProfileLoader,
     mcp_manager: Arc<McpConnectionManager>,
 }

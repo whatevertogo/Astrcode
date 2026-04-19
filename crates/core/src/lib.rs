@@ -63,6 +63,7 @@ pub mod home;
 pub mod hook;
 pub mod ids;
 pub mod local_server;
+mod mcp;
 pub mod mode;
 pub mod observability;
 pub mod plugin;
@@ -76,6 +77,7 @@ pub mod session;
 mod session_catalog;
 mod session_plan;
 mod shell;
+mod skill;
 pub mod store;
 mod time;
 // test_support 通过 feature gate "test-support" 守卫。
@@ -150,6 +152,7 @@ pub use hook::{
 };
 pub use ids::{AgentId, CapabilityName, SessionId, SubRunId, TurnId};
 pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
+pub use mcp::{McpApprovalData, McpApprovalStatus};
 pub use mode::{
     ActionPolicies, ActionPolicyEffect, ActionPolicyRule, BUILTIN_MODE_CODE_ID,
     BUILTIN_MODE_PLAN_ID, BUILTIN_MODE_REVIEW_ID, CapabilitySelector, ChildPolicySpec,
@@ -169,12 +172,13 @@ pub use policy::{
 };
 pub use ports::{
     EventStore, LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, ModelLimits, PromptAgentProfileSummary, PromptBuildCacheMetrics, PromptBuildOutput,
-    PromptBuildRequest, PromptCacheHints, PromptDeclaration, PromptDeclarationKind,
-    PromptDeclarationRenderTarget, PromptDeclarationSource, PromptEntrySummary, PromptFacts,
-    PromptFactsProvider, PromptFactsRequest, PromptGovernanceContext, PromptLayerFingerprints,
-    PromptProvider, PromptSkillSummary, RecoveredSessionState, ResourceProvider,
-    ResourceReadResult, ResourceRequestContext, SessionRecoveryCheckpoint,
+    LlmUsage, McpSettingsStore, ModelLimits, PromptAgentProfileSummary, PromptBuildCacheMetrics,
+    PromptBuildOutput, PromptBuildRequest, PromptCacheHints, PromptDeclaration,
+    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource,
+    PromptEntrySummary, PromptFacts, PromptFactsProvider, PromptFactsRequest,
+    PromptGovernanceContext, PromptLayerFingerprints, PromptProvider, PromptSkillSummary,
+    RecoveredSessionState, ResourceProvider, ResourceReadResult, ResourceRequestContext,
+    SessionRecoveryCheckpoint, SkillCatalog,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
@@ -189,6 +193,7 @@ pub use session_plan::{SessionPlanState, SessionPlanStatus, session_plan_content
 pub use shell::{
     ResolvedShell, ShellFamily, default_shell_label, detect_shell_family, resolve_shell,
 };
+pub use skill::{SkillSource, SkillSpec, is_valid_skill_name, normalize_skill_name};
 pub use store::{
     EventLogWriter, SessionManager, SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease,
     StoreError, StoreResult,
