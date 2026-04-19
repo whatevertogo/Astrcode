@@ -61,6 +61,7 @@ impl ExecutionResultCommon {
 /// - 统一承载 spawn/send/observe/close 产生的后续协作续接语义
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+// TODO: 目前只有 child agent 一种续接目标，但未来可以扩展为工具调用、能力调用等。
 pub enum ExecutionContinuation {
     ChildAgent { child_ref: ChildAgentRef },
 }
