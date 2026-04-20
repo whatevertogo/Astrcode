@@ -23,6 +23,8 @@ graph TD
   astrcode-cli[astrcode-cli] --> astrcode-core[astrcode-core]
   astrcode-client[astrcode-client] --> astrcode-protocol[astrcode-protocol]
   astrcode-core[astrcode-core]
+  astrcode-eval[astrcode-eval] --> astrcode-core[astrcode-core]
+  astrcode-eval[astrcode-eval] --> astrcode-protocol[astrcode-protocol]
   astrcode-kernel[astrcode-kernel] --> astrcode-core[astrcode-core]
   astrcode-plugin[astrcode-plugin] --> astrcode-core[astrcode-core]
   astrcode-plugin[astrcode-plugin] --> astrcode-protocol[astrcode-protocol]
@@ -61,6 +63,7 @@ graph TD
 | astrcode-cli | crates/cli | 2 | astrcode-client, astrcode-core |
 | astrcode-client | crates/client | 1 | astrcode-protocol |
 | astrcode-core | crates/core | 0 | - |
+| astrcode-eval | crates/eval | 2 | astrcode-core, astrcode-protocol |
 | astrcode-kernel | crates/kernel | 1 | astrcode-core |
 | astrcode-plugin | crates/plugin | 2 | astrcode-core, astrcode-protocol |
 | astrcode-protocol | crates/protocol | 1 | astrcode-core |
