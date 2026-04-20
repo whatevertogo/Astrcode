@@ -45,6 +45,11 @@ struct ExistingServerRunInfoResponse {
     token: String,
 }
 
+struct DesktopBootstrap {
+    script: String,
+    server_origin: String,
+}
+
 fn main() {
     if let Err(error) = run_desktop_shell() {
         eprintln!("{error:#}");
@@ -64,12 +69,14 @@ fn run_desktop_shell() -> Result<()> {
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
             instance_for_setup.attach_app_handle(app.handle().clone());
-            let (server_state, bootstrap_script) = initialize_server(app.handle())?;
+            let (server_state, bootstrap) = initialize_server(app.handle())?;
             app.manage(server_state);
             let app_handle = app.handle().clone();
             let instance_for_window = Arc::clone(&instance_for_setup);
             std::thread::spawn(move || {
-                if let Err(error) = create_main_window(&app_handle, &bootstrap_script) {
+                if let Err(error) =
+                    create_main_window(&app_handle, &bootstrap.script, &bootstrap.server_origin)
+                {
                     eprintln!("[astrcode-window] failed to create main window: {error:#}");
                     app_handle.exit(1);
                     return;
@@ -107,16 +114,16 @@ fn run_desktop_shell() -> Result<()> {
     Ok(())
 }
 
-fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, String)> {
+fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, DesktopBootstrap)> {
     if let Some(run_info) = try_connect_existing_server()? {
-        let bootstrap_script = build_bootstrap_script(&run_info)?;
+        let bootstrap = build_bootstrap(&run_info)?;
         return Ok((
             ServerState {
                 child: Mutex::new(None),
                 shutting_down: Arc::new(AtomicBool::new(false)),
                 spawned_sidecar_path: Arc::new(Mutex::new(None)),
             },
-            bootstrap_script,
+            bootstrap,
         ));
     }
 
@@ -151,22 +158,29 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Stri
         )
     })?;
 
-    let bootstrap_script = build_bootstrap_script(&run_info)?;
+    let bootstrap = build_bootstrap(&run_info)?;
     Ok((
         ServerState {
             child: Mutex::new(child),
             shutting_down,
             spawned_sidecar_path,
         },
-        bootstrap_script,
+        bootstrap,
     ))
 }
 
 fn create_main_window(
     app_handle: &tauri::AppHandle,
     bootstrap_script: &str,
+    server_origin: &str,
 ) -> Result<WebviewWindow> {
-    create_named_window(app_handle, "main", "index.html", bootstrap_script)
+    create_named_window(
+        app_handle,
+        "main",
+        "index.html",
+        bootstrap_script,
+        server_origin,
+    )
 }
 
 fn try_connect_existing_server() -> Result<Option<LocalServerInfo>> {
@@ -253,6 +267,7 @@ fn create_named_window(
     label: &str,
     entry_path: &str,
     bootstrap_script: &str,
+    server_origin: &str,
 ) -> Result<WebviewWindow> {
     if let Some(window) = app_handle.get_webview_window(label) {
         return Ok(window);
@@ -266,7 +281,16 @@ fn create_named_window(
         .find(|config| config.label == label)
         .cloned()
         .ok_or_else(|| anyhow!("{label} window config is missing"))?;
-    window_config.url = resolve_window_url(app_handle, entry_path, window_config.use_https_scheme)?;
+    window_config.url = resolve_window_url(
+        app_handle,
+        entry_path,
+        window_config.use_https_scheme,
+        server_origin,
+    )?;
+    eprintln!(
+        "[astrcode-window] creating '{label}' with resolved url {:?}",
+        window_config.url
+    );
 
     // Windows 上同步创建 WebView 和同步 `eval` 都踩过 WebView2 死锁面。
     // 这里保留初始化脚本注入，并配合 setup 里的独立线程创建窗口，避开阻塞主 UI 线程。
@@ -277,26 +301,35 @@ fn create_named_window(
         .with_context(|| format!("failed to create {label} window"))
 }
 
-fn build_bootstrap_script(run_info: &LocalServerInfo) -> Result<String> {
+fn build_bootstrap(run_info: &LocalServerInfo) -> Result<DesktopBootstrap> {
+    let server_origin = format!("http://127.0.0.1:{}", run_info.port);
     let bootstrap = serde_json::json!({
         "token": run_info.token,
         "isDesktopHost": true,
-        "serverOrigin": format!("http://127.0.0.1:{}", run_info.port),
+        "serverOrigin": server_origin,
     });
-    Ok(format!(
-        "window.__ASTRCODE_BOOTSTRAP__ = {};",
-        serde_json::to_string(&bootstrap)?
-    ))
+    Ok(DesktopBootstrap {
+        script: format!(
+            "window.__ASTRCODE_BOOTSTRAP__ = {};",
+            serde_json::to_string(&bootstrap)?
+        ),
+        server_origin,
+    })
 }
 
 fn resolve_window_url(
     app_handle: &tauri::AppHandle,
     entry_path: &str,
     use_https_scheme: bool,
+    server_origin: &str,
 ) -> Result<WebviewUrl> {
     if !cfg!(debug_assertions) {
         // `cfg!(dev)` 在 Tauri CLI 场景下并不可靠，发布构建仍可能命中。
         // 这里改用 Rust profile 语义：release 包默认直接走内嵌资源，不再等待 Vite。
+        eprintln!(
+            "[astrcode-window] release profile detected, using embedded frontend for '{}'",
+            entry_path
+        );
         return embedded_frontend_url(app_handle, entry_path, use_https_scheme);
     }
 
@@ -315,7 +348,20 @@ fn resolve_window_url(
                 .join(entry_path)
                 .with_context(|| format!("failed to resolve dev url for '{entry_path}'"))?
         };
+        eprintln!(
+            "[astrcode-window] using Vite dev server for '{}': {}",
+            entry_path, url
+        );
         return Ok(WebviewUrl::External(url));
+    }
+
+    if debug_server_frontend_is_available(server_origin) {
+        eprintln!(
+            "[astrcode-window] Vite dev server at {} is not reachable; falling back to local \
+             astrcode-server frontend at {}.",
+            dev_url, server_origin
+        );
+        return external_server_frontend_url(server_origin, entry_path);
     }
 
     if embedded_frontend_is_available(app_handle, entry_path, use_https_scheme) {
@@ -340,6 +386,53 @@ fn resolve_window_url(
     );
     let url = Url::parse(&error_uri).with_context(|| "failed to build error page url")?;
     Ok(WebviewUrl::External(url))
+}
+
+fn external_server_frontend_url(server_origin: &str, entry_path: &str) -> Result<WebviewUrl> {
+    let trimmed_origin = server_origin.trim_end_matches('/');
+    let path = if entry_path == "index.html" {
+        format!("{trimmed_origin}/")
+    } else {
+        format!("{trimmed_origin}/{}", entry_path.trim_start_matches('/'))
+    };
+    let url = Url::parse(&path)
+        .with_context(|| format!("failed to build server frontend url '{path}'"))?;
+    Ok(WebviewUrl::External(url))
+}
+
+fn debug_server_frontend_is_available(server_origin: &str) -> bool {
+    let Ok(url) = Url::parse(server_origin) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let Some(port) = url.port_or_known_default() else {
+        return false;
+    };
+
+    let Ok(mut stream) = connect_host_with_timeout(host, port, Duration::from_millis(100)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
+
+    if stream
+        .write_all(b"GET /index.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+
+    let mut buffer = [0_u8; 64];
+    match stream.read(&mut buffer) {
+        Ok(0) => false,
+        Ok(read) => {
+            let response_head = String::from_utf8_lossy(&buffer[..read]);
+            response_head.starts_with("HTTP/1.1 200") || response_head.starts_with("HTTP/1.0 200")
+        },
+        Err(_) => false,
+    }
 }
 
 fn embedded_frontend_url(
