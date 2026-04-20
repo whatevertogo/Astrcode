@@ -10,10 +10,11 @@
 //! Token 通过 `x-astrcode-token` 请求头或 `token` 查询参数传递，
 //! 比较使用常量时间比较函数防止时序攻击。
 
-use std::{collections::HashMap, sync::Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::http::HeaderMap;
 use chrono::{Duration, Utc};
+use dashmap::DashMap;
 
 use crate::{AUTH_HEADER_NAME, ApiError, AppState, bootstrap::random_hex_token};
 
@@ -22,6 +23,7 @@ use crate::{AUTH_HEADER_NAME, ApiError, AppState, bootstrap::random_hex_token};
 /// 通过 `/api/auth/exchange` 交换获得的 token 有效期为 8 小时，
 /// 过期后需要重新用 bootstrap token 交换。
 const API_SESSION_TTL_HOURS: i64 = 8;
+const AUTH_TOKEN_CLEANUP_INTERVAL: u64 = 128;
 
 /// Bootstrap 认证凭证。
 ///
@@ -85,9 +87,19 @@ pub(crate) struct AuthExchangeSummary {
 ///
 /// 维护一个线程安全的 token 映射，支持签发和验证。
 /// 验证时会自动清理过期 token，防止内存泄漏。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct AuthSessionManager {
-    tokens: Mutex<HashMap<String, i64>>,
+    tokens: DashMap<String, i64>,
+    validate_calls: AtomicU64,
+}
+
+impl Default for AuthSessionManager {
+    fn default() -> Self {
+        Self {
+            tokens: DashMap::new(),
+            validate_calls: AtomicU64::new(0),
+        }
+    }
 }
 
 impl AuthSessionManager {
@@ -109,15 +121,21 @@ impl AuthSessionManager {
 
     /// 验证 token 是否有效且未过期。
     ///
-    /// 验证前会先清理所有过期 token。
-    /// 使用常量时间比较防止时序攻击。
+    /// 查找走并发 map 的精确匹配路径，避免每次认证都遍历整张表。
+    /// 过期清理由 validate 的周期性维护和命中过期 token 时的即时删除共同完成。
     pub(crate) fn validate(&self, token: &str) -> bool {
         let now = Utc::now().timestamp_millis();
-        let mut tokens = self.tokens.lock().expect("auth token lock poisoned");
-        tokens.retain(|_, expires_at_ms| *expires_at_ms > now);
-        tokens
-            .iter()
-            .any(|(known, expires_at_ms)| *expires_at_ms > now && secure_token_eq(known, token))
+        self.cleanup_expired_if_needed(now);
+
+        let Some(expires_at_ms) = self.tokens.get(token).map(|entry| *entry.value()) else {
+            return false;
+        };
+        if expires_at_ms <= now {
+            self.tokens.remove(token);
+            return false;
+        }
+
+        true
     }
 
     #[cfg(test)]
@@ -130,14 +148,20 @@ impl AuthSessionManager {
     /// 内部方法，被 `issue_token` 和 `issue_test_token` 共用。
     fn issue_named_token(&self, token: String, ttl_hours: i64) -> IssuedAuthToken {
         let expires_at_ms = (Utc::now() + Duration::hours(ttl_hours)).timestamp_millis();
-        self.tokens
-            .lock()
-            .expect("auth token lock poisoned")
-            .insert(token.clone(), expires_at_ms);
+        self.tokens.insert(token.clone(), expires_at_ms);
         IssuedAuthToken {
             token,
             expires_at_ms,
         }
+    }
+
+    fn cleanup_expired_if_needed(&self, now: i64) {
+        let call_index = self.validate_calls.fetch_add(1, Ordering::Relaxed) + 1;
+        if !call_index.is_multiple_of(AUTH_TOKEN_CLEANUP_INTERVAL) {
+            return;
+        }
+
+        self.tokens.retain(|_, expires_at_ms| *expires_at_ms > now);
     }
 }
 

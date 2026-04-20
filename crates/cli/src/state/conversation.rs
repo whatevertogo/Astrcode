@@ -367,10 +367,13 @@ where
         .map(|value| value.trim().to_string())
 }
 
+#[cfg(debug_assertions)]
 fn debug_missing_block(operation: &str, block_id: &str) {
-    #[cfg(debug_assertions)]
     eprintln!("astrcode-cli: ignored {operation} delta for unknown block '{block_id}'");
 }
+
+#[cfg(not(debug_assertions))]
+fn debug_missing_block(_operation: &str, _block_id: &str) {}
 
 fn set_block_status(
     block: &mut AstrcodeConversationBlockDto,

@@ -353,6 +353,64 @@ async fn fork_session_contract_returns_not_found_for_missing_session() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn delete_project_contract_requires_valid_working_dir() {
+    let (state, _guard) = test_state(None).await;
+    let app = build_api_router().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/projects?workingDir=./definitely-missing-dir")
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn delete_project_contract_deletes_sessions_for_canonical_working_dir() {
+    let (state, _guard) = test_state(None).await;
+    let project = tempfile::tempdir().expect("tempdir should be created");
+    let alias = project.path().join(".");
+    let working_dir_query = alias.display().to_string().replace('\\', "/");
+    let created = state
+        .app
+        .create_session(alias.display().to_string())
+        .await
+        .expect("session should be created");
+    let app = build_api_router().with_state(state.clone());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/projects?workingDir={working_dir_query}"))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .body(Body::empty())
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let list = state
+        .app
+        .list_sessions()
+        .await
+        .expect("sessions should list");
+    assert!(
+        list.into_iter()
+            .all(|meta| meta.session_id != created.session_id),
+        "project delete should remove sessions that belong to the canonical working dir"
+    );
+}
+
 // ─── SubRun 状态查询契约 ──────────────────────────────────
 
 #[tokio::test]

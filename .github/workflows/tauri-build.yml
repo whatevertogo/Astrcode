@@ -69,13 +69,54 @@ jobs:
             Start-Sleep -Seconds (10 * $attempt)
           }
 
+      - name: Install Tauri CLI
+        shell: pwsh
+        run: cargo install tauri-cli --version "^2" --locked
+
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_ENV_TARGET_TRIPLE: ${{ env.TAURI_ENV_TARGET_TRIPLE }}
+        run: cargo tauri build --target $env:TAURI_ENV_TARGET_TRIPLE
+
+      - name: Collect bundle artifacts
+        id: bundle-artifacts
+        shell: pwsh
+        run: |
+          $bundleRoot = Join-Path $PWD "target/$env:TAURI_ENV_TARGET_TRIPLE/release/bundle"
+          if (-not (Test-Path $bundleRoot)) {
+            throw "bundle directory not found: $bundleRoot"
+          }
+
+          $artifacts = Get-ChildItem -Path $bundleRoot -Recurse -File |
+            Where-Object {
+              $_.Extension -in @(
+                '.msi',
+                '.exe',
+                '.dmg',
+                '.appimage',
+                '.deb',
+                '.rpm',
+                '.gz',
+                '.sig',
+                '.zip'
+              ) -or $_.Name -like '*.AppImage'
+            } |
+            Select-Object -ExpandProperty FullName
+
+          if (-not $artifacts) {
+            throw "no bundle artifacts found under $bundleRoot"
+          }
+
+          "files<<EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $artifacts | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "AstrCode ${{ github.ref_name }}"
-          releaseDraft: false
+          tag_name: ${{ github.ref_name }}
+          name: AstrCode ${{ github.ref_name }}
+          draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+          files: ${{ steps.bundle-artifacts.outputs.files }}

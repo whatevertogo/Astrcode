@@ -4,9 +4,11 @@
 )]
 
 mod commands;
+mod desktop_frontend_mode;
 mod instance;
 mod paths;
 use std::{
+    collections::HashSet,
     io::{ErrorKind, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
@@ -20,6 +22,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use astrcode_core::LocalServerInfo;
+use desktop_frontend_mode::DesktopFrontendMode;
 use instance::{DesktopInstanceCoordinator, InstanceBootstrap};
 use serde::Deserialize;
 use tauri::{Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, async_runtime};
@@ -32,6 +35,7 @@ use crate::paths::{resolve_home_dir, runtime_sidecar_dir};
 
 type SpawnedSidecarPath = Arc<Mutex<Option<PathBuf>>>;
 const DESKTOP_TARGET_TRIPLE: &str = env!("ASTRCODE_DESKTOP_TARGET_TRIPLE");
+const DESKTOP_FRONTEND_MODE_ENV: &str = env!("ASTRCODE_DESKTOP_FRONTEND_MODE");
 
 struct ServerState {
     child: Mutex<Option<CommandChild>>,
@@ -42,6 +46,21 @@ struct ServerState {
 #[derive(Debug, Deserialize)]
 struct ExistingServerRunInfoResponse {
     token: String,
+}
+
+struct DesktopBootstrap {
+    script: String,
+    server_origin: String,
+}
+
+fn desktop_diagnostics_enabled() -> bool {
+    cfg!(debug_assertions) || std::env::var_os("ASTRCODE_DESKTOP_DIAGNOSTICS").is_some()
+}
+
+fn log_desktop_diagnostic(message: impl AsRef<str>) {
+    if desktop_diagnostics_enabled() {
+        eprintln!("{}", message.as_ref());
+    }
 }
 
 fn main() {
@@ -63,12 +82,14 @@ fn run_desktop_shell() -> Result<()> {
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
             instance_for_setup.attach_app_handle(app.handle().clone());
-            let (server_state, bootstrap_script) = initialize_server(app.handle())?;
+            let (server_state, bootstrap) = initialize_server(app.handle())?;
             app.manage(server_state);
             let app_handle = app.handle().clone();
             let instance_for_window = Arc::clone(&instance_for_setup);
             std::thread::spawn(move || {
-                if let Err(error) = create_main_window(&app_handle, &bootstrap_script) {
+                if let Err(error) =
+                    create_main_window(&app_handle, &bootstrap.script, &bootstrap.server_origin)
+                {
                     eprintln!("[astrcode-window] failed to create main window: {error:#}");
                     app_handle.exit(1);
                     return;
@@ -106,16 +127,16 @@ fn run_desktop_shell() -> Result<()> {
     Ok(())
 }
 
-fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, String)> {
+fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, DesktopBootstrap)> {
     if let Some(run_info) = try_connect_existing_server()? {
-        let bootstrap_script = build_bootstrap_script(&run_info)?;
+        let bootstrap = build_bootstrap(&run_info)?;
         return Ok((
             ServerState {
                 child: Mutex::new(None),
                 shutting_down: Arc::new(AtomicBool::new(false)),
                 spawned_sidecar_path: Arc::new(Mutex::new(None)),
             },
-            bootstrap_script,
+            bootstrap,
         ));
     }
 
@@ -150,22 +171,29 @@ fn initialize_server(app_handle: &tauri::AppHandle) -> Result<(ServerState, Stri
         )
     })?;
 
-    let bootstrap_script = build_bootstrap_script(&run_info)?;
+    let bootstrap = build_bootstrap(&run_info)?;
     Ok((
         ServerState {
             child: Mutex::new(child),
             shutting_down,
             spawned_sidecar_path,
         },
-        bootstrap_script,
+        bootstrap,
     ))
 }
 
 fn create_main_window(
     app_handle: &tauri::AppHandle,
     bootstrap_script: &str,
+    server_origin: &str,
 ) -> Result<WebviewWindow> {
-    create_named_window(app_handle, "main", "index.html", bootstrap_script)
+    create_named_window(
+        app_handle,
+        "main",
+        "index.html",
+        bootstrap_script,
+        server_origin,
+    )
 }
 
 fn try_connect_existing_server() -> Result<Option<LocalServerInfo>> {
@@ -252,6 +280,7 @@ fn create_named_window(
     label: &str,
     entry_path: &str,
     bootstrap_script: &str,
+    server_origin: &str,
 ) -> Result<WebviewWindow> {
     if let Some(window) = app_handle.get_webview_window(label) {
         return Ok(window);
@@ -265,7 +294,16 @@ fn create_named_window(
         .find(|config| config.label == label)
         .cloned()
         .ok_or_else(|| anyhow!("{label} window config is missing"))?;
-    window_config.url = resolve_window_url(app_handle, entry_path, window_config.use_https_scheme)?;
+    window_config.url = resolve_window_url(
+        app_handle,
+        entry_path,
+        window_config.use_https_scheme,
+        server_origin,
+    )?;
+    log_desktop_diagnostic(format!(
+        "[astrcode-window] creating '{label}' with resolved url {:?}",
+        window_config.url
+    ));
 
     // Windows 上同步创建 WebView 和同步 `eval` 都踩过 WebView2 死锁面。
     // 这里保留初始化脚本注入，并配合 setup 里的独立线程创建窗口，避开阻塞主 UI 线程。
@@ -276,63 +314,205 @@ fn create_named_window(
         .with_context(|| format!("failed to create {label} window"))
 }
 
-fn build_bootstrap_script(run_info: &LocalServerInfo) -> Result<String> {
+fn build_bootstrap(run_info: &LocalServerInfo) -> Result<DesktopBootstrap> {
+    let server_origin = format!("http://127.0.0.1:{}", run_info.port);
     let bootstrap = serde_json::json!({
         "token": run_info.token,
         "isDesktopHost": true,
-        "serverOrigin": format!("http://127.0.0.1:{}", run_info.port),
+        "serverOrigin": server_origin,
     });
-    Ok(format!(
-        "window.__ASTRCODE_BOOTSTRAP__ = {};",
-        serde_json::to_string(&bootstrap)?
-    ))
+    Ok(DesktopBootstrap {
+        script: format!(
+            "window.__ASTRCODE_BOOTSTRAP__ = {};",
+            serde_json::to_string(&bootstrap)?
+        ),
+        server_origin,
+    })
 }
 
 fn resolve_window_url(
     app_handle: &tauri::AppHandle,
     entry_path: &str,
     use_https_scheme: bool,
+    server_origin: &str,
 ) -> Result<WebviewUrl> {
-    if !cfg!(dev) {
-        // 生产构建必须回到 Tauri 的资源型 URL。这里让框架自己解析内嵌资源，
-        // 避免我们把资源地址硬编码成 http(s)://tauri.localhost/index.html 后，
-        // 再次绕开官方的 app asset 解析路径，导致桌面端报 asset not found。
-        return Ok(WebviewUrl::App(entry_path.into()));
+    let launch_mode = frontend_launch_mode();
+    log_desktop_diagnostic(format!(
+        "[astrcode-window] resolving '{}' with launch mode {:?}",
+        entry_path, launch_mode
+    ));
+
+    match launch_mode {
+        DesktopFrontendMode::Packaged => {
+            resolve_packaged_window_url(app_handle, entry_path, use_https_scheme)
+        },
+        DesktopFrontendMode::PlainCargo => {
+            resolve_plain_cargo_window_url(app_handle, entry_path, use_https_scheme, server_origin)
+        },
+        DesktopFrontendMode::TauriDevCli => {
+            let Some(dev_url) = app_handle.config().build.dev_url.as_ref() else {
+                return resolve_packaged_window_url(app_handle, entry_path, use_https_scheme);
+            };
+
+            if wait_for_dev_server(dev_url) {
+                let url = if entry_path == "index.html" {
+                    dev_url.clone()
+                } else {
+                    dev_url
+                        .join(entry_path)
+                        .with_context(|| format!("failed to resolve dev url for '{entry_path}'"))?
+                };
+                log_desktop_diagnostic(format!(
+                    "[astrcode-window] using Vite dev server for '{}': {}",
+                    entry_path, url
+                ));
+                return Ok(WebviewUrl::External(url));
+            }
+
+            if server_frontend_is_available(server_origin) {
+                log_desktop_diagnostic(format!(
+                    "[astrcode-window] Vite dev server at {} is not reachable; falling back to \
+                     local astrcode-server frontend at {}.",
+                    dev_url, server_origin
+                ));
+                return external_server_frontend_url(server_origin, entry_path);
+            }
+
+            if embedded_frontend_is_available(app_handle, entry_path, use_https_scheme) {
+                log_desktop_diagnostic(format!(
+                    "[astrcode-window] Vite dev server at {} is not reachable; falling back to \
+                     bundled frontend resources.",
+                    dev_url
+                ));
+                return explicit_embedded_frontend_url(use_https_scheme, entry_path);
+            }
+
+            frontend_unavailable_error_url(build_vite_unreachable_error_page(dev_url, entry_path))
+        },
+    }
+}
+
+fn resolve_packaged_window_url(
+    app_handle: &tauri::AppHandle,
+    entry_path: &str,
+    use_https_scheme: bool,
+) -> Result<WebviewUrl> {
+    if embedded_frontend_is_available(app_handle, entry_path, use_https_scheme) {
+        log_desktop_diagnostic(format!(
+            "[astrcode-window] packaged build detected, using embedded frontend for '{}'",
+            entry_path
+        ));
+        return packaged_embedded_frontend_url(entry_path);
     }
 
-    let Some(dev_url) = app_handle.config().build.dev_url.as_ref() else {
+    frontend_unavailable_error_url(build_packaged_frontend_missing_error_page(entry_path))
+}
+
+fn resolve_plain_cargo_window_url(
+    app_handle: &tauri::AppHandle,
+    entry_path: &str,
+    use_https_scheme: bool,
+    server_origin: &str,
+) -> Result<WebviewUrl> {
+    if server_frontend_is_available(server_origin) {
+        log_desktop_diagnostic(format!(
+            "[astrcode-window] plain cargo build detected; using local astrcode-server frontend \
+             at {}.",
+            server_origin
+        ));
+        return external_server_frontend_url(server_origin, entry_path);
+    }
+
+    if embedded_frontend_is_available(app_handle, entry_path, use_https_scheme) {
+        log_desktop_diagnostic(
+            "[astrcode-window] plain cargo build could not confirm server frontend; falling back \
+             to bundled frontend resources.",
+        );
         return explicit_embedded_frontend_url(use_https_scheme, entry_path);
-    };
-
-    // 开发环境优先直连 Vite，这样 `cargo tauri dev` 仍保留 HMR。
-    // `beforeDevCommand` 会先编译 sidecar 再启动 Vite，
-    // 所以这里需要重试等待 Vite 就绪，避免 fallback 到不可用的 asset URL。
-    if wait_for_dev_server(dev_url) {
-        let url = if entry_path == "index.html" {
-            dev_url.clone()
-        } else {
-            dev_url
-                .join(entry_path)
-                .with_context(|| format!("failed to resolve dev url for '{entry_path}'"))?
-        };
-        return Ok(WebviewUrl::External(url));
     }
 
-    // Vite 未能在规定时间内启动。
-    // 在 Tauri dev 模式下，`App("index.html")` 的基址会被解释为 `devUrl`，
-    // 所以这里不用 asset fallback，而是返回一个明确错误提示的 data URI 页面。
-    eprintln!(
-        "[astrcode-window] Vite dev server at {} is not reachable after retries. Check frontend \
-         build output for errors.",
-        dev_url
-    );
-    let error_page_html = build_vite_unreachable_error_page(dev_url, entry_path);
+    frontend_unavailable_error_url(build_frontend_unavailable_error_page(
+        "普通 cargo 构建不会自动拉起 Vite dev server。",
+        Some(server_origin),
+    ))
+}
+
+fn external_server_frontend_url(server_origin: &str, entry_path: &str) -> Result<WebviewUrl> {
+    let trimmed_origin = server_origin.trim_end_matches('/');
+    let path = if entry_path == "index.html" {
+        format!("{trimmed_origin}/")
+    } else {
+        format!("{trimmed_origin}/{}", entry_path.trim_start_matches('/'))
+    };
+    let url = Url::parse(&path)
+        .with_context(|| format!("failed to build server frontend url '{path}'"))?;
+    Ok(WebviewUrl::External(url))
+}
+
+fn frontend_unavailable_error_url(html: String) -> Result<WebviewUrl> {
     let error_uri = format!(
         "data:text/html;charset=utf-8,{}",
-        error_page_html.replace('%', "%25").replace('#', "%23")
+        html.replace('%', "%25").replace('#', "%23")
     );
     let url = Url::parse(&error_uri).with_context(|| "failed to build error page url")?;
     Ok(WebviewUrl::External(url))
+}
+
+fn server_frontend_is_available(server_origin: &str) -> bool {
+    let Ok(url) = Url::parse(server_origin) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let Some(port) = url.port_or_known_default() else {
+        return false;
+    };
+
+    let Ok(mut stream) = connect_host_with_timeout(host, port, Duration::from_millis(100)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
+
+    if stream
+        .write_all(b"GET /index.html HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+
+    let mut buffer = [0_u8; 64];
+    match stream.read(&mut buffer) {
+        Ok(0) => false,
+        Ok(read) => {
+            let response_head = String::from_utf8_lossy(&buffer[..read]);
+            response_head.starts_with("HTTP/1.1 200") || response_head.starts_with("HTTP/1.0 200")
+        },
+        Err(_) => false,
+    }
+}
+
+fn frontend_launch_mode() -> DesktopFrontendMode {
+    desktop_frontend_mode::DesktopFrontendMode::parse(DESKTOP_FRONTEND_MODE_ENV)
+        .expect("desktop frontend mode should be injected by build.rs")
+}
+
+fn packaged_embedded_frontend_url(entry_path: &str) -> Result<WebviewUrl> {
+    // 打包产物必须回到 Tauri 官方的资源型 URL。这里不再混入 debug/release 猜测，
+    // 只允许 packaged 模式使用 `WebviewUrl::App`，避免 plain-cargo 误连到 devUrl。
+    Ok(WebviewUrl::App(entry_path.into()))
+}
+
+fn embedded_frontend_is_available(
+    app_handle: &tauri::AppHandle,
+    entry_path: &str,
+    use_https_scheme: bool,
+) -> bool {
+    app_handle
+        .asset_resolver()
+        .get_for_scheme(entry_path.to_string(), use_https_scheme)
+        .is_some()
 }
 
 /// 等待 Vite 开发服务器就绪，最多重试数秒。
@@ -345,10 +525,10 @@ fn wait_for_dev_server(dev_url: &Url) -> bool {
     // 每次重试间隔 500ms，最多等待 20 秒。
     for i in 1..=40 {
         std::thread::sleep(Duration::from_millis(500));
-        eprintln!(
+        log_desktop_diagnostic(format!(
             "[astrcode-window] waiting for Vite dev server at {}... ({}/40)",
             dev_url, i
-        );
+        ));
         if dev_server_is_reachable(dev_url) {
             return true;
         }
@@ -387,6 +567,65 @@ fn build_vite_unreachable_error_page(dev_url: &Url, entry_path: &str) -> String 
     )
 }
 
+fn build_frontend_unavailable_error_page(reason: &str, server_origin: Option<&str>) -> String {
+    let server_hint = server_origin
+        .map(|origin| {
+            format!(
+                "<p>已尝试使用本地服务前端：<code>{origin}/index.html</code>，但当前不可用。</p>"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>AstrCode – 前端未就绪</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; padding: 3rem; max-width: 640px; margin: 0 auto; background: #1a1a2e; color: #eee; }}
+  h1 {{ color: #e05555; }}
+  code {{ background: #2d2d44; padding: 0.2em 0.5em; border-radius: 4px; }}
+  pre {{ background: #16162a; color: #c8c8d8; padding: 1rem; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }}
+</style></head>
+<body>
+  <h1>⚠️ AstrCode 前端不可用</h1>
+  <p>{reason}</p>
+  {server_hint}
+  <p>建议操作：</p>
+  <ol>
+    <li>开发模式使用 <code>cargo tauri dev</code></li>
+    <li>打包模式使用 <code>cargo tauri build</code></li>
+    <li>若只运行普通 <code>cargo build</code> 产物，请确认本地 <code>frontend/dist</code> 已构建且 sidecar server 可访问</li>
+  </ol>
+</body>
+</html>"#
+    )
+}
+
+fn build_packaged_frontend_missing_error_page(entry_path: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>AstrCode – 打包资源缺失</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; padding: 3rem; max-width: 640px; margin: 0 auto; background: #1a1a2e; color: #eee; }}
+  h1 {{ color: #e05555; }}
+  code {{ background: #2d2d44; padding: 0.2em 0.5em; border-radius: 4px; }}
+  pre {{ background: #16162a; color: #c8c8d8; padding: 1rem; border-radius: 8px; overflow-x: auto; font-size: 0.9em; }}
+</style></head>
+<body>
+  <h1>⚠️ AstrCode 打包前端资源缺失</h1>
+  <p>桌面端已进入 packaged 模式，但内嵌资源里找不到 <code>{entry_path}</code>。</p>
+  <p>这通常表示当前可执行文件不是由 <code>cargo tauri build</code> 产出，或者安装包/资源目录已损坏。</p>
+  <p>建议操作：</p>
+  <ol>
+    <li>重新执行 <code>cargo tauri build</code></li>
+    <li>如果使用安装包，请重新安装完整产物，不要单独拷贝 exe</li>
+    <li>若只想直接运行构建产物，请改用 <code>cargo build</code> 或 <code>cargo build --release</code></li>
+  </ol>
+</body>
+</html>"#
+    )
+}
+
 fn explicit_embedded_frontend_url(use_https_scheme: bool, entry_path: &str) -> Result<WebviewUrl> {
     let scheme = if cfg!(windows) || cfg!(target_os = "android") {
         if use_https_scheme {
@@ -408,7 +647,7 @@ fn spawn_server_process(
     spawned_sidecar_path: SpawnedSidecarPath,
 ) -> Result<(CommandChild, Receiver<Result<LocalServerInfo>>)> {
     let (ready_tx, ready_rx) = sync_channel(1);
-    let detached_sidecar_path = prepare_detached_sidecar_copy()?;
+    let detached_sidecar_path = prepare_detached_sidecar_copy(app_handle)?;
     let sidecar = app_handle
         .shell()
         .command(&detached_sidecar_path)
@@ -562,8 +801,8 @@ fn dev_server_is_reachable(dev_url: &Url) -> bool {
     }
 }
 
-fn prepare_detached_sidecar_copy() -> Result<PathBuf> {
-    let source_path = resolve_packaged_sidecar_path()?;
+fn prepare_detached_sidecar_copy(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
+    let source_path = resolve_packaged_sidecar_path(app_handle)?;
     let sidecar_dir = runtime_sidecar_dir()?;
     std::fs::create_dir_all(&sidecar_dir).with_context(|| {
         format!(
@@ -587,7 +826,7 @@ fn prepare_detached_sidecar_copy() -> Result<PathBuf> {
     Ok(target_path)
 }
 
-fn resolve_packaged_sidecar_path() -> Result<PathBuf> {
+fn resolve_packaged_sidecar_path(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
     let current_exe =
         std::env::current_exe().context("failed to resolve current desktop executable")?;
     let exe_dir = current_exe
@@ -599,9 +838,12 @@ fn resolve_packaged_sidecar_path() -> Result<PathBuf> {
         exe_dir
     };
 
-    let packaged_path = base_dir.join(packaged_sidecar_file_name());
-    if packaged_path.is_file() {
-        return Ok(packaged_path);
+    for root in packaged_sidecar_search_roots(app_handle, base_dir) {
+        for candidate in packaged_sidecar_candidate_paths(&root) {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
     }
 
     if let Some(dev_path) = resolve_development_sidecar_path(base_dir) {
@@ -610,11 +852,54 @@ fn resolve_packaged_sidecar_path() -> Result<PathBuf> {
         }
     }
 
+    let searched_roots = packaged_sidecar_search_roots(app_handle, base_dir)
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let candidate_names = packaged_sidecar_candidate_file_names().join(", ");
     Err(anyhow!(
-        "desktop sidecar was not found next to '{}' or under the development target triple '{}'",
+        "desktop sidecar was not found for '{}'; searched roots [{}] with candidates [{}], then \
+         checked development target triple '{}'",
         current_exe.display(),
-        DESKTOP_TARGET_TRIPLE
+        searched_roots,
+        candidate_names,
+        DESKTOP_TARGET_TRIPLE,
     ))
+}
+
+fn packaged_sidecar_search_roots(app_handle: &tauri::AppHandle, base_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut push_root = |path: PathBuf| {
+        if seen.insert(path.clone()) {
+            roots.push(path);
+        }
+    };
+
+    push_root(base_dir.to_path_buf());
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        push_root(resource_dir);
+    }
+
+    roots
+}
+
+fn packaged_sidecar_candidate_paths(root: &Path) -> Vec<PathBuf> {
+    packaged_sidecar_candidate_file_names()
+        .into_iter()
+        .map(|name| root.join(name))
+        .collect()
+}
+
+fn packaged_sidecar_candidate_file_names() -> Vec<String> {
+    let mut candidates = vec![packaged_sidecar_file_name().to_string()];
+    let target_specific = targeted_packaged_sidecar_file_name();
+    if target_specific != candidates[0] {
+        candidates.push(target_specific);
+    }
+    candidates
 }
 
 fn resolve_development_sidecar_path(base_dir: &Path) -> Option<PathBuf> {
@@ -640,6 +925,14 @@ fn packaged_sidecar_file_name() -> &'static str {
         "astrcode-server.exe"
     } else {
         "astrcode-server"
+    }
+}
+
+fn targeted_packaged_sidecar_file_name() -> String {
+    if cfg!(windows) {
+        format!("astrcode-server-{DESKTOP_TARGET_TRIPLE}.exe")
+    } else {
+        format!("astrcode-server-{DESKTOP_TARGET_TRIPLE}")
     }
 }
 
@@ -852,9 +1145,11 @@ mod tests {
     use tauri::WebviewUrl;
 
     use super::{
-        DESKTOP_TARGET_TRIPLE, explicit_embedded_frontend_url, packaged_sidecar_file_name,
-        resolve_development_sidecar_path,
+        DESKTOP_TARGET_TRIPLE, explicit_embedded_frontend_url, packaged_embedded_frontend_url,
+        packaged_sidecar_candidate_paths, packaged_sidecar_file_name,
+        resolve_development_sidecar_path, targeted_packaged_sidecar_file_name,
     };
+    use crate::desktop_frontend_mode::DesktopFrontendMode;
 
     #[test]
     fn development_sidecar_path_matches_tauri_target_layout() {
@@ -875,6 +1170,15 @@ mod tests {
     }
 
     #[test]
+    fn packaged_sidecar_candidates_cover_plain_and_target_specific_names() {
+        let root = Path::new(r"D:\repo\bundle");
+        let candidates = packaged_sidecar_candidate_paths(root);
+
+        assert_eq!(candidates[0], root.join(packaged_sidecar_file_name()));
+        assert!(candidates.contains(&root.join(targeted_packaged_sidecar_file_name())));
+    }
+
+    #[test]
     fn explicit_embedded_frontend_url_builds_expected_dev_fallback_url() {
         let url = explicit_embedded_frontend_url(false, "index.html")
             .expect("embedded frontend url should build");
@@ -892,12 +1196,45 @@ mod tests {
     }
 
     #[test]
-    fn production_embedded_frontend_should_use_app_url() {
-        let url = WebviewUrl::App("index.html".into());
+    fn packaged_embedded_frontend_should_use_app_url() {
+        let url = packaged_embedded_frontend_url("index.html")
+            .expect("packaged frontend url should build");
 
         match url {
             WebviewUrl::App(path) => assert_eq!(path.to_string_lossy(), "index.html"),
             other => panic!("expected resource app url, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn plain_cargo_builds_do_not_enter_tauri_dev_mode() {
+        assert_eq!(
+            DesktopFrontendMode::parse("plain-cargo"),
+            Ok(DesktopFrontendMode::PlainCargo)
+        );
+        assert_eq!(
+            DesktopFrontendMode::resolve(false, true),
+            DesktopFrontendMode::PlainCargo
+        );
+    }
+
+    #[test]
+    fn tauri_cli_builds_select_expected_frontend_modes() {
+        assert_eq!(
+            DesktopFrontendMode::parse("tauri-dev-cli"),
+            Ok(DesktopFrontendMode::TauriDevCli)
+        );
+        assert_eq!(
+            DesktopFrontendMode::resolve(true, true),
+            DesktopFrontendMode::TauriDevCli
+        );
+        assert_eq!(
+            DesktopFrontendMode::parse("packaged"),
+            Ok(DesktopFrontendMode::Packaged)
+        );
+        assert_eq!(
+            DesktopFrontendMode::resolve(true, false),
+            DesktopFrontendMode::Packaged
+        );
     }
 }

@@ -359,8 +359,15 @@ function projectConversationMessages(
   options?: { includeInlineChildSummaries?: boolean }
 ): Message[] {
   const messages: Message[] = [];
-  const reasoningByTurn = new Map<string, string>();
-  const thinkingTurnIds = new Set<string>();
+  const queuedThinkingByTurn = new Map<
+    string,
+    Array<{
+      id: string;
+      markdown: string;
+      streaming: boolean;
+      timestamp: number;
+    }>
+  >();
   const inlineChildSessions = new Set<string>();
 
   state.blocks.forEach((block, index) => {
@@ -384,36 +391,53 @@ function projectConversationMessages(
 
       case 'thinking': {
         const markdown = pickString(block, 'markdown') ?? '';
+        const streaming = pickString(block, 'status') === 'streaming';
         if (turnId) {
-          reasoningByTurn.set(turnId, markdown);
-          thinkingTurnIds.add(turnId);
+          const queue = queuedThinkingByTurn.get(turnId) ?? [];
+          queue.push({
+            id: `conversation-thinking:${id}`,
+            markdown,
+            streaming,
+            timestamp: index,
+          });
+          queuedThinkingByTurn.set(turnId, queue);
+          return;
         }
-        // TODO(conversation-stream): 如果后端后续把 thinking 升级为一级流事件契约，
-        // 这里应直接映射成专用 message kind，而不是继续借 assistant message 承载。
+
         messages.push({
           id: `conversation-thinking:${id}`,
           kind: 'assistant',
           turnId,
           text: '',
           reasoningText: markdown,
-          streaming: pickString(block, 'status') === 'streaming',
+          streaming,
           timestamp: index,
         });
         return;
       }
 
-      case 'assistant':
+      case 'assistant': {
+        const queuedThinking =
+          turnId !== null && turnId !== undefined ? queuedThinkingByTurn.get(turnId)?.shift() : undefined;
+        if (
+          turnId !== null &&
+          turnId !== undefined &&
+          queuedThinkingByTurn.get(turnId)?.length === 0
+        ) {
+          queuedThinkingByTurn.delete(turnId);
+        }
         messages.push({
-          id: `conversation-assistant:${id}`,
+          id: queuedThinking?.id ?? `conversation-assistant:${id}`,
           kind: 'assistant',
           turnId,
           text: pickString(block, 'markdown') ?? '',
-          reasoningText:
-            turnId && !thinkingTurnIds.has(turnId) ? reasoningByTurn.get(turnId) : undefined,
-          streaming: pickString(block, 'status') === 'streaming',
-          timestamp: index,
+          reasoningText: queuedThinking?.markdown,
+          streaming:
+            pickString(block, 'status') === 'streaming' || queuedThinking?.streaming === true,
+          timestamp: queuedThinking?.timestamp ?? index,
         });
         return;
+      }
 
       case 'plan': {
         const blockers = asRecord(block.blockers);
@@ -571,6 +595,22 @@ function projectConversationMessages(
         return;
     }
   });
+
+  for (const [turnId, queuedThinking] of queuedThinkingByTurn.entries()) {
+    for (const thinking of queuedThinking) {
+      messages.push({
+        id: thinking.id,
+        kind: 'assistant',
+        turnId,
+        text: '',
+        reasoningText: thinking.markdown,
+        streaming: thinking.streaming,
+        timestamp: thinking.timestamp,
+      });
+    }
+  }
+
+  messages.sort((left, right) => left.timestamp - right.timestamp);
 
   if (options?.includeInlineChildSummaries !== false) {
     state.childSummaries.forEach((summary, index) => {

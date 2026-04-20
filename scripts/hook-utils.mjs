@@ -7,32 +7,63 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 export const repoRoot = resolve(scriptDir, '..');
 export const isWindows = process.platform === 'win32';
 export const textDecoder = new TextDecoder('utf8');
+const windowsShellCommands = new Set(['npm', 'npx', 'npm.cmd', 'npx.cmd']);
+
+function escapeCmdArgument(argument) {
+  if (argument.length === 0) {
+    return '""';
+  }
+
+  const escaped = argument
+    .replace(/\^/gu, '^^')
+    .replace(/"/gu, '^"')
+    .replace(/([&|<>()!])/gu, '^$1');
+
+  if (/[\s&|<>()!"^]/u.test(argument)) {
+    return `"${escaped}"`;
+  }
+
+  return escaped;
+}
+
+function buildExecution(command, args) {
+  if (!isWindows || !windowsShellCommands.has(command)) {
+    return { file: command, args };
+  }
+
+  const comspec = process.env.ComSpec ?? 'cmd.exe';
+  const cmdCommand = [command, ...args].map(escapeCmdArgument).join(' ');
+  return {
+    file: comspec,
+    args: ['/d', '/s', '/c', cmdCommand],
+  };
+}
 
 export function run(command, args, options = {}) {
-  return execFileSync(command, args, {
+  const execution = buildExecution(command, args);
+  return execFileSync(execution.file, execution.args, {
     cwd: repoRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    shell: isWindows,
     ...options,
   }).trim();
 }
 
 export function runBuffer(command, args, options = {}) {
-  return execFileSync(command, args, {
+  const execution = buildExecution(command, args);
+  return execFileSync(execution.file, execution.args, {
     cwd: repoRoot,
     encoding: null,
     stdio: ['ignore', 'pipe', 'pipe'],
-    shell: isWindows,
     ...options,
   });
 }
 
 export function runWithInheritedOutput(command, args, options = {}) {
-  execFileSync(command, args, {
+  const execution = buildExecution(command, args);
+  execFileSync(execution.file, execution.args, {
     cwd: repoRoot,
     stdio: 'inherit',
-    shell: isWindows,
     ...options,
   });
 }

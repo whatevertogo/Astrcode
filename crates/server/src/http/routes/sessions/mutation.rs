@@ -11,8 +11,10 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    ApiError, AppState, auth::require_auth, mapper::to_session_list_item,
-    routes::sessions::validate_session_path_id,
+    ApiError, AppState,
+    auth::require_auth,
+    mapper::to_session_list_item,
+    routes::sessions::{validate_session_path_id, validate_working_dir},
 };
 
 #[derive(Debug, Deserialize)]
@@ -194,9 +196,10 @@ pub(crate) async fn delete_project(
     Query(query): Query<DeleteProjectQuery>,
 ) -> Result<Json<DeleteProjectResultDto>, ApiError> {
     require_auth(&state, &headers, None)?;
+    let working_dir = validate_working_dir(&query.working_dir)?;
     let result = state
         .app
-        .delete_project(&query.working_dir)
+        .delete_project(&working_dir)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(result))

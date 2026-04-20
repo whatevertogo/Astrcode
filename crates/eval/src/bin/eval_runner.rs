@@ -58,23 +58,24 @@ async fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let mut config = EvalRunnerConfig::default();
-    config.server_url = args
-        .server_url
-        .ok_or_else(|| "缺少必填参数 --server-url".to_string())?;
-    config.session_storage_root = args
-        .session_storage_root
-        .ok_or_else(|| "缺少必填参数 --session-storage-root".to_string())?;
-    config.task_set = args
-        .task_set
-        .ok_or_else(|| "缺少必填参数 --task-set".to_string())?;
-    config.workspace_root = None;
-    config.baseline = args.baseline;
-    config.concurrency = args.concurrency.unwrap_or(1);
-    config.keep_workspace = args.keep_workspace;
-    config.output = args.output;
-    config.timeout = Duration::from_secs(300);
-    config.poll_interval = Duration::from_millis(500);
+    let config = EvalRunnerConfig {
+        server_url: args
+            .server_url
+            .ok_or_else(|| "缺少必填参数 --server-url".to_string())?,
+        session_storage_root: args
+            .session_storage_root
+            .ok_or_else(|| "缺少必填参数 --session-storage-root".to_string())?,
+        task_set: args
+            .task_set
+            .ok_or_else(|| "缺少必填参数 --task-set".to_string())?,
+        baseline: args.baseline,
+        concurrency: args.concurrency.unwrap_or(1),
+        keep_workspace: args.keep_workspace,
+        output: args.output,
+        timeout: Duration::from_secs(300),
+        poll_interval: Duration::from_millis(500),
+        ..EvalRunnerConfig::default()
+    };
 
     let output_path = config.output.clone();
     let report = EvalRunner::run(config)

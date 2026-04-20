@@ -36,6 +36,7 @@ deny = [
       "astrcode-cli",
       "astrcode-client",
       "astrcode-core",
+      "astrcode-eval",
       "astrcode-kernel",
       "astrcode-example-plugin",
       "astrcode-plugin",

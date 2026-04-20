@@ -15,7 +15,7 @@ const baseControl = {
 };
 
 describe('projectConversationState', () => {
-  it('keeps thinking blocks visible even when the same turn also has assistant output', () => {
+  it('merges same-turn thinking blocks into the following assistant message', () => {
     const state: ConversationSnapshotState = {
       cursor: 'cursor-1',
       phase: 'streaming',
@@ -41,19 +41,41 @@ describe('projectConversationState', () => {
 
     const projection = projectConversationState(state);
 
-    expect(projection.messages).toHaveLength(2);
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]).toMatchObject({
+      kind: 'assistant',
+      turnId: 'turn-1',
+      text: '这是答案。',
+      reasoningText: '先分析问题，再给结论。',
+      streaming: true,
+    });
+  });
+
+  it('keeps orphan thinking blocks visible when no assistant block follows', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-thinking-only',
+      phase: 'thinking',
+      blocks: [
+        {
+          id: 'thinking-1',
+          kind: 'thinking',
+          turnId: 'turn-1',
+          markdown: '先分析问题，再给结论。',
+          status: 'streaming',
+        },
+      ],
+      control: { ...baseControl, phase: 'thinking' as const },
+      childSummaries: [],
+    };
+
+    const projection = projectConversationState(state);
+
+    expect(projection.messages).toHaveLength(1);
     expect(projection.messages[0]).toMatchObject({
       kind: 'assistant',
       turnId: 'turn-1',
       text: '',
       reasoningText: '先分析问题，再给结论。',
-      streaming: true,
-    });
-    expect(projection.messages[1]).toMatchObject({
-      kind: 'assistant',
-      turnId: 'turn-1',
-      text: '这是答案。',
-      reasoningText: undefined,
       streaming: true,
     });
   });

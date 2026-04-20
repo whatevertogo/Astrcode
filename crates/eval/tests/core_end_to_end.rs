@@ -188,11 +188,13 @@ fn append_turn_events(log_path: &Path, turn_id: &str, prompt: &str, working_dir:
             next_seq,
             turn_id,
             &agent,
-            "call-read",
-            "Read",
-            &output,
-            true,
-            12,
+            ToolResultEventArgs {
+                tool_call_id: "call-read",
+                tool_name: "Read",
+                output: &output,
+                success: true,
+                duration_ms: 12,
+            },
         ));
         next_seq += 1;
         events.push(StoredEvent {
@@ -227,11 +229,13 @@ fn append_turn_events(log_path: &Path, turn_id: &str, prompt: &str, working_dir:
             next_seq,
             turn_id,
             &agent,
-            "call-read",
-            "Read",
-            &original,
-            true,
-            10,
+            ToolResultEventArgs {
+                tool_call_id: "call-read",
+                tool_name: "Read",
+                output: &original,
+                success: true,
+                duration_ms: 10,
+            },
         ));
         next_seq += 1;
         events.push(tool_call_event(
@@ -249,11 +253,13 @@ fn append_turn_events(log_path: &Path, turn_id: &str, prompt: &str, working_dir:
             next_seq,
             turn_id,
             &agent,
-            "call-edit",
-            "Edit",
-            &updated,
-            true,
-            18,
+            ToolResultEventArgs {
+                tool_call_id: "call-edit",
+                tool_name: "Edit",
+                output: &updated,
+                success: true,
+                duration_ms: 18,
+            },
         ));
         next_seq += 1;
         events.push(StoredEvent {
@@ -285,11 +291,13 @@ fn append_turn_events(log_path: &Path, turn_id: &str, prompt: &str, working_dir:
             next_seq,
             turn_id,
             &agent,
-            "call-read",
-            "Read",
-            &plan,
-            true,
-            9,
+            ToolResultEventArgs {
+                tool_call_id: "call-read",
+                tool_name: "Read",
+                output: &plan,
+                success: true,
+                duration_ms: 9,
+            },
         ));
         next_seq += 1;
         events.push(tool_call_event(
@@ -307,11 +315,13 @@ fn append_turn_events(log_path: &Path, turn_id: &str, prompt: &str, working_dir:
             next_seq,
             turn_id,
             &agent,
-            "call-edit",
-            "Edit",
-            &updated,
-            true,
-            14,
+            ToolResultEventArgs {
+                tool_call_id: "call-edit",
+                tool_name: "Edit",
+                output: &updated,
+                success: true,
+                duration_ms: 14,
+            },
         ));
         next_seq += 1;
         events.push(StoredEvent {
@@ -367,15 +377,19 @@ fn tool_call_event(
     }
 }
 
+struct ToolResultEventArgs<'a> {
+    tool_call_id: &'a str,
+    tool_name: &'a str,
+    output: &'a str,
+    success: bool,
+    duration_ms: u64,
+}
+
 fn tool_result_event(
     storage_seq: u64,
     turn_id: &str,
     agent: &AgentEventContext,
-    tool_call_id: &str,
-    tool_name: &str,
-    output: &str,
-    success: bool,
-    duration_ms: u64,
+    args: ToolResultEventArgs<'_>,
 ) -> StoredEvent {
     StoredEvent {
         storage_seq,
@@ -383,14 +397,14 @@ fn tool_result_event(
             turn_id: Some(turn_id.to_string()),
             agent: agent.clone(),
             payload: StorageEventPayload::ToolResult {
-                tool_call_id: tool_call_id.to_string(),
-                tool_name: tool_name.to_string(),
-                output: output.to_string(),
-                success,
+                tool_call_id: args.tool_call_id.to_string(),
+                tool_name: args.tool_name.to_string(),
+                output: args.output.to_string(),
+                success: args.success,
                 error: None,
                 metadata: None,
                 continuation: None,
-                duration_ms,
+                duration_ms: args.duration_ms,
             },
         },
     }
@@ -402,8 +416,7 @@ fn read_last_storage_seq(log_path: &Path) -> u64 {
         .and_then(|content| {
             content
                 .lines()
-                .filter(|line| !line.trim().is_empty())
-                .last()
+                .rfind(|line| !line.trim().is_empty())
                 .and_then(|line| serde_json::from_str::<StoredEvent>(line).ok())
                 .map(|event| event.storage_seq)
         })
