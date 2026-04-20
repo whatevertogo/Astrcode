@@ -14,7 +14,8 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentEvent, AgentEventContext, AstrError, CancelToken, LlmEvent, LlmRequest, Result,
+    AgentEvent, AgentEventContext, AstrError, CancelToken, LlmEvent, LlmOutput, LlmRequest,
+    ReasoningContent, Result,
 };
 use astrcode_kernel::{KernelError, KernelGateway};
 use tokio::sync::mpsc;
@@ -31,7 +32,7 @@ pub(crate) struct StreamedToolCallDelta {
 
 pub(crate) type ToolCallDeltaSink = Arc<dyn Fn(StreamedToolCallDelta) + Send + Sync>;
 
-/// 调用 LLM 并收集流式 delta 为 StorageEvent。
+/// 调用 LLM，并把流式 thinking 片段回填到最终 `LlmOutput.reasoning`。
 ///
 /// LLM 完成前推送的最后几个 delta 可能还在 channel 缓冲中，
 /// 因此在 LLM 返回后还需 `try_recv()` 排空残余事件。
@@ -54,12 +55,22 @@ pub async fn call_llm_streaming(
     tokio::pin!(generate_future);
 
     let mut event_rx_open = true;
+    let mut thinking_deltas = Vec::new();
+    let mut thinking_signature = None;
     let output = loop {
         tokio::select! {
             result = &mut generate_future => break result,
             maybe_event = event_rx.recv(), if event_rx_open => {
                 match maybe_event {
-                    Some(event) => emit_llm_delta_live(event, turn_id, agent, session_state, tool_delta_sink.as_ref()),
+                    Some(event) => emit_llm_delta_live(
+                        event,
+                        turn_id,
+                        agent,
+                        session_state,
+                        tool_delta_sink.as_ref(),
+                        &mut thinking_deltas,
+                        &mut thinking_signature,
+                    ),
                     None => event_rx_open = false,
                 }
             }
@@ -78,23 +89,50 @@ pub async fn call_llm_streaming(
             agent,
             session_state,
             tool_delta_sink.as_ref(),
+            &mut thinking_deltas,
+            &mut thinking_signature,
         );
     }
 
-    output.map_err(map_kernel_error)
+    let mut output = output.map_err(map_kernel_error)?;
+    hydrate_reasoning_from_stream(&mut output, &thinking_deltas, thinking_signature.as_deref());
+
+    Ok(output)
 }
 
-/// 将 LLM 流式增量直接发到 live-only 广播通道。
+fn hydrate_reasoning_from_stream(
+    output: &mut LlmOutput,
+    thinking_deltas: &[String],
+    thinking_signature: Option<&str>,
+) {
+    if output.reasoning.is_none() && !thinking_deltas.is_empty() {
+        output.reasoning = Some(ReasoningContent {
+            content: thinking_deltas.concat(),
+            signature: thinking_signature.map(ToString::to_string),
+        });
+        return;
+    }
+
+    if let Some(reasoning) = output.reasoning.as_mut() {
+        if reasoning.signature.is_none() {
+            reasoning.signature = thinking_signature.map(ToString::to_string);
+        }
+    }
+}
+
+/// 将 LLM 流式增量发到 live 广播，并收集 thinking 片段用于最终 output 回填。
 ///
-/// 为什么不再把 token 级 delta 塞进 turn 结束后的 durable 批量事件：
-/// 旧实现会等整轮 run_turn 完成后才 append，导致前端只能在结束时一次性看到全文。
-/// live delta 负责“即时吐字”，durable 真相继续由 AssistantFinal / TurnDone 承担。
+/// Why:
+/// - live 广播负责“即时吐字”，避免前端只能在 turn 结束后一次性看到内容
+/// - durable 真相只保留 `AssistantFinal.reasoning_content`，因此这里需要兜底补齐
 fn emit_llm_delta_live(
     event: LlmEvent,
     turn_id: &str,
     agent: &AgentEventContext,
     session_state: &SessionState,
     tool_delta_sink: Option<&ToolCallDeltaSink>,
+    thinking_deltas: &mut Vec<String>,
+    thinking_signature: &mut Option<String>,
 ) {
     match event {
         LlmEvent::TextDelta(text) => {
@@ -105,6 +143,7 @@ fn emit_llm_delta_live(
             });
         },
         LlmEvent::ThinkingDelta(text) => {
+            thinking_deltas.push(text.clone());
             session_state.broadcast_live_event(AgentEvent::ThinkingDelta {
                 turn_id: turn_id.to_string(),
                 agent: agent.clone(),
@@ -126,8 +165,11 @@ fn emit_llm_delta_live(
                 });
             }
         },
-        // ThinkingSignature 是 Anthropic API 计费验证令牌，不需要对 live UI 或 runner 暴露。
-        LlmEvent::ThinkingSignature(_) => {},
+        // ThinkingSignature 是 Anthropic API 的 thinking 完整性令牌。
+        // live UI 不消费它，但 durable AssistantFinal 需要保留这份事实。
+        LlmEvent::ThinkingSignature(signature) => {
+            *thinking_signature = Some(signature);
+        },
     }
 }
 
@@ -191,10 +233,14 @@ fn map_kernel_error(error: KernelError) -> AstrError {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use astrcode_core::{AgentEventContext, AstrError};
+    use astrcode_core::{
+        AgentEventContext, AstrError, LlmFinishReason, LlmOutput, ReasoningContent,
+    };
     use astrcode_kernel::KernelError;
 
-    use super::{StreamedToolCallDelta, emit_llm_delta_live, map_kernel_error};
+    use super::{
+        StreamedToolCallDelta, emit_llm_delta_live, hydrate_reasoning_from_stream, map_kernel_error,
+    };
     use crate::turn::test_support::test_session_state;
 
     #[test]
@@ -237,6 +283,8 @@ mod tests {
                 .push(delta);
         });
 
+        let mut thinking_deltas = Vec::new();
+        let mut thinking_signature = None;
         emit_llm_delta_live(
             astrcode_core::LlmEvent::ToolCallDelta {
                 index: 0,
@@ -248,6 +296,8 @@ mod tests {
             &AgentEventContext::default(),
             &test_session_state(),
             Some(&sink),
+            &mut thinking_deltas,
+            &mut thinking_signature,
         );
 
         assert_eq!(
@@ -261,6 +311,85 @@ mod tests {
                 name: Some("readFile".to_string()),
                 arguments_delta: r#"{"path":"README.md"}"#.to_string(),
             }]
+        );
+        assert!(thinking_deltas.is_empty());
+        assert_eq!(thinking_signature, None);
+    }
+
+    #[test]
+    fn emit_llm_delta_live_collects_thinking_for_durable_persistence() {
+        let mut thinking_deltas = Vec::new();
+        let mut thinking_signature = None;
+
+        emit_llm_delta_live(
+            astrcode_core::LlmEvent::ThinkingDelta("先检查状态".to_string()),
+            "turn-1",
+            &AgentEventContext::default(),
+            &test_session_state(),
+            None,
+            &mut thinking_deltas,
+            &mut thinking_signature,
+        );
+        emit_llm_delta_live(
+            astrcode_core::LlmEvent::ThinkingSignature("sig-1".to_string()),
+            "turn-1",
+            &AgentEventContext::default(),
+            &test_session_state(),
+            None,
+            &mut thinking_deltas,
+            &mut thinking_signature,
+        );
+
+        assert_eq!(thinking_deltas, vec!["先检查状态".to_string()]);
+        assert_eq!(thinking_signature.as_deref(), Some("sig-1"));
+    }
+
+    #[test]
+    fn hydrate_reasoning_from_stream_backfills_missing_reasoning_content() {
+        let mut output = LlmOutput {
+            content: "done".to_string(),
+            tool_calls: Vec::new(),
+            reasoning: None,
+            usage: None,
+            finish_reason: LlmFinishReason::Stop,
+        };
+
+        hydrate_reasoning_from_stream(
+            &mut output,
+            &["先检查".to_string(), "再修改".to_string()],
+            Some("sig-1"),
+        );
+
+        assert_eq!(
+            output.reasoning,
+            Some(ReasoningContent {
+                content: "先检查再修改".to_string(),
+                signature: Some("sig-1".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn hydrate_reasoning_from_stream_preserves_existing_reasoning_and_backfills_signature() {
+        let mut output = LlmOutput {
+            content: "done".to_string(),
+            tool_calls: Vec::new(),
+            reasoning: Some(ReasoningContent {
+                content: "最终 reasoning".to_string(),
+                signature: None,
+            }),
+            usage: None,
+            finish_reason: LlmFinishReason::Stop,
+        };
+
+        hydrate_reasoning_from_stream(&mut output, &["流式 reasoning".to_string()], Some("sig-2"));
+
+        assert_eq!(
+            output.reasoning,
+            Some(ReasoningContent {
+                content: "最终 reasoning".to_string(),
+                signature: Some("sig-2".to_string()),
+            })
         );
     }
 }

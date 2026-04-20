@@ -226,6 +226,23 @@ pub(super) fn is_official_anthropic_api_url(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 判断 Anthropic 协议 endpoint 是否支持 extended thinking。
+///
+/// Why:
+/// - 官方 Anthropic endpoint 原生支持 `thinking`
+/// - 智谱的 Anthropic 兼容网关 `open.bigmodel.cn/api/anthropic` 也支持 `thinking`
+/// - 其他第三方兼容网关仍默认关闭，避免把不兼容参数发给只实现基础 messages 子集的服务
+pub(super) fn supports_extended_thinking_api_url(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .map(|host| {
+            host.eq_ignore_ascii_case("api.anthropic.com")
+                || host.eq_ignore_ascii_case("open.bigmodel.cn")
+        })
+        .unwrap_or(false)
+}
+
 fn cache_control_if_allowed(remaining: &mut usize) -> Option<AnthropicCacheControl> {
     consume_cache_breakpoint(remaining).then(AnthropicCacheControl::ephemeral)
 }
@@ -653,6 +670,40 @@ mod tests {
         assert!(body.get("thinking").is_none());
         assert_eq!(body["messages"][0]["content"][0]["type"], json!("text"));
         assert_eq!(body["messages"][0]["content"][0]["text"], json!(""));
+    }
+
+    #[test]
+    fn bigmodel_gateway_request_enables_extended_thinking_payloads() {
+        let provider = AnthropicProvider::new(
+            "https://open.bigmodel.cn/api/anthropic/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "glm-5.1".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 128_000,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+        let request = provider.build_request(
+            &[LlmMessage::User {
+                content: "你好".to_string(),
+                origin: UserMessageOrigin::User,
+            }],
+            &[],
+            None,
+            &[],
+            None,
+            true,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(
+            body.get("thinking")
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str),
+            Some("enabled")
+        );
     }
 
     #[test]

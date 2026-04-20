@@ -16,7 +16,8 @@ use super::{
     request::{
         ANTHROPIC_CACHE_BREAKPOINT_LIMIT, MessageBuildOptions, enable_message_caching,
         is_official_anthropic_api_url, summarize_request_for_diagnostics,
-        thinking_config_for_model, to_anthropic_messages, to_anthropic_system, to_anthropic_tools,
+        supports_extended_thinking_api_url, thinking_config_for_model, to_anthropic_messages,
+        to_anthropic_system, to_anthropic_tools,
     },
     response::response_to_output,
     stream::{consume_sse_text_chunk, flush_sse_buffer},
@@ -110,6 +111,7 @@ impl AnthropicProvider {
             .unwrap_or(self.limits.max_output_tokens)
             .min(self.limits.max_output_tokens);
         let use_official_endpoint = is_official_anthropic_api_url(&self.messages_api_url);
+        let supports_extended_thinking = supports_extended_thinking_api_url(&self.messages_api_url);
         let use_automatic_cache = use_official_endpoint;
         let mut remaining_cache_breakpoints = ANTHROPIC_CACHE_BREAKPOINT_LIMIT;
         let request_cache_control = if use_automatic_cache {
@@ -148,9 +150,10 @@ impl AnthropicProvider {
             system,
             tools,
             stream: stream.then_some(true),
-            // Why: 第三方 Anthropic 兼容网关常见只支持基础 messages 子集；
-            // 在非官方 endpoint 下关闭 `thinking` 字段，避免触发参数校验失败。
-            thinking: if use_official_endpoint {
+            // Why:
+            // - 官方 Anthropic 与已知兼容的智谱 Anthropic 网关都支持 `thinking`
+            // - 其余第三方网关仍默认关闭，避免触发未知参数校验失败
+            thinking: if supports_extended_thinking {
                 thinking_config_for_model(
                     &self.model,
                     effective_max_output_tokens.min(u32::MAX as usize) as u32,
