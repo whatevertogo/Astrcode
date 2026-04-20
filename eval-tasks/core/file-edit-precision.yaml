@@ -1,0 +1,15 @@
+task_id: file-edit-precision
+description: 精准修改现有 Rust 文件中的常量值。
+prompt: |
+  打开 src/lib.rs，把 DEFAULT_RETRY_COUNT 改成 5，并保持其余内容不变。
+workspace:
+  setup: ../fixtures/file-edit-precision
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Edit
+  max_tool_calls: 3
+  file_changes:
+    - path: src/lib.rs
+      contains: "pub const DEFAULT_RETRY_COUNT: u32 = 5;"
+  max_turns: 1

@@ -4,6 +4,7 @@ members = [
     "crates/kernel",
     "crates/session-runtime",
     "crates/application",
+    "crates/eval",
     "crates/adapter-storage",
     "crates/adapter-agents",
     "crates/adapter-llm",
@@ -24,7 +25,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
+license-file = "LICENSE"
 authors = ["whatevertogo"]
 
 [workspace.dependencies]

@@ -448,7 +448,9 @@ cargo deny check bans
 
 ## 许可证
 
-本项目采用 **Apache License 2.0 with Commons Clause** 许可证。
+本项目采用仓库根目录 [LICENSE](LICENSE) 中声明的许可证文本：**Apache License 2.0 with Commons Clause**。
+
+为避免 `Cargo.toml`、README 与许可证文本出现漂移，Rust crate 清单统一通过 `license-file` 指向根目录 `LICENSE`，以该文件为唯一许可证事实来源。
 
 - 允许个人使用、学习和研究
 - 允许非商业开源项目使用

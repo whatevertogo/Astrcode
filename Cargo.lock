@@ -327,6 +327,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "astrcode-eval"
+version = "0.1.0"
+dependencies = [
+ "astrcode-core",
+ "astrcode-protocol",
+ "axum",
+ "chrono",
+ "glob",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "astrcode-example-plugin"
 version = "0.1.0"
 dependencies = [
