@@ -1,0 +1,60 @@
+name: Bug 反馈
+description: 报告一个可复现的问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量提供可复现信息，避免只贴一张报错截图。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 例如 `v0.1.0-alpha`、commit SHA 或分支名
+      placeholder: v0.1.0-alpha
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: 运行形态
+      options:
+        - 桌面端（Tauri）
+        - 浏览器端
+        - CLI
+        - Server
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 发生了什么，预期应该是什么
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请尽量提供最小复现路径
+      placeholder: |
+        1. 执行 ...
+        2. 打开 ...
+        3. 看到 ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图
+      description: 粘贴关键日志、报错、截图或录屏链接
+      render: shell
+  - type: input
+    id: env
+    attributes:
+      label: 环境信息
+      description: 例如 Windows/macOS/Linux、Rust/Node 版本
+      placeholder: Windows 11, Rust nightly, Node 20
