@@ -70,9 +70,9 @@
   - `to_phase_id`
   - `trigger: WorkflowTransitionTrigger`
 - `WorkflowTransitionTrigger`
-  - `Signal(WorkflowSignal)`
-  - `Auto(WorkflowAutoTrigger)`
-  - `Manual(WorkflowManualTrigger)`
+  - `Signal(WorkflowSignal)` — 用户信号匹配后触发
+  - `Auto(WorkflowAutoTrigger)` — exit_gate 条件自动满足时触发（如 plan 审批通过后自动进入下一 phase）
+  - `Manual(WorkflowManualTrigger)` — 用户显式操作触发（如 slash command 或 UI 按钮），第一阶段仅预留，不落地
 - `WorkflowSignal`
   - `Approve`
   - `RequestChanges`
@@ -109,6 +109,12 @@
 - `session-runtime` 应保持“执行引擎 + 事件真相 + 读取面”定位，不反向依赖业务工作流。
 - 当前 crate 依赖方向也是 `application -> session-runtime`，而不是反过来。
 - workflow phase 可能复用同一个 `mode_id`，但不会复用同一套 signal / bridge / artifact 语义，因此 workflow 的主键必须是 phase，而不是 mode。
+
+**workflow phase 迁移由工具调用驱动，orchestrator 只解释结果：**
+
+- `enter_plan_mode` / `exit_plan_mode` 等工具仍是模型主动调用的，`WorkflowOrchestrator` 不替代或拦截这些工具调用。
+- orchestrator 在提交边界解释工具驱动的迁移结果，注入 phase overlay 和 bridge context，但不主动发起迁移。
+- 这保持了"LLM 通过工具驱动状态变更"的现有模式，避免 orchestrator 与工具调用路径竞争。
 
 **备选方案：**
 
@@ -155,6 +161,7 @@ workflow phase 在 mode 之上补充：
 新增内部 runtime lifecycle 模型，用于真正控制执行：
 
 - `TurnRuntimeState`
+  - `generation: AtomicU64`（Decision 19 引入，防护 interrupt/resubmit 竞态）
   - `active_turn: Option<ActiveTurnState>`
   - `compaction: CompactRuntimeState`
 - `ActiveTurnState`
@@ -234,6 +241,12 @@ workflow phase 在 mode 之上补充：
 trait ProjectionReducer {
     fn apply(&mut self, stored: &StoredEvent, effects: &mut ProjectionEffects) -> Result<()>;
 }
+
+/// reducer apply 期间的附带输出收集器。
+struct ProjectionEffects {
+    /// PhaseTracker 产出的 live AgentEvent（如 PhaseChanged），需在主事件之前推送。
+    pre_push_events: Vec<AgentEvent>,
+}
 ```
 
 约束：
@@ -257,7 +270,7 @@ trait ProjectionReducer {
 - `ToolResultBudgetState`：replacement_state、replacement_count、reapply_count、bytes_saved、over_budget_count
 - `StreamingToolState`：launch_count、match_count、fallback_count、discard_count、overlap_ms
 
-这让 `TurnExecutionContext::finish()` 的 summary 收集从 22 个独立字段赋值变成 5 个分组的 `summarize()` 调用。
+这让 `TurnExecutionContext::finish()` 的 summary 收集从 22 个独立字段赋值变成 4 个内聚分组的 `summarize()` 调用；`TurnSummary.collaboration` 由 `TurnCollaborationSummary::from_facts()` 独立聚合，不依赖上述四组的字段。
 
 同时，`TurnRuntimeState::complete()` 在单次调用中完成所有控制状态清理并原子返回 `Option<PendingManualCompactRequest>`，消除当前 `finalize_turn_execution` 中 `complete_session_execution()` 之后再单独调用 `take_pending_manual_compact()` 的悬挂副作用。
 
@@ -370,6 +383,8 @@ match policy.decide(output, step_state, runtime_config) {
 
 现有 `decide_budget_continuation()` 和 `continuation_cycle` 逻辑合并入 policy。
 
+policy 还应包含**收益递减检测**：当 `continuation_count` 超过阈值且最近 k 次 output 的 token 数持续偏低时，即使 budget 仍有余量，也应返回 `Stop`。现有 `decide_budget_continuation` 的硬性 continuation limit 已防止无限循环，收益递减检测在此基础上提前终止低质量的反复续写。
+
 **备选方案：**
 
 - 保持三处散落逻辑：拒绝。靠执行顺序隐式耦合，修改一处容易破坏另一处的假设。
@@ -421,8 +436,8 @@ match policy.decide(output, step_state, runtime_config) {
 
 `interrupt_session()` 和 `fork_session()` 当前直接操作散落字段（`running`、`active_turn_id`、`cancel`），与 `TurnCoordinator` 封装的 lifecycle 不一致。重构后：
 
-- `interrupt_session()` 通过 `TurnCoordinator::interrupt()` 触发，`interrupt()` 调用 `TurnRuntimeState` 的 transition API
-- `fork_session()` 通过 `TurnCoordinator` 读取 turn 状态（stage、turn_id），不直接读取散落字段
+- `interrupt_session()` 直接通过 `TurnRuntimeState::force_complete()` 触发，不走 `TurnCoordinator`（TurnCoordinator 是 per-turn 短暂对象，interrupt 发生时可能不存在活跃实例）；`force_complete()` 原子递增 generation 并清理控制状态（参见 Decision 19）
+- `fork_session()` 通过 `TurnRuntimeState` 的 typed getter 读取 turn 状态（stage、turn_id），不直接读取散落字段
 - `resolve_submit_target()` 的 branch 逻辑通过 `TurnRuntimeState::running()` 缓存镜像判断
 
 **备选方案：**
@@ -552,7 +567,28 @@ phase 迁移涉及：解释 signal、执行 bridge、写 workflow state、切 mo
 - 若 workflow state 写入成功但 mode 切换失败，则保留新的 workflow phase，并在下一次提交或恢复时按 `current_phase_id -> mode_id` 进行 reconcile；因为 phase 对 mode 是单向可推导的，而 mode 不能可靠反推 phase。
 - bridge 失败视为 phase 迁移失败，不写 workflow state，也不切 mode。
 
-这样可以避免“mode 已切但 workflow 仍停在旧 phase”的不可恢复歧义。
+这样可以避免”mode 已切但 workflow 仍停在旧 phase”的不可恢复歧义。
+
+### Decision 19：TurnCoordinator 使用 generation counter 防护 interrupt/resubmit 竞态
+
+当前 `interrupt_session()` 和 `finalize_turn_execution()` 之间存在竞态窗口：
+
+1. Turn A 正在执行，用户触发 interrupt
+2. `interrupt_session()` 通过 `complete_session_execution()` 清除 `running`、`active_turn_id` 等控制状态
+3. Turn A 的 spawned task 继续执行 LLM 调用（cancel token 已触发，但异步返回尚未到达 finalize）
+4. 用户提交 Turn B，`prepare_session_execution()` 设置新的 `running=true`、新 `active_turn_id`
+5. Turn A 的 spawned task 完成，`finalize_turn_execution()` 调用 `complete_session_execution()`，**无条件**设置 `running=false`、清除 `active_turn_id` —— Turn B 的控制状态被覆盖
+
+引入 `TurnCoordinator` 时，必须通过 generation counter 防止此类 stale finalize：
+
+- `prepare()` 原子递增 `generation: AtomicU64`，将当前 generation 传入 turn 执行上下文
+- `complete(generation)` 仅当传入的 generation 与当前 `TurnRuntimeState.generation` 匹配时才执行清理；不匹配则跳过（说明这是旧 turn 的残留 finalize）
+- `interrupt()` 通过 `force_complete()` 无条件递增 generation 并清理控制状态，使旧 turn 的 pending finalize 失效
+
+**备选方案：**
+
+- 不加 generation counter，靠 `active_turn_id` 比对判断：拒绝。`active_turn_id` 本身在竞态中会被覆写，不能作为可靠判据。
+- 禁止 interrupt 后立即提交新 turn：拒绝。会恶化用户体验，且无法防止其他异步 cleanup 路径的竞态。
 
 ## Risks / Trade-offs
 

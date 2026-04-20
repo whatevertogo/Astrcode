@@ -6,7 +6,7 @@
 
 - 引入一层显式的 **workflow orchestration**：用 `workflow -> phase -> transition -> bridge` 模型承载跨 turn、跨 mode 的正式工作流，把 `plan -> execute` 落成第一个宏工作流，而不是继续在 `submit_prompt_with_options()` 中写死 plan 特判。
 - 把 **phase** 定义为 workflow 的核心执行单元：每个 phase 绑定一个 `mode_id`，并声明自己的角色、artifact 规则、用户信号解释、退出 gate 和 phase bridge；mode 继续负责治理 envelope，而不是直接承担完整业务流程。
-- 引入 **TurnCoordinator** 显式收口 turn 生命周期：把 `accept → prepare → run → persist → finalize → deferred_compact` 从多模块分段拼装收为单一协调器的生命周期方法，让 interrupt/fork 也走协调器。
+- 引入 **TurnCoordinator** 显式收口 turn 生命周期：把 `accept → prepare → run → persist → finalize → deferred_compact` 从多模块分段拼装收为单一协调器的生命周期方法，让 interrupt/fork 也走协调器；使用 generation counter 防护 interrupt/resubmit 竞态，确保 stale finalize 不覆盖新 turn 控制状态。
 - 引入 **typed TurnTerminalKind** 和 **TurnProjection**：消除 turn 终态的字符串约定，让 `wait_for_turn_terminal_snapshot()` 等待投影终态而不是扫描事件做启发式判断。
 - 引入 **PostLlmDecisionPolicy**：统一 agent loop 中"LLM 返回无工具输出后下一步做什么"的决策，消除 `continuation_cycle` / `loop_control` / `step` 三处散落逻辑的隐式耦合。
 - 重构 `application` 的 session 提交流程：由 workflow orchestrator 统一处理 prompt 注入、审批解释、phase 迁移与 artifact bridge，替换当前 plan-specific 的 if/else 分支。

@@ -218,21 +218,21 @@
 - **AND** `normalize_recovered_phase()` SHALL 继续把 `Thinking / Streaming / CallingTool` 映射为 `Interrupted`
 - **AND** runtime control state SHALL 不持有任何 Phase 信息（Phase 是 display-only）
 
-### Requirement: interrupt 和 fork SHALL 通过 TurnCoordinator 完成，不绕过协调器
+### Requirement: interrupt 和 fork SHALL 通过 TurnRuntimeState transition API 完成，不绕过生命周期管控
 
-当前 `interrupt_session()` 和 `fork_session()` 直接操作 `running`、`active_turn_id`、`cancel` 等散落字段，绕过任何 turn lifecycle 协调。系统 MUST 让 interrupt 和 fork 走 `TurnCoordinator` 的生命周期路径，与正常提交共享同一套 control state 管控。
+当前 `interrupt_session()` 和 `fork_session()` 直接操作 `running`、`active_turn_id`、`cancel` 等散落字段，绕过任何 turn lifecycle 协调。系统 MUST 让 interrupt 和 fork 通过 `TurnRuntimeState` 的 typed transition API 操作，与正常提交共享同一套 control state 管控。它们不经过 `TurnCoordinator`（TurnCoordinator 是 per-turn 短暂对象，interrupt 发生时可能不存在活跃实例）。
 
-#### Scenario: interrupt 通过 TurnCoordinator 执行
+#### Scenario: interrupt 通过 TurnRuntimeState::force_complete() 执行
 
 - **WHEN** 用户请求中断正在运行的 session
-- **THEN** 系统 SHALL 通过 `TurnCoordinator::interrupt()` 触发
-- **AND** `interrupt()` SHALL 通过 `TurnRuntimeState` 的 transition API 设置中断状态
+- **THEN** 系统 SHALL 通过 `TurnRuntimeState::force_complete()` 触发中断
+- **AND** `force_complete()` SHALL 原子递增 generation 并清理控制状态（与 Decision 19 的 generation counter 协同）
 - **AND** SHALL NOT 直接操作 `cancel.lock()`、`active_turn_id.lock()` 或 `complete_session_execution()`
 
-#### Scenario: fork 通过 TurnCoordinator 读取 turn 状态
+#### Scenario: fork 通过 TurnRuntimeState typed getter 读取 turn 状态
 
 - **WHEN** 用户请求 fork 一个 session
-- **THEN** 系统 SHALL 通过 `TurnCoordinator` 读取当前 turn 状态（stage、turn_id）
+- **THEN** 系统 SHALL 通过 `TurnRuntimeState` 的 typed getter 读取当前 turn 状态（stage、turn_id）
 - **AND** SHALL NOT 直接读取 `phase.lock()` 或 `active_turn_id.lock()` 判断 turn 是否在运行
 
 ### Requirement: TurnRuntimeState 崩溃恢复 SHALL 不残留活跃 turn 控制状态
@@ -245,3 +245,26 @@
 - **THEN** `TurnRuntimeState` SHALL 初始化为无 active turn（`active_turn: None`，`running: false`）
 - **AND** `running` 缓存镜像 SHALL 为 `false`
 - **AND** 崩溃前未完成的 turn 的 display Phase SHALL 由 `normalize_recovered_phase()` 映射为 `Interrupted`
+
+### Requirement: TurnCoordinator SHALL 使用 generation counter 防护 interrupt/resubmit 竞态
+
+`interrupt_session()` 在清除控制状态后，被中断 turn 的异步 finalize 仍可能运行并覆盖新 turn 的控制状态。`TurnCoordinator` MUST 使用 generation counter 确保只有当前 generation 的 finalize 才能修改控制状态。
+
+#### Scenario: stale finalize 不覆盖新 turn 控制状态
+
+- **WHEN** Turn A 被中断后 Turn B 已开始执行
+- **THEN** Turn A 的 finalize 调用 `complete()` 时 SHALL 检测 generation 不匹配
+- **AND** SHALL 跳过控制状态清理（不清除 `running`、`active_turn_id`、`cancel`、`lease`）
+- **AND** Turn B 的控制状态 SHALL 保持不变
+
+#### Scenario: interrupt 无效化旧 generation
+
+- **WHEN** `TurnRuntimeState::force_complete()` 被调用
+- **THEN** SHALL 原子递增 generation 并清理控制状态
+- **AND** 被中断 turn 的任何后续 finalize SHALL 因 generation 不匹配而被跳过
+
+#### Scenario: 正常 complete 仅在 generation 匹配时执行
+
+- **WHEN** turn 正常完成并调用 `complete(generation)`
+- **THEN** 若 generation 与 `TurnRuntimeState` 当前 generation 匹配，SHALL 执行完整控制状态清理
+- **AND** SHALL 原子返回 `Option<PendingManualCompactRequest>`
