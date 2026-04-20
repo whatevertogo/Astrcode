@@ -1,0 +1,4 @@
+tasks:
+  - core/file-read-accuracy.yaml
+  - core/file-edit-precision.yaml
+  - core/tool-chain-efficiency.yaml

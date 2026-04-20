@@ -1,0 +1,14 @@
+task_id: file-read-accuracy
+description: 读取项目 README，并在单轮内给出准确摘要。
+prompt: |
+  请读取 README.md，告诉我项目名称和第一条要点。
+workspace:
+  setup: ../fixtures/file-read-accuracy
+expected_outcome:
+  tool_pattern:
+    - Read
+  max_tool_calls: 2
+  max_turns: 1
+  output_contains:
+    - Astrcode Eval
+    - 离线评测

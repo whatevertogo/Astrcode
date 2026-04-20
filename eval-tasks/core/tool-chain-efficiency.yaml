@@ -1,0 +1,15 @@
+task_id: tool-chain-efficiency
+description: 读取文档后更新计划文件，检验工具链效率。
+prompt: |
+  请先读取 docs/plan.md，再把 status.txt 改成 done。
+workspace:
+  setup: ../fixtures/tool-chain-efficiency
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Edit
+  max_tool_calls: 3
+  file_changes:
+    - path: status.txt
+      exact: "done\n"
+  max_turns: 1
