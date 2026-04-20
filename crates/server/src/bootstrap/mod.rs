@@ -315,6 +315,9 @@ fn browser_index_response(index_html: &str) -> Response {
 /// 允许的来源：
 /// - `http://localhost:5173` — Vite dev server
 /// - `http://127.0.0.1:5173` — Vite dev server（IP 形式）
+/// - `tauri://localhost` — 桌面端显式 app scheme
+/// - `http://tauri.localhost` / `https://tauri.localhost` — Tauri WebView 资源域名
+/// - `http://*.tauri.localhost` / `https://*.tauri.localhost` — 部分平台/版本会为 webview 分配子域
 ///
 /// 允许的方法：GET、POST、DELETE、OPTIONS
 ///
@@ -325,10 +328,23 @@ fn browser_index_response(index_html: &str) -> Response {
 /// - `cache-control` — 缓存控制
 pub(crate) fn build_cors_layer() -> CorsLayer {
     CorsLayer::new()
-        .allow_origin([
-            HeaderValue::from_static("http://localhost:5173"),
-            HeaderValue::from_static("http://127.0.0.1:5173"),
-        ])
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            |origin: &HeaderValue, _request_parts| {
+                let Ok(origin) = origin.to_str() else {
+                    return false;
+                };
+
+                matches!(
+                    origin,
+                    "http://localhost:5173"
+                        | "http://127.0.0.1:5173"
+                        | "tauri://localhost"
+                        | "http://tauri.localhost"
+                        | "https://tauri.localhost"
+                ) || origin.ends_with(".tauri.localhost")
+                    && (origin.starts_with("http://") || origin.starts_with("https://"))
+            },
+        ))
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
         .allow_headers([
             HeaderName::from_static(AUTH_HEADER_NAME),
@@ -434,11 +450,15 @@ fn run_info_path_in_home(home_dir: &FsPath) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use axum::{Router, routing::get};
+    use tower::ServiceExt;
+
     use super::{
         bootstrap_token_expires_at_ms, clear_run_info_in_home,
         deps::core::{LocalServerInfo, format_local_rfc3339},
         run_info_path_in_home, write_run_info_in_home,
     };
+    use crate::bootstrap::build_cors_layer;
 
     #[test]
     fn write_run_info_persists_expiry_and_clear_run_info_removes_matching_pid() {
@@ -508,6 +528,71 @@ mod tests {
         assert!(
             path.exists(),
             "cleanup must not delete a newer server's run info"
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_allows_tauri_desktop_origins() {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(build_cors_layer());
+
+        for origin in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "https://main.tauri.localhost",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(axum::http::Method::OPTIONS)
+                        .uri("/")
+                        .header(axum::http::header::ORIGIN, origin)
+                        .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                        .body(axum::body::Body::empty())
+                        .expect("preflight request should build"),
+                )
+                .await
+                .expect("preflight should succeed");
+
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .and_then(|value| value.to_str().ok()),
+                Some(origin),
+                "expected desktop origin '{origin}' to be allowed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cors_rejects_unknown_origins() {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(build_cors_layer());
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::OPTIONS)
+                    .uri("/")
+                    .header(axum::http::header::ORIGIN, "https://evil.example.com")
+                    .header(axum::http::header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                    .body(axum::body::Body::empty())
+                    .expect("preflight request should build"),
+            )
+            .await
+            .expect("preflight should succeed");
+
+        assert!(
+            response
+                .headers()
+                .get(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "unexpected origin should not be echoed back by CORS"
         );
     }
 }

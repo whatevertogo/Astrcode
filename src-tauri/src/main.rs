@@ -294,15 +294,14 @@ fn resolve_window_url(
     entry_path: &str,
     use_https_scheme: bool,
 ) -> Result<WebviewUrl> {
-    if !cfg!(dev) {
-        // 生产构建必须回到 Tauri 的资源型 URL。这里让框架自己解析内嵌资源，
-        // 避免我们把资源地址硬编码成 http(s)://tauri.localhost/index.html 后，
-        // 再次绕开官方的 app asset 解析路径，导致桌面端报 asset not found。
-        return Ok(WebviewUrl::App(entry_path.into()));
+    if !cfg!(debug_assertions) {
+        // `cfg!(dev)` 在 Tauri CLI 场景下并不可靠，发布构建仍可能命中。
+        // 这里改用 Rust profile 语义：release 包默认直接走内嵌资源，不再等待 Vite。
+        return embedded_frontend_url(app_handle, entry_path, use_https_scheme);
     }
 
     let Some(dev_url) = app_handle.config().build.dev_url.as_ref() else {
-        return explicit_embedded_frontend_url(use_https_scheme, entry_path);
+        return embedded_frontend_url(app_handle, entry_path, use_https_scheme);
     };
 
     // 开发环境优先直连 Vite，这样 `cargo tauri dev` 仍保留 HMR。
@@ -319,9 +318,16 @@ fn resolve_window_url(
         return Ok(WebviewUrl::External(url));
     }
 
-    // Vite 未能在规定时间内启动。
-    // 在 Tauri dev 模式下，`App("index.html")` 的基址会被解释为 `devUrl`，
-    // 所以这里不用 asset fallback，而是返回一个明确错误提示的 data URI 页面。
+    if embedded_frontend_is_available(app_handle, entry_path, use_https_scheme) {
+        eprintln!(
+            "[astrcode-window] Vite dev server at {} is not reachable; falling back to bundled \
+             frontend resources.",
+            dev_url
+        );
+        return embedded_frontend_url(app_handle, entry_path, use_https_scheme);
+    }
+
+    // Vite 未能在规定时间内启动，且当前也找不到可用的内嵌/打包前端资源。
     eprintln!(
         "[astrcode-window] Vite dev server at {} is not reachable after retries. Check frontend \
          build output for errors.",
@@ -334,6 +340,34 @@ fn resolve_window_url(
     );
     let url = Url::parse(&error_uri).with_context(|| "failed to build error page url")?;
     Ok(WebviewUrl::External(url))
+}
+
+fn embedded_frontend_url(
+    _app_handle: &tauri::AppHandle,
+    entry_path: &str,
+    use_https_scheme: bool,
+) -> Result<WebviewUrl> {
+    if cfg!(debug_assertions) {
+        // 开发构建里 `WebviewUrl::App` 仍可能被解释为 `devUrl`。
+        // 显式走 `tauri://localhost` / `tauri.localhost` 才能稳定命中本地 asset resolver。
+        explicit_embedded_frontend_url(use_https_scheme, entry_path)
+    } else {
+        // 生产构建必须回到 Tauri 的资源型 URL。这里让框架自己解析内嵌资源，
+        // 避免我们把资源地址硬编码成 http(s)://tauri.localhost/index.html 后，
+        // 再次绕开官方的 app asset 解析路径，导致桌面端报 asset not found。
+        Ok(WebviewUrl::App(entry_path.into()))
+    }
+}
+
+fn embedded_frontend_is_available(
+    app_handle: &tauri::AppHandle,
+    entry_path: &str,
+    use_https_scheme: bool,
+) -> bool {
+    app_handle
+        .asset_resolver()
+        .get_for_scheme(entry_path.to_string(), use_https_scheme)
+        .is_some()
 }
 
 /// 等待 Vite 开发服务器就绪，最多重试数秒。
