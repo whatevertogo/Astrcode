@@ -37,7 +37,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{Request, State},
-    http::{HeaderName, HeaderValue, Method, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -117,7 +117,10 @@ async fn server_root() -> &'static str {
 /// 然后才能进行鉴权交换。
 pub(crate) async fn serve_run_info(
     State(_state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<BrowserBootstrapResponse>, ApiError> {
+    require_allowed_run_info_origin(&headers)?;
+
     let run_info_path = run_info_path().map_err(|e| ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: e.to_string(),
@@ -152,6 +155,42 @@ pub(crate) async fn serve_run_info(
         token: run_info.token,
         server_origin: format!("http://127.0.0.1:{}", run_info.port),
     }))
+}
+
+/// 判断给定 origin 是否在本地 bootstrap 白名单内。
+///
+/// Why: `run-info` 会返回明文 bootstrap token，必须把消费方限制在明确允许的
+/// 本地前端 origin，避免任意网页直接读取本地 sidecar 引导凭证。
+pub(crate) fn is_allowed_local_origin(origin: &str) -> bool {
+    matches!(
+        origin,
+        "http://localhost:5173"
+            | "http://127.0.0.1:5173"
+            | "tauri://localhost"
+            | "http://tauri.localhost"
+            | "https://tauri.localhost"
+    ) || origin.ends_with(".tauri.localhost")
+        && (origin.starts_with("http://") || origin.starts_with("https://"))
+}
+
+fn require_allowed_run_info_origin(headers: &HeaderMap) -> Result<(), ApiError> {
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "run-info requires an allowed Origin header from the local frontend".to_string(),
+            )
+        })?;
+
+    if is_allowed_local_origin(origin) {
+        Ok(())
+    } else {
+        Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: format!("origin '{origin}' is not allowed to access run-info"),
+        })
+    }
 }
 
 /// 将前端路由挂载到 Axum 路由器。
@@ -334,15 +373,7 @@ pub(crate) fn build_cors_layer() -> CorsLayer {
                     return false;
                 };
 
-                matches!(
-                    origin,
-                    "http://localhost:5173"
-                        | "http://127.0.0.1:5173"
-                        | "tauri://localhost"
-                        | "http://tauri.localhost"
-                        | "https://tauri.localhost"
-                ) || origin.ends_with(".tauri.localhost")
-                    && (origin.starts_with("http://") || origin.starts_with("https://"))
+                is_allowed_local_origin(origin)
             },
         ))
         .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
@@ -450,15 +481,27 @@ fn run_info_path_in_home(home_dir: &FsPath) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use axum::{Router, routing::get};
+    use std::sync::{Mutex, OnceLock};
+
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        http::{Request, StatusCode, header},
+        routing::get,
+    };
     use tower::ServiceExt;
 
     use super::{
         bootstrap_token_expires_at_ms, clear_run_info_in_home,
         deps::core::{LocalServerInfo, format_local_rfc3339},
-        run_info_path_in_home, write_run_info_in_home,
+        is_allowed_local_origin, run_info_path_in_home, serve_run_info, write_run_info_in_home,
     };
-    use crate::bootstrap::build_cors_layer;
+    use crate::{bootstrap::build_cors_layer, test_support::test_state};
+
+    fn run_info_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn write_run_info_persists_expiry_and_clear_run_info_removes_matching_pid() {
@@ -594,5 +637,115 @@ mod tests {
                 .is_none(),
             "unexpected origin should not be echoed back by CORS"
         );
+    }
+
+    #[test]
+    fn allowed_local_origin_matches_browser_and_tauri_hosts() {
+        assert!(is_allowed_local_origin("http://localhost:5173"));
+        assert!(is_allowed_local_origin("https://main.tauri.localhost"));
+        assert!(!is_allowed_local_origin("https://evil.example.com"));
+    }
+
+    #[tokio::test]
+    async fn serve_run_info_requires_allowed_origin() {
+        let _env_guard = run_info_env_lock()
+            .lock()
+            .expect("run info env lock should not be poisoned");
+        let (state, guard) = test_state(None).await;
+        let expires_at_ms = bootstrap_token_expires_at_ms(chrono::Utc::now());
+        write_run_info_in_home(
+            guard.home_dir(),
+            &LocalServerInfo {
+                port: 62000,
+                token: "bootstrap-token".to_string(),
+                pid: std::process::id(),
+                started_at: format_local_rfc3339(chrono::Utc::now()),
+                expires_at_ms,
+            },
+        )
+        .expect("run info should be written");
+        std::env::set_var(
+            astrcode_core::home::ASTRCODE_TEST_HOME_ENV,
+            guard.home_dir(),
+        );
+
+        let app = Router::new()
+            .route("/__astrcode__/run-info", get(serve_run_info))
+            .with_state(state);
+
+        let forbidden = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/__astrcode__/run-info")
+                    .header(header::ORIGIN, "https://evil.example.com")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let missing = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__astrcode__/run-info")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        std::env::remove_var(astrcode_core::home::ASTRCODE_TEST_HOME_ENV);
+    }
+
+    #[tokio::test]
+    async fn serve_run_info_returns_payload_for_allowed_origin() {
+        let _env_guard = run_info_env_lock()
+            .lock()
+            .expect("run info env lock should not be poisoned");
+        let (state, guard) = test_state(None).await;
+        let expires_at_ms = bootstrap_token_expires_at_ms(chrono::Utc::now());
+        write_run_info_in_home(
+            guard.home_dir(),
+            &LocalServerInfo {
+                port: 62000,
+                token: "bootstrap-token".to_string(),
+                pid: std::process::id(),
+                started_at: format_local_rfc3339(chrono::Utc::now()),
+                expires_at_ms,
+            },
+        )
+        .expect("run info should be written");
+        std::env::set_var(
+            astrcode_core::home::ASTRCODE_TEST_HOME_ENV,
+            guard.home_dir(),
+        );
+
+        let app = Router::new()
+            .route("/__astrcode__/run-info", get(serve_run_info))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__astrcode__/run-info")
+                    .header(header::ORIGIN, "http://127.0.0.1:5173")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: serde_json::Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body should be readable"),
+        )
+        .expect("payload should deserialize");
+        assert_eq!(payload["token"], "bootstrap-token");
+        assert_eq!(payload["serverOrigin"], "http://127.0.0.1:62000");
+        std::env::remove_var(astrcode_core::home::ASTRCODE_TEST_HOME_ENV);
     }
 }

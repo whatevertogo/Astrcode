@@ -26,6 +26,7 @@ axum.workspace = true
 axum-extra.workspace = true
 chrono.workspace = true
 dirs.workspace = true
+dashmap.workspace = true
 futures-util.workspace = true
 log.workspace = true
 env_logger.workspace = true
