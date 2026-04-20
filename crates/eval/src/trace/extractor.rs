@@ -44,10 +44,7 @@ impl TraceExtractor {
                 continue;
             }
 
-            let stored = match serde_json::from_str::<StoredEvent>(&line) {
-                Ok(event) => Some(event),
-                Err(_) => None,
-            };
+            let stored = serde_json::from_str::<StoredEvent>(&line).ok();
             let event = match serde_json::from_str::<StorageEvent>(&line) {
                 Ok(event) => event,
                 Err(source) => {
@@ -825,7 +822,7 @@ mod tests {
     fn extractor_merges_tool_call_lifecycle_with_stream_and_reference() {
         let turn_id = "turn-1";
         let agent = AgentEventContext::root_execution("agent-root", "default");
-        let events = vec![
+        let events = [
             line(
                 1,
                 StorageEvent {
@@ -972,7 +969,7 @@ mod tests {
             },
         };
 
-        let lines = vec![
+        let lines = [
             line(
                 1,
                 StorageEvent {
