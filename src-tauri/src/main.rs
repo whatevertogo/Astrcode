@@ -7,6 +7,7 @@ mod commands;
 mod instance;
 mod paths;
 use std::{
+    collections::HashSet,
     io::{ErrorKind, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
@@ -408,7 +409,7 @@ fn spawn_server_process(
     spawned_sidecar_path: SpawnedSidecarPath,
 ) -> Result<(CommandChild, Receiver<Result<LocalServerInfo>>)> {
     let (ready_tx, ready_rx) = sync_channel(1);
-    let detached_sidecar_path = prepare_detached_sidecar_copy()?;
+    let detached_sidecar_path = prepare_detached_sidecar_copy(app_handle)?;
     let sidecar = app_handle
         .shell()
         .command(&detached_sidecar_path)
@@ -562,8 +563,8 @@ fn dev_server_is_reachable(dev_url: &Url) -> bool {
     }
 }
 
-fn prepare_detached_sidecar_copy() -> Result<PathBuf> {
-    let source_path = resolve_packaged_sidecar_path()?;
+fn prepare_detached_sidecar_copy(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
+    let source_path = resolve_packaged_sidecar_path(app_handle)?;
     let sidecar_dir = runtime_sidecar_dir()?;
     std::fs::create_dir_all(&sidecar_dir).with_context(|| {
         format!(
@@ -587,7 +588,7 @@ fn prepare_detached_sidecar_copy() -> Result<PathBuf> {
     Ok(target_path)
 }
 
-fn resolve_packaged_sidecar_path() -> Result<PathBuf> {
+fn resolve_packaged_sidecar_path(app_handle: &tauri::AppHandle) -> Result<PathBuf> {
     let current_exe =
         std::env::current_exe().context("failed to resolve current desktop executable")?;
     let exe_dir = current_exe
@@ -599,9 +600,12 @@ fn resolve_packaged_sidecar_path() -> Result<PathBuf> {
         exe_dir
     };
 
-    let packaged_path = base_dir.join(packaged_sidecar_file_name());
-    if packaged_path.is_file() {
-        return Ok(packaged_path);
+    for root in packaged_sidecar_search_roots(app_handle, base_dir) {
+        for candidate in packaged_sidecar_candidate_paths(&root) {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
     }
 
     if let Some(dev_path) = resolve_development_sidecar_path(base_dir) {
@@ -610,11 +614,54 @@ fn resolve_packaged_sidecar_path() -> Result<PathBuf> {
         }
     }
 
+    let searched_roots = packaged_sidecar_search_roots(app_handle, base_dir)
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let candidate_names = packaged_sidecar_candidate_file_names().join(", ");
     Err(anyhow!(
-        "desktop sidecar was not found next to '{}' or under the development target triple '{}'",
+        "desktop sidecar was not found for '{}'; searched roots [{}] with candidates [{}], then \
+         checked development target triple '{}'",
         current_exe.display(),
-        DESKTOP_TARGET_TRIPLE
+        searched_roots,
+        candidate_names,
+        DESKTOP_TARGET_TRIPLE,
     ))
+}
+
+fn packaged_sidecar_search_roots(app_handle: &tauri::AppHandle, base_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut push_root = |path: PathBuf| {
+        if seen.insert(path.clone()) {
+            roots.push(path);
+        }
+    };
+
+    push_root(base_dir.to_path_buf());
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        push_root(resource_dir);
+    }
+
+    roots
+}
+
+fn packaged_sidecar_candidate_paths(root: &Path) -> Vec<PathBuf> {
+    packaged_sidecar_candidate_file_names()
+        .into_iter()
+        .map(|name| root.join(name))
+        .collect()
+}
+
+fn packaged_sidecar_candidate_file_names() -> Vec<String> {
+    let mut candidates = vec![packaged_sidecar_file_name().to_string()];
+    let target_specific = targeted_packaged_sidecar_file_name();
+    if target_specific != candidates[0] {
+        candidates.push(target_specific);
+    }
+    candidates
 }
 
 fn resolve_development_sidecar_path(base_dir: &Path) -> Option<PathBuf> {
@@ -640,6 +687,14 @@ fn packaged_sidecar_file_name() -> &'static str {
         "astrcode-server.exe"
     } else {
         "astrcode-server"
+    }
+}
+
+fn targeted_packaged_sidecar_file_name() -> String {
+    if cfg!(windows) {
+        format!("astrcode-server-{DESKTOP_TARGET_TRIPLE}.exe")
+    } else {
+        format!("astrcode-server-{DESKTOP_TARGET_TRIPLE}")
     }
 }
 
@@ -852,8 +907,9 @@ mod tests {
     use tauri::WebviewUrl;
 
     use super::{
-        DESKTOP_TARGET_TRIPLE, explicit_embedded_frontend_url, packaged_sidecar_file_name,
-        resolve_development_sidecar_path,
+        DESKTOP_TARGET_TRIPLE, explicit_embedded_frontend_url, packaged_sidecar_candidate_paths,
+        packaged_sidecar_file_name, resolve_development_sidecar_path,
+        targeted_packaged_sidecar_file_name,
     };
 
     #[test]
@@ -872,6 +928,15 @@ mod tests {
         let base_dir = Path::new(r"D:\repo\bundle");
 
         assert_eq!(resolve_development_sidecar_path(base_dir), None);
+    }
+
+    #[test]
+    fn packaged_sidecar_candidates_cover_plain_and_target_specific_names() {
+        let root = Path::new(r"D:\repo\bundle");
+        let candidates = packaged_sidecar_candidate_paths(root);
+
+        assert_eq!(candidates[0], root.join(packaged_sidecar_file_name()));
+        assert!(candidates.contains(&root.join(targeted_packaged_sidecar_file_name())));
     }
 
     #[test]
