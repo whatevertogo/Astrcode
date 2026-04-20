@@ -12,7 +12,7 @@ interface ContextMenuState {
 
 interface UseContextMenuReturn {
   contextMenu: ContextMenuState | null;
-  menuRef: React.RefObject<HTMLDivElement | null>;
+  menuRef: React.RefObject<HTMLDivElement>;
   openMenu: (e: React.MouseEvent) => void;
   closeMenu: () => void;
 }
