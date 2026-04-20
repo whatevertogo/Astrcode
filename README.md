@@ -2,6 +2,14 @@
 
 一个 AI 编程助手，支持桌面端（Tauri）、浏览器端和终端（CLI），基于 Rust + React 构建的 HTTP/SSE 分层架构。
 
+> 当前处于 `v0.1.0-alpha` 实验阶段。适合试用、评估架构和参与共建，不承诺接口稳定性。
+
+- 发布下载：[GitHub Releases](https://github.com/whatevertogo/Astrcode/releases)
+- 安装说明：见下文“下载与安装”
+- 路线图：[ROADMAP.md](ROADMAP.md)
+- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 安全策略：[SECURITY.md](SECURITY.md)
+
 ## 功能特性
 
 - **多模型支持**：支持 Anthropic Claude、OpenAI 兼容 API（DeepSeek、OpenAI 等），运行时切换 Profile 和 Model
@@ -47,6 +55,42 @@
 | `send` | 向 Agent 发送消息 |
 | `observe` | 观察 Agent 状态 |
 | `close` | 关闭 Agent |
+
+## 下载与安装
+
+### 预编译版本
+
+`v0.1.0-alpha` 起，预编译二进制会发布在 [GitHub Releases](https://github.com/whatevertogo/Astrcode/releases)：
+
+- **桌面端**：下载对应平台的 Tauri 安装包
+- **源码包**：下载 tag 对应源码，按下文方式本地构建
+
+当前 alpha 版本定位：
+
+- 验证桌面端、浏览器端、CLI 三端形态
+- 验证 Rust + React + HTTP/SSE 分层架构
+- 验证工具调用、Agent 协作、MCP/插件等核心能力
+
+### 从源码安装
+
+```bash
+# 安装仓库级依赖
+npm install
+cd frontend && npm install
+
+# 运行桌面端
+cargo tauri dev
+
+# 或单独运行服务端 / CLI
+cargo run -p astrcode-server
+cargo run -p astrcode-cli
+```
+
+如果你想把 CLI 安装到本机：
+
+```bash
+cargo install --path crates/cli
+```
 
 ## 快速开始
 
@@ -98,6 +142,12 @@ cd frontend && npm run build
 # 然后启动 cargo run -p astrcode-server，并打开它输出的 http://localhost:<port>/
 # server 会直接托管 frontend/dist，并自动注入浏览器端 bootstrap
 ```
+
+## 项目预览
+
+当前仓库已经先补齐 release、安装入口和维护文档；桌面端/终端的正式截图与 GIF 会在下一轮产品化迭代补上。
+
+![AstrCode Icon](src-tauri/icons/icon.png)
 
 ## 配置
 
@@ -445,6 +495,21 @@ cargo deny check bans
 | `frontend-check` | push/PR 到 master（前端文件变更） | typecheck、lint、format 检查 |
 | `dependency-audit` | `Cargo.lock` / `deny.toml` 变更 | `cargo deny check bans` |
 | `tauri-build` | 发布 tag (`v*`) | 三平台（Ubuntu/Windows/macOS）Tauri 构建 |
+
+## 路线图
+
+当前和后续计划见 [ROADMAP.md](ROADMAP.md)。如果你想看近期优先级，重点关注：
+
+- `v0.1.0-alpha`：发布首个可下载预发布版本，补齐试用入口
+- `v0.1.0-beta`：补齐稳定性、安装体验、截图/GIF、更多文档
+- `v0.1.x`：收敛协议与配置，降低试用门槛
+
+## 贡献与反馈
+
+- 提交代码前请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)
+- 安全问题请按 [SECURITY.md](SECURITY.md) 中的方式私下报告
+- 普通 bug / 功能建议请使用 GitHub Issue 模板
+- 与发布相关的已知计划和限制见 [docs/releases/v0.1.0-alpha.md](docs/releases/v0.1.0-alpha.md)
 
 ## 许可证
 
