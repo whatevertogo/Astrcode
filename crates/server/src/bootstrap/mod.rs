@@ -481,7 +481,7 @@ fn run_info_path_in_home(home_dir: &FsPath) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::OnceLock;
 
     use axum::{
         Router,
@@ -489,6 +489,7 @@ mod tests {
         http::{Request, StatusCode, header},
         routing::get,
     };
+    use tokio::sync::Mutex;
     use tower::ServiceExt;
 
     use super::{
@@ -648,9 +649,7 @@ mod tests {
 
     #[tokio::test]
     async fn serve_run_info_requires_allowed_origin() {
-        let _env_guard = run_info_env_lock()
-            .lock()
-            .expect("run info env lock should not be poisoned");
+        let _env_guard = run_info_env_lock().lock().await;
         let (state, guard) = test_state(None).await;
         let expires_at_ms = bootstrap_token_expires_at_ms(chrono::Utc::now());
         write_run_info_in_home(
@@ -701,9 +700,7 @@ mod tests {
 
     #[tokio::test]
     async fn serve_run_info_returns_payload_for_allowed_origin() {
-        let _env_guard = run_info_env_lock()
-            .lock()
-            .expect("run info env lock should not be poisoned");
+        let _env_guard = run_info_env_lock().lock().await;
         let (state, guard) = test_state(None).await;
         let expires_at_ms = bootstrap_token_expires_at_ms(chrono::Utc::now());
         write_run_info_in_home(

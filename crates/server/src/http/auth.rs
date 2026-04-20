@@ -157,7 +157,7 @@ impl AuthSessionManager {
 
     fn cleanup_expired_if_needed(&self, now: i64) {
         let call_index = self.validate_calls.fetch_add(1, Ordering::Relaxed) + 1;
-        if call_index % AUTH_TOKEN_CLEANUP_INTERVAL != 0 {
+        if !call_index.is_multiple_of(AUTH_TOKEN_CLEANUP_INTERVAL) {
             return;
         }
 
