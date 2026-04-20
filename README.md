@@ -147,7 +147,6 @@ cd frontend && npm run build
 
 当前仓库已经先补齐 release、安装入口和维护文档；桌面端/终端的正式截图与 GIF 会在下一轮产品化迭代补上。
 
-![AstrCode Icon](src-tauri/icons/icon.png)
 
 ## 配置
 
