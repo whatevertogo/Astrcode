@@ -26,6 +26,7 @@ use std::{
 };
 
 use astrcode_core::SkillCatalog as SkillCatalogPort;
+use astrcode_support::hostpaths::resolve_home_dir;
 use log::debug;
 
 use crate::{
@@ -58,7 +59,7 @@ impl LayeredSkillCatalog {
     /// `base_skills` 应按优先级从低到高排序（builtin < mcp < plugin），
     /// 这样后续的覆盖逻辑才能正确工作。
     pub fn new(base_skills: Vec<SkillSpec>) -> Self {
-        let user_home_dir = astrcode_core::home::resolve_home_dir().ok();
+        let user_home_dir = resolve_home_dir().ok();
         Self::new_with_optional_home_dir(base_skills, user_home_dir)
     }
 

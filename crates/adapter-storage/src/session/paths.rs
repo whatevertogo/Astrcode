@@ -27,10 +27,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_core::{
-    project::{project_dir, project_dir_name, projects_dir},
-    store::StoreError,
-};
+use astrcode_core::store::StoreError;
+use astrcode_support::hostpaths::{project_dir, project_dir_name, projects_dir};
 
 use crate::{Result, internal_io_error, io_error};
 

@@ -26,8 +26,8 @@ use std::{
 
 use astrcode_core::{
     AstrError, CancelToken, PersistedToolOutput, PersistedToolResult, Result, ToolContext,
-    project::project_dir,
 };
+use astrcode_support::{hostpaths::project_dir, tool_results::maybe_persist_tool_result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -719,7 +719,7 @@ pub use astrcode_core::tool_result_persist::TOOL_RESULTS_DIR;
 
 /// 将大型工具结果存到磁盘并返回截断预览。
 ///
-/// 委托给 `astrcode_core::tool_result_persist::maybe_persist_tool_result`。
+/// 委托给 `astrcode_support::tool_results::maybe_persist_tool_result`。
 /// `force_inline` 用于调试/测试模式跳过存盘。
 pub fn maybe_persist_large_tool_result(
     session_dir: &std::path::Path,
@@ -733,12 +733,7 @@ pub fn maybe_persist_large_tool_result(
             persisted: None,
         };
     }
-    astrcode_core::tool_result_persist::maybe_persist_tool_result(
-        session_dir,
-        tool_call_id,
-        content,
-        TOOL_RESULT_INLINE_LIMIT,
-    )
+    maybe_persist_tool_result(session_dir, tool_call_id, content, TOOL_RESULT_INLINE_LIMIT)
 }
 
 pub fn merge_persisted_tool_output_metadata(

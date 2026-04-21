@@ -1,6 +1,6 @@
-//! # 项目目录解析
+//! # 项目标识规范化
 //!
-//! 负责将工作目录映射到 `~/.astrcode/projects/<slug>` 下的持久化目录。
+//! 负责把工作目录映射为稳定、可读的 project bucket 名称。
 //!
 //! ## 设计动机
 //!
@@ -14,24 +14,10 @@ use std::path::{Component, Path, PathBuf, Prefix};
 
 use uuid::Uuid;
 
-use crate::{Result, home::resolve_home_dir};
-
 /// 项目目录名称的最大长度限制。
 ///
 /// 超过此长度的路径名会被截断并追加稳定 hash。
 const MAX_PROJECT_DIR_NAME_LEN: usize = 96;
-
-/// 返回 `~/.astrcode` 根目录。
-///
-/// 所有用户级和项目级持久化数据都应从这里派生，避免各 crate 自己拼装路径。
-pub fn astrcode_dir() -> Result<PathBuf> {
-    Ok(resolve_home_dir()?.join(".astrcode"))
-}
-
-/// 返回项目级持久化根目录 `~/.astrcode/projects`。
-pub fn projects_dir() -> Result<PathBuf> {
-    Ok(astrcode_dir()?.join("projects"))
-}
 
 /// 返回工作目录对应的项目目录名称。
 ///
@@ -67,11 +53,6 @@ pub fn project_dir_name(working_dir: &Path) -> String {
     } else {
         format!("{slug}-{stable_hash}")
     }
-}
-
-/// 返回工作目录的项目级持久化目录 `~/.astrcode/projects/<project>`。
-pub fn project_dir(working_dir: &Path) -> Result<PathBuf> {
-    Ok(projects_dir()?.join(project_dir_name(working_dir)))
 }
 
 /// 规范化项目标识路径

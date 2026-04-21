@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use super::{
     cache::{RecentSessionEvents, RecentStoredEvents},
     child_sessions::{child_node_from_stored_event, rebuild_child_nodes},
-    input_queue::apply_input_queue_event_to_index,
+    input_queue::{apply_input_queue_event_to_index, replay_input_queue_projection_index},
     tasks::{apply_snapshot_to_map, rebuild_active_tasks, task_snapshot_from_stored_event},
 };
 use crate::turn::projector::{apply_turn_projection_event, project_turn_projection};
@@ -162,7 +162,7 @@ struct InputQueueProjectionIndex {
 impl InputQueueProjectionIndex {
     fn rebuild(events: &[StoredEvent]) -> Self {
         Self {
-            by_agent: InputQueueProjection::replay_index(events),
+            by_agent: replay_input_queue_projection_index(events),
         }
     }
 

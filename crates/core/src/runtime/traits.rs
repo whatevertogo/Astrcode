@@ -17,7 +17,7 @@ use crate::{
 /// 运行时主句柄。
 ///
 /// 代表一个具体的 LLM 运行时实现（如 OpenAI 兼容 API 客户端）。
-/// 通过 [`RuntimeCoordinator`](crate::RuntimeCoordinator) 统一管理生命周期。
+/// 生命周期由组合根的运行时协调设施统一管理。
 #[async_trait]
 pub trait RuntimeHandle: Send + Sync {
     /// 运行时实例的名称（用于日志和错误信息）。

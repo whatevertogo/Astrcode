@@ -4,7 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_core::{WorkflowBridgeState, project::project_dir};
+use astrcode_core::WorkflowBridgeState;
+use astrcode_support::hostpaths::project_dir;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

@@ -10,7 +10,8 @@ use std::{
     time::Duration,
 };
 
-use astrcode_core::{StorageEvent, StorageEventPayload, StoredEvent, project::project_dir_name};
+use astrcode_core::{StorageEvent, StorageEventPayload, StoredEvent};
+use astrcode_support::hostpaths::project_dir_name;
 use tokio::{sync::Semaphore, task::JoinSet, time::sleep};
 
 use self::{

@@ -209,7 +209,11 @@ impl OpenAiProvider {
                     return Err(AstrError::LlmInterrupted);
                 }
                 result = send_future => result
-                    .map_err(|error| AstrError::http("failed to call openai-compatible endpoint", error))
+                    .map_err(|error| AstrError::http_with_source(
+                        "failed to call openai-compatible endpoint",
+                        error.is_timeout() || error.is_connect() || error.is_body(),
+                        error,
+                    ))
             };
 
             match response {
@@ -341,7 +345,11 @@ impl LlmProvider for OpenAiProvider {
             None => {
                 // 非流式路径：解析完整 JSON 响应
                 let parsed: OpenAiChatResponse = response.json().await.map_err(|error| {
-                    AstrError::http("failed to parse openai-compatible response", error)
+                    AstrError::http_with_source(
+                        "failed to parse openai-compatible response",
+                        error.is_timeout() || error.is_connect() || error.is_body(),
+                        error,
+                    )
                 })?;
                 let usage = parsed.usage.as_ref().map(|usage| LlmUsage {
                     input_tokens: usage.prompt_tokens.unwrap_or_default() as usize,
@@ -382,7 +390,11 @@ impl LlmProvider for OpenAiProvider {
                     };
 
                     let bytes = item.map_err(|error| {
-                        AstrError::http("failed to read openai-compatible response stream", error)
+                        AstrError::http_with_source(
+                            "failed to read openai-compatible response stream",
+                            error.is_timeout() || error.is_connect() || error.is_body(),
+                            error,
+                        )
                     })?;
                     let Some(chunk_text) = utf8_decoder.push(
                         &bytes,

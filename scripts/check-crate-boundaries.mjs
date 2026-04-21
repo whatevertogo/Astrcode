@@ -62,19 +62,26 @@ function buildRules() {
     },
     {
       id: 'R004',
-      description: 'session-runtime 仅允许依赖 core 与 kernel',
+      description: 'session-runtime 仅允许依赖 core、support 与 kernel',
       source: 'astrcode-session-runtime',
-      allowedExact: new Set(['astrcode-core', 'astrcode-kernel']),
+      allowedExact: new Set(['astrcode-core', 'astrcode-support', 'astrcode-kernel']),
     },
     {
       id: 'R005',
-      description: 'application 仅允许依赖 core、kernel、session-runtime',
+      description: 'application 仅允许依赖 core、support、kernel、session-runtime',
       source: 'astrcode-application',
       allowedExact: new Set([
         'astrcode-core',
+        'astrcode-support',
         'astrcode-kernel',
         'astrcode-session-runtime',
       ]),
+    },
+    {
+      id: 'R006',
+      description: 'support 仅允许依赖 core',
+      source: 'astrcode-support',
+      allowedExact: new Set(['astrcode-core']),
     },
   ];
 }

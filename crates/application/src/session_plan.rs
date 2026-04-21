@@ -10,8 +10,9 @@ use std::{
 
 use astrcode_core::{
     ModeId, PromptDeclaration, SessionPlanState, SessionPlanStatus, WorkflowSignal,
-    project::project_dir, session_plan_content_digest,
+    session_plan_content_digest,
 };
+use astrcode_support::hostpaths::project_dir;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

@@ -32,7 +32,7 @@ use std::{
     time::SystemTime,
 };
 
-use astrcode_core::home::resolve_home_dir;
+use astrcode_support::hostpaths::resolve_home_dir;
 use log::warn;
 use serde::Deserialize;
 

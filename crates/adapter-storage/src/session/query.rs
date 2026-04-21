@@ -600,7 +600,8 @@ fn title_from_user_message(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{StorageEventPayload, StoredEvent, project::project_dir_name};
+    use astrcode_core::{StorageEventPayload, StoredEvent};
+    use astrcode_support::hostpaths::project_dir_name;
     use chrono::TimeZone;
 
     use super::*;

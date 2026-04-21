@@ -2,11 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use astrcode_core::{
-    AstrError,
-    home::resolve_home_dir,
-    project::{project_dir_name, projects_dir},
-};
+use astrcode_core::AstrError;
+use astrcode_support::hostpaths::{project_dir_name, projects_dir, resolve_home_dir};
 
 const SESSIONS_DIR_NAME: &str = "sessions";
 

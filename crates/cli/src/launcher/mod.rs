@@ -9,7 +9,8 @@ use std::{
     time::Duration,
 };
 
-use astrcode_core::{LocalServerInfo, home::resolve_home_dir};
+use astrcode_core::LocalServerInfo;
+use astrcode_support::hostpaths::resolve_home_dir;
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use serde::Deserialize;

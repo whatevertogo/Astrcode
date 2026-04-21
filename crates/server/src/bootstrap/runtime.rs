@@ -14,6 +14,7 @@ use astrcode_application::{
     AgentOrchestrationService, App, AppGovernance, GovernanceSurfaceAssembler,
     RuntimeObservabilityCollector, WatchService, builtin_mode_catalog, lifecycle::TaskRegistry,
 };
+use astrcode_support::hostpaths::resolve_home_dir;
 
 use super::{
     capabilities::{
@@ -25,8 +26,7 @@ use super::{
     deps::{
         core::{
             self, AstrError, CapabilityInvoker, Config, EventStore, LlmProvider, PromptProvider,
-            ResolvedRuntimeConfig, ResourceProvider, Result, RuntimeCoordinator,
-            resolve_runtime_config,
+            ResolvedRuntimeConfig, ResourceProvider, Result, resolve_runtime_config,
         },
         kernel::{AgentControlLimits, CapabilityRouter, Kernel, KernelBuilder},
         session_runtime::SessionRuntime,
@@ -39,6 +39,7 @@ use super::{
         build_config_service, build_llm_provider, build_profile_resolution_service,
         build_prompt_provider, build_resource_provider,
     },
+    runtime_coordinator::RuntimeCoordinator,
     watch::{bootstrap_profile_watch_runtime, build_watch_service},
 };
 
@@ -107,7 +108,7 @@ impl ServerBootstrapPaths {
     fn from_options(options: &ServerBootstrapOptions) -> Result<Self> {
         let home_dir = match &options.home_dir {
             Some(home_dir) => home_dir.clone(),
-            None => core::home::resolve_home_dir()?,
+            None => resolve_home_dir()?,
         };
         let astrcode_dir = home_dir.join(".astrcode");
         Ok(Self {

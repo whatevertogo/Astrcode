@@ -15,7 +15,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use astrcode_core::home::resolve_home_dir;
+use astrcode_support::hostpaths::resolve_home_dir;
 use log::warn;
 
 use crate::{

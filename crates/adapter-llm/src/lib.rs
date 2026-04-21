@@ -210,7 +210,9 @@ pub fn build_http_client(config: LlmClientConfig) -> Result<reqwest::Client> {
         .connect_timeout(config.connect_timeout)
         .read_timeout(config.read_timeout)
         .build()
-        .map_err(|error| AstrError::http("failed to build shared http client", error))
+        .map_err(|error| {
+            AstrError::http_with_source("failed to build shared http client", false, error)
+        })
 }
 
 /// 判断 HTTP 状态码是否可重试

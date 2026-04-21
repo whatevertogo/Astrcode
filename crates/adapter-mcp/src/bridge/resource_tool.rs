@@ -12,8 +12,9 @@ use std::{
 
 use astrcode_core::{
     CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilityKind,
-    CapabilitySpec, Result, maybe_persist_tool_result,
+    CapabilitySpec, Result,
 };
+use astrcode_support::{hostpaths::project_dir, tool_results::maybe_persist_tool_result};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use log::warn;
@@ -231,7 +232,7 @@ impl CapabilityInvoker for ReadMcpResourceTool {
 }
 
 fn session_dir_for_mcp_results(ctx: &CapabilityContext) -> Result<PathBuf> {
-    let project_dir = astrcode_core::project::project_dir(&ctx.working_dir).map_err(|error| {
+    let project_dir = project_dir(&ctx.working_dir).map_err(|error| {
         astrcode_core::AstrError::Internal(format!(
             "failed to resolve project directory for '{}': {}",
             ctx.working_dir.display(),

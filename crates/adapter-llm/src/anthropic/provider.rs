@@ -204,7 +204,11 @@ impl AnthropicProvider {
                 _ = crate::cancelled(cancel.clone()) => {
                     return Err(AstrError::LlmInterrupted);
                 }
-                result = send_future => result.map_err(|e| AstrError::http("failed to call anthropic endpoint", e))
+                result = send_future => result.map_err(|error| AstrError::http_with_source(
+                    "failed to call anthropic endpoint",
+                    error.is_timeout() || error.is_connect() || error.is_body(),
+                    error,
+                ))
             };
 
             match response {
@@ -333,10 +337,13 @@ impl LlmProvider for AnthropicProvider {
 
         match sink {
             None => {
-                let payload: AnthropicResponse = response
-                    .json()
-                    .await
-                    .map_err(|e| AstrError::http("failed to parse anthropic response", e))?;
+                let payload: AnthropicResponse = response.json().await.map_err(|error| {
+                    AstrError::http_with_source(
+                        "failed to parse anthropic response",
+                        error.is_timeout() || error.is_connect() || error.is_body(),
+                        error,
+                    )
+                })?;
                 Ok(response_to_output(payload))
             },
             Some(sink) => {
@@ -360,8 +367,12 @@ impl LlmProvider for AnthropicProvider {
                         break;
                     };
 
-                    let bytes = item.map_err(|e| {
-                        AstrError::http("failed to read anthropic response stream", e)
+                    let bytes = item.map_err(|error| {
+                        AstrError::http_with_source(
+                            "failed to read anthropic response stream",
+                            error.is_timeout() || error.is_connect() || error.is_body(),
+                            error,
+                        )
                     })?;
                     let Some(chunk_text) = utf8_decoder
                         .push(&bytes, "anthropic response stream was not valid utf-8")?

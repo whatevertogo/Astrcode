@@ -11,6 +11,7 @@ use astrcode_core::{
     AgentEventContext, StorageEvent, StorageEventPayload, StoredEvent, UserMessageOrigin,
 };
 use astrcode_eval::runner::{EvalRunner, EvalRunnerConfig};
+use astrcode_support::hostpaths::project_dir_name;
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State},
@@ -71,7 +72,7 @@ async fn create_session(
             .expect("workingDir should be provided"),
     );
     let canonical_id = session_id.trim_start_matches("session-");
-    let project_bucket = astrcode_core::project::project_dir_name(&working_dir);
+    let project_bucket = project_dir_name(&working_dir);
     let session_dir = state
         .projects_root
         .join(project_bucket)

@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 astrcode-core = { path = "../core" }
 astrcode-kernel = { path = "../kernel" }
+astrcode-support = { path = "../support" }
 async-trait.workspace = true
 chrono.workspace = true
 dashmap.workspace = true

@@ -81,10 +81,13 @@ impl McpTransport for StreamableHttpTransport {
             }
         }
 
-        let response = req_builder
-            .send()
-            .await
-            .map_err(|e| AstrError::http("MCP HTTP request", e))?;
+        let response = req_builder.send().await.map_err(|error| {
+            AstrError::http_with_source(
+                "MCP HTTP request",
+                error.is_timeout() || error.is_connect() || error.is_body(),
+                error,
+            )
+        })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -138,10 +141,13 @@ impl McpTransport for StreamableHttpTransport {
             }
         }
 
-        let response = req_builder
-            .send()
-            .await
-            .map_err(|e| AstrError::http("MCP HTTP notification", e))?;
+        let response = req_builder.send().await.map_err(|error| {
+            AstrError::http_with_source(
+                "MCP HTTP notification",
+                error.is_timeout() || error.is_connect() || error.is_body(),
+                error,
+            )
+        })?;
 
         let status = response.status();
         if !status.is_success() {

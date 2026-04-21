@@ -9,6 +9,7 @@ authors.workspace = true
 astrcode-core = { path = "../core" }
 astrcode-kernel = { path = "../kernel" }
 astrcode-session-runtime = { path = "../session-runtime" }
+astrcode-support = { path = "../support" }
 async-trait.workspace = true
 chrono.workspace = true
 dashmap.workspace = true

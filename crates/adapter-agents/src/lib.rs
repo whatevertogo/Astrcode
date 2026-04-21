@@ -16,6 +16,7 @@ use std::{
 };
 
 use astrcode_core::{AgentMode, AgentProfile, AstrError};
+use astrcode_support::hostpaths::resolve_home_dir;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -109,7 +110,7 @@ impl AgentProfileLoader {
     /// - `~/.claude/agents`
     /// - `~/.astrcode/agents`
     pub fn new() -> Result<Self, AstrError> {
-        let home = astrcode_core::home::resolve_home_dir()?;
+        let home = resolve_home_dir()?;
         Ok(Self::new_with_home_dir(home))
     }
 

@@ -5,13 +5,10 @@
 //! ## 核心接口
 //!
 //! - `RuntimeHandle`: 运行时主句柄
-//! - `ManagedRuntimeComponent`: 可被协调器管理的子组件
-//! - `RuntimeCoordinator`: 统一管理运行时实例、插件和能力列表
+//! - `ManagedRuntimeComponent`: 可被组合根管理的子组件
 
-mod coordinator;
 mod traits;
 
-pub use coordinator::RuntimeCoordinator;
 pub use traits::{
     ExecutionAccepted, ExecutionOrchestrationBoundary, LiveSubRunControlBoundary,
     LoopRunnerBoundary, ManagedRuntimeComponent, RuntimeHandle, SessionTruthBoundary,

@@ -16,10 +16,16 @@
 
 use std::path::PathBuf;
 
-use astrcode_core::{PluginManifest, Result};
+use astrcode_core::{AstrError, PluginManifest, Result};
 use astrcode_protocol::plugin::{InitializeMessage, PeerDescriptor};
 
 use crate::{PluginProcess, Supervisor};
+
+pub fn parse_plugin_manifest_toml(raw: &str) -> Result<PluginManifest> {
+    toml::from_str(raw).map_err(|error| {
+        AstrError::Validation(format!("failed to parse plugin manifest TOML: {error}"))
+    })
+}
 
 /// 插件加载器。
 ///
@@ -128,7 +134,7 @@ impl PluginLoader {
                         continue;
                     },
                 };
-                let mut manifest = match PluginManifest::from_toml(&raw) {
+                let mut manifest = match parse_plugin_manifest_toml(&raw) {
                     Ok(manifest) => manifest,
                     Err(error) => {
                         log::warn!(

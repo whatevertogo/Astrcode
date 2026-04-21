@@ -12,6 +12,8 @@ use std::env::VarError;
 
 use thiserror::Error;
 
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
 /// 项目级统一错误类型
 #[derive(Debug, Error)]
 pub enum AstrError {
@@ -100,11 +102,13 @@ pub enum AstrError {
     #[error("network error: {0}")]
     Network(String),
 
-    #[error("HTTP request error: {context}")]
+    #[error("HTTP request error: {context}: {detail}")]
     HttpRequest {
         context: String,
+        detail: String,
+        retryable: bool,
         #[source]
-        source: reqwest::Error,
+        source: Option<BoxError>,
     },
 
     // ========== 验证错误 ==========
@@ -163,15 +167,6 @@ impl From<VarError> for AstrError {
     }
 }
 
-impl From<reqwest::Error> for AstrError {
-    fn from(e: reqwest::Error) -> Self {
-        AstrError::HttpRequest {
-            context: String::new(),
-            source: e,
-        }
-    }
-}
-
 // ========== 辅助方法 ==========
 
 impl AstrError {
@@ -182,7 +177,17 @@ impl AstrError {
             AstrError::Io { source, .. } => AstrError::Io { context, source },
             AstrError::Parse { source, .. } => AstrError::Parse { context, source },
             AstrError::Utf8 { source, .. } => AstrError::Utf8 { context, source },
-            AstrError::HttpRequest { source, .. } => AstrError::HttpRequest { context, source },
+            AstrError::HttpRequest {
+                detail,
+                retryable,
+                source,
+                ..
+            } => AstrError::HttpRequest {
+                context,
+                detail,
+                retryable,
+                source,
+            },
             other => other,
         }
     }
@@ -201,19 +206,31 @@ impl AstrError {
         }
     }
 
-    pub fn http(context: impl Into<String>, source: reqwest::Error) -> Self {
+    pub fn http(context: impl Into<String>, detail: impl Into<String>) -> Self {
         AstrError::HttpRequest {
             context: context.into(),
-            source,
+            detail: detail.into(),
+            retryable: false,
+            source: None,
+        }
+    }
+
+    pub fn http_with_source<E>(context: impl Into<String>, retryable: bool, source: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        AstrError::HttpRequest {
+            context: context.into(),
+            detail: source.to_string(),
+            retryable,
+            source: Some(Box::new(source)),
         }
     }
 
     /// 检查是否为可重试的网络错误
     pub fn is_retryable(&self) -> bool {
         match self {
-            AstrError::HttpRequest { source, .. } => {
-                source.is_timeout() || source.is_connect() || source.is_body()
-            },
+            AstrError::HttpRequest { retryable, .. } => *retryable,
             _ => false,
         }
     }

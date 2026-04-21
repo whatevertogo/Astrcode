@@ -40,9 +40,8 @@
 //! ### 基础设施
 //!
 //! - [`env`][]: 环境变量解析
-//! - [`home`][]: 主目录管理
 //! - [`local_server`][]: 本地服务器信息
-//! - [`project`][]: 项目信息
+//! - [`project`][]: 项目标识与目录名算法
 //! - [`shell`][]: Shell 检测与解析
 //! - [`tool_result_persist`][]: 工具结果持久化
 
@@ -59,7 +58,6 @@ pub mod event;
 mod execution_control;
 mod execution_result;
 mod execution_task;
-pub mod home;
 pub mod hook;
 pub mod ids;
 pub mod local_server;
@@ -186,15 +184,12 @@ pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
 pub use runtime::{
     ExecutionAccepted, ExecutionOrchestrationBoundary, LiveSubRunControlBoundary,
-    LoopRunnerBoundary, ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle,
-    SessionTruthBoundary,
+    LoopRunnerBoundary, ManagedRuntimeComponent, RuntimeHandle, SessionTruthBoundary,
 };
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
 pub use session_catalog::SessionCatalogEvent;
 pub use session_plan::{SessionPlanState, SessionPlanStatus, session_plan_content_digest};
-pub use shell::{
-    ResolvedShell, ShellFamily, default_shell_label, detect_shell_family, resolve_shell,
-};
+pub use shell::{ResolvedShell, ShellFamily};
 pub use skill::{SkillSource, SkillSpec, is_valid_skill_name, normalize_skill_name};
 pub use store::{
     EventLogWriter, SessionManager, SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease,
@@ -209,8 +204,8 @@ pub use tool::{
 };
 pub use tool_result_persist::{
     DEFAULT_TOOL_RESULT_INLINE_LIMIT, PersistedToolOutput, PersistedToolResult,
-    TOOL_RESULT_PREVIEW_LIMIT, TOOL_RESULTS_DIR, is_persisted_output, maybe_persist_tool_result,
-    persist_tool_result, persisted_output_absolute_path,
+    TOOL_RESULT_PREVIEW_LIMIT, TOOL_RESULTS_DIR, is_persisted_output,
+    persisted_output_absolute_path,
 };
 pub use workflow::{
     WorkflowBridgeState, WorkflowDef, WorkflowPhaseDef, WorkflowSignal, WorkflowTransitionDef,

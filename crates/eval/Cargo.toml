@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 astrcode-core = { path = "../core" }
 astrcode-protocol = { path = "../protocol" }
+astrcode-support = { path = "../support" }
 chrono.workspace = true
 glob.workspace = true
 reqwest.workspace = true

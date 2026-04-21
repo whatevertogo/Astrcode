@@ -72,7 +72,7 @@ pub use capability_router::{
     AllowAllPermissionChecker, CapabilityHandler, CapabilityRouter, PermissionChecker,
 };
 pub use invoker::PluginCapabilityInvoker;
-pub use loader::PluginLoader;
+pub use loader::{PluginLoader, parse_plugin_manifest_toml};
 pub use peer::Peer;
 pub use process::{PluginProcess, PluginProcessStatus};
 pub use streaming::{EventEmitter, StreamExecution};

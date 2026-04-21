@@ -18,11 +18,12 @@ use async_trait::async_trait;
 use super::{
     capabilities::CapabilitySurfaceSync,
     deps::{
-        core::{AstrError, ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle},
+        core::{AstrError, ManagedRuntimeComponent, RuntimeHandle},
         session_runtime::SessionRuntime,
     },
     mcp::load_declared_configs,
     plugins::bootstrap_plugins_with_skill_root,
+    runtime_coordinator::RuntimeCoordinator,
 };
 
 pub(crate) struct GovernanceBuildInput {

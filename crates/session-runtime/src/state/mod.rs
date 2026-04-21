@@ -29,6 +29,7 @@ use astrcode_core::{
 use chrono::Utc;
 pub use execution::checkpoint_if_compacted;
 pub(crate) use execution::{SessionStateEventSink, append_and_broadcast};
+pub(crate) use input_queue::replay_input_queue_projection_index;
 pub(crate) use paths::compact_history_event_log_path;
 pub use paths::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
 use projection_registry::ProjectionRegistry;

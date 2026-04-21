@@ -13,6 +13,7 @@ use astrcode_core::{
     AstrError, Config, ConfigOverlay, Result,
     ports::{ConfigStore, McpConfigFileScope},
 };
+use astrcode_support::hostpaths::resolve_home_dir;
 use serde_json::{Map, Value};
 
 /// 配置文件存储的文件系统实现。
@@ -31,7 +32,7 @@ impl FileConfigStore {
 
     /// 默认路径 `~/.astrcode/config.json`。
     pub fn default_path() -> Result<Self> {
-        let home = astrcode_core::home::resolve_home_dir()?;
+        let home = resolve_home_dir()?;
         Ok(Self {
             config_path: home.join(".astrcode").join("config.json"),
         })
