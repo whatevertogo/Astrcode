@@ -6,7 +6,7 @@
 
 ### Requirement: mode SHALL compile to a prompt program that generates PromptDeclarations
 
-每个 governance mode MUST 编译为一个 prompt program，该 program 在 turn 边界生成一组 `PromptDeclaration`，作为 `ResolvedTurnEnvelope` 的一部分注入 prompt 组装管线。
+每个 governance mode MUST 编译为一个 prompt program，该 program 在 turn 边界生成一组 `PromptDeclaration`。这些 declarations 先进入治理 compile 产物（当前实现中仍挂在 `ResolvedTurnEnvelope`），再由 bind 后的 `ResolvedGovernanceSurface` 注入 prompt 组装管线。
 
 #### Scenario: execute mode compiles the default prompt program
 

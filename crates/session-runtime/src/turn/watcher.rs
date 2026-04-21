@@ -50,7 +50,10 @@ pub(crate) async fn wait_for_turn_terminal_snapshot(
                 {
                     return Ok(snapshot);
                 }
-                receiver = state.broadcaster.subscribe();
+                return Err(astrcode_core::AstrError::Internal(format!(
+                    "session '{}' broadcaster closed before turn '{}' reached a terminal snapshot",
+                    session_id, turn_id
+                )));
             },
         }
     }

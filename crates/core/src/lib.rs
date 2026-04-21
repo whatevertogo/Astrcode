@@ -155,9 +155,11 @@ pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
 pub use mcp::{McpApprovalData, McpApprovalStatus};
 pub use mode::{
     ActionPolicies, ActionPolicyEffect, ActionPolicyRule, BUILTIN_MODE_CODE_ID,
-    BUILTIN_MODE_PLAN_ID, BUILTIN_MODE_REVIEW_ID, CapabilitySelector, ChildPolicySpec,
-    GovernanceModeSpec, ModeExecutionPolicySpec, ModeId, PromptProgramEntry, ResolvedChildPolicy,
-    ResolvedTurnEnvelope, SubmitBusyPolicy, TransitionPolicySpec,
+    BUILTIN_MODE_PLAN_ID, BUILTIN_MODE_REVIEW_ID, BoundModeToolContractSnapshot,
+    CapabilitySelector, ChildPolicySpec, CompiledModeContracts, GovernanceModeSpec,
+    ModeArtifactDef, ModeExecutionPolicySpec, ModeExitGateDef, ModeId, ModePromptHooks,
+    PromptProgramEntry, ResolvedChildPolicy, ResolvedTurnEnvelope, SubmitBusyPolicy,
+    TransitionPolicySpec,
 };
 pub use observability::{
     AgentCollaborationScorecardSnapshot, ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot,
@@ -208,6 +210,6 @@ pub use tool_result_persist::{
     persisted_output_absolute_path,
 };
 pub use workflow::{
-    WorkflowBridgeState, WorkflowDef, WorkflowPhaseDef, WorkflowSignal, WorkflowTransitionDef,
-    WorkflowTransitionTrigger,
+    WorkflowArtifactRef, WorkflowBridgeState, WorkflowDef, WorkflowInstanceState, WorkflowPhaseDef,
+    WorkflowSignal, WorkflowTransitionDef, WorkflowTransitionTrigger,
 };

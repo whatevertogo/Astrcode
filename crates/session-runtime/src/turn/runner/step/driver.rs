@@ -156,6 +156,8 @@ impl StepDriver for RuntimeStepDriver {
                 max_concurrency: resources.runtime.max_tool_concurrency,
                 tool_result_inline_limit: resources.runtime.tool_result_inline_limit,
                 event_emission_mode,
+                current_mode_id: resources.current_mode_id,
+                bound_mode_tool_contract: resources.bound_mode_tool_contract,
             },
             tool_calls,
         )

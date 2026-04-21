@@ -177,9 +177,9 @@ Turn 提交时编译治理面
           → evaluate_selector()  → BTreeSet<String>  allowed_tools
         → child_allowed_tools()  // 计算子代理继承的工具白名单
         → subset_router()  // 创建过滤后的 CapabilityRouter
-        → ResolvedTurnEnvelope  // 编译产物
+        → ResolvedTurnEnvelope  // 当前命名仍沿用 envelope，语义上属于编译产物
     → build_surface()
-      → ResolvedGovernanceSurface  // 最终运行时治理面
+      → ResolvedGovernanceSurface  // bind 后的最终运行时治理面
 
                 ↓
 
@@ -208,7 +208,7 @@ pub struct ResolvedTurnEnvelope {
 }
 ```
 
-### ResolvedGovernanceSurface — 运行时治理面
+### ResolvedGovernanceSurface — 绑定后的运行时治理面
 
 `ResolvedGovernanceSurface`（`crates/application/src/governance_surface/mod.rs`）是装配器输出的最终产物，携带：
 
@@ -287,7 +287,7 @@ Plan 模式的工具面 =
 这确保了：
 - 插件热加载后，新模式 spec 立刻生效
 - 运行时修改 mode spec 不需要重启
-- 编译产物（`ResolvedGovernanceSurface`）是一次性的，不会被旧状态污染
+- 绑定产物（`ResolvedGovernanceSurface`）是一次性的，不会被旧状态污染
 
 ### 4. 子代理能力严格收缩
 

@@ -6,7 +6,7 @@
 
 ### Requirement: mode SHALL compile to action policies that the PolicyEngine enforces
 
-每个 governance mode MUST 编译为 action policies，作为 `ResolvedTurnEnvelope` 的一部分。`PolicyEngine` 的三个检查点 SHALL 在 turn 执行链路中消费这些 action policies。
+每个 governance mode MUST 编译为 action policies，先进入治理 compile 产物（当前实现中仍挂在 `ResolvedTurnEnvelope`），再由 bind 阶段投影到 `ResolvedGovernanceSurface`。`PolicyEngine` 的三个检查点 SHALL 在 turn 执行链路中消费这些 action policies。
 
 #### Scenario: execute mode compiles permissive action policies
 

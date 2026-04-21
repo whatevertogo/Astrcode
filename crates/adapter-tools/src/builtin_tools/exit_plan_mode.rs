@@ -6,8 +6,9 @@
 use std::{fs, path::Path, time::Instant};
 
 use astrcode_core::{
-    AstrError, ModeId, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolExecutionResult, ToolPromptMetadata, session_plan_content_digest,
+    AstrError, BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId, Result,
+    SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata, session_plan_content_digest,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -16,39 +17,14 @@ use serde_json::json;
 use crate::builtin_tools::{
     mode_transition::emit_mode_changed,
     session_plan::{
-        SessionPlanStatus, load_session_plan_state, persist_planning_workflow_state,
-        persist_session_plan_state, session_plan_markdown_path, session_plan_paths,
+        PlanArtifactContractBlockers, SessionPlanStatus, load_session_plan_state,
+        persist_planning_workflow_state, persist_session_plan_state, session_plan_markdown_path,
+        session_plan_paths, validate_plan_artifact_contract,
     },
 };
 
 #[derive(Default)]
 pub struct ExitPlanModeTool;
-
-const REQUIRED_PLAN_HEADINGS: &[&str] = &[
-    "## Context",
-    "## Goal",
-    "## Existing Code To Reuse",
-    "## Implementation Steps",
-    "## Verification",
-];
-const FINAL_REVIEW_CHECKLIST: &[&str] = &[
-    "Re-check assumptions against the code you already inspected.",
-    "Look for missing edge cases, affected files, and integration boundaries.",
-    "Confirm the verification steps are specific enough to prove the change works.",
-    "If the plan changes, persist it with upsertSessionPlan before retrying exitPlanMode.",
-];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PlanExitBlockers {
-    missing_headings: Vec<String>,
-    invalid_sections: Vec<String>,
-}
-
-impl PlanExitBlockers {
-    fn is_empty(&self) -> bool {
-        self.missing_headings.is_empty() && self.invalid_sections.is_empty()
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReviewPendingKind {
@@ -114,6 +90,18 @@ impl Tool for ExitPlanModeTool {
                 ctx.current_mode_id()
             )));
         }
+        let mode_contract = require_plan_mode_contract(ctx)?;
+        let artifact_contract = mode_contract.artifact.as_ref().ok_or_else(|| {
+            AstrError::Validation(
+                "exitPlanMode requires the current mode to declare an artifact contract"
+                    .to_string(),
+            )
+        })?;
+        let exit_gate = mode_contract.exit_gate.as_ref().ok_or_else(|| {
+            AstrError::Validation(
+                "exitPlanMode requires the current mode to declare an exit gate".to_string(),
+            )
+        })?;
 
         let paths = session_plan_paths(ctx)?;
         let Some(mut state) = load_session_plan_state(&paths.state_path)? else {
@@ -131,7 +119,7 @@ impl Tool for ExitPlanModeTool {
                 error,
             )
         })?;
-        let blockers = validate_plan_readiness(&plan_content);
+        let blockers = validate_plan_readiness(&plan_content, artifact_contract);
         if !blockers.is_empty() {
             return Ok(review_pending_result(
                 tool_call_id,
@@ -140,15 +128,21 @@ impl Tool for ExitPlanModeTool {
                 &plan_path,
                 &blockers,
                 ReviewPendingKind::RevisePlan,
+                exit_gate,
             ));
         }
 
         let plan_digest = session_plan_content_digest(plan_content.trim());
-        if state.reviewed_plan_digest.as_deref() != Some(plan_digest.as_str()) {
+        if exit_gate.review_passes > 0
+            && state.reviewed_plan_digest.as_deref() != Some(plan_digest.as_str())
+        {
             // 这里故意不立刻退出 plan mode。
             // 设计目标是把“最后一次自审”保留为内部流程，而不是把 review 段落写进计划正文：
             // 当前计划版本第一次调用 exitPlanMode 只登记一个自审检查点；
             // 如果模型自审后认为计划无需再改，再次调用 exitPlanMode 才真正呈递给前端。
+            // 当前 plan 专用状态只持久化“本次修订是否已经完成过 review checkpoint”，
+            // 因此 builtin plan mode 的 `reviewPasses=1` 会被严格执行；更高的 review pass
+            // 语义应由后续通用 mode exit 流程承载，而不是继续塞进 plan-specific 工具。
             state.reviewed_plan_digest = Some(plan_digest);
             persist_session_plan_state(&paths.state_path, &state)?;
             return Ok(review_pending_result(
@@ -158,6 +152,7 @@ impl Tool for ExitPlanModeTool {
                 &plan_path,
                 &blockers,
                 ReviewPendingKind::FinalReview,
+                exit_gate,
             ));
         }
 
@@ -195,6 +190,7 @@ impl Tool for ExitPlanModeTool {
                     "planPath": plan_path.to_string_lossy(),
                     "content": plan_content.trim(),
                     "updatedAt": state.updated_at.to_rfc3339(),
+                    "artifactType": artifact_contract.artifact_type,
                 }
             })),
             continuation: None,
@@ -204,65 +200,11 @@ impl Tool for ExitPlanModeTool {
     }
 }
 
-fn validate_plan_readiness(content: &str) -> PlanExitBlockers {
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return PlanExitBlockers {
-            missing_headings: REQUIRED_PLAN_HEADINGS
-                .iter()
-                .map(|heading| (*heading).to_string())
-                .collect(),
-            invalid_sections: Vec::new(),
-        };
-    }
-
-    let missing_headings = REQUIRED_PLAN_HEADINGS
-        .iter()
-        .copied()
-        .filter(|heading| !trimmed.contains(heading))
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-
-    let mut invalid_sections = Vec::new();
-    if let Err(error) = ensure_actionable_section(trimmed, "## Implementation Steps") {
-        invalid_sections.push(error);
-    }
-    if let Err(error) = ensure_actionable_section(trimmed, "## Verification") {
-        invalid_sections.push(error);
-    }
-
-    PlanExitBlockers {
-        missing_headings,
-        invalid_sections,
-    }
-}
-
-fn ensure_actionable_section(content: &str, heading: &str) -> std::result::Result<(), String> {
-    let section = section_body(content, heading)
-        .ok_or_else(|| format!("session plan is missing required section '{}'", heading))?;
-    let has_actionable_line = section.lines().map(str::trim).any(|line| {
-        !line.is_empty()
-            && (line.starts_with("- ")
-                || line.starts_with("* ")
-                || line.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
-    });
-    if has_actionable_line {
-        return Ok(());
-    }
-    Err(format!(
-        "session plan section '{}' must contain concrete actionable items before exiting plan mode",
-        heading
-    ))
-}
-
-fn section_body<'a>(content: &'a str, heading: &str) -> Option<&'a str> {
-    let start = content.find(heading)?;
-    let after_heading = &content[start + heading.len()..];
-    let next_heading_offset = after_heading.find("\n## ");
-    Some(match next_heading_offset {
-        Some(offset) => &after_heading[..offset],
-        None => after_heading,
-    })
+fn validate_plan_readiness(
+    content: &str,
+    artifact_contract: &ModeArtifactDef,
+) -> PlanArtifactContractBlockers {
+    validate_plan_artifact_contract(content, artifact_contract)
 }
 
 fn review_pending_result(
@@ -270,8 +212,9 @@ fn review_pending_result(
     started_at: Instant,
     title: &str,
     plan_path: &Path,
-    blockers: &PlanExitBlockers,
+    blockers: &PlanArtifactContractBlockers,
     kind: ReviewPendingKind,
+    exit_gate: &ModeExitGateDef,
 ) -> ToolExecutionResult {
     let mut checklist = match kind {
         ReviewPendingKind::RevisePlan => vec![
@@ -288,9 +231,13 @@ fn review_pending_result(
                 .to_string(),
         ],
     };
-    checklist.push("Final review checklist:".to_string());
+    checklist.push(format!(
+        "Final review checklist (configured passes: {}):",
+        exit_gate.review_passes
+    ));
     checklist.extend(
-        FINAL_REVIEW_CHECKLIST
+        exit_gate
+            .review_checklist
             .iter()
             .enumerate()
             .map(|(index, item)| format!("{}. {}", index + 1, item)),
@@ -326,7 +273,8 @@ fn review_pending_result(
                     ReviewPendingKind::RevisePlan => "revise_plan",
                     ReviewPendingKind::FinalReview => "final_review",
                 },
-                "checklist": FINAL_REVIEW_CHECKLIST,
+                "checklist": exit_gate.review_checklist,
+                "reviewPasses": exit_gate.review_passes,
             },
             "blockers": {
                 "missingHeadings": blockers.missing_headings,
@@ -339,11 +287,29 @@ fn review_pending_result(
     }
 }
 
+fn require_plan_mode_contract(ctx: &ToolContext) -> Result<&BoundModeToolContractSnapshot> {
+    let mode_contract = ctx.bound_mode_tool_contract().ok_or_else(|| {
+        AstrError::Validation(
+            "exitPlanMode requires a bound mode tool contract snapshot".to_string(),
+        )
+    })?;
+    if mode_contract.mode_id != ModeId::plan() {
+        return Err(AstrError::Validation(format!(
+            "exitPlanMode requires the 'plan' mode contract, got '{}'",
+            mode_contract.mode_id
+        )));
+    }
+    Ok(mode_contract)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use astrcode_core::{StorageEvent, StorageEventPayload};
+    use astrcode_core::{
+        BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, StorageEvent,
+        StorageEventPayload,
+    };
 
     use super::*;
     use crate::{
@@ -353,6 +319,45 @@ mod tests {
         },
         test_support::test_tool_context_for,
     };
+
+    fn plan_mode_contract() -> BoundModeToolContractSnapshot {
+        BoundModeToolContractSnapshot {
+            mode_id: ModeId::plan(),
+            artifact: Some(ModeArtifactDef {
+                artifact_type: "canonical-plan".to_string(),
+                file_template: None,
+                schema_template: None,
+                required_headings: vec![
+                    "Context".to_string(),
+                    "Goal".to_string(),
+                    "Scope".to_string(),
+                    "Non-Goals".to_string(),
+                    "Existing Code To Reuse".to_string(),
+                    "Implementation Steps".to_string(),
+                    "Verification".to_string(),
+                    "Open Questions".to_string(),
+                ],
+                actionable_sections: vec![
+                    "Implementation Steps".to_string(),
+                    "Verification".to_string(),
+                    "Open Questions".to_string(),
+                ],
+            }),
+            exit_gate: Some(ModeExitGateDef {
+                review_passes: 1,
+                review_checklist: vec![
+                    "Re-check assumptions against the code you already inspected.".to_string(),
+                    "Look for missing edge cases, affected files, and integration boundaries."
+                        .to_string(),
+                    "Confirm the verification steps are specific enough to prove the change works."
+                        .to_string(),
+                    "If the plan changes, persist it with upsertSessionPlan before retrying \
+                     exitPlanMode."
+                        .to_string(),
+                ],
+            }),
+        }
+    }
 
     struct RecordingSink {
         events: Arc<Mutex<Vec<StorageEvent>>>,
@@ -376,6 +381,7 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let ctx = test_tool_context_for(temp.path())
             .with_current_mode_id(ModeId::plan())
+            .with_bound_mode_tool_contract(plan_mode_contract())
             .with_event_sink(Arc::new(RecordingSink {
                 events: Arc::clone(&events),
             }));
@@ -446,6 +452,7 @@ mod tests {
         let upsert = UpsertSessionPlanTool;
         let ctx = test_tool_context_for(temp.path())
             .with_current_mode_id(ModeId::plan())
+            .with_bound_mode_tool_contract(plan_mode_contract())
             .with_event_sink(Arc::new(RecordingSink {
                 events: Arc::new(Mutex::new(Vec::new())),
             }));
@@ -474,7 +481,7 @@ mod tests {
         assert_eq!(metadata["review"]["kind"], json!("revise_plan"));
         assert_eq!(
             metadata["blockers"]["missingHeadings"][0],
-            json!("## Existing Code To Reuse")
+            json!("## Scope")
         );
         assert!(result.output.contains("not executable yet"));
     }
@@ -489,6 +496,12 @@ mod tests {
 ## Goal
 - align crate boundaries
 
+## Scope
+- runtime and adapter cleanup
+
+## Non-Goals
+- change transport protocol
+
 ## Existing Code To Reuse
 - reuse current capability routing
 
@@ -497,8 +510,14 @@ mod tests {
 
 ## Verification
 - run targeted Rust checks
+
+## Open Questions
+- none
 ";
 
-        assert!(validate_plan_readiness(content).is_empty());
+        assert!(
+            validate_plan_readiness(content, &plan_mode_contract().artifact.expect("artifact"))
+                .is_empty()
+        );
     }
 }

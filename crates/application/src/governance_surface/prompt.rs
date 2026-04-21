@@ -61,19 +61,14 @@ pub fn build_fresh_child_contract(
         ));
     }
 
-    PromptDeclaration {
-        block_id: "child.execution.contract".to_string(),
-        title: "Child Execution Contract".to_string(),
+    governance_prompt_declaration(
+        "child.execution.contract",
+        "Child Execution Contract",
         content,
-        render_target: PromptDeclarationRenderTarget::System,
-        layer: SystemPromptLayer::Inherited,
-        kind: PromptDeclarationKind::ExtensionInstruction,
-        priority_hint: Some(585),
-        always_include: true,
-        source: PromptDeclarationSource::Builtin,
-        capability_name: None,
-        origin: Some("child-contract:fresh".to_string()),
-    }
+        SystemPromptLayer::Inherited,
+        Some(585),
+        "child-contract:fresh",
+    )
 }
 
 pub fn build_resumed_child_contract(
@@ -107,19 +102,14 @@ pub fn build_resumed_child_contract(
         ));
     }
 
-    PromptDeclaration {
-        block_id: "child.execution.contract".to_string(),
-        title: "Child Execution Contract".to_string(),
+    governance_prompt_declaration(
+        "child.execution.contract",
+        "Child Execution Contract",
         content,
-        render_target: PromptDeclarationRenderTarget::System,
-        layer: SystemPromptLayer::Inherited,
-        kind: PromptDeclarationKind::ExtensionInstruction,
-        priority_hint: Some(585),
-        always_include: true,
-        source: PromptDeclarationSource::Builtin,
-        capability_name: None,
-        origin: Some("child-contract:resumed".to_string()),
-    }
+        SystemPromptLayer::Inherited,
+        Some(585),
+        "child-contract:resumed",
+    )
 }
 
 pub(super) fn collaboration_prompt_declarations(
@@ -135,10 +125,10 @@ pub(super) fn collaboration_prompt_declarations(
         return Vec::new();
     }
 
-    vec![PromptDeclaration {
-        block_id: "governance.collaboration.guide".to_string(),
-        title: "Child Agent Collaboration Guide".to_string(),
-        content: format!(
+    vec![governance_prompt_declaration(
+        "governance.collaboration.guide",
+        "Child Agent Collaboration Guide",
+        format!(
             "Use the child-agent tools as one decision protocol.\n\nKeep `agentId` exact. Copy it \
              byte-for-byte in later `send`, `observe`, and `close` calls. Never renumber it, \
              never zero-pad it, and never invent `agent-01` when the tool result says \
@@ -186,15 +176,33 @@ pub(super) fn collaboration_prompt_declarations(
              the same child should continue with one concrete `send` follow-up that names the \
              exact next step."
         ),
+        SystemPromptLayer::Dynamic,
+        Some(600),
+        "governance:collaboration-guide",
+    )]
+}
+
+fn governance_prompt_declaration(
+    block_id: impl Into<String>,
+    title: impl Into<String>,
+    content: String,
+    layer: SystemPromptLayer,
+    priority_hint: Option<i32>,
+    origin: impl Into<String>,
+) -> PromptDeclaration {
+    PromptDeclaration {
+        block_id: block_id.into(),
+        title: title.into(),
+        content,
         render_target: PromptDeclarationRenderTarget::System,
-        layer: SystemPromptLayer::Dynamic,
+        layer,
         kind: PromptDeclarationKind::ExtensionInstruction,
-        priority_hint: Some(600),
+        priority_hint,
         always_include: true,
         source: PromptDeclarationSource::Builtin,
         capability_name: None,
-        origin: Some("governance:collaboration-guide".to_string()),
-    }]
+        origin: Some(origin.into()),
+    }
 }
 
 fn compact_delegation_summary(description: &str, prompt: &str) -> String {

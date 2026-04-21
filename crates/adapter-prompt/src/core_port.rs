@@ -87,14 +87,13 @@ impl PromptProvider for ComposerPromptProvider {
             system_prompt_blocks,
             prompt_cache_hints: prompt_cache_hints.clone(),
             cache_metrics: summarize_prompt_cache_metrics(&output),
-            metadata: serde_json::json!({
-                "extra_tools_count": output.plan.extra_tools.len(),
-                "diagnostics_count": output.diagnostics.items.len(),
-                "profile": request.profile,
-                "step_index": request.step_index,
-                "turn_index": request.turn_index,
-                "promptCacheHints": prompt_cache_hints,
-            }),
+            metadata: build_output_metadata(
+                &request.profile,
+                request.step_index,
+                request.turn_index,
+                &output,
+                prompt_cache_hints,
+            ),
         })
     }
 }
@@ -171,6 +170,24 @@ fn summarize_prompt_cache_metrics(output: &crate::PromptBuildOutput) -> PromptBu
     metrics
 }
 
+fn build_output_metadata(
+    profile: &str,
+    step_index: usize,
+    turn_index: usize,
+    output: &crate::PromptBuildOutput,
+    prompt_cache_hints: astrcode_core::PromptCacheHints,
+) -> Value {
+    serde_json::json!({
+        "extra_tools_count": output.plan.extra_tools.len(),
+        "diagnostics_count": output.diagnostics.items.len(),
+        "profile": profile,
+        "step_index": step_index,
+        "turn_index": turn_index,
+        "promptCacheHints": prompt_cache_hints,
+        "promptSources": output.plan.source_metadata(),
+    })
+}
+
 fn build_system_prompt_blocks(plan: &crate::PromptPlan) -> Vec<SystemPromptBlock> {
     let ordered = plan.ordered_system_blocks();
     let mut last_cacheable_index = std::collections::HashMap::<SystemPromptLayer, usize>::new();
@@ -222,7 +239,8 @@ mod tests {
 
     use astrcode_core::ports::PromptBuildRequest;
 
-    use super::build_prompt_vars;
+    use super::{build_output_metadata, build_prompt_vars};
+    use crate::{BlockKind, PromptBlock, PromptDiagnostics, PromptPlan, block::BlockMetadata};
 
     #[test]
     fn build_prompt_vars_exposes_agent_max_subrun_depth() {
@@ -275,6 +293,65 @@ mod tests {
         assert_eq!(
             vars.get("agent.max_spawn_per_turn").map(String::as_str),
             Some("2")
+        );
+    }
+
+    #[test]
+    fn build_output_metadata_includes_prompt_source_projection() {
+        let request = PromptBuildRequest {
+            session_id: None,
+            turn_id: None,
+            working_dir: PathBuf::from("/workspace/demo"),
+            profile: "default".to_string(),
+            step_index: 1,
+            turn_index: 2,
+            profile_context: serde_json::Value::Null,
+            capabilities: Vec::new(),
+            skills: Vec::new(),
+            agent_profiles: Vec::new(),
+            prompt_declarations: Vec::new(),
+            metadata: serde_json::Value::Null,
+        };
+        let output = crate::PromptBuildOutput {
+            plan: PromptPlan {
+                system_blocks: vec![
+                    PromptBlock::new(
+                        "child.execution.contract",
+                        BlockKind::ExtensionInstruction,
+                        "Child Execution Contract",
+                        "contract",
+                        585,
+                        BlockMetadata {
+                            tags: vec!["source:builtin".into()],
+                            category: Some("extensions".into()),
+                            origin: Some("child-contract:fresh".to_string()),
+                        },
+                        0,
+                    )
+                    .with_layer(crate::PromptLayer::Inherited),
+                ],
+                ..PromptPlan::default()
+            },
+            diagnostics: PromptDiagnostics::default(),
+            cache_hints: Default::default(),
+        };
+
+        let metadata = build_output_metadata(
+            &request.profile,
+            request.step_index,
+            request.turn_index,
+            &output,
+            Default::default(),
+        );
+
+        assert_eq!(
+            metadata["promptSources"][0]["blockId"],
+            "child.execution.contract"
+        );
+        assert_eq!(metadata["promptSources"][0]["source"], "builtin");
+        assert_eq!(
+            metadata["promptSources"][0]["origin"],
+            "child-contract:fresh"
         );
     }
 }

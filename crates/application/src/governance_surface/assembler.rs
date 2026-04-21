@@ -1,10 +1,11 @@
 //! 治理面装配器。
 //!
-//! `GovernanceSurfaceAssembler` 是治理面子域的核心：将 mode spec、runtime 配置、
-//! 执行控制等输入编译成 `ResolvedGovernanceSurface`，供 turn 提交时一次性消费。
+//! `GovernanceSurfaceAssembler` 是治理面子域的 bind owner：先消费 mode compiler 的产物，
+//! 再把 runtime 配置、执行控制与 session 事实绑定成 `ResolvedGovernanceSurface`，
+//! 供 turn 提交时一次性消费。
 //!
 //! 装配过程：
-//! 1. 从 `ModeCatalog` 查找 mode spec → 编译 `CapabilitySelector` 得到工具白名单
+//! 1. 从 `ModeCatalog` 查找 mode spec → 调用 compiler 产出治理 compile artifact
 //! 2. 构建 `PolicyContext` 和 `AgentCollaborationPolicyContext`
 //! 3. 注入 prompt declarations（mode prompt + 协作指导 + skill 声明）
 //! 4. 解析 busy policy（是否在 session busy 时分支或拒绝）
@@ -160,6 +161,7 @@ impl GovernanceSurfaceAssembler {
             runtime: runtime.clone(),
             capability_router: compiled.capability_router,
             prompt_declarations,
+            bound_mode_tool_contract: compiled.envelope.bound_tool_contract_snapshot(),
             resolved_limits: ResolvedExecutionLimitsSnapshot {
                 allowed_tools: compiled.envelope.allowed_tools.clone(),
                 max_steps: Some(runtime.max_steps as u32),

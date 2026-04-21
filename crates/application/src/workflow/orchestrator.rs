@@ -1,15 +1,18 @@
 use std::{collections::BTreeMap, path::Path};
 
-use astrcode_core::{WorkflowDef, WorkflowPhaseDef, WorkflowSignal, WorkflowTransitionDef};
+use astrcode_core::{
+    WorkflowDef, WorkflowInstanceState, WorkflowPhaseDef, WorkflowSignal, WorkflowTransitionDef,
+};
 
 use crate::{
     ApplicationError,
     workflow::{
         bridge::PlanToExecuteBridgeState,
+        compiler::{CompiledWorkflowDef, compile_workflows},
         definition::{
             EXECUTING_PHASE_ID, PLAN_EXECUTE_WORKFLOW_ID, PLANNING_PHASE_ID, builtin_workflows,
         },
-        state::{WorkflowInstanceState, WorkflowStateService},
+        state::WorkflowStateService,
     },
 };
 
@@ -18,49 +21,48 @@ use crate::{
 /// Why: 正式 workflow 的 phase 图、恢复与迁移查询不应继续散落在 plan-specific if/else 中。
 #[derive(Debug, Clone)]
 pub struct WorkflowOrchestrator {
-    workflows: BTreeMap<String, WorkflowDef>,
+    workflows: BTreeMap<String, CompiledWorkflowDef>,
 }
 
 impl Default for WorkflowOrchestrator {
     fn default() -> Self {
-        Self::new(builtin_workflows())
+        Self::try_new(builtin_workflows()).expect("builtin workflows should compile")
     }
 }
 
 impl WorkflowOrchestrator {
     pub fn new(workflows: Vec<WorkflowDef>) -> Self {
-        Self {
-            workflows: workflows
-                .into_iter()
-                .map(|workflow| (workflow.workflow_id.clone(), workflow))
-                .collect(),
-        }
+        Self::try_new(workflows).expect("workflow definitions should compile")
+    }
+
+    pub fn try_new(workflows: Vec<WorkflowDef>) -> Result<Self, ApplicationError> {
+        Ok(Self {
+            workflows: compile_workflows(workflows)?,
+        })
     }
 
     pub fn workflow(&self, workflow_id: &str) -> Option<&WorkflowDef> {
-        self.workflows.get(workflow_id)
+        self.workflows
+            .get(workflow_id)
+            .map(CompiledWorkflowDef::definition)
     }
 
     pub fn phase<'a>(
         &'a self,
         state: &WorkflowInstanceState,
     ) -> Result<&'a WorkflowPhaseDef, ApplicationError> {
-        let workflow = self.workflow(&state.workflow_id).ok_or_else(|| {
+        let workflow = self.workflows.get(&state.workflow_id).ok_or_else(|| {
             ApplicationError::Internal(format!(
                 "workflow '{}' is not registered",
                 state.workflow_id
             ))
         })?;
-        workflow
-            .phases
-            .iter()
-            .find(|phase| phase.phase_id == state.current_phase_id)
-            .ok_or_else(|| {
-                ApplicationError::Internal(format!(
-                    "workflow '{}' does not contain phase '{}'",
-                    state.workflow_id, state.current_phase_id
-                ))
-            })
+        workflow.phase(&state.current_phase_id).ok_or_else(|| {
+            ApplicationError::Internal(format!(
+                "workflow '{}' does not contain phase '{}'",
+                state.workflow_id, state.current_phase_id
+            ))
+        })
     }
 
     pub fn transition_for_signal<'a>(
@@ -68,21 +70,13 @@ impl WorkflowOrchestrator {
         state: &WorkflowInstanceState,
         signal: WorkflowSignal,
     ) -> Result<Option<&'a WorkflowTransitionDef>, ApplicationError> {
-        let workflow = self.workflow(&state.workflow_id).ok_or_else(|| {
+        let workflow = self.workflows.get(&state.workflow_id).ok_or_else(|| {
             ApplicationError::Internal(format!(
                 "workflow '{}' is not registered",
                 state.workflow_id
             ))
         })?;
-        Ok(workflow.transitions.iter().find(|transition| {
-            transition.source_phase_id == state.current_phase_id
-                && matches!(
-                    transition.trigger,
-                    astrcode_core::WorkflowTransitionTrigger::Signal {
-                        signal: transition_signal,
-                    } if transition_signal == signal
-                )
-        }))
+        Ok(workflow.transition_for_signal(&state.current_phase_id, signal))
     }
 
     pub fn load_active_workflow(
@@ -160,7 +154,10 @@ impl WorkflowOrchestrator {
 mod tests {
     use std::{collections::BTreeMap, fs};
 
-    use astrcode_core::WorkflowSignal;
+    use astrcode_core::{
+        ModeId, WorkflowArtifactRef, WorkflowInstanceState, WorkflowSignal,
+        WorkflowTransitionTrigger,
+    };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
 
@@ -168,7 +165,7 @@ mod tests {
     use crate::workflow::{
         bridge::{PlanImplementationStep, PlanToExecuteBridgeState},
         definition::{EXECUTING_PHASE_ID, PLANNING_PHASE_ID},
-        state::{WorkflowArtifactRef, WorkflowInstanceState, WorkflowStateService},
+        state::WorkflowStateService,
     };
 
     fn workflow_state() -> WorkflowInstanceState {
@@ -277,6 +274,36 @@ mod tests {
         assert!(
             loaded.is_none(),
             "invalid execute bridge should downgrade to mode-only"
+        );
+    }
+
+    #[test]
+    fn try_new_rejects_invalid_workflow_phase_graph() {
+        let error = WorkflowOrchestrator::try_new(vec![astrcode_core::WorkflowDef {
+            workflow_id: "invalid".to_string(),
+            initial_phase_id: "planning".to_string(),
+            phases: vec![astrcode_core::WorkflowPhaseDef {
+                phase_id: "planning".to_string(),
+                mode_id: ModeId::plan(),
+                role: "planning".to_string(),
+                artifact_kind: None,
+                accepted_signals: Vec::new(),
+            }],
+            transitions: vec![astrcode_core::WorkflowTransitionDef {
+                transition_id: "invalid-transition".to_string(),
+                source_phase_id: "planning".to_string(),
+                target_phase_id: "missing".to_string(),
+                trigger: WorkflowTransitionTrigger::Signal {
+                    signal: WorkflowSignal::Approve,
+                },
+            }],
+        }])
+        .expect_err("invalid workflow should not compile");
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown target phase 'missing'")
         );
     }
 

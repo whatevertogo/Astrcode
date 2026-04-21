@@ -77,6 +77,8 @@ pub(crate) struct ToolCycleContext<'a> {
     pub max_concurrency: usize,
     pub tool_result_inline_limit: usize,
     pub event_emission_mode: ToolEventEmissionMode,
+    pub current_mode_id: &'a astrcode_core::ModeId,
+    pub bound_mode_tool_contract: Option<&'a astrcode_core::BoundModeToolContractSnapshot>,
 }
 
 struct SingleToolInvocation<'a> {
@@ -90,6 +92,8 @@ struct SingleToolInvocation<'a> {
     cancel: &'a CancelToken,
     tool_result_inline_limit: usize,
     event_emission_mode: ToolEventEmissionMode,
+    current_mode_id: &'a astrcode_core::ModeId,
+    bound_mode_tool_contract: Option<&'a astrcode_core::BoundModeToolContractSnapshot>,
 }
 
 pub(crate) struct BufferedToolExecutionRequest {
@@ -101,6 +105,8 @@ pub(crate) struct BufferedToolExecutionRequest {
     pub turn_id: String,
     pub agent: AgentEventContext,
     pub cancel: CancelToken,
+    pub current_mode_id: astrcode_core::ModeId,
+    pub bound_mode_tool_contract: Option<astrcode_core::BoundModeToolContractSnapshot>,
     pub tool_result_inline_limit: usize,
 }
 
@@ -241,6 +247,8 @@ pub async fn execute_tool_calls(
             cancel: ctx.cancel,
             tool_result_inline_limit: ctx.tool_result_inline_limit,
             event_emission_mode: ctx.event_emission_mode,
+            current_mode_id: ctx.current_mode_id,
+            bound_mode_tool_contract: ctx.bound_mode_tool_contract,
         })
         .await;
         collected_events.extend(local_events);
@@ -303,6 +311,8 @@ async fn execute_concurrent_safe(
                     cancel: &cancel,
                     tool_result_inline_limit,
                     event_emission_mode: ctx.event_emission_mode,
+                    current_mode_id: ctx.current_mode_id,
+                    bound_mode_tool_contract: ctx.bound_mode_tool_contract,
                 })
                 .await;
                 (call, result, events)
@@ -327,6 +337,8 @@ pub async fn execute_buffered_tool_call(
         turn_id,
         agent,
         cancel,
+        current_mode_id,
+        bound_mode_tool_contract,
         tool_result_inline_limit,
     } = request;
     let started_at = Instant::now();
@@ -341,6 +353,8 @@ pub async fn execute_buffered_tool_call(
         cancel: &cancel,
         tool_result_inline_limit,
         event_emission_mode: ToolEventEmissionMode::Buffered,
+        current_mode_id: &current_mode_id,
+        bound_mode_tool_contract: bound_mode_tool_contract.as_ref(),
     })
     .await;
     let finished_at = Instant::now();
@@ -370,6 +384,8 @@ async fn invoke_single_tool(
         cancel,
         tool_result_inline_limit,
         event_emission_mode,
+        current_mode_id,
+        bound_mode_tool_contract,
     } = invocation;
     let buffered_events = Arc::new(Mutex::new(Vec::new()));
     let mut fallback_events = Vec::new();
@@ -415,12 +431,11 @@ async fn invoke_single_tool(
         tool_result_inline_limit,
     ))
     .with_tool_output_sender(tool_output_tx.clone());
-    let tool_ctx = match session_state.current_mode_id() {
-        Ok(current_mode_id) => tool_ctx.with_current_mode_id(current_mode_id),
-        Err(error) => {
-            log::warn!("failed to read current mode before tool execution: {error}");
-            tool_ctx
-        },
+    let tool_ctx = tool_ctx.with_current_mode_id(current_mode_id.clone());
+    let tool_ctx = if let Some(snapshot) = bound_mode_tool_contract.cloned() {
+        tool_ctx.with_bound_mode_tool_contract(snapshot)
+    } else {
+        tool_ctx
     };
     let tool_ctx = if let Some(sink) = &event_sink {
         tool_ctx.with_event_sink(Arc::clone(sink))
@@ -834,6 +849,7 @@ mod tests {
         let session_state = test_session_state();
 
         let cancel = CancelToken::new();
+        let current_mode_id = astrcode_core::ModeId::default();
         let (result, _) = invoke_single_tool(SingleToolInvocation {
             gateway: kernel.gateway(),
             session_state,
@@ -845,6 +861,8 @@ mod tests {
             cancel: &cancel,
             tool_result_inline_limit: 32 * 1024,
             event_emission_mode: ToolEventEmissionMode::Immediate,
+            current_mode_id: &current_mode_id,
+            bound_mode_tool_contract: None,
         })
         .await;
 
@@ -873,6 +891,7 @@ mod tests {
         let mut live_receiver = session_state.subscribe_live();
 
         let cancel = CancelToken::new();
+        let current_mode_id = astrcode_core::ModeId::default();
         let (result, fallback_events) = invoke_single_tool(SingleToolInvocation {
             gateway: kernel.gateway(),
             session_state: Arc::clone(&session_state),
@@ -884,6 +903,8 @@ mod tests {
             cancel: &cancel,
             tool_result_inline_limit: 32 * 1024,
             event_emission_mode: ToolEventEmissionMode::Immediate,
+            current_mode_id: &current_mode_id,
+            bound_mode_tool_contract: None,
         })
         .await;
 
@@ -1005,6 +1026,7 @@ mod tests {
         let mut live_receiver = session_state.subscribe_live();
 
         let cancel = CancelToken::new();
+        let current_mode_id = astrcode_core::ModeId::default();
         let (result, buffered_events) = invoke_single_tool(SingleToolInvocation {
             gateway: kernel.gateway(),
             session_state: Arc::clone(&session_state),
@@ -1016,6 +1038,8 @@ mod tests {
             cancel: &cancel,
             tool_result_inline_limit: 32 * 1024,
             event_emission_mode: ToolEventEmissionMode::Buffered,
+            current_mode_id: &current_mode_id,
+            bound_mode_tool_contract: None,
         })
         .await;
 
@@ -1121,6 +1145,7 @@ mod tests {
         let session_state = test_session_state();
 
         let cancel = CancelToken::new();
+        let current_mode_id = astrcode_core::ModeId::default();
         let (result, fallback_events) = invoke_single_tool(SingleToolInvocation {
             gateway: kernel.gateway(),
             session_state: Arc::clone(&session_state),
@@ -1132,6 +1157,8 @@ mod tests {
             cancel: &cancel,
             tool_result_inline_limit: 32 * 1024,
             event_emission_mode: ToolEventEmissionMode::Immediate,
+            current_mode_id: &current_mode_id,
+            bound_mode_tool_contract: None,
         })
         .await;
 
@@ -1176,6 +1203,7 @@ mod tests {
         let mut live_receiver = session_state.subscribe_live();
 
         let cancel = CancelToken::new();
+        let current_mode_id = astrcode_core::ModeId::default();
         let (result, fallback_events) = invoke_single_tool(SingleToolInvocation {
             gateway: kernel.gateway(),
             session_state: Arc::clone(&session_state),
@@ -1187,6 +1215,8 @@ mod tests {
             cancel: &cancel,
             tool_result_inline_limit: 32 * 1024,
             event_emission_mode: ToolEventEmissionMode::Immediate,
+            current_mode_id: &current_mode_id,
+            bound_mode_tool_contract: None,
         })
         .await;
 

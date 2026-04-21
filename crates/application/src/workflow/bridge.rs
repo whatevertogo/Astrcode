@@ -1,8 +1,8 @@
-use astrcode_core::WorkflowBridgeState;
+use astrcode_core::{WorkflowArtifactRef, WorkflowBridgeState};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{ApplicationError, workflow::state::WorkflowArtifactRef};
+use crate::ApplicationError;
 
 pub(crate) const PLAN_TO_EXECUTE_BRIDGE_KIND: &str = "plan_to_execute";
 pub(crate) const PLAN_TO_EXECUTE_SCHEMA_VERSION: u32 = 1;
@@ -71,10 +71,10 @@ impl PlanToExecuteBridgeState {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::WorkflowArtifactRef;
     use chrono::{TimeZone, Utc};
 
     use super::{PlanImplementationStep, PlanToExecuteBridgeState};
-    use crate::workflow::state::WorkflowArtifactRef;
 
     #[test]
     fn plan_to_execute_bridge_round_trips_through_envelope() {

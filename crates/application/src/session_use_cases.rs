@@ -9,7 +9,6 @@ use astrcode_core::{
     AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ModeId,
     PromptDeclaration, SessionMeta, StoredEvent,
 };
-use astrcode_session_runtime::SessionModeSnapshot;
 
 use crate::{
     App, ApplicationError, CompactSessionAccepted, CompactSessionSummary, ExecutionControl,
@@ -23,16 +22,17 @@ use crate::{
     governance_surface::{GovernanceBusyPolicy, SessionGovernanceInput},
     session_identity::normalize_external_session_id,
     session_plan::{
-        active_plan_requires_approval, advance_plan_workflow_to_execution,
-        bootstrap_plan_workflow_state, build_execute_phase_prompt_declaration,
-        build_plan_exit_declaration, build_plan_prompt_context, build_plan_prompt_declarations,
-        copy_session_plan_artifacts, current_mode_requires_plan_context,
-        list_project_plan_archives, load_session_plan_state, mark_active_session_plan_approved,
-        parse_plan_approval, parse_plan_workflow_signal, planning_phase_allows_review_mode,
-        read_project_plan_archive, revert_execution_to_planning_workflow_state,
+        active_plan_requires_approval, build_plan_exit_declaration, build_plan_prompt_context,
+        build_plan_prompt_declarations, copy_session_plan_artifacts,
+        current_mode_requires_plan_context, list_project_plan_archives, load_session_plan_state,
+        mark_active_session_plan_approved, parse_plan_approval, parse_plan_workflow_signal,
+        read_project_plan_archive,
     },
     workflow::{
         EXECUTING_PHASE_ID, PLANNING_PHASE_ID, WorkflowInstanceState, WorkflowStateService,
+        advance_plan_workflow_to_execution, bootstrap_plan_workflow_state,
+        build_execute_phase_prompt_declaration, reconcile_workflow_phase_mode,
+        revert_execution_to_planning_workflow_state,
     },
 };
 
@@ -50,6 +50,12 @@ pub enum SessionForkSelector {
 }
 
 impl App {
+    fn plan_mode_spec(&self) -> Result<astrcode_core::GovernanceModeSpec, ApplicationError> {
+        self.mode_catalog()
+            .get(&ModeId::plan())
+            .ok_or_else(|| ApplicationError::Internal("builtin plan mode is missing".to_string()))
+    }
+
     pub async fn list_sessions(&self) -> Result<Vec<SessionMeta>, ApplicationError> {
         self.session_runtime
             .list_session_metas()
@@ -277,6 +283,7 @@ impl App {
         let mut prompt_declarations = Vec::new();
         let plan_state = load_session_plan_state(session_id, working_dir)?;
         let plan_approval = parse_plan_approval(text);
+        let plan_mode_spec = self.plan_mode_spec()?;
 
         if active_plan_requires_approval(plan_state.as_ref()) && plan_approval.approved {
             let approved_plan = mark_active_session_plan_approved(session_id, working_dir)?;
@@ -285,14 +292,18 @@ impl App {
                 current_mode_id = ModeId::code();
             }
             if let Some(summary) = approved_plan {
-                prompt_declarations.push(build_plan_exit_declaration(session_id, &summary));
+                if let Some(declaration) =
+                    build_plan_exit_declaration(&plan_mode_spec, session_id, &summary)
+                {
+                    prompt_declarations.push(declaration);
+                }
             }
         } else if current_mode_id == ModeId::plan()
             && current_mode_requires_plan_context(&current_mode_id)
             && !plan_approval.approved
         {
             let context = build_plan_prompt_context(session_id, working_dir, text)?;
-            prompt_declarations.extend(build_plan_prompt_declarations(session_id, &context));
+            prompt_declarations.extend(build_plan_prompt_declarations(&plan_mode_spec, &context));
         }
 
         Ok(PreparedSessionSubmission {
@@ -312,6 +323,7 @@ impl App {
         let plan_state = load_session_plan_state(session_id, working_dir)?;
         let signal = parse_plan_workflow_signal(text, plan_state.as_ref());
         let mut prompt_declarations = Vec::new();
+        let plan_mode_spec = self.plan_mode_spec()?;
 
         if let Some(signal) = signal {
             if let Some(transition) = self
@@ -354,20 +366,25 @@ impl App {
             }
         }
 
-        current_mode_id = self
-            .reconcile_workflow_phase_mode(
-                session_id,
-                working_dir,
-                current_mode_id,
-                &workflow_state,
-                plan_state.as_ref(),
-            )
-            .await?;
+        current_mode_id = reconcile_workflow_phase_mode(
+            self.workflow(),
+            session_id,
+            working_dir,
+            current_mode_id,
+            &workflow_state,
+            plan_state.as_ref(),
+            |mode_id| {
+                let session_id = session_id.to_string();
+                async move { self.switch_mode(&session_id, mode_id).await }
+            },
+        )
+        .await?;
 
         match workflow_state.current_phase_id.as_str() {
             PLANNING_PHASE_ID => {
                 let context = build_plan_prompt_context(session_id, working_dir, text)?;
-                prompt_declarations.extend(build_plan_prompt_declarations(session_id, &context));
+                prompt_declarations
+                    .extend(build_plan_prompt_declarations(&plan_mode_spec, &context));
             },
             EXECUTING_PHASE_ID => {
                 if prompt_declarations.is_empty() {
@@ -389,42 +406,6 @@ impl App {
             current_mode_id,
             prompt_declarations,
         })
-    }
-
-    async fn reconcile_workflow_phase_mode(
-        &self,
-        session_id: &str,
-        working_dir: &Path,
-        current_mode_id: ModeId,
-        workflow_state: &WorkflowInstanceState,
-        plan_state: Option<&astrcode_core::SessionPlanState>,
-    ) -> Result<ModeId, ApplicationError> {
-        let phase = self.workflow().phase(workflow_state)?;
-        if phase.mode_id == current_mode_id {
-            return Ok(current_mode_id);
-        }
-        if workflow_state.current_phase_id == PLANNING_PHASE_ID
-            && planning_phase_allows_review_mode(&current_mode_id, plan_state)
-        {
-            return Ok(current_mode_id);
-        }
-
-        match self.switch_mode(session_id, phase.mode_id.clone()).await {
-            Ok(SessionModeSnapshot {
-                current_mode_id, ..
-            }) => Ok(current_mode_id),
-            Err(error) => {
-                let state_path = WorkflowStateService::state_path(session_id, working_dir)?;
-                log::warn!(
-                    "workflow phase '{}' persisted in '{}' but mode reconcile to '{}' failed: {}",
-                    workflow_state.current_phase_id,
-                    state_path.display(),
-                    phase.mode_id,
-                    error
-                );
-                Err(error)
-            },
-        }
     }
 
     pub async fn submit_prompt_summary(
@@ -1001,7 +982,7 @@ mod tests {
             submissions[0]
                 .prompt_declarations
                 .iter()
-                .any(|declaration| declaration.origin.as_deref() == Some("session-plan:facts"))
+                .any(|declaration| declaration.origin.as_deref() == Some("mode-hook:plan:facts"))
         );
         assert!(
             !submissions[0]
@@ -1235,7 +1216,7 @@ mod tests {
             submissions[0]
                 .prompt_declarations
                 .iter()
-                .any(|declaration| declaration.origin.as_deref() == Some("session-plan:facts"))
+                .any(|declaration| declaration.origin.as_deref() == Some("mode-hook:plan:facts"))
         );
         assert!(
             !submissions[0]

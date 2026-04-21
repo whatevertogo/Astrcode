@@ -6,7 +6,7 @@
 
 ### Requirement: mode SHALL resolve mode-specific execution limits into the turn envelope
 
-每个 governance mode MUST 在编译 envelope 时解析 mode-specific 的执行限制参数，包括 max_steps、ForkMode 策略、以及 turn 级并发策略（SubmitBusyPolicy），作为 `ResolvedTurnEnvelope` 的一部分。
+每个 governance mode MUST 在 compile 阶段解析 mode-specific 的执行限制参数，包括 max_steps、ForkMode 策略、以及 turn 级并发策略（SubmitBusyPolicy）。当前实现中这些结果先进入 `ResolvedTurnEnvelope`，再在 bind 阶段组合成最终治理快照。
 
 #### Scenario: execute mode uses default execution limits
 

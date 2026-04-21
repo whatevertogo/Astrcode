@@ -32,9 +32,9 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, LlmMessage, PromptDeclaration, PromptFactsProvider,
-    PromptGovernanceContext, ResolvedRuntimeConfig, Result, StorageEvent, StorageEventPayload,
-    ToolDefinition,
+    AgentEventContext, BoundModeToolContractSnapshot, CancelToken, LlmMessage, ModeId,
+    PromptDeclaration, PromptFactsProvider, PromptGovernanceContext, ResolvedRuntimeConfig, Result,
+    StorageEvent, StorageEventPayload, ToolDefinition,
 };
 use astrcode_kernel::{CapabilityRouter, Kernel, KernelGateway};
 use chrono::{DateTime, Utc};
@@ -71,9 +71,11 @@ pub(crate) struct TurnRunRequest {
     pub runtime: ResolvedRuntimeConfig,
     pub cancel: CancelToken,
     pub agent: AgentEventContext,
+    pub current_mode_id: ModeId,
     pub prompt_facts_provider: Arc<dyn PromptFactsProvider>,
     pub capability_router: Option<CapabilityRouter>,
     pub prompt_declarations: Vec<PromptDeclaration>,
+    pub bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
     pub prompt_governance: Option<PromptGovernanceContext>,
 }
 
@@ -98,7 +100,9 @@ struct TurnExecutionResources<'a> {
     runtime: &'a ResolvedRuntimeConfig,
     cancel: &'a CancelToken,
     agent: &'a AgentEventContext,
+    current_mode_id: &'a ModeId,
     prompt_declarations: &'a [PromptDeclaration],
+    bound_mode_tool_contract: Option<&'a BoundModeToolContractSnapshot>,
     prompt_governance: Option<&'a PromptGovernanceContext>,
     tools: Arc<[ToolDefinition]>,
     settings: ContextWindowSettings,
@@ -115,7 +119,9 @@ struct TurnExecutionRequestView<'a> {
     runtime: &'a ResolvedRuntimeConfig,
     cancel: &'a CancelToken,
     agent: &'a AgentEventContext,
+    current_mode_id: &'a ModeId,
     prompt_declarations: &'a [PromptDeclaration],
+    bound_mode_tool_contract: Option<&'a BoundModeToolContractSnapshot>,
     prompt_governance: Option<&'a PromptGovernanceContext>,
 }
 
@@ -213,7 +219,9 @@ impl<'a> TurnExecutionResources<'a> {
             runtime: request.runtime,
             cancel: request.cancel,
             agent: request.agent,
+            current_mode_id: request.current_mode_id,
             prompt_declarations: request.prompt_declarations,
+            bound_mode_tool_contract: request.bound_mode_tool_contract,
             prompt_governance: request.prompt_governance,
             tools: Arc::from(gateway.capabilities().tool_definitions()),
             settings,
@@ -439,9 +447,11 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         runtime,
         cancel,
         agent,
+        current_mode_id,
         prompt_facts_provider,
         capability_router,
         prompt_declarations,
+        bound_mode_tool_contract,
         prompt_governance,
     } = request;
     let gateway = scoped_gateway(kernel.gateway(), capability_router)?;
@@ -456,7 +466,9 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
             runtime: &runtime,
             cancel: &cancel,
             agent: &agent,
+            current_mode_id: &current_mode_id,
             prompt_declarations: &prompt_declarations,
+            bound_mode_tool_contract: bound_mode_tool_contract.as_ref(),
             prompt_governance: prompt_governance.as_ref(),
         },
     );

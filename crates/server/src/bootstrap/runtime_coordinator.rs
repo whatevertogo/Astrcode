@@ -71,6 +71,7 @@ impl RuntimeCoordinator {
         )
     }
 
+    #[allow(dead_code)]
     pub(crate) fn managed_components(&self) -> Vec<Arc<dyn ManagedRuntimeComponent>> {
         support::with_read_lock_recovery(
             &self.managed_components,

@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -92,13 +95,47 @@ pub struct WorkflowBridgeState {
     pub payload: Value,
 }
 
+/// workflow 工件引用的稳定持久化模型。
+///
+/// Why: `workflow/state.json` 同时被 application 和 adapter-tools 读写，serde 合同必须只有一个
+/// owner。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowArtifactRef {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub artifact_kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<String>,
+}
+
+/// workflow instance 的稳定持久化真相。
+///
+/// Why: session-scoped workflow 状态需要跨 crate 共用同一份磁盘 schema，避免重复定义漂移。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowInstanceState {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub workflow_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub current_phase_id: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub artifact_refs: BTreeMap<String, WorkflowArtifactRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_state: Option<WorkflowBridgeState>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use serde_json::json;
 
     use super::{
-        WorkflowBridgeState, WorkflowDef, WorkflowPhaseDef, WorkflowSignal, WorkflowTransitionDef,
-        WorkflowTransitionTrigger,
+        WorkflowArtifactRef, WorkflowBridgeState, WorkflowDef, WorkflowInstanceState,
+        WorkflowPhaseDef, WorkflowSignal, WorkflowTransitionDef, WorkflowTransitionTrigger,
     };
     use crate::ModeId;
 
@@ -209,6 +246,43 @@ mod tests {
                     "planRef": "artifact://plan/current",
                     "stepCount": 3
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn workflow_instance_state_serializes_shared_disk_schema() {
+        let state = WorkflowInstanceState {
+            workflow_id: "plan_execute".to_string(),
+            current_phase_id: "planning".to_string(),
+            artifact_refs: BTreeMap::from([(
+                "canonical-plan".to_string(),
+                WorkflowArtifactRef {
+                    artifact_kind: "canonical-plan".to_string(),
+                    path: "/tmp/plan.md".to_string(),
+                    content_digest: Some("abc".to_string()),
+                },
+            )]),
+            bridge_state: None,
+            updated_at: chrono::DateTime::parse_from_rfc3339("2026-04-21T09:00:00Z")
+                .expect("timestamp should parse")
+                .with_timezone(&chrono::Utc),
+        };
+
+        let encoded = serde_json::to_value(&state).expect("workflow state should serialize");
+        assert_eq!(
+            encoded,
+            json!({
+                "workflowId": "plan_execute",
+                "currentPhaseId": "planning",
+                "artifactRefs": {
+                    "canonical-plan": {
+                        "artifactKind": "canonical-plan",
+                        "path": "/tmp/plan.md",
+                        "contentDigest": "abc"
+                    }
+                },
+                "updatedAt": "2026-04-21T09:00:00Z"
             })
         );
     }

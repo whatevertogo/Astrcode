@@ -1,46 +1,15 @@
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
 
-use astrcode_core::WorkflowBridgeState;
+use astrcode_core::WorkflowInstanceState;
 use astrcode_support::hostpaths::project_dir;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 
 use crate::ApplicationError;
 
 const WORKFLOW_DIR_NAME: &str = "workflow";
 const WORKFLOW_STATE_FILE_NAME: &str = "state.json";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowArtifactRef {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub artifact_kind: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_digest: Option<String>,
-}
-
-/// application 层持久化的 workflow instance 真相。
-///
-/// Why: workflow phase 恢复不能继续寄生在 plan state 或内存分支上，必须有显式 session-scoped 文件。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowInstanceState {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub workflow_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub current_phase_id: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub artifact_refs: BTreeMap<String, WorkflowArtifactRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bridge_state: Option<WorkflowBridgeState>,
-    pub updated_at: DateTime<Utc>,
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct WorkflowStateService;
@@ -141,10 +110,11 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> ApplicationErro
 mod tests {
     use std::{collections::BTreeMap, fs};
 
+    use astrcode_core::{WorkflowArtifactRef, WorkflowInstanceState};
     use chrono::{TimeZone, Utc};
     use tempfile::tempdir;
 
-    use super::{WorkflowArtifactRef, WorkflowInstanceState, WorkflowStateService};
+    use super::WorkflowStateService;
 
     #[test]
     fn workflow_state_service_round_trips_state_file() {

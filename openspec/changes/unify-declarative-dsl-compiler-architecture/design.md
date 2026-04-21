@@ -1,212 +1,195 @@
 ## Context
 
-Astrcode 已经具备声明式治理与正式 workflow 的核心骨架，但当前实现存在两类问题同时叠加：
+Astrcode 已经具备声明式治理与正式 workflow 的核心骨架，但当前实现把几类本应分开的真相揉在了一起：
 
-1. 声明式编译边界不够清晰
-   - `GovernanceModeSpec` 在 `core` 中定义为治理 DSL，但 `compile_mode_envelope()` 与 `GovernanceSurfaceAssembler` 之间的职责边界没有被统一命名。
-   - workflow 目前主要体现为 `WorkflowDef + WorkflowOrchestrator`，缺少明确的“已校验 / 已编译 workflow artifact”概念。
-   - prompt 侧同时存在 `PromptDeclaration` 与 contributor/composer 两套路径，但上游治理层没有把“为什么注入这些 prompt”完全讲清楚。
+1. `mode` 想承载更多合同语义，但 compile / bind 的边界不清。
+   - `compile_mode_envelope()` 与 `GovernanceSurfaceAssembler` 的职责边界没有统一命名。
+   - builtin `plan` mode 的 artifact / exit / prompt 语义仍主要体现在专用工具和 session-specific helper 中。
 
-2. mode spec 的表达能力不足
-   - builtin `plan` mode 依赖 `upsertSessionPlan`、`exitPlanMode` 与 canonical session plan artifact 的硬编码约定。
-   - 插件虽然已经能通过 `InitializeResultData.modes` 注册 mode，但当前 mode spec 还不足以描述 artifact 合同、退出门、动态 prompt hook 与 phase 绑定。
-   - reload 路径会分别替换 mode catalog、capability surface、skill catalog，但失败时没有统一的一致性回滚契约。
+2. `workflow` 已经拥有 `phase -> mode` 的正式绑定点，却缺少显式的 validate / compile owner。
+   - `WorkflowPhaseDef.mode_id` 已经是现有真相。
+   - 但 plan approval、bridge 生成、workflow bootstrap 与 reconcile 仍散落在 `session_plan.rs`、`session_use_cases.rs` 和工具 handler 中。
 
-这次 change 的目标不是“发明一个统一超级 DSL”，而是建立统一的声明式编译骨架，同时先补齐 `GovernanceModeSpec` 的缺口，使 mode 真正具备插件化扩展基础。
+3. `reload` 已经有局部原子替换，但治理输入还不是统一快照。
+   - capability surface 失败时会回滚。
+   - mode catalog 与 skill catalog 还没有被纳入同一次提交/回滚。
 
-受影响的主要模块：
+4. 工具层缺少稳定的 mode contract 读取面。
+   - `ToolContext` 只有 `current_mode_id`。
+   - 需要 artifact / exit 语义的工具只能硬编码规则，或者不干净地回看 application/runtime 内部实现。
 
-- `crates/core/src/mode/mod.rs`
-- `crates/application/src/mode/*`
-- `crates/application/src/governance_surface/*`
-- `crates/application/src/workflow/*`
-- `crates/protocol/src/plugin/handshake.rs`
-- `crates/server/src/bootstrap/governance.rs`
-- `crates/server/src/bootstrap/capabilities.rs`
+这次 change 的目标不是继续扩 scope，而是把 owner 收清楚：
 
-与 `PROJECT_ARCHITECTURE.md` 的关系：
-
-- 本次方案不改变 `mode envelope / workflow phase / application orchestration / session-runtime truth` 四层划分。
-- 需要补充的是：把 `compile`、`bind`、`orchestrate` 三类职责明确映射到这套分层中，并把 plugin mode 注册与 reload 一致性纳入治理组合根的正式约束。
+- `mode` 负责治理合同。
+- `workflow` 负责 phase 图与 phase -> mode 绑定。
+- `binder` 负责把 compile 结果与 runtime/session/profile/control 绑定。
+- `tool context` 只接收 pure-data snapshot，不接触 application 内部类型。
 
 ## Goals / Non-Goals
 
-**Goals:**
+**Goals**
 
-- 统一治理链路中的 `compile`、`bind`、`orchestrate` 术语与职责边界。
-- 扩展 `GovernanceModeSpec`，让 mode 能声明 artifact 合同、exit gate、动态 prompt hook 与 workflow 绑定。
-- 明确 plugin mode 的 host 消费链路和 reload 一致性要求。
-- 让 prompt 结果继续沉淀到现有 `PromptPlan`，避免引入平行 prompt IR。
-- 为 workflow 引入轻量的 validate/compile 语义，但保持当前规模下的实现克制。
+- 统一 `compile`、`bind`、`orchestrate` 术语与职责边界。
+- 扩展 `GovernanceModeSpec`，让 mode 能声明 artifact 合同、exit gate 与 prompt hooks。
+- 明确 workflow compiled artifact 是 phase -> mode 绑定的唯一 owner。
+- 为工具执行提供纯数据的 bound mode contract snapshot。
+- 让 prompt 结果继续沉淀到现有 `PromptPlan`。
+- 让 reload 在“无活跃 session”约束下对 mode catalog、capability surface、skill catalog 做统一候选快照提交/回滚。
+- 补上 duplicate `mode_id` 冲突策略。
 
-**Non-Goals:**
+**Non-Goals**
 
 - 不把 mode、workflow、prompt、capability 合并成单一 schema。
-- 不在本次引入新的外部配置格式。
-- 不承诺一次性删除 `enterPlanMode` / `exitPlanMode` / `upsertSessionPlan`。
-- 不为当前 workflow 规模引入额外索引化结构或缓存层。
-- 不修改 `session-runtime` 的 truth 边界，不让它接管 workflow 业务编排。
+- 不把 workflow 绑定反向塞进 `GovernanceModeSpec`。
+- 不在本次为 workflow 引入与当前规模不匹配的索引化结构。
+- 不让 `adapter-tools` 直接依赖 `application` 或 runtime 内部类型。
+- 不在本次直接设计新一代通用 mode transition DSL。
 
 ## Decisions
 
-### 决策 1：将本次工作拆成“两条主线 + 两个支撑项”，而不是串行五阶段
+### 决策 1：`GovernanceModeSpec` 只扩 artifact / exit / prompt 合同，不再承载 workflow phase 绑定
 
 选择：
 
-- 主线 A：补齐 `GovernanceModeSpec` 的表达能力
-- 主线 B：显式化 `compile / bind` 边界
-- 支撑项 C：为 workflow 引入轻量 validate/compile 语义
-- 支撑项 D：收束 prompt 来源与高频 metadata
+- 在 `GovernanceModeSpec` 中新增：
+  - `ModeArtifactDef`
+  - `ModeExitGateDef`
+  - `ModePromptHooks`
+- 不新增 `ModeWorkflowBinding`。
 
 原因：
 
-- 当前最痛的扩展性瓶颈是 mode spec 表达力不足，而不是类型命名本身。
-- 如果先做纯命名重构，再做 mode contract 扩展，很容易让 artifact / exit gate / prompt hook 继续被塞回 binder。
-- 两条主线并行能保证“补 spec”与“边界收束”互相约束，而不是互相等待。
+- 仓库级架构已经明确 `mode` 与 `workflow phase` 是两层不同语义。
+- `WorkflowPhaseDef.mode_id` 已经是 phase -> mode 绑定真相，再在 mode spec 内保存 `workflow_id/phase_id/phase_role` 只会形成双写。
+- 同一个 `mode_id` 可以被多个 phase 复用；反向绑定会把这个合法关系错误收窄成一对一。
 
 备选方案：
 
-- 先完成一轮纯架构命名重构，再开始 spec 扩展
-  - 未采纳原因：会延后对 `plan` mode 硬编码问题的处理，且新能力仍可能沿旧边界生长。
+- 在 `GovernanceModeSpec` 中加入 `workflow_binding`
+  - 未采纳原因：会复制已有 workflow 真相，并迫使 binder 做双向一致性校验。
 
-### 决策 2：`GovernanceModeSpec` 继续作为治理 DSL 核心，并扩展 mode 合同能力
+### 决策 2：workflow compiled artifact 保持 phase -> mode 绑定 owner，mode 只提供可复用合同
 
 选择：
 
-- 继续围绕 `GovernanceModeSpec` 扩展，而不是新建并行的 mode contract 对象。
-- 新增的表达能力应至少覆盖：
-  - artifact 定义
-  - exit gate
-  - prompt hooks
-  - workflow binding
+- `WorkflowDef`/compiled workflow artifact 持有：
+  - `phase_id`
+  - `mode_id`
+  - `role`
+  - `artifact_kind`
+  - `accepted_signals`
+- workflow orchestration 通过 `phase.mode_id` 向治理编译链路索取 mode contract。
 
 原因：
 
-- 插件 mode 已通过协议层直接声明 `GovernanceModeSpec`，如果再引入平行 DSL，会扩大 host/plugin 双边复杂度。
-- `plan` mode 的特殊性，本质上是 mode 合同表达不够，而不是缺少另一个专用系统。
-- 复用现有 mode catalog、selector 编译和 policy 编译路径，改动面更可控。
+- 这符合 `PROJECT_ARCHITECTURE.md` 中“mode 负责治理约束，workflow phase 负责业务阶段”的分层。
+- 可自然支持“多个 phase 复用同一个 mode”。
+- recovery / reconcile 时也应该从 `current_phase_id -> phase.mode_id` 出发，而不是反向从 mode 猜 phase。
 
-备选方案：
-
-- 保持 `GovernanceModeSpec` 不变，把 artifact / exit gate 继续塞进 builtin tool 或 workflow 逻辑
-  - 未采纳原因：这会继续固化 `plan` mode 的专有硬编码，插件仍无法定义完整 mode。
-
-### 决策 3：治理链路保持“compile 产物”和“bound surface”两层，但不强制引入公开 normalize 类型
+### 决策 3：compile 与 bind 保持两层产物，但为工具执行补一层 pure-data 投影
 
 选择：
 
-- 明确保留两层产物：
-  - 编译产物：`CompiledModeSurface`（命名可渐进演化）
-  - 绑定产物：`ResolvedGovernanceSurface`
-- 不把 `NormalizedModeSpec` 作为当前阶段必须公开落地的类型。
+- compile 阶段产出 `CompiledModeSurface` / 等价编译产物，负责：
+  - selector 求值
+  - child/grant 裁剪
+  - artifact / exit / prompt contract 派生
+  - diagnostics
+- bind 阶段产出 `ResolvedGovernanceSurface`，负责：
+  - runtime config
+  - resolved limits
+  - profile / injected messages
+  - approval pipeline
+- 对工具执行额外投影一份 pure-data `BoundModeToolContractSnapshot`（命名可渐进演化），只包含工具所需的 artifact / exit 合同字段。
 
 原因：
 
-- 现有 `GovernanceModeSpec::validate()` 已覆盖基础校验，短期不需要为了“层次完整”额外制造公开中间类型。
-- 当前最重要的是把 selector 解析、policy 派生、router subset 生成视为 compiler 责任，把 runtime/profile/session/control 合并视为 binder 责任。
+- `adapter-tools` 不能也不应该依赖 `GovernanceSurfaceAssembler`。
+- `ToolContext` 只有 `current_mode_id` 不足以支撑 contract-aware 工具。
+- 纯数据 snapshot 可以跨 `ResolvedGovernanceSurface -> AgentPromptSubmission -> ToolContext -> CapabilityContext` 稳定传递，不泄漏 application 内脏。
 
-备选方案：
-
-- 立即新增公开 `NormalizedModeSpec`
-  - 未采纳原因：目前收益不足，且会增加额外概念负担。
-
-### 决策 4：prompt 不新增平行 IR，继续以 `PromptPlan` 作为结果模型
+### 决策 4：通用工具化先不做“大一统工具”，先建立稳定 contract 读取面
 
 选择：
 
-- 治理层负责“决定要注入哪些 prompt”
-- `adapter-prompt` 继续负责“如何渲染并产出 `PromptPlan`”
-- 不再引入新的 `CompiledPromptSet`
+- 本次不再要求立即实现 `upsertModeArtifact` / `exitMode` 这类过度泛化的新工具。
+- 先让 plan-specific 工具通过 `BoundModeToolContractSnapshot` 读取 artifact / exit 合同，消除硬编码重复。
+- 后续若要做真正的通用 mode 工具，再基于该 snapshot 单独开 change。
 
 原因：
 
-- `PromptPlan`、`PromptBlock`、`BlockMetadata` 已经覆盖排序、来源、层级、渲染目标等职责。
-- 当前真正缺失的是 prompt 来源语义与绑定责任，而不是结果模型。
+- 当前 generic tool 方案缺少稳定的 contract 输入面，也没有清楚定义“exit 到哪个 target mode”。
+- 直接推进会把不完整的治理语义硬塞进工具层。
 
-备选方案：
-
-- 引入新的治理侧 prompt IR，再交给 `adapter-prompt` 二次转换
-  - 未采纳原因：与现有 `PromptPlan` 明显重叠，会增加平行概念。
-
-### 决策 5：workflow 采用轻量 compiled artifact 语义，但不为现有规模引入索引化结构
+### 决策 5：plan workflow 的副作用 owner 收回 application orchestration
 
 选择：
 
-- 为 `WorkflowDef` 增加 validate/compile 语义
-- `WorkflowOrchestrator` 消费“已校验 / 已编译 workflow artifact”
-- 当前保持 `Vec` 结构，不强制 `HashMap` 索引化
+- `enterPlanMode` 只负责 mode transition。
+- workflow bootstrap、approval、archive、bridge 生成、reconcile 回归 `application::workflow/*` 与对应 helper。
+- `session_plan.rs` 保留 plan artifact owner，但不再成为 workflow side effect 的隐式组合根。
 
 原因：
 
-- 当前 workflow 规模很小，索引化不是瓶颈。
-- 这里真正需要的是边界清晰，而不是数据结构升级。
+- workflow 迁移、副作用与 bridge 本就属于 application orchestration，而不是 tool handler。
+- 当前逻辑散落在 `session_plan.rs`、`session_use_cases.rs`、`enter_plan_mode.rs`，已经形成多个 owner。
 
-备选方案：
-
-- 直接引入 phase/transition 索引表
-  - 未采纳原因：对当前规模是过度抽象，且会稀释本次 change 的重点。
-
-### 决策 6：plugin reload 必须提升为治理一致性问题，而不是局部实现细节
+### 决策 6：mode catalog 必须拒绝 duplicate `mode_id`，包括 plugin 对 builtin 的影子覆盖
 
 选择：
 
-- mode catalog、capability surface、skill catalog 的替换必须形成统一候选快照
-- 成功时一起切换，失败时一起回滚
-- 运行中的 turn 继续使用旧 surface；下一 turn 才使用新快照
+- `ModeCatalog` 在构造候选快照时检测 duplicate `mode_id`。
+- plugin mode 不允许覆盖 builtin `code` / `plan` / `review`，也不允许与其他 plugin 重名。
 
 原因：
 
-- 当前 reload 已有“能力面失败则回滚 surface”的雏形，但 mode catalog 与 skill catalog 没有统一的一致性契约。
-- plugin mode 已经是正式 DSL 输入，如果 reload 失败后 mode catalog 与 capability surface 漂移，后续编译就会得到不一致结果。
+- 扩展 mode contract 后，重复 id 已经不是“展示层小问题”，而是能直接篡改治理语义。
+- 静默覆盖会让 bootstrap / reload 结果不可预测，且难以诊断。
 
-备选方案：
+### 决策 7：reload 继续遵守 idle-only 合同，不再引入“running turn 用旧快照”的并行语义
 
-- 只要求 capability surface 原子替换，mode catalog/skill catalog 由调用方自行协调
-  - 未采纳原因：这会把一致性责任散落到多个模块，后续难以验证。
+选择：
+
+- `AppGovernance.reload()` 继续在存在 running session 时拒绝 reload。
+- reload 只在 idle 状态下组装候选治理快照：
+  - mode catalog
+  - capability surface
+  - skill catalog
+- 成功时一次提交，失败时完整回滚。
+
+原因：
+
+- 这是现有主 spec 和代码已经建立的治理合同。
+- 在这个前提下，不存在“执行中 turn 继续用旧快照、下一 turn 再切新快照”的混合语义；那是另一套模型，不能和 idle-only 同时存在。
 
 ## Risks / Trade-offs
 
-- [风险] `GovernanceModeSpec` 扩展后，builtin mode 与 plugin mode 的校验复杂度上升
-  - Mitigation：把新增字段设计为显式可选，并为 mode catalog 注册增加集中校验和错误归类。
+- [风险] 去掉 `workflow_binding` 后，change 看起来比最初 proposal 更收敛。
+  - Mitigation：这是有意收敛，换来 owner 清晰与可实现性；workflow 绑定本来就已有正式 owner。
 
-- [风险] compile/bind 命名收束期间，新旧术语并存会让代码短期更难读
-  - Mitigation：优先补模块注释和类型注释，再做渐进重命名，避免“一次性全改名”。
+- [风险] 引入 `BoundModeToolContractSnapshot` 会扩大 core/tool 上下文字段。
+  - Mitigation：只引入 pure-data snapshot，不携带 router、锁、channel 或 application 类型。
 
-- [风险] `plan` mode 通用化过程中可能影响现有 `enterPlanMode` / `exitPlanMode` / `upsertSessionPlan` 行为
-  - Mitigation：先让 mode spec 能表达等价合同，再逐步把 builtin plan 迁移到新合同上，保留明确回滚点。
+- [风险] plan workflow 副作用回收进 application 后，短期改动面横跨 `workflow`、`session_plan`、`session_use_cases`。
+  - Mitigation：以“迁 owner 不改语义”为原则，先抽 helper，再移动调用点。
 
-- [风险] reload 一致性提升后，重载路径实现会更复杂
-  - Mitigation：以“候选快照 + 提交/回滚”模型收敛更新步骤，并补充失败路径测试。
-
-- [风险] workflow validate/compile 语义补入后，可能诱发额外抽象冲动
-  - Mitigation：明确当前非目标是不做索引化与过度目录拆分，只补边界，不追求形式完整。
+- [风险] duplicate `mode_id` 拒绝会让此前依赖覆盖行为的实验性插件失效。
+  - Mitigation：仓库本身不追求向后兼容；这里优先保证治理语义确定性。
 
 ## Migration Plan
 
-1. 先更新架构文档和相关 specs，固定 compile/bind/orchestrate 与 mode contract 术语。
-2. 在 `core` 扩展 `GovernanceModeSpec` 所需字段，并补充 mode 校验逻辑。
-3. 在 `application` 中把 mode compile 产物与 governance binder 的边界显式化。
-4. 让 builtin `plan` mode 先以新 spec 字段表达现有语义，再视实现节奏决定是否通用化 builtin tools。
-5. 为 workflow 加入轻量 validate/compile 边界，并保持当前数据结构。
-6. 调整 bootstrap / reload 逻辑，保证 mode catalog、capability surface、skill catalog 的一致性切换。
-7. 补充 selector 编译、plan mode 合同、plugin reload 回滚、workflow compile 与 prompt 来源的测试。
-
-回滚策略：
-
-- 若 mode spec 扩展或 reload 一致性改造引发不稳定，可保留新的 spec 字段但继续由 builtin plan 走旧逻辑。
-- 若 compile/bind 重命名带来阅读或迁移成本过高，可先保留旧类型名，通过注释与包装函数明确语义，待后续 change 再逐步改名。
-
-## Open Questions
-
-- mode 级 artifact 合同是否只覆盖单 artifact，还是需要从一开始支持多 artifact 及命名槽位？
-- exit gate 应定义为通用规则表达式，还是先收敛成少量内建 gate 类型？
-- workflow binding 应落在 `GovernanceModeSpec` 内，还是由 workflow spec 引用 mode contract 并做双向校验？
-- reload 的"一致性提交"最终应由 `AppGovernance`、`ServerRuntimeReloader` 还是更底层的组合根对象统一承载？
-
+1. 先更新架构文档和 change/spec 术语，删掉 `workflow_binding` 与 mixed-snapshot 语义。
+2. 在 `core` 扩展 `GovernanceModeSpec` 的 artifact / exit / prompt 合同，并增加 duplicate `mode_id` 校验需求。
+3. 在 `application` 中显式化 mode compile / governance bind 边界。
+4. 为 `ResolvedGovernanceSurface -> AgentPromptSubmission -> ToolContext` 增加 pure-data bound mode contract snapshot。
+5. 让 builtin `plan` mode 用新 mode contract 字段表达当前 artifact / exit / prompt 语义。
+6. 把 plan workflow 的 bootstrap / approval / bridge / reconcile 副作用收回 workflow/application owner。
+7. 重构 reload 路径为统一候选治理快照提交/回滚。
+8. 补充 duplicate mode id、workflow compile / reconcile、reload rollback、prompt source tracking 与 tool-contract bridge 测试。
 
 ## Resolved Questions
 
-- **单 artifact vs 多 artifact**：本次只支持单 artifact。当前 plan mode 只有 1 个 artifact，多 artifact 需求不明确，等有真实场景再扩展。
-- **exit gate 形状**：先收敛为内建 gate 类型（`required_headings` + `actionable_sections` + `review_passes` + `review_checklist`）。不引入通用规则表达式。
-- **workflow binding 位置**：放在 `GovernanceModeSpec` 内。插件声明 mode 时应能同时声明它属于哪个 workflow phase，这比让 workflow spec 反向引用 mode 更简单。
-- **reload 一致性承载方**：由 `AppGovernance` 统一承载。它已经是治理组合根，mode catalog / capability surface / skill catalog 的候选快照提交/回滚应由它协调。
+- **workflow phase 绑定放哪里**：放在 workflow compiled artifact，不放在 `GovernanceModeSpec`。
+- **duplicate mode id 怎么处理**：一律拒绝；plugin 不允许影子覆盖 builtin mode。
+- **reload 是否支持执行中 session 混合版本**：不支持；继续遵守 idle-only reload。
+- **generic mode tools 是否纳入本次**：不纳入；本次先建立稳定的 tool contract snapshot。

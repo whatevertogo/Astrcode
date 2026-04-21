@@ -9,11 +9,11 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AllowAllPolicyEngine, ApprovalDefault, AstrError, CapabilityKind, CapabilitySpec, LlmMessage,
-    LlmOutput, LlmProvider, LlmRequest, ModeId, ModelLimits, ModelRequest, PromptBuildOutput,
-    PromptBuildRequest, PromptProvider, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
-    ResourceProvider, ResourceReadResult, ResourceRequestContext, SideEffect, Stability,
-    UserMessageOrigin,
+    AllowAllPolicyEngine, ApprovalDefault, AstrError, BoundModeToolContractSnapshot,
+    CapabilityKind, CapabilitySpec, LlmMessage, LlmOutput, LlmProvider, LlmRequest, ModeId,
+    ModelLimits, ModelRequest, PromptBuildOutput, PromptBuildRequest, PromptProvider,
+    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResourceProvider, ResourceReadResult,
+    ResourceRequestContext, SideEffect, Stability, UserMessageOrigin,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -180,6 +180,7 @@ fn session_surface_builds_collaboration_prompt_and_policy_context() {
                 == Some("governance:collaboration-guide"))
     );
     assert_eq!(surface.prompt_facts_context().approval_mode, "inherit");
+    assert_eq!(surface.bound_mode_tool_contract.mode_id, ModeId::code());
 }
 
 #[tokio::test]
@@ -189,6 +190,11 @@ async fn surface_policy_pipeline_defaults_to_allow_all() {
         runtime: ResolvedRuntimeConfig::default(),
         capability_router: None,
         prompt_declarations: Vec::new(),
+        bound_mode_tool_contract: BoundModeToolContractSnapshot {
+            mode_id: ModeId::code(),
+            artifact: None,
+            exit_gate: None,
+        },
         resolved_limits: ResolvedExecutionLimitsSnapshot {
             allowed_tools: vec!["readFile".to_string()],
             max_steps: Some(4),

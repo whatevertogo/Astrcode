@@ -19,13 +19,19 @@ mode prompt program、governance helper prompt、child contract prompt、skill-s
 
 ### Requirement: mode prompt hooks SHALL extend governance prompt behavior without replacing the prompt pipeline
 
-mode contract MAY 声明动态 prompt hooks，用于根据 artifact 状态、exit gate 状态或 workflow binding 调整 prompt 输入，但这些 hooks MUST 通过既有 `PromptDeclaration` / prompt composition 路径生效。
+mode contract MAY 声明动态 prompt hooks，用于根据 artifact 状态、exit gate 状态或 workflow phase facts 调整 prompt 输入，但这些 facts MUST 由 binder / workflow orchestration 以显式输入提供；hooks 自身 MUST 继续通过既有 `PromptDeclaration` / prompt composition 路径生效。
 
 #### Scenario: mode prompt hook adds artifact-aware guidance
 
 - **WHEN** 某个 mode 声明了与 artifact 状态相关的 prompt hook
 - **THEN** 系统 SHALL 基于已绑定的 mode contract 产出额外 prompt input
 - **AND** 这些输入 SHALL 通过现有 prompt declaration 与 prompt composer 路径渲染
+
+#### Scenario: mode prompt hook reacts to workflow phase facts without owning workflow truth
+
+- **WHEN** binder 已经把当前 workflow phase 或 bridge facts 作为显式输入传给 mode prompt hook
+- **THEN** 该 hook SHALL 可以基于这些 facts 调整治理 prompt 输入
+- **AND** SHALL NOT 通过在 `GovernanceModeSpec` 中反向声明 workflow binding 来拥有 workflow 真相
 
 #### Scenario: prompt hook cannot replace contributor internals
 

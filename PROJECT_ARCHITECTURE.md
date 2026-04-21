@@ -284,7 +284,16 @@ core 中需要警惕的边界：
 - `mode` 负责治理约束，回答"这一轮允许做什么、如何做"。
 - `workflow phase` 负责业务语义，回答"当前处于正式流程的哪一段、下一步如何迁移"。
 - 同一个 `mode_id` 可以被多个 phase 复用。
+- phase -> mode 绑定由 workflow artifact 的 `phase.mode_id` 持有；mode 不反向拥有 workflow 真相。
 - workflow 迁移必须通过显式 `transition` 与 `bridge` 建模，不能散落在提交入口的 plan-specific if/else 里。
+
+## 治理 compile / bind / orchestrate 术语
+
+- `compile`：把声明模型编译成纯数据产物，不读取 session/runtime 实例状态。当前治理链路里的 `ResolvedTurnEnvelope` 虽沿用 envelope 命名，但语义上属于 compile 阶段产物。
+- `bind`：把编译产物与 runtime/session/control/profile 绑定成一次性可执行快照。治理链路里的 owner 是 `ResolvedGovernanceSurface`，工具侧只消费从该快照投影出的纯数据合同。
+- `orchestrate`：基于 workflow state、signal 与 bridge 推进业务 phase，不负责重解释 mode selector 或 capability 语义。
+- compile 结果与 bind 结果不是同一层对象，文档、注释与接口命名不得混称。
+- governance reload 继续遵守 idle-only 合同：存在 running session 时拒绝 reload，不引入 mixed-snapshot 执行模型。
 
 ## 依赖方向
 

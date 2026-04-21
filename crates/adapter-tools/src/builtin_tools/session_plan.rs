@@ -10,11 +10,11 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, Result, ToolContext, WorkflowBridgeState, session_plan_content_digest,
+    AstrError, ModeArtifactDef, Result, ToolContext, WorkflowArtifactRef, WorkflowInstanceState,
+    session_plan_content_digest,
 };
 pub use astrcode_core::{SessionPlanState, SessionPlanStatus};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
 
 use crate::builtin_tools::fs_common::session_dir_for_tool_results;
 
@@ -26,35 +26,22 @@ pub const WORKFLOW_STATE_FILE_NAME: &str = "state.json";
 pub const PLAN_EXECUTE_WORKFLOW_ID: &str = "plan_execute";
 pub const PLANNING_PHASE_ID: &str = "planning";
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlanArtifactContractBlockers {
+    pub missing_headings: Vec<String>,
+    pub invalid_sections: Vec<String>,
+}
+
+impl PlanArtifactContractBlockers {
+    pub fn is_empty(&self) -> bool {
+        self.missing_headings.is_empty() && self.invalid_sections.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionPlanPaths {
     pub plan_dir: PathBuf,
     pub state_path: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowArtifactRef {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub artifact_kind: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_digest: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowInstanceState {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub workflow_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub current_phase_id: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub artifact_refs: BTreeMap<String, WorkflowArtifactRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bridge_state: Option<WorkflowBridgeState>,
-    pub updated_at: DateTime<Utc>,
 }
 
 pub fn session_plan_paths(ctx: &ToolContext) -> Result<SessionPlanPaths> {
@@ -173,6 +160,41 @@ pub fn persist_workflow_state(path: &Path, state: &WorkflowInstanceState) -> Res
     Ok(())
 }
 
+pub fn validate_plan_artifact_contract(
+    content: &str,
+    artifact: &ModeArtifactDef,
+) -> PlanArtifactContractBlockers {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return PlanArtifactContractBlockers {
+            missing_headings: artifact
+                .required_headings
+                .iter()
+                .map(|heading| markdown_section_heading(heading))
+                .collect(),
+            invalid_sections: Vec::new(),
+        };
+    }
+
+    let missing_headings = artifact
+        .required_headings
+        .iter()
+        .map(|heading| markdown_section_heading(heading))
+        .filter(|heading| !trimmed.contains(heading))
+        .collect::<Vec<_>>();
+
+    let invalid_sections = artifact
+        .actionable_sections
+        .iter()
+        .filter_map(|section| ensure_actionable_section(trimmed, section).err())
+        .collect::<Vec<_>>();
+
+    PlanArtifactContractBlockers {
+        missing_headings,
+        invalid_sections,
+    }
+}
+
 fn current_plan_artifact_ref(
     plan_dir: &Path,
     plan_state: &SessionPlanState,
@@ -185,6 +207,45 @@ fn current_plan_artifact_ref(
         artifact_kind: "canonical-plan".to_string(),
         path: plan_path.display().to_string(),
         content_digest: Some(session_plan_content_digest(content.trim())),
+    })
+}
+
+fn markdown_section_heading(heading: &str) -> String {
+    let trimmed = heading.trim();
+    if trimmed.starts_with('#') {
+        trimmed.to_string()
+    } else {
+        format!("## {trimmed}")
+    }
+}
+
+fn ensure_actionable_section(content: &str, heading: &str) -> std::result::Result<(), String> {
+    let heading = markdown_section_heading(heading);
+    let section = section_body(content, &heading)
+        .ok_or_else(|| format!("session plan is missing required section '{}'", heading))?;
+    let has_actionable_line = section.lines().map(str::trim).any(|line| {
+        !line.is_empty()
+            && (line.starts_with("- ")
+                || line.starts_with("* ")
+                || line.starts_with("+ ")
+                || line.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
+    });
+    if has_actionable_line {
+        return Ok(());
+    }
+    Err(format!(
+        "session plan section '{}' must contain concrete actionable items",
+        heading
+    ))
+}
+
+fn section_body<'a>(content: &'a str, heading: &str) -> Option<&'a str> {
+    let start = content.find(heading)?;
+    let after_heading = &content[start + heading.len()..];
+    let next_heading_offset = after_heading.find("\n## ");
+    Some(match next_heading_offset {
+        Some(offset) => &after_heading[..offset],
+        None => after_heading,
     })
 }
 
@@ -212,5 +273,32 @@ mod tests {
         let artifact = current_plan_artifact_ref(temp.path(), &plan_state);
 
         assert_eq!(artifact, None);
+    }
+
+    #[test]
+    fn validate_plan_artifact_contract_uses_required_and_actionable_sections() {
+        let blockers = validate_plan_artifact_contract(
+            "# Plan\n\n## Context\n- grounded\n\n## Implementation Steps\nrefine later\n",
+            &ModeArtifactDef {
+                artifact_type: "canonical-plan".to_string(),
+                file_template: None,
+                schema_template: None,
+                required_headings: vec![
+                    "Context".to_string(),
+                    "Implementation Steps".to_string(),
+                    "Verification".to_string(),
+                ],
+                actionable_sections: vec![
+                    "Implementation Steps".to_string(),
+                    "Verification".to_string(),
+                ],
+            },
+        );
+
+        assert_eq!(
+            blockers.missing_headings,
+            vec!["## Verification".to_string()]
+        );
+        assert_eq!(blockers.invalid_sections.len(), 2);
     }
 }

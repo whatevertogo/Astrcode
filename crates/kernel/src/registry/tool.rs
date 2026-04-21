@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentEventContext, AstrError, CancelToken, CapabilityContext, CapabilityExecutionResult,
-    CapabilityInvoker, CapabilitySpec, ExecutionOwner, Result, SessionId, Tool, ToolContext,
-    ToolEventSink, ToolOutputDelta,
+    AgentEventContext, AstrError, BoundModeToolContractSnapshot, CancelToken, CapabilityContext,
+    CapabilityExecutionResult, CapabilityInvoker, CapabilitySpec, ExecutionOwner, Result,
+    SessionId, Tool, ToolContext, ToolEventSink, ToolOutputDelta,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -112,6 +112,7 @@ struct ToolBridgeContext {
     request_id: Option<String>,
     agent: AgentEventContext,
     current_mode_id: astrcode_core::ModeId,
+    bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
     execution_owner: Option<ExecutionOwner>,
     tool_output_sender: Option<UnboundedSender<ToolOutputDelta>>,
     event_sink: Option<Arc<dyn ToolEventSink>>,
@@ -127,6 +128,7 @@ impl ToolBridgeContext {
             request_id: None,
             agent: ctx.agent_context().clone(),
             current_mode_id: ctx.current_mode_id().clone(),
+            bound_mode_tool_contract: ctx.bound_mode_tool_contract().cloned(),
             execution_owner: ctx.execution_owner().cloned(),
             tool_output_sender: ctx.tool_output_sender(),
             event_sink: ctx.event_sink(),
@@ -142,6 +144,7 @@ impl ToolBridgeContext {
             request_id: ctx.request_id.clone(),
             agent: ctx.agent.clone(),
             current_mode_id: ctx.current_mode_id.clone(),
+            bound_mode_tool_contract: ctx.bound_mode_tool_contract.clone(),
             execution_owner: ctx.execution_owner.clone(),
             tool_output_sender: ctx.tool_output_sender.clone(),
             event_sink: ctx.event_sink.clone(),
@@ -160,6 +163,7 @@ impl ToolBridgeContext {
             turn_id: self.turn_id,
             agent: self.agent,
             current_mode_id: self.current_mode_id,
+            bound_mode_tool_contract: self.bound_mode_tool_contract,
             execution_owner: self.execution_owner,
             profile: default_tool_capability_profile().to_string(),
             profile_context,
@@ -179,6 +183,9 @@ impl ToolBridgeContext {
         }
         tool_ctx = tool_ctx.with_agent_context(self.agent);
         tool_ctx = tool_ctx.with_current_mode_id(self.current_mode_id);
+        if let Some(snapshot) = self.bound_mode_tool_contract {
+            tool_ctx = tool_ctx.with_bound_mode_tool_contract(snapshot);
+        }
         if let Some(sender) = self.tool_output_sender {
             tool_ctx = tool_ctx.with_tool_output_sender(sender);
         }
@@ -219,9 +226,9 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use astrcode_core::{
-        AgentLifecycleStatus, CapabilityInvoker, ChildExecutionIdentity, ChildSessionLineageKind,
-        ExecutionOwner, InvocationKind, ParentExecutionRef, Tool, ToolContext, ToolDefinition,
-        ToolExecutionResult,
+        AgentLifecycleStatus, BoundModeToolContractSnapshot, CapabilityInvoker,
+        ChildExecutionIdentity, ChildSessionLineageKind, ExecutionOwner, InvocationKind,
+        ParentExecutionRef, Tool, ToolContext, ToolDefinition, ToolExecutionResult,
     };
     use async_trait::async_trait;
     use serde_json::{Value, json};
@@ -249,7 +256,12 @@ mod tests {
             "session-1",
             "turn-root",
             InvocationKind::RootExecution,
-        ));
+        ))
+        .with_bound_mode_tool_contract(BoundModeToolContractSnapshot {
+            mode_id: "plan".into(),
+            artifact: None,
+            exit_gate: None,
+        });
 
         let capability_ctx =
             capability_context_from_tool_context(&tool_ctx, Some("request-1".to_string()));
@@ -266,6 +278,13 @@ mod tests {
                 .map(|owner| owner.root_turn_id.as_str()),
             Some("turn-root")
         );
+        assert_eq!(
+            capability_ctx
+                .bound_mode_tool_contract
+                .as_ref()
+                .map(|snapshot| snapshot.mode_id.as_str()),
+            Some("plan")
+        );
         assert_eq!(capability_ctx.profile, default_tool_capability_profile());
         assert_eq!(
             capability_ctx.profile_context,
@@ -281,6 +300,11 @@ mod tests {
             astrcode_core::CancelToken::new(),
         )
         .with_turn_id("turn-2")
+        .with_bound_mode_tool_contract(BoundModeToolContractSnapshot {
+            mode_id: "review".into(),
+            artifact: None,
+            exit_gate: None,
+        })
         .with_agent_context(astrcode_core::AgentEventContext::root_execution(
             "agent-2", "reviewer",
         ));
@@ -296,6 +320,12 @@ mod tests {
         assert_eq!(
             bridged_tool_ctx.agent_context().agent_id.as_deref(),
             Some("agent-2")
+        );
+        assert_eq!(
+            bridged_tool_ctx
+                .bound_mode_tool_contract()
+                .map(|snapshot| snapshot.mode_id.as_str()),
+            Some("review")
         );
     }
 

@@ -19,6 +19,7 @@ use crate::builtin_tools::{
     session_plan::{
         PLAN_PATH_TIMESTAMP_FORMAT, load_session_plan_state, persist_planning_workflow_state,
         persist_session_plan_state, session_plan_markdown_path, session_plan_paths,
+        validate_plan_artifact_contract,
     },
 };
 
@@ -112,6 +113,17 @@ impl Tool for UpsertSessionPlanTool {
                 "plan markdown content must not be empty".to_string(),
             ));
         }
+        let mode_contract = ctx.bound_mode_tool_contract().ok_or_else(|| {
+            AstrError::Validation(
+                "upsertSessionPlan requires a bound mode tool contract snapshot".to_string(),
+            )
+        })?;
+        let artifact_contract = mode_contract.artifact.as_ref().ok_or_else(|| {
+            AstrError::Validation(
+                "upsertSessionPlan requires the current mode to declare an artifact contract"
+                    .to_string(),
+            )
+        })?;
 
         let started_at = Instant::now();
         let paths = session_plan_paths(ctx)?;
@@ -124,6 +136,23 @@ impl Tool for UpsertSessionPlanTool {
             .unwrap_or_else(|| format!("plan-{}", Utc::now().format(PLAN_PATH_TIMESTAMP_FORMAT)));
         let plan_path = session_plan_markdown_path(&paths.plan_dir, &slug);
         let status = args.status.unwrap_or(SessionPlanStatus::Draft);
+        if matches!(
+            status,
+            SessionPlanStatus::AwaitingApproval
+                | SessionPlanStatus::Approved
+                | SessionPlanStatus::Completed
+        ) {
+            let blockers = validate_plan_artifact_contract(content, artifact_contract);
+            if !blockers.is_empty() {
+                return Err(AstrError::Validation(format!(
+                    "session plan does not satisfy artifact contract '{}': missing headings [{}], \
+                     invalid sections [{}]",
+                    artifact_contract.artifact_type,
+                    blockers.missing_headings.join(", "),
+                    blockers.invalid_sections.join("; "),
+                )));
+            }
+        }
 
         fs::create_dir_all(&paths.plan_dir).map_err(|error| {
             AstrError::io(
@@ -184,6 +213,8 @@ impl Tool for UpsertSessionPlanTool {
                 "status": state.status.as_str(),
                 "title": state.title,
                 "updatedAt": state.updated_at.to_rfc3339(),
+                "artifactType": artifact_contract.artifact_type,
+                "requiredHeadings": artifact_contract.required_headings,
             })),
             continuation: None,
             duration_ms: started_at.elapsed().as_millis() as u64,
@@ -216,7 +247,7 @@ fn slugify(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::ModeId;
+    use astrcode_core::{BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId};
     use serde_json::json;
 
     use super::*;
@@ -225,17 +256,44 @@ mod tests {
         test_support::test_tool_context_for,
     };
 
+    fn plan_mode_contract() -> BoundModeToolContractSnapshot {
+        BoundModeToolContractSnapshot {
+            mode_id: ModeId::plan(),
+            artifact: Some(ModeArtifactDef {
+                artifact_type: "canonical-plan".to_string(),
+                file_template: None,
+                schema_template: None,
+                required_headings: vec![
+                    "Context".to_string(),
+                    "Goal".to_string(),
+                    "Implementation Steps".to_string(),
+                    "Verification".to_string(),
+                ],
+                actionable_sections: vec![
+                    "Implementation Steps".to_string(),
+                    "Verification".to_string(),
+                ],
+            }),
+            exit_gate: Some(ModeExitGateDef {
+                review_passes: 1,
+                review_checklist: vec!["Check the plan".to_string()],
+            }),
+        }
+    }
+
     #[tokio::test]
     async fn upsert_session_plan_creates_canonical_plan_state() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let tool = UpsertSessionPlanTool;
-        let ctx = test_tool_context_for(temp.path()).with_current_mode_id(ModeId::plan());
+        let ctx = test_tool_context_for(temp.path())
+            .with_current_mode_id(ModeId::plan())
+            .with_bound_mode_tool_contract(plan_mode_contract());
         let result = tool
             .execute(
                 "tc-plan-create".to_string(),
                 json!({
                     "title": "Cleanup crates",
-                    "content": "# Plan: Cleanup crates\n\n## Context",
+                    "content": "# Plan: Cleanup crates\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries\n\n## Implementation Steps\n- audit crate boundaries\n\n## Verification\n- run targeted tests",
                     "status": "draft"
                 }),
                 &ctx,
@@ -273,14 +331,15 @@ mod tests {
     async fn upsert_session_plan_reuses_existing_slug() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let tool = UpsertSessionPlanTool;
-        let ctx = test_tool_context_for(temp.path());
+        let ctx =
+            test_tool_context_for(temp.path()).with_bound_mode_tool_contract(plan_mode_contract());
 
         let first = tool
             .execute(
                 "tc-plan-initial".to_string(),
                 json!({
                     "title": "Cleanup crates",
-                    "content": "# Plan: Cleanup crates",
+                    "content": "# Plan: Cleanup crates\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries\n\n## Implementation Steps\n- audit crate boundaries\n\n## Verification\n- run targeted tests",
                     "status": "draft"
                 }),
                 &ctx,
@@ -299,7 +358,7 @@ mod tests {
                 "tc-plan-update".to_string(),
                 json!({
                     "title": "Cleanup crates revised",
-                    "content": "# Plan: Cleanup crates revised",
+                    "content": "# Plan: Cleanup crates revised\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries\n\n## Implementation Steps\n- audit crate boundaries\n\n## Verification\n- run targeted tests",
                     "status": "awaiting_approval"
                 }),
                 &ctx,
@@ -318,13 +377,14 @@ mod tests {
     async fn upsert_session_plan_preserves_archive_markers() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let tool = UpsertSessionPlanTool;
-        let ctx = test_tool_context_for(temp.path());
+        let ctx =
+            test_tool_context_for(temp.path()).with_bound_mode_tool_contract(plan_mode_contract());
 
         tool.execute(
             "tc-plan-first".to_string(),
             json!({
                 "title": "Cleanup crates",
-                "content": "# Plan: Cleanup crates",
+                "content": "# Plan: Cleanup crates\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries\n\n## Implementation Steps\n- audit crate boundaries\n\n## Verification\n- run targeted tests",
                 "status": "approved"
             }),
             &ctx,
@@ -346,7 +406,7 @@ mod tests {
             "tc-plan-second".to_string(),
             json!({
                 "title": "Cleanup crates revised",
-                "content": "# Plan: Cleanup crates revised",
+                "content": "# Plan: Cleanup crates revised\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries\n\n## Implementation Steps\n- audit crate boundaries\n\n## Verification\n- run targeted tests",
                 "status": "draft"
             }),
             &ctx,
@@ -365,7 +425,8 @@ mod tests {
     async fn upsert_session_plan_preserves_existing_custom_slug_from_state() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let tool = UpsertSessionPlanTool;
-        let ctx = test_tool_context_for(temp.path());
+        let ctx =
+            test_tool_context_for(temp.path()).with_bound_mode_tool_contract(plan_mode_contract());
         let paths = session_plan_paths(&ctx).expect("plan paths should resolve");
         let now = Utc::now();
         let existing_slug = "my-custom-slug".to_string();
@@ -391,7 +452,7 @@ mod tests {
                 "tc-plan-custom-slug".to_string(),
                 json!({
                     "title": "Completely different title",
-                    "content": "# Plan: revised",
+                    "content": "# Plan: revised\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries\n\n## Implementation Steps\n- audit crate boundaries\n\n## Verification\n- run targeted tests",
                     "status": "draft"
                 }),
                 &ctx,
@@ -405,5 +466,28 @@ mod tests {
             json!(existing_slug)
         );
         assert!(paths.plan_dir.join("my-custom-slug.md").exists());
+    }
+
+    #[tokio::test]
+    async fn upsert_session_plan_rejects_reviewable_status_when_contract_is_unmet() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let tool = UpsertSessionPlanTool;
+        let ctx =
+            test_tool_context_for(temp.path()).with_bound_mode_tool_contract(plan_mode_contract());
+
+        let error = tool
+            .execute(
+                "tc-plan-invalid".to_string(),
+                json!({
+                    "title": "Cleanup crates",
+                    "content": "# Plan: Cleanup crates\n\n## Context\n- grounded enough",
+                    "status": "awaiting_approval"
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("reviewable status should enforce artifact contract");
+
+        assert!(error.to_string().contains("artifact contract"));
     }
 }

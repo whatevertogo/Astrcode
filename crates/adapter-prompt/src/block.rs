@@ -142,6 +142,16 @@ pub struct BlockMetadata {
     pub origin: Option<String>,
 }
 
+impl BlockMetadata {
+    /// 返回规范化后的来源标签值。
+    ///
+    /// `source:*` 目前仍存放在 tags 中，这里集中做一次解析，
+    /// 让上层不需要自己扫描 tag 约定。
+    pub fn source_name(&self) -> Option<&str> {
+        self.tags.iter().find_map(|tag| tag.strip_prefix("source:"))
+    }
+}
+
 /// Block 的内容形式。
 ///
 /// 支持纯文本和模板两种形式。模板在渲染时会通过变量解析器填充占位符。

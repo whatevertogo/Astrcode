@@ -9,9 +9,9 @@
 use std::collections::BTreeSet;
 
 use astrcode_core::{
-    AstrError, CapabilitySelector, CapabilitySpec, GovernanceModeSpec, PromptDeclaration,
-    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource,
-    ResolvedTurnEnvelope, Result, SpawnCapabilityGrant, SystemPromptLayer,
+    AstrError, CapabilitySelector, CapabilitySpec, CompiledModeContracts, GovernanceModeSpec,
+    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    PromptDeclarationSource, ResolvedTurnEnvelope, Result, SpawnCapabilityGrant, SystemPromptLayer,
 };
 use astrcode_kernel::CapabilityRouter;
 
@@ -44,6 +44,7 @@ pub fn compile_mode_envelope(
         mode_id: spec.id.clone(),
         allowed_tools: allowed_tools.clone(),
         prompt_declarations: prompt_declarations.clone(),
+        mode_contracts: compiled_mode_contracts(spec),
         action_policies: spec.action_policies.clone(),
         child_policy: astrcode_core::ResolvedChildPolicy {
             mode_id: spec
@@ -118,6 +119,7 @@ pub fn compile_mode_envelope_for_child(
         mode_id: spec.id.clone(),
         allowed_tools: child_tools.clone(),
         prompt_declarations: prompt_declarations.clone(),
+        mode_contracts: compiled_mode_contracts(spec),
         action_policies: spec.action_policies.clone(),
         child_policy: astrcode_core::ResolvedChildPolicy {
             mode_id: spec
@@ -161,6 +163,14 @@ pub fn compile_mode_envelope_for_child(
         envelope,
         capability_router,
     })
+}
+
+fn compiled_mode_contracts(spec: &GovernanceModeSpec) -> CompiledModeContracts {
+    CompiledModeContracts {
+        artifact: spec.artifact.clone(),
+        exit_gate: spec.exit_gate.clone(),
+        prompt_hooks: spec.prompt_hooks.clone(),
+    }
 }
 
 fn evaluate_selector(
@@ -427,6 +437,39 @@ mod tests {
             compile_capability_selector(&router.capability_specs(), &review.capability_selector)
                 .expect("review selector should compile"),
             vec!["readFile".to_string()]
+        );
+    }
+
+    #[test]
+    fn compile_mode_envelope_projects_mode_contracts_into_compile_artifact() {
+        let router = router();
+        let catalog = builtin_mode_catalog().expect("builtin catalog should build");
+        let plan = catalog.get(&astrcode_core::ModeId::plan()).unwrap();
+
+        let compiled =
+            super::compile_mode_envelope(&router, &plan, Vec::new()).expect("plan should compile");
+
+        assert_eq!(
+            compiled
+                .envelope
+                .mode_contracts
+                .artifact
+                .as_ref()
+                .map(|value| value.artifact_type.as_str()),
+            Some("canonical-plan")
+        );
+        assert_eq!(
+            compiled
+                .envelope
+                .mode_contracts
+                .exit_gate
+                .as_ref()
+                .map(|value| value.review_passes),
+            Some(1)
+        );
+        assert!(
+            compiled.envelope.mode_contracts.prompt_hooks.is_some(),
+            "plan compile artifact should carry prompt hooks"
         );
     }
 }

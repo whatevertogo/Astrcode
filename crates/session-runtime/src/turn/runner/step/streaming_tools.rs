@@ -220,6 +220,8 @@ struct StreamingToolLaunchContext {
     turn_id: String,
     agent: Option<astrcode_core::AgentEventContext>,
     cancel: Option<astrcode_core::CancelToken>,
+    current_mode_id: Option<astrcode_core::ModeId>,
+    bound_mode_tool_contract: Option<astrcode_core::BoundModeToolContractSnapshot>,
     tool_result_inline_limit: usize,
 }
 
@@ -241,6 +243,8 @@ impl StreamingToolLauncher {
                 turn_id: resources.turn_id.to_string(),
                 agent: Some(resources.agent.clone()),
                 cancel: Some(resources.cancel.clone()),
+                current_mode_id: Some(resources.current_mode_id.clone()),
+                bound_mode_tool_contract: resources.bound_mode_tool_contract.cloned(),
                 tool_result_inline_limit: resources.runtime.tool_result_inline_limit,
             },
             ..Self::default()
@@ -270,6 +274,9 @@ impl StreamingToolLauncher {
         let Some(cancel) = self.context.cancel.as_ref() else {
             return false;
         };
+        let Some(current_mode_id) = self.context.current_mode_id.as_ref() else {
+            return false;
+        };
 
         let request = candidate.request.clone();
         let handle = tokio::spawn(tool_cycle::execute_buffered_tool_call(
@@ -282,6 +289,8 @@ impl StreamingToolLauncher {
                 turn_id: self.context.turn_id.clone(),
                 agent: agent.clone(),
                 cancel: cancel.clone(),
+                current_mode_id: current_mode_id.clone(),
+                bound_mode_tool_contract: self.context.bound_mode_tool_contract.clone(),
                 tool_result_inline_limit: self.context.tool_result_inline_limit,
             },
         ));

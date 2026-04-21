@@ -9,8 +9,27 @@
 //! prepend/append 消息则直接作为 LLM 对话消息的一部分。
 
 use astrcode_core::{LlmMessage, ToolDefinition};
+use serde::Serialize;
 
 use super::{PromptBlock, append_unique_tools, block::PromptLayer};
+
+/// 已渲染 system block 的来源摘要。
+///
+/// 这是 `PromptPlan` 对外暴露的稳定来源投影，调用方只依赖最终渲染结果，
+/// 不需要再回看 contributor 或 declaration 内部结构。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptPlanSourceMetadata {
+    pub block_id: String,
+    pub title: String,
+    pub layer: PromptLayer,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
 
 /// Prompt 组装的最终计划。
 ///
@@ -54,6 +73,25 @@ impl PromptPlan {
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         )
+    }
+
+    /// 返回最终渲染后的 system block 来源信息。
+    pub fn source_metadata(&self) -> Vec<PromptPlanSourceMetadata> {
+        self.ordered_system_blocks()
+            .into_iter()
+            .map(|block| PromptPlanSourceMetadata {
+                block_id: block.id.clone(),
+                title: block.title.clone(),
+                layer: block.layer,
+                category: block
+                    .metadata
+                    .category
+                    .as_ref()
+                    .map(|value| value.to_string()),
+                source: block.metadata.source_name().map(str::to_string),
+                origin: block.metadata.origin.clone(),
+            })
+            .collect()
     }
 
     /// 以指定层级合并另一个 plan。
@@ -173,6 +211,65 @@ mod tests {
         assert_eq!(
             rendered,
             "[Environment]\nenvironment\n\n[Identity]\nidentity\n\n[Project Rules]\nproject"
+        );
+    }
+
+    #[test]
+    fn source_metadata_tracks_rendered_block_sources() {
+        let plan = PromptPlan {
+            system_blocks: vec![
+                PromptBlock::new(
+                    "governance.collaboration.guide",
+                    BlockKind::ExtensionInstruction,
+                    "Child Agent Collaboration Guide",
+                    "guide",
+                    590,
+                    BlockMetadata {
+                        tags: vec!["source:builtin".into()],
+                        category: Some("extensions".into()),
+                        origin: Some("governance:collaboration-guide".to_string()),
+                    },
+                    1,
+                )
+                .with_layer(PromptLayer::Dynamic),
+                PromptBlock::new(
+                    "child.execution.contract",
+                    BlockKind::ExtensionInstruction,
+                    "Child Execution Contract",
+                    "contract",
+                    585,
+                    BlockMetadata {
+                        tags: vec!["source:builtin".into()],
+                        category: Some("extensions".into()),
+                        origin: Some("child-contract:fresh".to_string()),
+                    },
+                    0,
+                )
+                .with_layer(PromptLayer::Inherited),
+            ],
+            ..PromptPlan::default()
+        };
+
+        assert_eq!(
+            plan.source_metadata(),
+            vec![
+                PromptPlanSourceMetadata {
+                    block_id: "child.execution.contract".to_string(),
+                    title: "Child Execution Contract".to_string(),
+                    layer: PromptLayer::Inherited,
+                    category: Some("extensions".to_string()),
+                    source: Some("builtin".to_string()),
+                    origin: Some("child-contract:fresh".to_string()),
+                },
+                PromptPlanSourceMetadata {
+                    block_id: "governance.collaboration.guide".to_string(),
+                    title: "Child Agent Collaboration Guide".to_string(),
+                    layer: PromptLayer::Dynamic,
+                    category: Some("extensions".to_string()),
+                    source: Some("builtin".to_string()),
+                    origin: Some("governance:collaboration-guide".to_string()),
+                },
+            ]
         );
     }
 }

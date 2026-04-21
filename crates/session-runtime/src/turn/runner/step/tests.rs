@@ -164,6 +164,7 @@ fn test_resources<'a>(
     agent: &'a AgentEventContext,
     prompt_facts_provider: &'a dyn PromptFactsProvider,
 ) -> TurnExecutionResources<'a> {
+    let current_mode_id = Box::leak(Box::new(astrcode_core::ModeId::default()));
     TurnExecutionResources::new(
         gateway,
         TurnExecutionRequestView {
@@ -175,7 +176,9 @@ fn test_resources<'a>(
             runtime,
             cancel,
             agent,
+            current_mode_id,
             prompt_declarations: &[],
+            bound_mode_tool_contract: None,
             prompt_governance: None,
         },
     )

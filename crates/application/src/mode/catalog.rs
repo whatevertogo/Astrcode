@@ -8,7 +8,7 @@
 //! 内置三种 mode：
 //! - **Code**：默认执行模式，保留完整能力面与委派能力
 //! - **Plan**：规划模式，只暴露只读工具，禁止委派
-//! - **Review**：审查模式，严格只读，禁止委派，收紧步数
+//! - **Review**：审查模式，严格只读，禁止委派，收紧步数（未完成）
 
 use std::{
     collections::BTreeMap,
@@ -17,11 +17,14 @@ use std::{
 
 use astrcode_core::{
     ActionPolicies, ActionPolicyEffect, ActionPolicyRule, CapabilitySelector, ChildPolicySpec,
-    GovernanceModeSpec, ModeExecutionPolicySpec, ModeId, PromptProgramEntry, Result,
-    SubmitBusyPolicy, TransitionPolicySpec,
+    GovernanceModeSpec, ModeArtifactDef, ModeExecutionPolicySpec, ModeExitGateDef, ModeId,
+    ModePromptHooks, PromptProgramEntry, Result, SubmitBusyPolicy, TransitionPolicySpec,
 };
 
-use super::builtin_prompts::{code_mode_prompt, plan_mode_prompt, review_mode_prompt};
+use super::builtin_prompts::{
+    code_mode_prompt, plan_mode_exit_prompt, plan_mode_prompt, plan_mode_reentry_prompt,
+    plan_template_prompt, review_mode_prompt,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeSummary {
@@ -93,6 +96,15 @@ impl ModeCatalog {
         &self,
         plugin_modes: impl IntoIterator<Item = GovernanceModeSpec>,
     ) -> Result<()> {
+        let snapshot = self.preview_plugin_modes(plugin_modes)?;
+        self.replace_snapshot(snapshot);
+        Ok(())
+    }
+
+    pub fn preview_plugin_modes(
+        &self,
+        plugin_modes: impl IntoIterator<Item = GovernanceModeSpec>,
+    ) -> Result<ModeCatalogSnapshot> {
         let current = self.snapshot();
         let builtin_modes = current
             .entries
@@ -100,9 +112,11 @@ impl ModeCatalog {
             .filter(|entry| entry.builtin)
             .map(|entry| entry.spec.clone())
             .collect::<Vec<_>>();
-        let snapshot = build_snapshot(builtin_modes, plugin_modes)?;
+        build_snapshot(builtin_modes, plugin_modes)
+    }
+
+    pub fn replace_snapshot(&self, snapshot: ModeCatalogSnapshot) {
         *self.snapshot.write().expect("mode catalog lock poisoned") = snapshot;
-        Ok(())
     }
 }
 
@@ -123,12 +137,44 @@ fn build_snapshot(
         .chain(plugin_modes.into_iter().map(|spec| (false, spec)))
     {
         spec.validate()?;
-        entries.insert(
-            spec.id.as_str().to_string(),
-            ModeCatalogEntry { spec, builtin },
-        );
+        let mode_id = spec.id.as_str().to_string();
+        if entries.contains_key(&mode_id) {
+            return Err(astrcode_core::AstrError::Validation(format!(
+                "duplicate mode id '{}'",
+                mode_id
+            )));
+        }
+        entries.insert(mode_id, ModeCatalogEntry { spec, builtin });
     }
     Ok(ModeCatalogSnapshot { entries })
+}
+
+fn plan_artifact_schema_template() -> String {
+    [
+        "Session plan markdown schema:",
+        "- Context",
+        "- Goal",
+        "- Scope",
+        "- Non-Goals",
+        "- Existing Code To Reuse",
+        "- Implementation Steps",
+        "- Verification",
+        "- Open Questions",
+    ]
+    .join("\n")
+}
+
+fn plan_facts_template() -> String {
+    [
+        "Session plan facts:",
+        "- targetPlanPath: {{targetPlanPath}}",
+        "- targetPlanExists: {{targetPlanExists}}",
+        "- targetPlanSlug: {{targetPlanSlug}}",
+        "- activePlan: {{activePlanSummary}}",
+        "",
+        "Use `upsertSessionPlan` as the only canonical write path for the session plan artifact.",
+    ]
+    .join("\n")
 }
 
 fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
@@ -159,6 +205,9 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
                 content: code_mode_prompt().to_string(),
                 priority_hint: Some(600),
             }],
+            artifact: None,
+            exit_gate: None,
+            prompt_hooks: None,
             transition_policy: transitions.clone(),
         },
         GovernanceModeSpec {
@@ -207,6 +256,41 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
                 content: plan_mode_prompt().to_string(),
                 priority_hint: Some(600),
             }],
+            artifact: Some(ModeArtifactDef {
+                artifact_type: "canonical-plan".to_string(),
+                file_template: Some(plan_template_prompt().to_string()),
+                schema_template: Some(plan_artifact_schema_template()),
+                required_headings: vec![
+                    "Context".to_string(),
+                    "Goal".to_string(),
+                    "Scope".to_string(),
+                    "Non-Goals".to_string(),
+                    "Existing Code To Reuse".to_string(),
+                    "Implementation Steps".to_string(),
+                    "Verification".to_string(),
+                    "Open Questions".to_string(),
+                ],
+                actionable_sections: vec![
+                    "Implementation Steps".to_string(),
+                    "Verification".to_string(),
+                    "Open Questions".to_string(),
+                ],
+            }),
+            exit_gate: Some(ModeExitGateDef {
+                review_passes: 1,
+                review_checklist: vec![
+                    "检查计划中的假设是否成立".to_string(),
+                    "检查是否遗漏边界情况或受影响文件".to_string(),
+                    "检查验证步骤是否足够具体".to_string(),
+                    "确认计划已经可执行".to_string(),
+                ],
+            }),
+            prompt_hooks: Some(ModePromptHooks {
+                reentry_prompt: Some(plan_mode_reentry_prompt().to_string()),
+                initial_template: Some(plan_template_prompt().to_string()),
+                exit_prompt: Some(plan_mode_exit_prompt().to_string()),
+                facts_template: Some(plan_facts_template()),
+            }),
             transition_policy: transitions.clone(),
         },
         GovernanceModeSpec {
@@ -249,6 +333,9 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
                 content: review_mode_prompt().to_string(),
                 priority_hint: Some(600),
             }],
+            artifact: None,
+            exit_gate: None,
+            prompt_hooks: None,
             transition_policy: transitions,
         },
     ]
@@ -256,9 +343,9 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{CapabilitySelector, ModeId, Result};
+    use astrcode_core::{CapabilitySelector, GovernanceModeSpec, ModeId, Result};
 
-    use super::builtin_mode_catalog;
+    use super::{ModeCatalog, builtin_mode_catalog, builtin_mode_specs};
 
     #[test]
     fn builtin_catalog_contains_three_builtin_modes() -> Result<()> {
@@ -282,6 +369,107 @@ mod tests {
             review.capability_selector,
             CapabilitySelector::Intersection(_)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn builtin_plan_mode_declares_mode_contract_fields() -> Result<()> {
+        let catalog = builtin_mode_catalog()?;
+        let plan = catalog
+            .get(&ModeId::plan())
+            .expect("plan mode should exist");
+
+        assert_eq!(
+            plan.artifact
+                .as_ref()
+                .map(|value| value.artifact_type.as_str()),
+            Some("canonical-plan")
+        );
+        assert_eq!(
+            plan.exit_gate.as_ref().map(|value| value.review_passes),
+            Some(1)
+        );
+        assert!(
+            plan.prompt_hooks
+                .as_ref()
+                .and_then(|value| value.reentry_prompt.as_ref())
+                .is_some()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn plugin_mode_cannot_shadow_builtin_mode_id() {
+        let error = ModeCatalog::new(
+            builtin_mode_specs(),
+            vec![GovernanceModeSpec {
+                id: ModeId::plan(),
+                name: "Plan Override".to_string(),
+                description: "invalid".to_string(),
+                capability_selector: CapabilitySelector::AllTools,
+                action_policies: Default::default(),
+                child_policy: Default::default(),
+                execution_policy: Default::default(),
+                prompt_program: Vec::new(),
+                artifact: None,
+                exit_gate: None,
+                prompt_hooks: None,
+                transition_policy: Default::default(),
+            }],
+        )
+        .expect_err("duplicate builtin mode id should fail");
+
+        assert!(error.to_string().contains("duplicate mode id"));
+    }
+
+    #[test]
+    fn duplicate_plugin_mode_ids_are_rejected() {
+        let plugin_mode = GovernanceModeSpec {
+            id: ModeId::from("plugin.plan-lite"),
+            name: "Plan Lite".to_string(),
+            description: "invalid".to_string(),
+            capability_selector: CapabilitySelector::AllTools,
+            action_policies: Default::default(),
+            child_policy: Default::default(),
+            execution_policy: Default::default(),
+            prompt_program: Vec::new(),
+            artifact: None,
+            exit_gate: None,
+            prompt_hooks: None,
+            transition_policy: Default::default(),
+        };
+        let error = ModeCatalog::new(
+            Vec::<GovernanceModeSpec>::new(),
+            vec![plugin_mode.clone(), plugin_mode],
+        )
+        .expect_err("duplicate plugin ids should fail");
+
+        assert!(error.to_string().contains("duplicate mode id"));
+    }
+
+    #[test]
+    fn preview_plugin_modes_does_not_mutate_catalog_until_committed() -> Result<()> {
+        let catalog = builtin_mode_catalog()?;
+        let preview = catalog.preview_plugin_modes(vec![GovernanceModeSpec {
+            id: ModeId::from("plugin.plan-lite"),
+            name: "Plan Lite".to_string(),
+            description: "valid".to_string(),
+            capability_selector: CapabilitySelector::AllTools,
+            action_policies: Default::default(),
+            child_policy: Default::default(),
+            execution_policy: Default::default(),
+            prompt_program: Vec::new(),
+            artifact: None,
+            exit_gate: None,
+            prompt_hooks: None,
+            transition_policy: Default::default(),
+        }])?;
+
+        assert!(catalog.get(&ModeId::from("plugin.plan-lite")).is_none());
+
+        catalog.replace_snapshot(preview);
+
+        assert!(catalog.get(&ModeId::from("plugin.plan-lite")).is_some());
         Ok(())
     }
 }

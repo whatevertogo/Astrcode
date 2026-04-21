@@ -10,9 +10,9 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, CapabilitySpec, ExecutionContinuation, ExecutionOwner,
-    ExecutionResultCommon, ModeId, Result, SessionId, ToolEventSink, ToolExecutionResult,
-    ToolOutputDelta,
+    AgentEventContext, BoundModeToolContractSnapshot, CancelToken, CapabilitySpec,
+    ExecutionContinuation, ExecutionOwner, ExecutionResultCommon, ModeId, Result, SessionId,
+    ToolEventSink, ToolExecutionResult, ToolOutputDelta,
 };
 
 /// 能力调用的上下文信息。
@@ -34,6 +34,8 @@ pub struct CapabilityContext {
     pub agent: AgentEventContext,
     /// 当前调用开始时的治理 mode。
     pub current_mode_id: ModeId,
+    /// 当前 turn 绑定后的 mode tool contract 快照。
+    pub bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
     /// 当前调用所属执行 owner。
     pub execution_owner: Option<ExecutionOwner>,
     /// 当前使用的 profile 名称
@@ -59,6 +61,7 @@ impl fmt::Debug for CapabilityContext {
             .field("turn_id", &self.turn_id)
             .field("agent", &self.agent)
             .field("current_mode_id", &self.current_mode_id)
+            .field("bound_mode_tool_contract", &self.bound_mode_tool_contract)
             .field("execution_owner", &self.execution_owner)
             .field("profile", &self.profile)
             .field("profile_context", &self.profile_context)

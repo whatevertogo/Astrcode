@@ -4,8 +4,8 @@
 //! 是否正确，确保 JSON 格式与协议版本兼容。
 
 use astrcode_core::{
-    ActionPolicies, CapabilitySelector, ChildPolicySpec, GovernanceModeSpec,
-    ModeExecutionPolicySpec, ModeId, TransitionPolicySpec,
+    ActionPolicies, CapabilitySelector, ChildPolicySpec, GovernanceModeSpec, ModeArtifactDef,
+    ModeExecutionPolicySpec, ModeExitGateDef, ModeId, ModePromptHooks, TransitionPolicySpec,
 };
 use serde_json::json;
 
@@ -188,6 +188,23 @@ fn initialize_result_serializes_declared_modes() {
         child_policy: ChildPolicySpec::default(),
         execution_policy: ModeExecutionPolicySpec::default(),
         prompt_program: vec![],
+        artifact: Some(ModeArtifactDef {
+            artifact_type: "canonical-plan".to_string(),
+            file_template: Some("# Plan".to_string()),
+            schema_template: None,
+            required_headings: vec!["Implementation Steps".to_string()],
+            actionable_sections: vec!["Implementation Steps".to_string()],
+        }),
+        exit_gate: Some(ModeExitGateDef {
+            review_passes: 1,
+            review_checklist: vec!["检查假设".to_string()],
+        }),
+        prompt_hooks: Some(ModePromptHooks {
+            reentry_prompt: Some("read the plan".to_string()),
+            initial_template: None,
+            exit_prompt: Some("approved plan".to_string()),
+            facts_template: None,
+        }),
         transition_policy: TransitionPolicySpec {
             allowed_targets: vec![ModeId::code()],
         },
@@ -209,6 +226,37 @@ fn initialize_result_serializes_declared_modes() {
     let decoded: InitializeResultData =
         serde_json::from_value(encoded).expect("initialize result should deserialize");
     assert_eq!(decoded.modes, vec![mode]);
+}
+
+#[test]
+fn initialize_result_deserializes_legacy_mode_shape_without_new_contract_fields() {
+    let raw = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "peer": sample_peer(),
+        "capabilities": [],
+        "handlers": [],
+        "profiles": [],
+        "skills": [],
+        "modes": [{
+            "id": "plugin.legacy",
+            "name": "Legacy",
+            "description": "legacy mode",
+            "capabilitySelector": { "tag": "read-only" },
+            "actionPolicies": {},
+            "childPolicy": {},
+            "executionPolicy": {},
+            "promptProgram": [],
+            "transitionPolicy": {}
+        }],
+        "metadata": {}
+    });
+
+    let decoded: InitializeResultData =
+        serde_json::from_value(raw).expect("legacy shape should deserialize");
+    assert_eq!(decoded.modes.len(), 1);
+    assert_eq!(decoded.modes[0].artifact, None);
+    assert_eq!(decoded.modes[0].exit_gate, None);
+    assert_eq!(decoded.modes[0].prompt_hooks, None);
 }
 
 #[test]

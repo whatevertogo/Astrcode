@@ -1,10 +1,11 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, ApprovalPending, CancelToken, CapabilityCall, EventStore, EventTranslator,
-    ExecutionAccepted, LlmMessage, Phase, PolicyContext, PromptDeclaration,
-    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
-    Result, RuntimeMetricsRecorder, SessionId, TurnId, UserMessageOrigin,
+    AgentEventContext, ApprovalPending, BoundModeToolContractSnapshot, CancelToken, CapabilityCall,
+    EventStore, EventTranslator, ExecutionAccepted, LlmMessage, ModeId, Phase, PolicyContext,
+    PromptDeclaration, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
+    ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder, SessionId, TurnId,
+    UserMessageOrigin,
 };
 use astrcode_kernel::CapabilityRouter;
 use chrono::Utc;
@@ -62,7 +63,9 @@ struct TurnCoordinator {
 pub struct AgentPromptSubmission {
     pub agent: AgentEventContext,
     pub capability_router: Option<CapabilityRouter>,
+    pub current_mode_id: ModeId,
     pub prompt_declarations: Vec<PromptDeclaration>,
+    pub bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
     pub resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
     pub resolved_overrides: Option<ResolvedSubagentContextOverrides>,
     pub injected_messages: Vec<LlmMessage>,
@@ -162,9 +165,11 @@ impl TurnCoordinator {
                 runtime,
                 cancel,
                 agent: prepared.persisted.agent.clone(),
+                current_mode_id: prepared.current_mode_id,
                 prompt_facts_provider: Arc::clone(&prompt_facts_provider),
                 capability_router: prepared.capability_router,
                 prompt_declarations: prepared.prompt_declarations,
+                bound_mode_tool_contract: prepared.bound_mode_tool_contract,
                 prompt_governance: prepared.prompt_governance,
             },
             finalize: TurnFinalizeContext {
@@ -184,7 +189,9 @@ impl TurnCoordinator {
 
 struct PreparedTurnSubmission {
     capability_router: Option<CapabilityRouter>,
+    current_mode_id: ModeId,
     prompt_declarations: Vec<PromptDeclaration>,
+    bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
     prompt_governance: Option<astrcode_core::PromptGovernanceContext>,
     messages: Vec<LlmMessage>,
     persisted: PersistedTurnContext,
@@ -289,7 +296,9 @@ async fn prepare_turn_submission(
     let AgentPromptSubmission {
         agent,
         capability_router,
+        current_mode_id,
         prompt_declarations,
+        bound_mode_tool_contract,
         resolved_limits,
         resolved_overrides,
         injected_messages,
@@ -348,7 +357,9 @@ async fn prepare_turn_submission(
 
     Ok(PreparedTurnSubmission {
         capability_router,
+        current_mode_id,
         prompt_declarations,
+        bound_mode_tool_contract,
         prompt_governance,
         messages,
         persisted: PersistedTurnContext {
@@ -1125,6 +1136,37 @@ mod tests {
                 && inherited_answer == "parent answer"
                 && child_task == "child task"
         ));
+    }
+
+    #[tokio::test]
+    async fn prepare_turn_submission_preserves_bound_mode_tool_contract_snapshot() {
+        let actor = test_actor().await;
+        let prepared = prepare_turn_submission(
+            actor.state(),
+            "turn-1",
+            Some("hello".to_string()),
+            Vec::new(),
+            AgentPromptSubmission {
+                current_mode_id: "plan".into(),
+                bound_mode_tool_contract: Some(BoundModeToolContractSnapshot {
+                    mode_id: "plan".into(),
+                    artifact: None,
+                    exit_gate: None,
+                }),
+                ..AgentPromptSubmission::default()
+            },
+        )
+        .await
+        .expect("submission should prepare");
+
+        assert_eq!(prepared.current_mode_id.as_str(), "plan");
+        assert_eq!(
+            prepared
+                .bound_mode_tool_contract
+                .as_ref()
+                .map(|snapshot| snapshot.mode_id.as_str()),
+            Some("plan")
+        );
     }
 
     #[test]
