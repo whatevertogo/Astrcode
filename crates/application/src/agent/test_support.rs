@@ -64,29 +64,9 @@ impl AgentTestHarness {
     }
 
     pub(crate) async fn prepare_busy_turn(&self, session_id: &str, turn_id: &str) -> Result<u64> {
-        let state = self
-            .session_runtime
-            .get_session_state(&SessionId::from(session_id.to_string()))
-            .await?;
-        let lease = match self
-            .event_store
-            .try_acquire_turn(&SessionId::from(session_id.to_string()), turn_id)
-            .await?
-        {
-            SessionTurnAcquireResult::Acquired(lease) => lease,
-            SessionTurnAcquireResult::Busy(SessionTurnBusy { .. }) => {
-                return Err(AstrError::Internal(format!(
-                    "session '{}' unexpectedly busy while preparing test turn '{}'",
-                    session_id, turn_id
-                )));
-            },
-        };
-        state.prepare_execution(
-            session_id,
-            turn_id,
-            astrcode_core::CancelToken::new(),
-            lease,
-        )
+        self.session_runtime
+            .prepare_test_turn_runtime(session_id, turn_id)
+            .await
     }
 
     pub(crate) async fn complete_turn_state(
@@ -95,12 +75,9 @@ impl AgentTestHarness {
         generation: u64,
         _phase: Phase,
     ) -> Result<()> {
-        let state = self
-            .session_runtime
-            .get_session_state(&SessionId::from(session_id.to_string()))
-            .await?;
-        state.complete_execution_state(generation)?;
-        Ok(())
+        self.session_runtime
+            .complete_test_turn_runtime(session_id, generation)
+            .await
     }
 }
 

@@ -1,4 +1,4 @@
-use astrcode_core::{CancelToken, SessionId, SessionTurnLease, StorageEventPayload};
+use astrcode_core::StorageEventPayload;
 use astrcode_protocol::http::{
     CompactSessionResponse, ConfigReloadResponse, PromptAcceptedResponse,
 };
@@ -8,34 +8,17 @@ use axum::{
 };
 use tower::ServiceExt;
 
-use crate::{AUTH_HEADER_NAME, routes::build_api_router, test_support::test_state};
-
-struct StubTurnLease;
-
-impl SessionTurnLease for StubTurnLease {}
+use crate::{
+    AUTH_HEADER_NAME,
+    routes::build_api_router,
+    test_support::{mark_session_running, stored_events_for_session, test_state},
+};
 
 async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Response<Body>) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("response body should be readable");
     serde_json::from_slice(&bytes).expect("response should deserialize")
-}
-
-async fn mark_session_running(state: &crate::AppState, session_id: &str) {
-    let session_state = state
-        ._runtime_handles
-        .session_runtime
-        .get_session_state(&SessionId::from(session_id.to_string()))
-        .await
-        .expect("session state should load");
-    session_state
-        .prepare_execution(
-            session_id,
-            "test-running-turn",
-            CancelToken::new(),
-            Box::new(StubTurnLease),
-        )
-        .expect("session should enter running state");
 }
 
 #[tokio::test]
@@ -75,13 +58,13 @@ async fn config_reload_rejects_when_session_is_running() {
         )
         .await
         .expect("session should be created");
-    let session_state = state
-        ._runtime_handles
-        .session_runtime
-        .get_session_state(&session.session_id.clone().into())
-        .await
-        .expect("session state should load");
-    assert!(!session_state.is_running());
+    assert!(
+        !state
+            ._runtime_handles
+            .session_runtime
+            .list_running_sessions()
+            .contains(&session.session_id.clone().into())
+    );
     mark_session_running(&state, &session.session_id).await;
     let app = build_api_router().with_state(state);
 
@@ -114,13 +97,13 @@ async fn compact_route_defers_when_session_is_busy() {
         )
         .await
         .expect("session should be created");
-    let session_state = state
-        ._runtime_handles
-        .session_runtime
-        .get_session_state(&session.session_id.clone().into())
-        .await
-        .expect("session state should load");
-    assert!(!session_state.is_running());
+    assert!(
+        !state
+            ._runtime_handles
+            .session_runtime
+            .list_running_sessions()
+            .contains(&session.session_id.clone().into())
+    );
     mark_session_running(&state, &session.session_id).await;
     let app = build_api_router().with_state(state.clone());
 
@@ -326,12 +309,7 @@ async fn prompt_submission_registers_session_root_agent_context() {
     );
     assert_eq!(root_status.agent_profile, "default");
 
-    let events = state
-        ._runtime_handles
-        .session_runtime
-        .replay_stored_events(&SessionId::from(session.session_id.clone()))
-        .await
-        .expect("events should replay");
+    let events = stored_events_for_session(&state, &session.session_id).await;
     let user_message = events
         .into_iter()
         .find(|stored| {

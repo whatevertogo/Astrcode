@@ -1,7 +1,8 @@
 //! Turn 用例与执行核心。
 //!
-//! `session-runtime::turn` 只承接“单次 turn 如何开始、如何中断、如何回放、如何分支、如何执行”。
-//! `runner` 负责 step 循环，`submit/replay/interrupt/branch` 负责对外 façade。
+//! `session-runtime::turn` 只承接“单次 turn 如何开始、如何中断、如何分支、如何执行”。
+//! `runtime` 拥有运行时控制状态，`watcher` 拥有等待终态的异步监听循环，
+//! `runner` 负责 step 循环，`submit/interrupt/branch` 负责对外 façade。
 
 mod branch;
 mod compact_events;
@@ -19,6 +20,7 @@ mod post_llm_policy;
 pub(crate) mod projector;
 mod request;
 mod runner;
+mod runtime;
 mod submit;
 mod subrun_events;
 #[cfg(test)]
@@ -27,11 +29,14 @@ pub(crate) mod test_support;
 mod summary;
 pub(crate) mod tool_cycle;
 mod tool_result_budget;
+mod watcher;
 
 pub use fork::{ForkPoint, ForkResult};
 pub use loop_control::{TurnLoopTransition, TurnStopCause};
+pub(crate) use runtime::{PendingManualCompactRequest, TurnRuntimeState};
 pub use submit::AgentPromptSubmission;
 pub use summary::{TurnCollaborationSummary, TurnFinishReason, TurnSummary};
+pub(crate) use watcher::{wait_and_project_turn_outcome, wait_for_turn_terminal_snapshot};
 
 /// Turn 结束原因。
 #[derive(Debug, Clone, PartialEq, Eq)]

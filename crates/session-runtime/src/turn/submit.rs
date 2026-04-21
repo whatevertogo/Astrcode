@@ -123,7 +123,7 @@ impl TurnCoordinator {
             submission,
         } = self;
         let cancel = CancelToken::new();
-        let generation = submit_target.actor.state().prepare_execution(
+        let generation = submit_target.actor.turn_runtime().prepare(
             submit_target.session_id.as_str(),
             turn_id.as_str(),
             cancel.clone(),
@@ -141,7 +141,7 @@ impl TurnCoordinator {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                let _ = submit_target.actor.state().force_complete_execution_state();
+                let _ = submit_target.actor.turn_runtime().force_complete();
                 return Err(error);
             },
         };
@@ -255,12 +255,8 @@ async fn finalize_turn_execution(
         },
     }
 
-    let pending_manual_compact = match finalize
-        .actor
-        .state()
-        .complete_execution_state(finalize.generation)
-    {
-        Ok(pending) => pending,
+    let pending_manual_compact = match finalize.actor.turn_runtime().complete(finalize.generation) {
+        Ok((completed, pending)) => completed.then_some(pending).flatten(),
         Err(error) => {
             log::warn!(
                 "failed to complete turn runtime state for session '{}': {}",
@@ -275,6 +271,7 @@ async fn finalize_turn_execution(
         finalize.prompt_facts_provider.as_ref(),
         &finalize.event_store,
         finalize.actor.working_dir(),
+        finalize.actor.turn_runtime(),
         finalize.actor.state(),
         &finalize.session_id,
         pending_manual_compact,
@@ -663,8 +660,8 @@ mod tests {
 
     fn finalize_context(actor: Arc<SessionActor>) -> TurnFinalizeContext {
         let generation = actor
-            .state()
-            .prepare_execution(
+            .turn_runtime()
+            .prepare(
                 "session-1",
                 "turn-1",
                 CancelToken::new(),
@@ -796,8 +793,8 @@ mod tests {
         )
         .await;
         actor
-            .state()
-            .request_manual_compact(crate::state::PendingManualCompactRequest {
+            .turn_runtime()
+            .request_manual_compact(crate::turn::PendingManualCompactRequest {
                 runtime: ResolvedRuntimeConfig::default(),
                 instructions: None,
             })
@@ -837,8 +834,8 @@ mod tests {
         )
         .await;
         actor
-            .state()
-            .request_manual_compact(crate::state::PendingManualCompactRequest {
+            .turn_runtime()
+            .request_manual_compact(crate::turn::PendingManualCompactRequest {
                 runtime: ResolvedRuntimeConfig::default(),
                 instructions: None,
             })

@@ -11,7 +11,7 @@ impl SessionRuntime {
     pub async fn interrupt_session(&self, session_id: &str) -> Result<()> {
         let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.ensure_loaded_session(&session_id).await?;
-        let Some(interrupted) = actor.state().interrupt_execution_if_running()? else {
+        let Some(interrupted) = actor.turn_runtime().interrupt_if_running()? else {
             return Ok(());
         };
         let active_turn_id = interrupted.turn_id.clone();
@@ -44,6 +44,7 @@ impl SessionRuntime {
             self.prompt_facts_provider.as_ref(),
             &self.event_store,
             actor.working_dir(),
+            actor.turn_runtime(),
             actor.state(),
             session_id.as_str(),
             interrupted.pending_request,
@@ -186,15 +187,15 @@ mod tests {
         )
         .await;
         actor
-            .state()
-            .request_manual_compact(crate::state::PendingManualCompactRequest {
+            .turn_runtime()
+            .request_manual_compact(crate::turn::PendingManualCompactRequest {
                 runtime: ResolvedRuntimeConfig::default(),
                 instructions: None,
             })
             .expect("manual compact flag should set");
         actor
-            .state()
-            .prepare_execution(
+            .turn_runtime()
+            .prepare(
                 session_id.as_str(),
                 "turn-1",
                 astrcode_core::CancelToken::new(),

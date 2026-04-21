@@ -90,7 +90,7 @@ pub use ports::{
     SessionTurnOutcomeSummary, SessionTurnTerminalState,
 };
 pub use session_plan::{ProjectPlanArchiveDetail, ProjectPlanArchiveSummary};
-pub use session_use_cases::summarize_session_meta;
+pub use session_use_cases::{SessionForkSelector, summarize_session_meta};
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
 pub use workflow::{
     EXECUTING_PHASE_ID, PLAN_EXECUTE_WORKFLOW_ID, PLANNING_PHASE_ID, PlanImplementationStep,

@@ -11,15 +11,17 @@ use astrcode_core::{
     StoredEvent, TaskSnapshot,
 };
 use astrcode_session_runtime::{
-    ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint, ForkResult,
-    SessionCatalogEvent, SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay,
-    SessionRuntime, SessionTranscriptSnapshot,
+    ConversationSnapshotFacts, ConversationStreamReplayFacts, SessionCatalogEvent,
+    SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay, SessionRuntime,
+    SessionTranscriptSnapshot,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use super::AppAgentPromptSubmission;
-use crate::session_identity::normalize_external_session_id;
+use crate::{
+    session_identity::normalize_external_session_id, session_use_cases::SessionForkSelector,
+};
 
 /// `App` 依赖的 session-runtime 稳定端口。
 ///
@@ -33,8 +35,8 @@ pub trait AppSessionPort: Send + Sync {
     async fn fork_session(
         &self,
         session_id: &str,
-        fork_point: ForkPoint,
-    ) -> astrcode_core::Result<ForkResult>;
+        selector: SessionForkSelector,
+    ) -> astrcode_core::Result<SessionMeta>;
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()>;
     async fn delete_project(&self, working_dir: &str)
     -> astrcode_core::Result<DeleteProjectResult>;
@@ -117,13 +119,33 @@ impl AppSessionPort for SessionRuntime {
     async fn fork_session(
         &self,
         session_id: &str,
-        fork_point: ForkPoint,
-    ) -> astrcode_core::Result<ForkResult> {
-        self.fork_session(
-            &astrcode_core::SessionId::from(normalize_external_session_id(session_id)),
-            fork_point,
-        )
-        .await
+        selector: SessionForkSelector,
+    ) -> astrcode_core::Result<SessionMeta> {
+        let fork_point = match selector {
+            SessionForkSelector::Latest => astrcode_session_runtime::ForkPoint::Latest,
+            SessionForkSelector::TurnEnd { turn_id } => {
+                astrcode_session_runtime::ForkPoint::TurnEnd(turn_id)
+            },
+            SessionForkSelector::StorageSeq { storage_seq } => {
+                astrcode_session_runtime::ForkPoint::StorageSeq(storage_seq)
+            },
+        };
+        let result = self
+            .fork_session(
+                &astrcode_core::SessionId::from(normalize_external_session_id(session_id)),
+                fork_point,
+            )
+            .await?;
+        self.list_session_metas()
+            .await?
+            .into_iter()
+            .find(|meta| meta.session_id == result.new_session_id.as_str())
+            .ok_or_else(|| {
+                astrcode_core::AstrError::Internal(format!(
+                    "forked session '{}' was created but metadata is unavailable",
+                    result.new_session_id
+                ))
+            })
     }
 
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()> {

@@ -191,6 +191,7 @@ core 中需要警惕的边界：
 **应该只做**：turn 生命周期管理、LLM 调用、工具执行、流式处理。
 
 - `TurnRuntimeState`（prepare/complete/interrupt/cancel）属于此模块，不属于 `state/`。
+- `watcher.rs` 拥有等待 turn 终态的异步监听循环；它可以读取 `SessionState` 的纯投影和广播，但不把等待逻辑留在 `query/`。
 - `runner/` 负责单步循环编排（prompt → LLM → 工具/停止）。
 - `submit.rs` 只做提交入口和协调，终结持久化和 SubRun 事件构造应拆为独立模块。
 - 所有压缩后事件组装（proactive/reactive/manual）应抽取为共享函数，消除三处重复。
@@ -226,7 +227,9 @@ core 中需要警惕的边界：
 
 #### `actor/` — SessionActor
 
-- `SessionState` 的轻量容器 + 恢复入口。不包含写入逻辑。
+- `SessionState` 的轻量容器 + 恢复入口。
+- 直接持有 `TurnRuntimeState`，作为单 session live runtime owner。
+- 不包含 durable 写入逻辑；写入仍通过 `SessionState` / `SessionWriter` 完成。
 
 #### `observe/` — 纯数据类型
 

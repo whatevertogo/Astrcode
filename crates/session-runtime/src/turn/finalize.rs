@@ -85,11 +85,12 @@ async fn persist_deferred_manual_compact(
     prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
     event_store: &Arc<dyn EventStore>,
     working_dir: &str,
+    turn_runtime: &crate::turn::TurnRuntimeState,
     session_state: &Arc<SessionState>,
     session_id: &str,
-    request: &crate::state::PendingManualCompactRequest,
+    request: &crate::turn::PendingManualCompactRequest,
 ) {
-    session_state.set_compacting(true);
+    let compacting_guard = turn_runtime.enter_compacting();
     let built = build_manual_compact_events(ManualCompactRequest {
         gateway,
         prompt_facts_provider,
@@ -101,7 +102,7 @@ async fn persist_deferred_manual_compact(
         instructions: request.instructions.as_deref(),
     })
     .await;
-    session_state.set_compacting(false);
+    drop(compacting_guard);
     let events = match built {
         Ok(Some(events)) => events,
         Ok(None) => return,
@@ -144,9 +145,10 @@ pub(crate) async fn persist_pending_manual_compact_if_any(
     prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
     event_store: &Arc<dyn EventStore>,
     working_dir: &str,
+    turn_runtime: &crate::turn::TurnRuntimeState,
     session_state: &Arc<SessionState>,
     session_id: &str,
-    pending_runtime: Option<crate::state::PendingManualCompactRequest>,
+    pending_runtime: Option<crate::turn::PendingManualCompactRequest>,
 ) {
     if let Some(request) = pending_runtime {
         persist_deferred_manual_compact(
@@ -154,6 +156,7 @@ pub(crate) async fn persist_pending_manual_compact_if_any(
             prompt_facts_provider,
             event_store,
             working_dir,
+            turn_runtime,
             session_state,
             session_id,
             &request,

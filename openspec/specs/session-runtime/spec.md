@@ -130,13 +130,13 @@ SessionActor SHALL NOT 直接持有 `LlmProvider`、`PromptProvider`、`ToolProv
 
 `session-runtime` 内部 SHALL 至少按以下职责分块组织，而不是把所有执行细节平铺在 crate 根：
 
-- `state` — 会话真相状态、事件投影、child session 节点跟踪、input queue 投影、turn 生命周期
+- `state` — durable projection state、事件投影、child session 节点跟踪、input queue 投影、writer 与广播基础设施
 - `catalog` — session catalog 事件 re-export 与广播协调
-- `actor` — 单 session live truth 与 durable writer 桥接
-- `turn` — turn 用例与执行核心（submit, replay, interrupt, branch, fork, runner, request 等）
+- `actor` — 单 session live truth 组装与 `SessionState` / `TurnRuntimeState` owner
+- `turn` — turn 用例、执行核心、runtime control state 与 turn watcher（submit, interrupt, branch, fork, runner, request, runtime, watcher 等）
 - `context_window` — token 预算、裁剪、压缩与窗口化消息序列
 - `command` — 写操作 façade（append 各种 durable 事件、compact、switch mode 等）
-- `query` — 读操作 façade（observe, conversation snapshot, turn terminal, input queue 等）
+- `query` — 纯读 façade（observe 所需快照、conversation snapshot、replay、transcript、turn terminal snapshot 等）
 - `observe` — observe/replay/live 订阅语义、scope/filter 与状态来源
 - `heuristics` — 运行时启发式常量（token 估算等）
 
@@ -144,17 +144,18 @@ SessionActor SHALL NOT 直接持有 `LlmProvider`、`PromptProvider`、`ToolProv
 
 - `context_window` 只负责预算、裁剪、压缩与窗口化消息序列
 - request assembly 位于 `turn/request`，不在 `context_window` 名下
-- `actor` 只负责推进与持有单 session live truth
+- `actor` 只负责组装与持有单 session live truth，不承担 query 或 watcher 语义
 - `observe` 只负责推送/订阅语义与过滤范围
-- `query` 只负责拉取、快照与投影
+- `query` 只负责拉取、快照与回放，不负责订阅等待循环或 turn 运行时协调
 - `command` 只负责写操作与 durable event append
-- `state` 包含 cache, child_sessions, execution, input_queue, paths, tasks, writer 等子模块
+- `state` 包含 cache, child_sessions, execution, input_queue, paths, tasks, writer 等 durable/projection 子模块
+- `turn` 包含 runtime control、watcher 与完整执行循环；`TurnRuntimeState` 等运行时控制类型 MUST 归属 `turn`
 
 #### Scenario: 单 session 真相与执行结构清晰
 
 - **WHEN** 检查 `session-runtime/src`
 - **THEN** 可以沿着 `state -> actor -> turn -> query` 的结构理解单 session 行为
-- **AND** 不需要回到 `application` 中寻找会话真相
+- **AND** 不需要在 `state` 中同时追踪 turn runtime control 与 durable projection truth
 
 #### Scenario: request assembly 不再挂在 context_window 名下
 
@@ -182,9 +183,29 @@ SessionActor SHALL NOT 直接持有 `LlmProvider`、`PromptProvider`、`ToolProv
 - **AND** 公共导出包括 `SessionSnapshot`, `SessionState`, `append_and_broadcast`, `complete_session_execution`,
   `display_name_from_working_dir`, `normalize_session_id`, `normalize_working_dir`, `prepare_session_execution`
 
+#### Scenario: state 不再拥有 turn runtime control 类型
+
+- **WHEN** 检查 `state` 子域
+- **THEN** 其中不再定义 `TurnRuntimeState`、`CompactRuntimeState`、`ActiveTurnState`、`ForcedTurnCompletion` 或 `PendingManualCompactRequest`
+- **AND** 这些类型 SHALL 归属 `turn/runtime.rs` 或等价的 turn-owned 模块
+
+#### Scenario: query 保持纯读与回放语义
+
+- **WHEN** 检查 `query` 子域
+- **THEN** 其实现只包含 snapshot、projection、replay、transcript 与等价的纯读能力
+- **AND** 不再包含 `wait_for_turn_terminal_snapshot()` 这类基于 broadcaster 的等待循环
+
+#### Scenario: turn 拥有 watcher 与 runtime control
+
+- **WHEN** 检查 `turn` 子域
+- **THEN** 其实现包含 `runtime` 和 `watcher`（或等价命名）的子模块
+- **AND** turn terminal 等待语义 SHALL 由 `turn` 子域拥有
+
 ### Requirement: `session-runtime` SHALL 分离 runtime control state 与 display projection state
 
 `session-runtime` MUST 把“执行控制状态”和“面向读模型的 display phase / projected state”建模为两类不同真相。runtime control state 用于持有 active turn、cancel、lease 与 compacting 等控制信息；display projection state 继续由 durable 事件流投影得到。
+
+运行时控制状态的模块 owner SHALL 位于 `turn` 子域；`SessionState` SHALL 只承载 durable projection state 与相关基础设施，不再直接拥有 runtime control state。
 
 #### Scenario: turn 提交更新 runtime control state 而不是直接声明 display phase 真相
 
@@ -220,6 +241,19 @@ SessionActor SHALL NOT 直接持有 `LlmProvider`、`PromptProvider`、`ToolProv
 - **AND** `CompactRuntimeState` SHALL 至少持有 `in_progress`、`failure_count` 与 `pending_request`
 - **AND** SHALL 使用 `pending_request.is_some()` 作为唯一“存在待执行 deferred compact”的真相
 - **AND** SHALL NOT 再并行维护单独的 `pending_manual_compact: bool`
+
+#### Scenario: SessionState 不再直接拥有 runtime control state
+
+- **WHEN** 检查 `SessionState` 结构
+- **THEN** 其字段只包含 projection registry、writer、broadcaster 与等价的 durable/projection 基础设施
+- **AND** `TurnRuntimeState` SHALL 由 `turn` 子域定义并由单 session live truth owner 单独持有
+
+#### Scenario: prepare / complete / interrupt 只维护 runtime control，不直接写 display Phase
+
+- **WHEN** `TurnRuntimeState::prepare()`、`complete()` 或 `interrupt_if_running()` 被调用
+- **THEN** 系统 SHALL 只更新 active turn、generation、cancel、compacting 与 running 等 runtime control 字段
+- **AND** display `Phase` SHALL 继续只由 durable events 经 `PhaseTracker` 投影得到
+- **AND** SHALL NOT 在这些 runtime control transition 中直接 `phase.lock()` 或等价方式同步设置 display Phase
 
 ### Requirement: `session-runtime` SHALL 通过统一 projection registry 增量维护派生事实
 
@@ -450,3 +484,64 @@ SessionActor SHALL NOT 直接持有 `LlmProvider`、`PromptProvider`、`ToolProv
 - **WHEN** turn 正常完成并调用 `complete(generation)`
 - **THEN** 若 generation 与 `TurnRuntimeState` 当前 generation 匹配，SHALL 执行完整控制状态清理
 - **AND** SHALL 原子返回 `Option<PendingManualCompactRequest>`
+
+### Requirement: `session-runtime` SHALL 为重复的 turn/query helper 指定单一 canonical owner
+
+`session-runtime` MUST 为 turn 终态投影、assistant summary 提取和 `session_id` 规范化等重复 helper 指定单一 canonical owner。其他子域调用方 SHALL 只复用该实现，SHALL NOT 继续在 `query/service`、`turn/submit`、`application` 或等价位置各自维护一份同类逻辑。
+
+#### Scenario: turn outcome 与 terminal snapshot 复用同一投影逻辑
+- **WHEN** 系统需要计算某个 turn 的 terminal snapshot 或 projected outcome
+- **THEN** `query/service` 与其他消费方 SHALL 通过 `query/turn` 的 canonical helper 生成结果
+- **AND** SHALL NOT 在多个调用点分别扫描事件并各自拼装相同语义
+
+#### Scenario: assistant summary 提取不再多处实现
+- **WHEN** finalize 路径或查询路径需要读取某个 turn 的 assistant summary
+- **THEN** 系统 SHALL 通过同一份 summary 提取 helper 或 reducer 获取结果
+- **AND** SHALL NOT 在 `turn/submit` 与 `query/turn` 中长期保留两套等价实现
+
+#### Scenario: session id 规范化只有一个所有者
+- **WHEN** 任意运行时入口需要把外部 `session_id` 输入转换为内部使用形式
+- **THEN** 系统 SHALL 通过 `state::paths` 或等价 typed helper 完成规范化
+- **AND** `application` 与多个 runtime 调用点 SHALL NOT 继续散落手写等价规范化逻辑
+
+### Requirement: turn terminal projection SHALL 由同一 projector 同时服务增量、回放和重建路径
+
+同一个 turn 的 terminal projection MUST 由一套共享 projector/reducer 逻辑生成。live append、query replay fallback 和 recovery rebuild SHALL 共用该逻辑，SHALL NOT 继续长期维护两套以上对 `TurnDone` / `Error` 的平行匹配分支。
+
+#### Scenario: projection registry 与 query 共享同一 turn projector
+- **WHEN** live append 更新某个 turn 的 terminal projection
+- **THEN** `ProjectionRegistry` SHALL 通过共享 turn projector/reducer 更新结果
+- **AND** query fallback SHALL 复用同一 projector 逻辑
+
+#### Scenario: rebuild 与 live append 产出一致 terminal projection
+- **WHEN** 系统分别通过 recovery rebuild 和 live append 处理等价的 turn 事件序列
+- **THEN** 它们 SHALL 产出相同的 `TurnProjectionSnapshot`
+- **AND** SHALL NOT 因为走不同入口而出现 terminal kind / last error 漂移
+
+### Requirement: post-compact durable events SHALL 由共享 builder 生成
+
+主动 compact、reactive compact 和 manual compact 之后写入的 durable 事件序列 MUST 由共享 builder 生成。该 builder SHALL 统一负责 `compact_applied`、recent user context digest/messages 和 file recovery messages 的构造；各调用方只负责提供 trigger、上下文与 compact result。
+
+#### Scenario: 不同 compact 路径复用同一事件 builder
+- **WHEN** proactive、reactive 或 manual compact 成功完成
+- **THEN** 系统 SHALL 通过同一共享 builder 生成后续 durable 事件序列
+- **AND** SHALL NOT 在三个调用点长期维护三套等价的事件组装逻辑
+
+#### Scenario: compact 事件序列在不同 trigger 下结构保持一致
+- **WHEN** 仅 compact trigger 不同，但 compact result 结构等价
+- **THEN** 生成的 post-compact durable 事件结构 SHALL 保持一致
+- **AND** 不同路径的差异 SHALL 仅来自 trigger 和对应上下文值，而不是事件拼装规则分叉
+
+### Requirement: `session-runtime` crate 根导出面 SHALL 收口到稳定 façade 与稳定事实
+
+`session-runtime` crate 根的公开导出 MUST 只保留稳定 façade、稳定 snapshot/result 和确实面向外层合同的 read-model facts。低层 orchestration helper、路径规范化函数和仅用于 runtime 内部拼装的辅助类型 SHALL NOT 继续作为 crate 根默认导出面。
+
+#### Scenario: orchestration helper 不再从 crate 根外泄
+- **WHEN** 外层 crate 依赖 `session-runtime`
+- **THEN** 它们 SHALL 通过 `SessionRuntime` 的公开方法或 port blanket impl 消费运行时能力
+- **AND** SHALL NOT 依赖 crate 根暴露的低层 helper、执行辅助或路径规范化工具完成编排
+
+#### Scenario: 稳定 read-model facts 仍可继续暴露
+- **WHEN** 某个类型已经作为 terminal / conversation 的稳定 authoritative facts 被上层 surface 消费
+- **THEN** `session-runtime` MAY 继续公开该类型
+- **AND** 本次收口 SHALL 聚焦 orchestration helper 与内部运行时辅助，不把 terminal read-model 的后续隔离强行并入同一阶段

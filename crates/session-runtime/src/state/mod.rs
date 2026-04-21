@@ -1,7 +1,7 @@
-//! 会话真相状态：事件投影、child-session 节点跟踪、input queue 投影、turn 生命周期。
+//! 会话真相状态：事件投影、child-session 节点跟踪、input queue 投影、writer 与广播基础设施。
 //!
-//! 从 `runtime-session/session_state.rs` 迁入，去掉了 `anyhow` 依赖，
-//! 所有 `Result` 统一使用 `astrcode_core::Result`。
+//! `SessionState` 只拥有 durable truth 与 projection/cache/broadcast 基础设施，
+//! 不再承担 turn runtime control；运行时锁、CancelToken 与 compact 控制统一归 `turn/runtime.rs`。
 
 mod cache;
 mod child_sessions;
@@ -18,15 +18,12 @@ mod test_support;
 pub(crate) use test_support::sample_spawn_child_ref;
 mod writer;
 
-use std::sync::{
-    Arc, Mutex as StdMutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use astrcode_core::{
-    AgentEvent, AgentState, AgentStateProjector, CancelToken, EventTranslator, LlmMessage, ModeId,
-    Phase, ResolvedRuntimeConfig, Result, SessionEventRecord, SessionRecoveryCheckpoint,
-    SessionTurnLease, StoredEvent, TurnProjectionSnapshot, normalize_recovered_phase,
+    AgentEvent, AgentState, AgentStateProjector, EventTranslator, LlmMessage, ModeId, Phase,
+    Result, SessionEventRecord, SessionRecoveryCheckpoint, StoredEvent, TurnProjectionSnapshot,
+    normalize_recovered_phase,
     support::{self},
 };
 use chrono::Utc;
@@ -41,211 +38,7 @@ pub(crate) use writer::SessionWriter;
 const SESSION_BROADCAST_CAPACITY: usize = 2048;
 const SESSION_LIVE_BROADCAST_CAPACITY: usize = 2048;
 
-// ── SessionState ──────────────────────────────────────────
-
-// ── SessionState ──────────────────────────────────────────
-
-/// 会话 live 真相：事件投影、child-session 节点跟踪、input queue 投影、turn 生命周期。
-///
-/// 使用 per-field `StdMutex` 而非外层 `RwLock`，
-/// 允许不同字段的并发读写互不阻塞（如 broadcaster 广播不阻塞 projector 读取）。
-pub struct ActiveTurnState {
-    pub turn_id: String,
-    pub generation: u64,
-    pub cancel: CancelToken,
-    #[allow(dead_code)]
-    pub turn_lease: Box<dyn SessionTurnLease>,
-}
-
-pub struct TurnRuntimeState {
-    generation: AtomicU64,
-    running: AtomicBool,
-    active_turn: StdMutex<Option<ActiveTurnState>>,
-    compact: CompactRuntimeState,
-}
-
-pub struct CompactRuntimeState {
-    in_progress: AtomicBool,
-    pending_request: StdMutex<Option<PendingManualCompactRequest>>,
-    failure_count: StdMutex<u32>,
-}
-
-impl CompactRuntimeState {
-    fn new() -> Self {
-        Self {
-            in_progress: AtomicBool::new(false),
-            pending_request: StdMutex::new(None),
-            failure_count: StdMutex::new(0),
-        }
-    }
-
-    fn is_in_progress(&self) -> bool {
-        self.in_progress.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    fn set_in_progress(&self, in_progress: bool) {
-        self.in_progress
-            .store(in_progress, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    fn has_pending_request(&self) -> Result<bool> {
-        Ok(support::lock_anyhow(
-            &self.pending_request,
-            "session pending manual compact request",
-        )?
-        .is_some())
-    }
-
-    fn request_manual_compact(&self, request: PendingManualCompactRequest) -> Result<bool> {
-        let mut pending_request = support::lock_anyhow(
-            &self.pending_request,
-            "session pending manual compact request",
-        )?;
-        let already_pending = pending_request.is_some();
-        *pending_request = Some(request);
-        Ok(!already_pending)
-    }
-
-    fn take_pending_request(&self) -> Result<Option<PendingManualCompactRequest>> {
-        Ok(support::lock_anyhow(
-            &self.pending_request,
-            "session pending manual compact request",
-        )?
-        .take())
-    }
-
-    #[allow(dead_code)]
-    fn failure_count(&self) -> Result<u32> {
-        Ok(*support::lock_anyhow(
-            &self.failure_count,
-            "session compact failure count",
-        )?)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ForcedTurnCompletion {
-    pub(crate) turn_id: Option<String>,
-    pub(crate) pending_request: Option<PendingManualCompactRequest>,
-}
-
-impl TurnRuntimeState {
-    fn new() -> Self {
-        Self {
-            generation: AtomicU64::new(0),
-            running: AtomicBool::new(false),
-            active_turn: StdMutex::new(None),
-            compact: CompactRuntimeState::new(),
-        }
-    }
-
-    fn is_running(&self) -> bool {
-        self.running.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    fn active_turn_id_snapshot(&self) -> Result<Option<String>> {
-        Ok(
-            support::lock_anyhow(&self.active_turn, "session active turn")?
-                .as_ref()
-                .map(|active| active.turn_id.clone()),
-        )
-    }
-
-    fn prepare(
-        &self,
-        session_id: &str,
-        turn_id: &str,
-        cancel: CancelToken,
-        turn_lease: Box<dyn SessionTurnLease>,
-    ) -> Result<u64> {
-        let mut active_turn = support::lock_anyhow(&self.active_turn, "session active turn")?;
-        if active_turn.is_some() || self.is_running() {
-            return Err(astrcode_core::AstrError::Validation(format!(
-                "session '{}' entered an inconsistent running state",
-                session_id
-            )));
-        }
-        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        *active_turn = Some(ActiveTurnState {
-            turn_id: turn_id.to_string(),
-            generation,
-            cancel,
-            turn_lease,
-        });
-        self.running.store(true, Ordering::SeqCst);
-        Ok(generation)
-    }
-
-    fn cancel_active_turn(&self) -> Result<Option<String>> {
-        let active_turn = support::lock_anyhow(&self.active_turn, "session active turn")?;
-        if let Some(active_turn) = active_turn.as_ref() {
-            active_turn.cancel.cancel();
-            return Ok(Some(active_turn.turn_id.clone()));
-        }
-        Ok(None)
-    }
-
-    fn complete(&self, generation: u64) -> Result<(bool, Option<PendingManualCompactRequest>)> {
-        if self.generation.load(Ordering::SeqCst) != generation {
-            return Ok((false, None));
-        }
-        let mut active_turn = support::lock_anyhow(&self.active_turn, "session active turn")?;
-        if active_turn.as_ref().map(|active| active.generation) != Some(generation) {
-            return Ok((false, None));
-        }
-        *active_turn = None;
-        self.running.store(false, Ordering::SeqCst);
-        Ok((true, self.compact.take_pending_request()?))
-    }
-
-    fn force_complete(&self) -> Result<ForcedTurnCompletion> {
-        self.generation.fetch_add(1, Ordering::SeqCst);
-        let mut active_turn = support::lock_anyhow(&self.active_turn, "session active turn")?;
-        let turn_id = active_turn.take().map(|active| {
-            active.cancel.cancel();
-            active.turn_id
-        });
-        self.running.store(false, Ordering::SeqCst);
-        Ok(ForcedTurnCompletion {
-            turn_id,
-            pending_request: self.compact.take_pending_request()?,
-        })
-    }
-
-    fn interrupt_if_running(&self) -> Result<Option<ForcedTurnCompletion>> {
-        let mut active_turn = support::lock_anyhow(&self.active_turn, "session active turn")?;
-        let Some(active_turn_state) = active_turn.take() else {
-            self.running.store(false, Ordering::SeqCst);
-            return Ok(None);
-        };
-        self.generation.fetch_add(1, Ordering::SeqCst);
-        active_turn_state.cancel.cancel();
-        self.running.store(false, Ordering::SeqCst);
-        Ok(Some(ForcedTurnCompletion {
-            turn_id: Some(active_turn_state.turn_id),
-            pending_request: self.compact.take_pending_request()?,
-        }))
-    }
-
-    fn compacting(&self) -> bool {
-        self.compact.is_in_progress()
-    }
-
-    fn set_compacting(&self, compacting: bool) {
-        self.compact.set_in_progress(compacting);
-    }
-
-    fn has_pending_manual_compact(&self) -> Result<bool> {
-        self.compact.has_pending_request()
-    }
-
-    fn request_manual_compact(&self, request: PendingManualCompactRequest) -> Result<bool> {
-        self.compact.request_manual_compact(request)
-    }
-}
-
 pub struct SessionState {
-    turn_runtime: TurnRuntimeState,
     projection_registry: StdMutex<ProjectionRegistry>,
     pub broadcaster: broadcast::Sender<SessionEventRecord>,
     live_broadcaster: broadcast::Sender<AgentEvent>,
@@ -254,9 +47,7 @@ pub struct SessionState {
 
 impl std::fmt::Debug for SessionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionState")
-            .field("running", &self.turn_runtime.is_running())
-            .finish_non_exhaustive()
+        f.debug_struct("SessionState").finish_non_exhaustive()
     }
 }
 
@@ -268,12 +59,6 @@ pub struct SessionSnapshot {
     pub working_dir: String,
     pub latest_turn_id: Option<astrcode_core::TurnId>,
     pub turn_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingManualCompactRequest {
-    pub runtime: ResolvedRuntimeConfig,
-    pub instructions: Option<String>,
 }
 
 impl SessionState {
@@ -314,7 +99,6 @@ impl SessionState {
         let (live_broadcaster, _) = broadcast::channel(SESSION_LIVE_BROADCAST_CAPACITY);
 
         Ok(Self {
-            turn_runtime: TurnRuntimeState::new(),
             projection_registry: StdMutex::new(projection_registry),
             broadcaster,
             live_broadcaster,
@@ -332,7 +116,6 @@ impl SessionState {
         let (broadcaster, _) = broadcast::channel(SESSION_BROADCAST_CAPACITY);
         let (live_broadcaster, _) = broadcast::channel(SESSION_LIVE_BROADCAST_CAPACITY);
         Self {
-            turn_runtime: TurnRuntimeState::new(),
             projection_registry: StdMutex::new(ProjectionRegistry::new(
                 phase,
                 projector,
@@ -386,33 +169,6 @@ impl SessionState {
         )
     }
 
-    pub fn active_turn_id_snapshot(&self) -> Result<Option<String>> {
-        self.turn_runtime.active_turn_id_snapshot()
-    }
-
-    pub fn manual_compact_pending(&self) -> Result<bool> {
-        self.turn_runtime.has_pending_manual_compact()
-    }
-
-    pub fn is_running(&self) -> bool {
-        self.turn_runtime.is_running()
-    }
-
-    pub fn prepare_execution(
-        &self,
-        session_id: &str,
-        turn_id: &str,
-        cancel: CancelToken,
-        turn_lease: Box<dyn SessionTurnLease>,
-    ) -> Result<u64> {
-        self.turn_runtime
-            .prepare(session_id, turn_id, cancel, turn_lease)
-    }
-
-    pub fn cancel_active_turn(&self) -> Result<Option<String>> {
-        self.turn_runtime.cancel_active_turn()
-    }
-
     pub fn current_mode_id(&self) -> Result<ModeId> {
         Ok(
             support::lock_anyhow(&self.projection_registry, "session projection registry")?
@@ -425,37 +181,6 @@ impl SessionState {
             support::lock_anyhow(&self.projection_registry, "session projection registry")?
                 .last_mode_changed_at(),
         )
-    }
-
-    pub fn complete_execution_state(
-        &self,
-        generation: u64,
-    ) -> Result<Option<PendingManualCompactRequest>> {
-        let (completed, pending_request) = self.turn_runtime.complete(generation)?;
-        if !completed {
-            return Ok(None);
-        }
-        Ok(pending_request)
-    }
-
-    pub(crate) fn force_complete_execution_state(&self) -> Result<ForcedTurnCompletion> {
-        self.turn_runtime.force_complete()
-    }
-
-    pub(crate) fn interrupt_execution_if_running(&self) -> Result<Option<ForcedTurnCompletion>> {
-        self.turn_runtime.interrupt_if_running()
-    }
-
-    pub fn compacting(&self) -> bool {
-        self.turn_runtime.compacting()
-    }
-
-    pub fn set_compacting(&self, compacting: bool) {
-        self.turn_runtime.set_compacting(compacting);
-    }
-
-    pub fn request_manual_compact(&self, request: PendingManualCompactRequest) -> Result<bool> {
-        self.turn_runtime.request_manual_compact(request)
     }
 
     pub fn translate_store_and_cache(
@@ -517,9 +242,8 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::{
-        AgentEventContext, CancelToken, ExecutionTaskItem, ExecutionTaskStatus, InvocationKind,
-        ModeId, Phase, SessionRecoveryCheckpoint, SessionTurnLease, StorageEventPayload,
-        SubRunStorageMode, UserMessageOrigin,
+        AgentEventContext, ExecutionTaskItem, ExecutionTaskStatus, InvocationKind, ModeId, Phase,
+        SessionRecoveryCheckpoint, StorageEventPayload, SubRunStorageMode, UserMessageOrigin,
     };
     use chrono::Utc;
 
@@ -530,10 +254,6 @@ mod tests {
             test_session_state,
         },
     };
-
-    struct StubTurnLease;
-
-    impl SessionTurnLease for StubTurnLease {}
 
     #[test]
     fn translate_store_and_cache_keeps_sub_run_events_out_of_parent_snapshot() {
@@ -684,184 +404,6 @@ mod tests {
             .expect_err("invalid stored event should be rejected");
 
         assert!(error.to_string().contains("child_session_id"));
-    }
-
-    #[test]
-    fn turn_runtime_state_keeps_running_cache_and_active_turn_in_sync() {
-        let session = test_session_state();
-        let cancel = CancelToken::new();
-
-        let generation = session
-            .prepare_execution(
-                "session-1",
-                "turn-1",
-                cancel.clone(),
-                Box::new(StubTurnLease),
-            )
-            .expect("turn runtime should enter running state");
-
-        assert!(session.is_running());
-        assert_eq!(
-            session
-                .active_turn_id_snapshot()
-                .expect("active turn should be readable")
-                .as_deref(),
-            Some("turn-1")
-        );
-
-        let cancelled_turn_id = session.cancel_active_turn().expect("cancel should succeed");
-        assert_eq!(cancelled_turn_id.as_deref(), Some("turn-1"));
-        assert!(cancel.is_cancelled(), "cancel token should be triggered");
-
-        let pending_request = session
-            .complete_execution_state(generation)
-            .expect("turn runtime should complete successfully");
-        assert_eq!(pending_request, None);
-
-        assert!(!session.is_running());
-        assert_eq!(
-            session
-                .active_turn_id_snapshot()
-                .expect("active turn should be readable"),
-            None
-        );
-        assert_eq!(
-            session.current_phase().expect("phase should be readable"),
-            Phase::Idle
-        );
-    }
-
-    #[test]
-    fn recovery_resets_turn_runtime_to_idle_without_active_turn() {
-        let session = test_session_state();
-        session
-            .prepare_execution(
-                "session-1",
-                "turn-1",
-                CancelToken::new(),
-                Box::new(StubTurnLease),
-            )
-            .expect("turn runtime should enter running state");
-        session
-            .request_manual_compact(super::PendingManualCompactRequest {
-                runtime: astrcode_core::ResolvedRuntimeConfig::default(),
-                instructions: Some("compact".to_string()),
-            })
-            .expect("manual compact should be queued");
-        session.set_compacting(true);
-
-        let checkpoint = session
-            .recovery_checkpoint(7)
-            .expect("checkpoint should build");
-        let recovered = SessionState::from_recovery(
-            Arc::new(SessionWriter::new(Box::new(NoopEventLogWriter))),
-            &checkpoint,
-            Vec::new(),
-        )
-        .expect("session should recover from checkpoint");
-
-        assert!(!recovered.is_running());
-        assert_eq!(
-            recovered
-                .active_turn_id_snapshot()
-                .expect("active turn should be readable"),
-            None
-        );
-        assert!(
-            !recovered
-                .manual_compact_pending()
-                .expect("manual compact state should be readable")
-        );
-        assert!(!recovered.compacting());
-    }
-
-    #[test]
-    fn stale_complete_generation_does_not_clear_resubmitted_turn() {
-        let session = test_session_state();
-        let generation_a = session
-            .prepare_execution(
-                "session-1",
-                "turn-a",
-                CancelToken::new(),
-                Box::new(StubTurnLease),
-            )
-            .expect("first turn should prepare");
-        let interrupted = session
-            .force_complete_execution_state()
-            .expect("interrupt should clear active turn");
-        assert_eq!(interrupted.turn_id.as_deref(), Some("turn-a"));
-
-        let generation_b = session
-            .prepare_execution(
-                "session-1",
-                "turn-b",
-                CancelToken::new(),
-                Box::new(StubTurnLease),
-            )
-            .expect("second turn should prepare");
-
-        assert_eq!(
-            session
-                .complete_execution_state(generation_a)
-                .expect("stale finalize should not error"),
-            None
-        );
-        assert!(
-            session.is_running(),
-            "stale finalize must not clear running cache"
-        );
-        assert_eq!(
-            session
-                .active_turn_id_snapshot()
-                .expect("active turn should stay readable")
-                .as_deref(),
-            Some("turn-b")
-        );
-        assert_eq!(
-            session.current_phase().expect("phase should stay thinking"),
-            Phase::Idle
-        );
-
-        session
-            .complete_execution_state(generation_b)
-            .expect("current generation should complete");
-        assert!(!session.is_running());
-        assert_eq!(
-            session
-                .active_turn_id_snapshot()
-                .expect("active turn should be cleared"),
-            None
-        );
-    }
-
-    #[test]
-    fn interrupt_execution_if_running_is_noop_after_turn_already_completed() {
-        let session = test_session_state();
-        let generation = session
-            .prepare_execution(
-                "session-1",
-                "turn-1",
-                CancelToken::new(),
-                Box::new(StubTurnLease),
-            )
-            .expect("turn should prepare");
-
-        session
-            .complete_execution_state(generation)
-            .expect("turn should complete");
-
-        let interrupted = session
-            .interrupt_execution_if_running()
-            .expect("interrupt should not fail");
-
-        assert_eq!(interrupted, None);
-        assert!(!session.is_running());
-        assert_eq!(
-            session
-                .current_phase()
-                .expect("phase should remain readable"),
-            Phase::Idle
-        );
     }
 
     #[test]

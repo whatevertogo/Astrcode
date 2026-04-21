@@ -41,6 +41,12 @@ pub(crate) fn project_turn_projection(events: &[StoredEvent]) -> Option<TurnProj
     Some(projection)
 }
 
+pub(crate) fn has_terminal_projection(projection: Option<&TurnProjectionSnapshot>) -> bool {
+    projection.is_some_and(|projection| {
+        projection.terminal_kind.is_some() || projection.last_error.is_some()
+    })
+}
+
 pub(crate) fn last_non_empty_assistant_message(messages: &[LlmMessage]) -> Option<String> {
     messages.iter().rev().find_map(|message| match message {
         LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => {
@@ -81,7 +87,7 @@ mod tests {
     };
 
     use super::{
-        apply_turn_projection_event, last_non_empty_assistant_event,
+        apply_turn_projection_event, has_terminal_projection, last_non_empty_assistant_event,
         last_non_empty_assistant_message, project_turn_projection,
     };
 
@@ -132,6 +138,16 @@ mod tests {
             projection.terminal_kind,
             Some(astrcode_core::TurnTerminalKind::Completed)
         );
+    }
+
+    #[test]
+    fn has_terminal_projection_detects_terminal_kind() {
+        assert!(has_terminal_projection(Some(
+            &astrcode_core::TurnProjectionSnapshot {
+                terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+                last_error: None,
+            }
+        )));
     }
 
     #[test]

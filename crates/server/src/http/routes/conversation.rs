@@ -5,7 +5,8 @@ use astrcode_application::{
     terminal::{
         ConversationAuthoritativeSummary, ConversationChildSummarySummary,
         ConversationControlSummary, ConversationFocus, ConversationSlashCandidateSummary,
-        TerminalStreamFacts, TerminalStreamReplayFacts, summarize_conversation_authoritative,
+        ConversationStreamProjector, TerminalStreamFacts, TerminalStreamReplayFacts,
+        summarize_conversation_authoritative,
     },
 };
 use astrcode_core::AgentEvent;
@@ -13,7 +14,6 @@ use astrcode_protocol::http::conversation::v1::{
     ConversationDeltaDto, ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
     ConversationStreamEnvelopeDto,
 };
-use astrcode_session_runtime::ConversationStreamProjector as RuntimeConversationStreamProjector;
 use async_stream::stream;
 use axum::{
     Json,
@@ -233,8 +233,8 @@ fn build_conversation_stream(
     let mut stream_state =
         ConversationStreamProjectorState::new(session_id.clone(), cursor, &facts);
     let initial_envelopes = stream_state.seed_initial_replay(&facts);
-    let mut durable_receiver = facts.replay.replay.receiver;
-    let mut live_receiver = facts.replay.replay.live_receiver;
+    let mut durable_receiver = facts.stream.receiver;
+    let mut live_receiver = facts.stream.live_receiver;
     let app = state.app.clone();
     let session_id_for_stream = session_id.clone();
     let mut live_receiver_open = true;
@@ -290,8 +290,8 @@ fn build_conversation_stream(
                                 for envelope in stream_state.recover_from(&recovered) {
                                     yield Ok::<Event, Infallible>(to_conversation_sse_event(envelope));
                                 }
-                                durable_receiver = recovered.replay.replay.receiver;
-                                live_receiver = recovered.replay.replay.live_receiver;
+                                durable_receiver = recovered.stream.receiver;
+                                live_receiver = recovered.stream.live_receiver;
                                 live_receiver_open = true;
                             }
                             Ok(TerminalStreamFacts::RehydrateRequired(rehydrate)) => {
@@ -369,7 +369,7 @@ impl ConversationAuthoritativeFacts {
 
 struct ConversationStreamProjectorState {
     session_id: String,
-    projector: RuntimeConversationStreamProjector,
+    projector: ConversationStreamProjector,
     authoritative: ConversationAuthoritativeFacts,
 }
 
@@ -381,7 +381,7 @@ impl ConversationStreamProjectorState {
     ) -> Self {
         Self {
             session_id,
-            projector: RuntimeConversationStreamProjector::new(last_sent_cursor, &facts.replay),
+            projector: ConversationStreamProjector::new(last_sent_cursor, &facts.replay),
             authoritative: ConversationAuthoritativeFacts::from_replay(facts),
         }
     }
@@ -584,18 +584,19 @@ type ConversationSse = Sse<axum::response::sse::KeepAliveStream<ConversationEven
 
 #[cfg(test)]
 mod tests {
-    use astrcode_application::terminal::{
-        TaskItemFacts, TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
-        summarize_conversation_authoritative,
+    use astrcode_application::{
+        SessionReplay,
+        terminal::{
+            ConversationBlockFacts, ConversationBlockPatchFacts, ConversationDeltaFacts,
+            ConversationDeltaFrameFacts, ConversationStreamReplayFacts, TaskItemFacts,
+            TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
+            summarize_conversation_authoritative,
+        },
     };
     use astrcode_core::{
         AgentEventContext, AgentLifecycleStatus, ChildExecutionIdentity, ChildSessionLineageKind,
         ChildSessionNode, ChildSessionStatusSource, ExecutionTaskStatus, ParentExecutionRef, Phase,
         SessionEventRecord, ToolExecutionResult, ToolOutputStream,
-    };
-    use astrcode_session_runtime::{
-        ConversationBlockPatchFacts, ConversationDeltaFacts, ConversationDeltaFrameFacts,
-        ConversationStreamReplayFacts as RuntimeConversationStreamReplayFacts, SessionReplay,
     };
     use serde_json::json;
     use tokio::sync::broadcast;
@@ -826,7 +827,7 @@ mod tests {
 
         TerminalStreamReplayFacts {
             active_session_id: "session-root".to_string(),
-            replay: RuntimeConversationStreamReplayFacts {
+            replay: ConversationStreamReplayFacts {
                 cursor: history.last().map(|record| record.event_id.clone()),
                 phase: Phase::CallingTool,
                 seed_records: seed_records.clone(),
@@ -848,24 +849,23 @@ mod tests {
                                 },
                             },
                             _ => ConversationDeltaFacts::AppendBlock {
-                                block: Box::new(
-                                    astrcode_session_runtime::ConversationBlockFacts::User(
-                                        astrcode_session_runtime::ConversationUserBlockFacts {
-                                            id: "noop".to_string(),
-                                            turn_id: None,
-                                            markdown: String::new(),
-                                        },
-                                    ),
-                                ),
+                                block: Box::new(ConversationBlockFacts::User(
+                                    astrcode_application::terminal::ConversationUserBlockFacts {
+                                        id: "noop".to_string(),
+                                        turn_id: None,
+                                        markdown: String::new(),
+                                    },
+                                )),
                             },
                         },
                     })
                     .collect(),
-                replay: SessionReplay {
-                    history,
-                    receiver,
-                    live_receiver,
-                },
+                history: history.clone(),
+            },
+            stream: SessionReplay {
+                history,
+                receiver,
+                live_receiver,
             },
             control: TerminalControlFacts {
                 phase: Phase::CallingTool,

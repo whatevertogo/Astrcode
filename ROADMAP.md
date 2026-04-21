@@ -1,30 +1,23 @@
-# Roadmap
+  活跃 Change（8个）:                                                                                                                        
+                                                                                                                                             
+    不动:                                                                                                                                    
+    A  linearize-session-runtime-application-boundaries    ← 你在进行的                                                                      
+                                               
+    边界清理线（串行）:                                                                                                                      
+    B  session-runtime-state-turn-boundary                 ← 依赖 A
+    C  server-session-runtime-isolation                    ← 依赖 A
+    D  core-slimming                                       ← 依赖 B
 
-## 当前阶段：`v0.1.0-alpha`
+    内部重组（可与 C 并行）:
+    E  application-decomposition                           ← 依赖 A
 
-目标是让第一次接触 AstrCode 的用户可以完成试用，而不是只看到源码：
+    新功能（可独立推进）:
+    F  hooks-platform                                      ← 依赖 A+B，已吸收 G+H
+    I  async-shell-terminal-sessions                       ← 独立
 
-- 提供首个 GitHub prerelease 与可下载二进制
-- 补齐 description、topics、website 等仓库产品化信息
-- 补齐安装说明、路线图、贡献指南、安全策略、issue 模板
-- 稳定三种运行形态：桌面端、浏览器端、CLI
+    治理演进（建议 D 之后）:
+    J  unify-declarative-dsl-compiler-architecture
 
-## 下一阶段：`v0.1.0-beta`
-
-- 补齐桌面端 / 终端真实截图与 GIF
-- 收敛首次启动体验与默认配置
-- 强化错误提示、日志与可诊断性
-- 完善插件 SDK 与 MCP 互操作说明
-
-## `v0.1.x`
-
-- 继续清理架构边界与运行时模型
-- 提升多 Agent 与工具调用稳定性
-- 打磨浏览器端托管体验与发布流程
-- 完善评测框架，建立持续质量回归机制
-
-## 更长期
-
-- 更稳健的插件生态与开发者扩展能力
-- 更成熟的模型治理、配置治理与可观测性
-- 更完整的桌面端产品体验
+  已归档:
+    G  extract-governance-prompt-hooks          → 已合并入 F
+    H  introduce-hooks-platform-crate           → 已合并入 F

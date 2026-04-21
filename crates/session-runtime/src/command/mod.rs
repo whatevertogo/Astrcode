@@ -150,17 +150,17 @@ impl<'a> SessionCommands<'a> {
         let session_id =
             astrcode_core::SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
-        if actor.state().is_running() {
-            actor
-                .state()
-                .request_manual_compact(crate::state::PendingManualCompactRequest {
+        if actor.turn_runtime().is_running() {
+            actor.turn_runtime().request_manual_compact(
+                crate::turn::PendingManualCompactRequest {
                     runtime: runtime.clone(),
                     instructions: instructions.map(str::to_string),
-                })?;
+                },
+            )?;
             return Ok(true);
         }
         let mut translator = EventTranslator::new(actor.state().current_phase()?);
-        actor.state().set_compacting(true);
+        let compacting_guard = actor.turn_runtime().enter_compacting();
         let built = crate::turn::manual_compact::build_manual_compact_events(
             crate::turn::manual_compact::ManualCompactRequest {
                 gateway: self.runtime.kernel.gateway(),
@@ -174,7 +174,7 @@ impl<'a> SessionCommands<'a> {
             },
         )
         .await;
-        actor.state().set_compacting(false);
+        drop(compacting_guard);
         if let Some(events) = built? {
             let mut persisted = Vec::with_capacity(events.len());
             for event in &events {

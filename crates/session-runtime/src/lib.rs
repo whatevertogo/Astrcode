@@ -153,7 +153,7 @@ impl SessionRuntime {
         let mut sessions = self
             .sessions
             .iter()
-            .filter(|entry| entry.value().actor.state().is_running())
+            .filter(|entry| entry.value().actor.turn_runtime().is_running())
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>();
         sessions.sort();
@@ -316,9 +316,49 @@ impl SessionRuntime {
         session_id: &str,
         turn_id: &str,
     ) -> Result<TurnTerminalSnapshot> {
-        self.query()
-            .wait_for_turn_terminal_snapshot(session_id, turn_id)
-            .await
+        turn::wait_for_turn_terminal_snapshot(self, session_id, turn_id).await
+    }
+
+    /// 仅供跨 crate 集成测试设置单 session 的 runtime running 状态。
+    ///
+    /// Why: application/server 测试需要快速制造“busy session”场景，但不应继续直接操作
+    /// `SessionState` 的 turn runtime proxy。
+    #[doc(hidden)]
+    pub async fn prepare_test_turn_runtime(&self, session_id: &str, turn_id: &str) -> Result<u64> {
+        let session_id = SessionId::from(state::normalize_session_id(session_id));
+        let actor = self.ensure_loaded_session(&session_id).await?;
+        let lease = match self
+            .event_store
+            .try_acquire_turn(&session_id, turn_id)
+            .await?
+        {
+            astrcode_core::SessionTurnAcquireResult::Acquired(lease) => lease,
+            astrcode_core::SessionTurnAcquireResult::Busy(busy) => {
+                return Err(astrcode_core::AstrError::Validation(format!(
+                    "session '{}' unexpectedly busy while preparing test turn '{}': {}",
+                    session_id, turn_id, busy.turn_id
+                )));
+            },
+        };
+        actor.turn_runtime().prepare(
+            session_id.as_str(),
+            turn_id,
+            astrcode_core::CancelToken::new(),
+            lease,
+        )
+    }
+
+    /// 仅供跨 crate 集成测试清理通过 `prepare_test_turn_runtime()` 创建的 runtime running 状态。
+    #[doc(hidden)]
+    pub async fn complete_test_turn_runtime(
+        &self,
+        session_id: &str,
+        generation: u64,
+    ) -> Result<()> {
+        let session_id = SessionId::from(state::normalize_session_id(session_id));
+        let actor = self.ensure_loaded_session(&session_id).await?;
+        let _ = actor.turn_runtime().complete(generation)?;
+        Ok(())
     }
 
     /// 生成面向 agent 编排的单 session observe 快照。
@@ -434,7 +474,7 @@ impl SessionRuntime {
         session_id: &str,
         turn_id: &str,
     ) -> Result<ProjectedTurnOutcome> {
-        self.query().project_turn_outcome(session_id, turn_id).await
+        turn::wait_and_project_turn_outcome(self, session_id, turn_id).await
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {

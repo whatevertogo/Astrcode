@@ -3,7 +3,7 @@
 //! 用户直接发起的 session 操作：prompt 提交、compact、mode 切换、
 //! session 列表查询、快照查询等。这些方法组装治理面并委托到 session-runtime。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use astrcode_core::{
     AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ModeId,
@@ -42,6 +42,13 @@ struct PreparedSessionSubmission {
     prompt_declarations: Vec<PromptDeclaration>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionForkSelector {
+    Latest,
+    TurnEnd { turn_id: String },
+    StorageSeq { storage_seq: u64 },
+}
+
 impl App {
     pub async fn list_sessions(&self) -> Result<Vec<SessionMeta>, ApplicationError> {
         self.session_runtime
@@ -54,8 +61,7 @@ impl App {
         &self,
         working_dir: impl Into<String>,
     ) -> Result<SessionMeta, ApplicationError> {
-        let working_dir = working_dir.into();
-        self.validate_non_empty("workingDir", &working_dir)?;
+        let working_dir = normalize_application_working_dir(working_dir.into())?;
         self.session_runtime
             .create_session(working_dir)
             .await
@@ -72,34 +78,24 @@ impl App {
     pub async fn fork_session(
         &self,
         session_id: &str,
-        fork_point: astrcode_session_runtime::ForkPoint,
+        selector: SessionForkSelector,
     ) -> Result<SessionMeta, ApplicationError> {
         self.validate_non_empty("sessionId", session_id)?;
+        if let SessionForkSelector::TurnEnd { turn_id } = &selector {
+            self.validate_non_empty("turnId", turn_id)?;
+        }
         let source_working_dir = self
             .session_runtime
             .get_session_working_dir(session_id)
             .await?;
-        let result = self
-            .session_runtime
-            .fork_session(session_id, fork_point)
-            .await
-            .map_err(ApplicationError::from)?;
         let meta = self
             .session_runtime
-            .list_session_metas()
+            .fork_session(session_id, selector)
             .await
-            .map_err(ApplicationError::from)?
-            .into_iter()
-            .find(|meta| meta.session_id == result.new_session_id.as_str())
-            .ok_or_else(|| {
-                ApplicationError::Internal(format!(
-                    "forked session '{}' was created but metadata is unavailable",
-                    result.new_session_id
-                ))
-            })?;
+            .map_err(ApplicationError::from)?;
         copy_session_plan_artifacts(
             session_id,
-            result.new_session_id.as_str(),
+            meta.session_id.as_str(),
             Path::new(&source_working_dir),
         )?;
         Ok(meta)
@@ -109,8 +105,9 @@ impl App {
         &self,
         working_dir: &str,
     ) -> Result<DeleteProjectResult, ApplicationError> {
+        let working_dir = normalize_application_working_dir(working_dir.to_string())?;
         self.session_runtime
-            .delete_project(working_dir)
+            .delete_project(&working_dir)
             .await
             .map_err(ApplicationError::from)
     }
@@ -697,6 +694,19 @@ impl App {
             .governance_surface
             .build_submission_skill_declaration(&skill, skill_invocation.user_prompt.as_deref()))
     }
+}
+
+fn normalize_application_working_dir(working_dir: String) -> Result<String, ApplicationError> {
+    let trimmed = working_dir.trim();
+    if trimmed.is_empty() {
+        return Err(ApplicationError::InvalidArgument(
+            "workingDir must not be empty".to_string(),
+        ));
+    }
+
+    let normalized = astrcode_session_runtime::normalize_working_dir(PathBuf::from(trimmed))
+        .map_err(ApplicationError::from)?;
+    Ok(normalized.display().to_string())
 }
 
 pub fn summarize_session_meta(meta: SessionMeta) -> SessionListSummary {

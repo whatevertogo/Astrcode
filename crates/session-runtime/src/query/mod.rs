@@ -2,6 +2,7 @@
 //!
 //! 这些类型表达的是 session-runtime 对外提供的只读快照，
 //! 让 `application` 只消费稳定视图，不再自己拼装会话真相。
+//! 异步等待 turn 终态的 watcher 归 `turn/` 拥有，`query/` 只保留纯读 / replay / snapshot 语义。
 
 mod agent;
 mod conversation;
@@ -11,7 +12,7 @@ mod service;
 mod terminal;
 mod text;
 mod transcript;
-mod turn;
+pub(crate) mod turn;
 
 pub use agent::AgentObserveSnapshot;
 pub use conversation::{

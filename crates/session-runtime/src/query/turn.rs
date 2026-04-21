@@ -25,12 +25,6 @@ pub struct ProjectedTurnOutcome {
     pub technical_message: String,
 }
 
-pub(crate) fn is_terminal_projection(projection: Option<&TurnProjectionSnapshot>) -> bool {
-    projection.is_some_and(|projection| {
-        projection.terminal_kind.is_some() || projection.last_error.is_some()
-    })
-}
-
 pub(crate) fn project_turn_outcome(
     phase: Phase,
     projection: Option<&TurnProjectionSnapshot>,
@@ -129,12 +123,12 @@ mod tests {
         TurnProjectionSnapshot,
     };
 
-    use super::{is_terminal_projection, project_turn_outcome};
-    use crate::turn::projector::project_turn_projection;
+    use super::project_turn_outcome;
+    use crate::turn::projector::{has_terminal_projection, project_turn_projection};
 
     #[test]
-    fn is_terminal_projection_detects_typed_terminal_kind() {
-        assert!(is_terminal_projection(Some(&TurnProjectionSnapshot {
+    fn has_terminal_projection_detects_typed_terminal_kind() {
+        assert!(has_terminal_projection(Some(&TurnProjectionSnapshot {
             terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
             last_error: None,
         })));

@@ -3,16 +3,27 @@
 //! 定义面向前端的事件流数据模型（`TerminalFacts`、`ConversationSlashCandidateFacts` 等）
 //! 以及从 session-runtime 快照到终端视图的投影辅助函数。
 
+mod contracts;
+pub(crate) mod runtime_mapping;
+mod stream_projection;
+
 use astrcode_core::{
     ChildAgentRef, ChildSessionNode, CompactAppliedMeta, CompactTrigger, ExecutionTaskStatus, Phase,
 };
-use astrcode_session_runtime::{
-    ConversationSnapshotFacts as RuntimeConversationSnapshotFacts,
-    ConversationStreamReplayFacts as RuntimeConversationStreamReplayFacts,
-};
 use chrono::{DateTime, Utc};
+pub use contracts::{
+    ConversationAssistantBlockFacts, ConversationBlockFacts, ConversationBlockPatchFacts,
+    ConversationBlockStatus, ConversationChildHandoffBlockFacts, ConversationChildHandoffKind,
+    ConversationDeltaFacts, ConversationDeltaFrameFacts, ConversationErrorBlockFacts,
+    ConversationPlanBlockFacts, ConversationPlanBlockersFacts, ConversationPlanEventKind,
+    ConversationPlanReviewFacts, ConversationPlanReviewKind, ConversationSnapshotFacts,
+    ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts, ConversationSystemNoteKind,
+    ConversationThinkingBlockFacts, ConversationTranscriptErrorKind, ConversationUserBlockFacts,
+    ToolCallBlockFacts, ToolCallStreamsFacts,
+};
+pub use stream_projection::ConversationStreamProjector;
 
-use crate::ComposerOptionKind;
+use crate::{ComposerOptionKind, SessionReplay};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ConversationFocus {
@@ -157,7 +168,7 @@ pub type ConversationResumeCandidateFacts = TerminalResumeCandidateFacts;
 pub struct TerminalFacts {
     pub active_session_id: String,
     pub session_title: String,
-    pub transcript: RuntimeConversationSnapshotFacts,
+    pub transcript: ConversationSnapshotFacts,
     pub control: TerminalControlFacts,
     pub child_summaries: Vec<TerminalChildSummaryFacts>,
     pub slash_candidates: Vec<TerminalSlashCandidateFacts>,
@@ -168,13 +179,12 @@ pub type ConversationFacts = TerminalFacts;
 #[derive(Debug)]
 pub struct TerminalStreamReplayFacts {
     pub active_session_id: String,
-    pub replay: RuntimeConversationStreamReplayFacts,
+    pub replay: ConversationStreamReplayFacts,
+    pub stream: SessionReplay,
     pub control: TerminalControlFacts,
     pub child_summaries: Vec<TerminalChildSummaryFacts>,
     pub slash_candidates: Vec<TerminalSlashCandidateFacts>,
 }
-
-pub type ConversationStreamReplayFacts = TerminalStreamReplayFacts;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalRehydrateReason {
@@ -201,9 +211,7 @@ pub enum TerminalStreamFacts {
 
 pub type ConversationStreamFacts = TerminalStreamFacts;
 
-pub(crate) fn latest_transcript_cursor(
-    snapshot: &RuntimeConversationSnapshotFacts,
-) -> Option<String> {
+pub(crate) fn latest_transcript_cursor(snapshot: &ConversationSnapshotFacts) -> Option<String> {
     snapshot.cursor.clone()
 }
 

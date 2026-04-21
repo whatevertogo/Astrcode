@@ -1,11 +1,15 @@
 use std::collections::HashMap;
 
 use astrcode_application::terminal::{
-    ConversationChildSummarySummary, ConversationControlSummary, ConversationSlashActionSummary,
-    ConversationSlashCandidateSummary, TerminalChildSummaryFacts, TerminalFacts,
-    TerminalRehydrateFacts, TerminalSlashCandidateFacts, summarize_conversation_child_ref,
-    summarize_conversation_child_summary, summarize_conversation_control,
-    summarize_conversation_slash_candidate,
+    ConversationBlockFacts, ConversationBlockPatchFacts, ConversationBlockStatus,
+    ConversationChildHandoffBlockFacts, ConversationChildHandoffKind,
+    ConversationChildSummarySummary, ConversationControlSummary, ConversationDeltaFacts,
+    ConversationDeltaFrameFacts, ConversationPlanBlockFacts, ConversationPlanEventKind,
+    ConversationPlanReviewKind, ConversationSlashActionSummary, ConversationSlashCandidateSummary,
+    ConversationSystemNoteKind, ConversationTranscriptErrorKind, TerminalChildSummaryFacts,
+    TerminalFacts, TerminalRehydrateFacts, TerminalSlashCandidateFacts, ToolCallBlockFacts,
+    summarize_conversation_child_ref, summarize_conversation_child_summary,
+    summarize_conversation_control, summarize_conversation_slash_candidate,
 };
 use astrcode_core::ChildAgentRef;
 use astrcode_protocol::http::{
@@ -23,14 +27,6 @@ use astrcode_protocol::http::{
     ConversationToolCallBlockDto, ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto,
     ConversationUserBlockDto,
 };
-use astrcode_session_runtime::{
-    ConversationBlockFacts, ConversationBlockPatchFacts, ConversationBlockStatus,
-    ConversationChildHandoffBlockFacts, ConversationChildHandoffKind, ConversationDeltaFacts,
-    ConversationDeltaFrameFacts, ConversationPlanBlockFacts, ConversationPlanEventKind,
-    ConversationPlanReviewKind, ConversationSystemNoteKind, ConversationTranscriptErrorKind,
-    ToolCallBlockFacts,
-};
-
 pub(crate) fn project_conversation_snapshot(
     facts: &TerminalFacts,
 ) -> ConversationSnapshotResponseDto {

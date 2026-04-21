@@ -12,9 +12,8 @@ use astrcode_core::{
     SessionId, SessionMeta, StorageEvent, StorageEventPayload, StoredEvent, TaskSnapshot, TurnId,
 };
 use astrcode_session_runtime::{
-    ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint, ForkResult,
-    SessionCatalogEvent, SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay,
-    SessionTranscriptSnapshot,
+    ConversationSnapshotFacts, ConversationStreamReplayFacts, SessionCatalogEvent,
+    SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -22,7 +21,8 @@ use tokio::sync::broadcast;
 
 use crate::{
     AgentSessionPort, AppAgentPromptSubmission, AppSessionPort, RecoverableParentDelivery,
-    SessionObserveSnapshot, SessionTurnOutcomeSummary, SessionTurnTerminalState,
+    SessionForkSelector, SessionObserveSnapshot, SessionTurnOutcomeSummary,
+    SessionTurnTerminalState,
 };
 
 fn unimplemented_for_test(area: &str) -> ! {
@@ -88,8 +88,8 @@ impl AppSessionPort for StubSessionPort {
     async fn fork_session(
         &self,
         _session_id: &str,
-        _fork_point: ForkPoint,
-    ) -> astrcode_core::Result<ForkResult> {
+        _selector: SessionForkSelector,
+    ) -> astrcode_core::Result<SessionMeta> {
         unimplemented_for_test("application test stub")
     }
 

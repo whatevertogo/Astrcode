@@ -11,10 +11,8 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    ApiError, AppState,
-    auth::require_auth,
-    mapper::to_session_list_item,
-    routes::sessions::{validate_session_path_id, validate_working_dir},
+    ApiError, AppState, auth::require_auth, mapper::to_session_list_item,
+    routes::sessions::validate_session_path_id,
 };
 
 #[derive(Debug, Deserialize)]
@@ -135,15 +133,17 @@ pub(crate) async fn fork_session(
             "turnId and storageSeq are mutually exclusive".to_string(),
         ));
     }
-    let fork_point = match (request.turn_id, request.storage_seq) {
-        (Some(turn_id), None) => astrcode_session_runtime::ForkPoint::TurnEnd(turn_id),
-        (None, Some(storage_seq)) => astrcode_session_runtime::ForkPoint::StorageSeq(storage_seq),
-        (None, None) => astrcode_session_runtime::ForkPoint::Latest,
+    let selector = match (request.turn_id, request.storage_seq) {
+        (Some(turn_id), None) => astrcode_application::SessionForkSelector::TurnEnd { turn_id },
+        (None, Some(storage_seq)) => {
+            astrcode_application::SessionForkSelector::StorageSeq { storage_seq }
+        },
+        (None, None) => astrcode_application::SessionForkSelector::Latest,
         (Some(_), Some(_)) => unreachable!("validated above"),
     };
     let meta = state
         .app
-        .fork_session(&session_id, fork_point)
+        .fork_session(&session_id, selector)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(to_session_list_item(
@@ -196,10 +196,9 @@ pub(crate) async fn delete_project(
     Query(query): Query<DeleteProjectQuery>,
 ) -> Result<Json<DeleteProjectResultDto>, ApiError> {
     require_auth(&state, &headers, None)?;
-    let working_dir = validate_working_dir(&query.working_dir)?;
     let result = state
         .app
-        .delete_project(&working_dir)
+        .delete_project(&query.working_dir)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(result))

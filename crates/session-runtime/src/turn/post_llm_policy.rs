@@ -258,4 +258,36 @@ mod tests {
 
         assert_eq!(decision, PostLlmDecision::Stop(TurnStopCause::Completed));
     }
+
+    #[test]
+    fn policy_continues_when_budget_still_allows_another_step() {
+        let policy = PostLlmDecisionPolicy::new(
+            &ResolvedRuntimeConfig {
+                max_steps: 4,
+                ..ResolvedRuntimeConfig::default()
+            },
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 8_000,
+            },
+        );
+
+        let decision = policy.decide(PostLlmDecisionInput {
+            output: &output("brief follow-up", LlmFinishReason::Stop, 12, Vec::new()),
+            step_index: 1,
+            continuation_count: 1,
+            max_output_continuation_count: 0,
+            used_budget_tokens: 50,
+            recent_output_tokens: &[96, 72, 64],
+        });
+
+        assert_eq!(
+            decision,
+            PostLlmDecision::ContinueWithPrompt {
+                nudge: AUTO_CONTINUE_NUDGE,
+                origin: UserMessageOrigin::AutoContinueNudge,
+                transition: TurnLoopTransition::BudgetAllowsContinuation,
+            }
+        );
+    }
 }

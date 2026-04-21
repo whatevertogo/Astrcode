@@ -13,7 +13,8 @@ use crate::{
     terminal::{
         ConversationAuthoritativeSummary, ConversationFocus, TaskItemFacts,
         TerminalChildSummaryFacts, TerminalControlFacts, TerminalResumeCandidateFacts,
-        TerminalSlashAction, TerminalSlashCandidateFacts, summarize_conversation_authoritative,
+        TerminalSlashAction, TerminalSlashCandidateFacts, runtime_mapping,
+        summarize_conversation_authoritative,
     },
 };
 
@@ -87,7 +88,8 @@ impl App {
                 let child_transcript = self
                     .session_runtime
                     .conversation_snapshot(node.child_session_id.as_str())
-                    .await?;
+                    .await
+                    .map(runtime_mapping::map_snapshot)?;
                 Ok::<_, ApplicationError>(TerminalChildSummaryFacts {
                     node,
                     phase: child_transcript.phase,

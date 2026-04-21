@@ -14,7 +14,10 @@ use astrcode_core::{
 #[cfg(test)]
 use astrcode_core::{EventLogWriter, StoreResult};
 
-use crate::state::{SessionSnapshot, SessionState, SessionWriter};
+use crate::{
+    state::{SessionSnapshot, SessionState, SessionWriter},
+    turn::TurnRuntimeState,
+};
 
 /// 空操作 EventLogWriter，仅用于测试态 actor。
 #[cfg(test)]
@@ -35,6 +38,7 @@ impl EventLogWriter for NopEventLogWriter {
 #[derive(Debug)]
 pub struct SessionActor {
     state: Arc<SessionState>,
+    turn_runtime: TurnRuntimeState,
     session_id: SessionId,
     working_dir: String,
 }
@@ -94,6 +98,7 @@ impl SessionActor {
 
         Ok(Self {
             state: Arc::new(state),
+            turn_runtime: TurnRuntimeState::new(),
             session_id,
             working_dir,
         })
@@ -131,6 +136,7 @@ impl SessionActor {
 
         Ok(Self {
             state: Arc::new(state),
+            turn_runtime: TurnRuntimeState::new(),
             session_id,
             working_dir,
         })
@@ -165,6 +171,7 @@ impl SessionActor {
 
         Ok(Self {
             state: Arc::new(state),
+            turn_runtime: TurnRuntimeState::new(),
             session_id,
             working_dir,
         })
@@ -189,6 +196,7 @@ impl SessionActor {
         );
         Self {
             state: Arc::new(state),
+            turn_runtime: TurnRuntimeState::new(),
             session_id,
             working_dir: working_dir.into(),
         }
@@ -202,7 +210,7 @@ impl SessionActor {
             .map(|s| s.turn_count)
             .unwrap_or(0);
         let active_turn = self
-            .state
+            .turn_runtime
             .active_turn_id_snapshot()
             .ok()
             .flatten()
@@ -217,6 +225,10 @@ impl SessionActor {
 
     pub fn state(&self) -> &Arc<SessionState> {
         &self.state
+    }
+
+    pub(crate) fn turn_runtime(&self) -> &TurnRuntimeState {
+        &self.turn_runtime
     }
 
     pub fn working_dir(&self) -> &str {

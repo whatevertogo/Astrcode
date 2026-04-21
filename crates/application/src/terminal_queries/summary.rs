@@ -4,13 +4,11 @@
 //! 按 block 类型降级选择：assistant markdown → tool call summary/error → child handoff → error →
 //! system note。 所有候选项都为空时回退到游标位置。
 
-use astrcode_session_runtime::{
+use crate::terminal::{
     ConversationBlockFacts, ConversationChildHandoffBlockFacts, ConversationErrorBlockFacts,
     ConversationPlanBlockFacts, ConversationSnapshotFacts, ConversationSystemNoteBlockFacts,
-    ToolCallBlockFacts,
+    ToolCallBlockFacts, latest_transcript_cursor, truncate_terminal_summary,
 };
-
-use crate::terminal::{latest_transcript_cursor, truncate_terminal_summary};
 
 pub(super) fn latest_terminal_summary(snapshot: &ConversationSnapshotFacts) -> Option<String> {
     snapshot

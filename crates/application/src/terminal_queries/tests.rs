@@ -9,9 +9,7 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use astrcode_core::{AgentEvent, ExecutionTaskItem, ExecutionTaskStatus, TaskSnapshot};
-use astrcode_session_runtime::{
-    ConversationBlockFacts, SessionControlStateSnapshot, SessionRuntime,
-};
+use astrcode_session_runtime::{SessionControlStateSnapshot, SessionRuntime};
 use async_trait::async_trait;
 use tokio::time::timeout;
 
@@ -25,7 +23,9 @@ use crate::{
     },
     composer::ComposerSkillSummary,
     mcp::RegisterMcpServerInput,
-    terminal::{ConversationFocus, TerminalRehydrateReason, TerminalStreamFacts},
+    terminal::{
+        ConversationBlockFacts, ConversationFocus, TerminalRehydrateReason, TerminalStreamFacts,
+    },
     test_support::StubSessionPort,
 };
 
@@ -185,7 +185,7 @@ async fn terminal_stream_facts_expose_live_llm_deltas_before_durable_completion(
     else {
         panic!("fresh stream should start from replay facts");
     };
-    let mut live_receiver = replay.replay.replay.live_receiver;
+    let mut live_receiver = replay.stream.live_receiver;
 
     let accepted = harness
         .app
@@ -327,7 +327,7 @@ async fn terminal_stream_facts_returns_replay_for_valid_cursor() {
     match facts {
         TerminalStreamFacts::Replay(replay) => {
             assert_eq!(replay.active_session_id, session.session_id);
-            assert!(replay.replay.replay.history.is_empty());
+            assert!(replay.replay.history.is_empty());
             assert!(replay.replay.replay_frames.is_empty());
             assert_eq!(
                 replay
