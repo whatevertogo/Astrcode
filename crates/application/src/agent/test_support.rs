@@ -41,6 +41,65 @@ pub(crate) struct AgentTestHarness {
     pub(crate) profiles: Arc<ProfileResolutionService>,
 }
 
+impl AgentTestHarness {
+    pub(crate) async fn append_events_to_session(
+        &self,
+        session_id: &str,
+        phase: Phase,
+        events: &[StorageEvent],
+    ) -> Result<()> {
+        let state = self
+            .session_runtime
+            .get_session_state(&SessionId::from(session_id.to_string()))
+            .await?;
+        let mut translator = astrcode_core::EventTranslator::new(phase);
+        for event in events {
+            state.append_and_broadcast(event, &mut translator).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn prepare_busy_turn(&self, session_id: &str, turn_id: &str) -> Result<u64> {
+        let state = self
+            .session_runtime
+            .get_session_state(&SessionId::from(session_id.to_string()))
+            .await?;
+        let lease = match self
+            .event_store
+            .try_acquire_turn(&SessionId::from(session_id.to_string()), turn_id)
+            .await?
+        {
+            SessionTurnAcquireResult::Acquired(lease) => lease,
+            SessionTurnAcquireResult::Busy(SessionTurnBusy { .. }) => {
+                return Err(AstrError::Internal(format!(
+                    "session '{}' unexpectedly busy while preparing test turn '{}'",
+                    session_id, turn_id
+                )));
+            },
+        };
+        state.prepare_execution(
+            session_id,
+            turn_id,
+            astrcode_core::CancelToken::new(),
+            lease,
+        )
+    }
+
+    pub(crate) async fn complete_turn_state(
+        &self,
+        session_id: &str,
+        generation: u64,
+        _phase: Phase,
+    ) -> Result<()> {
+        let state = self
+            .session_runtime
+            .get_session_state(&SessionId::from(session_id.to_string()))
+            .await?;
+        state.complete_execution_state(generation)?;
+        Ok(())
+    }
+}
+
 pub(crate) fn build_agent_test_harness(llm_behavior: TestLlmBehavior) -> Result<AgentTestHarness> {
     build_agent_test_harness_with_agent_config(llm_behavior, None)
 }

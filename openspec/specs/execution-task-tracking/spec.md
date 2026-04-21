@@ -115,3 +115,19 @@
 - 状态管理规则：同一时刻最多 1 个 `in_progress`；开始工作前先标 `in_progress`；完成后立即标 `completed`。
 - 双形式要求：每项必须同时提供 `content`（祈使句）和 `activeForm`（进行时）。
 - 完成标准：只在真正完成时标 `completed`；测试失败或实现部分时保持 `in_progress`。
+
+### Requirement: workflow phase bridge SHALL 交接执行上下文而不改写 task durable truth
+
+当 workflow 从 planning 类 phase 迁移到 executing 类 phase 时，系统 MUST 通过显式 bridge 交接执行上下文，但 SHALL NOT 因该 bridge 自动创建、覆盖或清空 execution task 的 durable snapshot。`taskWrite` 仍 MUST 是 execution task truth 的唯一写入口。
+
+#### Scenario: approved plan 进入 executing phase 时只注入 bridge context
+
+- **WHEN** 一个 approved canonical plan 触发 workflow 从 `planning` phase 迁移到 `executing` phase
+- **THEN** 系统 SHALL 向 executing phase 提供可消费的 bridge context
+- **AND** SHALL NOT 在没有显式 `taskWrite` 调用的情况下生成新的 active task snapshot
+
+#### Scenario: replan 回路不隐式清空现有 task snapshot
+
+- **WHEN** executing phase 因用户触发 `replan` 类信号而回到 planning phase
+- **THEN** 系统 SHALL NOT 自动清空现有 execution task durable snapshot
+- **AND** task 面板的变化仍 SHALL 只由后续显式 task snapshot 写入驱动

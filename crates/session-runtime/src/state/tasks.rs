@@ -51,34 +51,30 @@ pub(crate) fn apply_snapshot_to_map(
 }
 
 impl SessionState {
-    pub(crate) fn apply_task_snapshot_event(&self, stored: &StoredEvent) -> Result<()> {
-        let Some(snapshot) = task_snapshot_from_stored_event(stored) else {
-            return Ok(());
-        };
-        self.replace_active_task_snapshot(snapshot)
-    }
-
+    #[cfg(test)]
     pub(crate) fn replace_active_task_snapshot(&self, snapshot: TaskSnapshot) -> Result<()> {
-        let mut tasks = support::lock_anyhow(&self.active_tasks, "session active tasks")?;
-        apply_snapshot_to_map(&mut tasks, snapshot);
+        support::lock_anyhow(&self.projection_registry, "session projection registry")?
+            .replace_active_task_snapshot(snapshot);
         Ok(())
     }
 
     pub fn active_tasks_for(&self, owner: &str) -> Result<Option<TaskSnapshot>> {
         Ok(
-            support::lock_anyhow(&self.active_tasks, "session active tasks")?
-                .get(owner)
-                .cloned(),
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .active_tasks_for(owner),
         )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{EventTranslator, ExecutionTaskItem, ExecutionTaskStatus, Phase};
+    use astrcode_core::{EventTranslator, ExecutionTaskItem, ExecutionTaskStatus, ModeId, Phase};
+    use chrono::Utc;
 
     use super::*;
-    use crate::state::test_support::{root_task_write_stored, test_session_state};
+    use crate::state::test_support::{
+        event, root_agent, root_task_write_stored, stored, test_session_state,
+    };
 
     #[test]
     fn session_state_rehydrates_active_tasks_from_replay() {
@@ -188,5 +184,78 @@ mod tests {
             .expect("task lookup should succeed")
             .expect("owner-b snapshot should exist");
         assert_eq!(owner_b.items[0].content, "任务 B");
+    }
+
+    #[test]
+    fn translate_store_and_cache_does_not_create_task_snapshot_from_mode_change() {
+        let session = test_session_state();
+        let mut translator = EventTranslator::new(Phase::Idle);
+        let stored = stored(
+            1,
+            event(
+                None,
+                root_agent(),
+                StorageEventPayload::ModeChanged {
+                    from: ModeId::plan(),
+                    to: ModeId::code(),
+                    timestamp: Utc::now(),
+                },
+            ),
+        );
+
+        session
+            .translate_store_and_cache(&stored, &mut translator)
+            .expect("mode change should translate");
+
+        assert!(
+            session
+                .active_tasks_for("owner-a")
+                .expect("task lookup should succeed")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn translate_store_and_cache_keeps_existing_task_snapshot_across_mode_change() {
+        let session = test_session_state();
+        let mut translator = EventTranslator::new(Phase::Idle);
+
+        session
+            .translate_store_and_cache(
+                &root_task_write_stored(
+                    1,
+                    "owner-a",
+                    vec![ExecutionTaskItem {
+                        content: "保持 task snapshot".to_string(),
+                        status: ExecutionTaskStatus::InProgress,
+                        active_form: Some("正在保持 task snapshot".to_string()),
+                    }],
+                ),
+                &mut translator,
+            )
+            .expect("task write should translate");
+        session
+            .translate_store_and_cache(
+                &stored(
+                    2,
+                    event(
+                        None,
+                        root_agent(),
+                        StorageEventPayload::ModeChanged {
+                            from: ModeId::code(),
+                            to: ModeId::plan(),
+                            timestamp: Utc::now(),
+                        },
+                    ),
+                ),
+                &mut translator,
+            )
+            .expect("mode change should translate");
+
+        let snapshot = session
+            .active_tasks_for("owner-a")
+            .expect("task lookup should succeed")
+            .expect("task snapshot should remain");
+        assert_eq!(snapshot.items[0].content, "保持 task snapshot");
     }
 }

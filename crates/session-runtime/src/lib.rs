@@ -45,11 +45,10 @@ pub use query::{
     SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
     ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
 };
-pub(crate) use state::{InputQueueEventAppend, SessionStateEventSink, append_input_queue_event};
+pub(crate) use state::{InputQueueEventAppend, SessionStateEventSink};
 pub use state::{
-    SessionSnapshot, SessionState, append_and_broadcast, complete_session_execution,
-    display_name_from_working_dir, normalize_session_id, normalize_working_dir,
-    prepare_session_execution,
+    SessionSnapshot, SessionState, display_name_from_working_dir, normalize_session_id,
+    normalize_working_dir,
 };
 pub use turn::{
     AgentPromptSubmission, ForkPoint, ForkResult, TurnCollaborationSummary, TurnFinishReason,
@@ -154,14 +153,7 @@ impl SessionRuntime {
         let mut sessions = self
             .sessions
             .iter()
-            .filter(|entry| {
-                entry
-                    .value()
-                    .actor
-                    .state()
-                    .running
-                    .load(std::sync::atomic::Ordering::SeqCst)
-            })
+            .filter(|entry| entry.value().actor.state().is_running())
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>();
         sessions.sort();

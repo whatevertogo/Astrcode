@@ -17,8 +17,8 @@ use serde_json::json;
 use crate::builtin_tools::{
     fs_common::check_cancel,
     session_plan::{
-        PLAN_PATH_TIMESTAMP_FORMAT, load_session_plan_state, persist_session_plan_state,
-        session_plan_markdown_path, session_plan_paths,
+        PLAN_PATH_TIMESTAMP_FORMAT, load_session_plan_state, persist_planning_workflow_state,
+        persist_session_plan_state, session_plan_markdown_path, session_plan_paths,
     },
 };
 
@@ -164,6 +164,9 @@ impl Tool for UpsertSessionPlanTool {
             archived_at: existing.as_ref().and_then(|state| state.archived_at),
         };
         persist_session_plan_state(&paths.state_path, &state)?;
+        if ctx.current_mode_id() == &astrcode_core::ModeId::plan() {
+            persist_planning_workflow_state(ctx, Some(&state))?;
+        }
 
         Ok(ToolExecutionResult {
             tool_call_id,
@@ -213,15 +216,20 @@ fn slugify(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::ModeId;
     use serde_json::json;
 
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::{
+        builtin_tools::session_plan::{load_workflow_state, workflow_state_path},
+        test_support::test_tool_context_for,
+    };
 
     #[tokio::test]
     async fn upsert_session_plan_creates_canonical_plan_state() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let tool = UpsertSessionPlanTool;
+        let ctx = test_tool_context_for(temp.path()).with_current_mode_id(ModeId::plan());
         let result = tool
             .execute(
                 "tc-plan-create".to_string(),
@@ -230,7 +238,7 @@ mod tests {
                     "content": "# Plan: Cleanup crates\n\n## Context",
                     "status": "draft"
                 }),
-                &test_tool_context_for(temp.path()),
+                &ctx,
             )
             .await
             .expect("tool should execute");
@@ -246,6 +254,19 @@ mod tests {
         let slug = metadata["slug"].as_str().expect("slug should exist");
         assert!(plan_dir.join(format!("{slug}.md")).exists());
         assert!(plan_dir.join("state.json").exists());
+        let workflow =
+            load_workflow_state(&workflow_state_path(&ctx).expect("workflow path should resolve"))
+                .expect("workflow state should load")
+                .expect("workflow state should exist");
+        assert_eq!(workflow.current_phase_id, "planning");
+        assert_eq!(
+            workflow
+                .artifact_refs
+                .get("canonical-plan")
+                .expect("canonical plan artifact should exist")
+                .path,
+            plan_dir.join(format!("{slug}.md")).display().to_string()
+        );
     }
 
     #[tokio::test]

@@ -16,8 +16,8 @@ use serde_json::json;
 use crate::builtin_tools::{
     mode_transition::emit_mode_changed,
     session_plan::{
-        SessionPlanStatus, load_session_plan_state, persist_session_plan_state,
-        session_plan_markdown_path, session_plan_paths,
+        SessionPlanStatus, load_session_plan_state, persist_planning_workflow_state,
+        persist_session_plan_state, session_plan_markdown_path, session_plan_paths,
     },
 };
 
@@ -166,6 +166,7 @@ impl Tool for ExitPlanModeTool {
         state.updated_at = now;
         state.approved_at = None;
         persist_session_plan_state(&paths.state_path, &state)?;
+        persist_planning_workflow_state(ctx, Some(&state))?;
 
         emit_mode_changed(ctx, "exitPlanMode", ModeId::plan(), ModeId::code()).await?;
 
@@ -346,7 +347,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        builtin_tools::upsert_session_plan::UpsertSessionPlanTool,
+        builtin_tools::{
+            session_plan::{load_workflow_state, workflow_state_path},
+            upsert_session_plan::UpsertSessionPlanTool,
+        },
         test_support::test_tool_context_for,
     };
 
@@ -420,6 +424,11 @@ mod tests {
             .expect("state should exist");
         assert_eq!(state.status, SessionPlanStatus::AwaitingApproval);
         assert!(state.reviewed_plan_digest.is_some());
+        let workflow =
+            load_workflow_state(&workflow_state_path(&ctx).expect("workflow path should resolve"))
+                .expect("workflow state should load")
+                .expect("workflow state should exist");
+        assert_eq!(workflow.current_phase_id, "planning");
 
         let events = events.lock().expect("recording sink lock should work");
         assert!(matches!(

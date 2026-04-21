@@ -72,6 +72,11 @@ impl EvalRunner {
         ensure_data_plane_access(&config.session_storage_root)?;
 
         let loaded = TaskLoader::load_task_set(&config.task_set)?;
+        let task_load_warnings: Vec<String> = loaded
+            .warnings
+            .iter()
+            .map(|warning| format!("跳过任务 {}: {}", warning.path.display(), warning.message))
+            .collect();
         let workspace_root = config
             .workspace_root
             .clone()
@@ -85,6 +90,7 @@ impl EvalRunner {
             config.timeout,
         )?;
         client.probe().await?;
+        verify_session_storage_alignment(&client, &workspace_manager.root, &config).await?;
 
         let order: HashMap<String, usize> = loaded
             .tasks
@@ -125,6 +131,7 @@ impl EvalRunner {
             .unwrap_or("task-set")
             .to_string();
         let mut report = ReportWriter::build(task_set_name, results);
+        report.warnings.extend(task_load_warnings);
         if let Some(baseline) = &config.baseline {
             ReportWriter::attach_baseline(&mut report, baseline, 0.05)?;
         }
@@ -211,14 +218,20 @@ async fn execute_task_inner(
 ) -> EvalResult<EvalTaskResult> {
     let working_dir = workspace_path.display().to_string();
     let session = client.create_session(&working_dir).await?;
+    let session_log = session_log_path(
+        &config.session_storage_root,
+        Path::new(&session.working_dir),
+        &session.session_id,
+    );
+    ensure_session_log_accessible(
+        &session_log,
+        config.poll_interval,
+        session_storage_probe_timeout(config.poll_interval),
+    )
+    .await?;
     let accepted = client
         .submit_turn(&session.session_id, &task.prompt)
         .await?;
-    let session_log = session_log_path(
-        &config.session_storage_root,
-        workspace_path,
-        &accepted.session_id,
-    );
     wait_for_turn_done(
         &session_log,
         &accepted.turn_id,
@@ -334,6 +347,84 @@ fn ensure_data_plane_access(session_storage_root: &Path) -> EvalResult<()> {
     }
 }
 
+async fn verify_session_storage_alignment(
+    client: &ServerControlClient,
+    workspace_root: &Path,
+    config: &EvalRunnerConfig,
+) -> EvalResult<()> {
+    let probe_dir = workspace_root.join(format!(
+        "__session-storage-probe-{}",
+        chrono::Utc::now().timestamp_millis()
+    ));
+    fs::create_dir_all(&probe_dir).map_err(|error| {
+        EvalError::io(
+            format!(
+                "创建 session storage probe 工作区 {} 失败",
+                probe_dir.display()
+            ),
+            error,
+        )
+    })?;
+
+    let result = async {
+        let session = client
+            .create_session(&probe_dir.display().to_string())
+            .await?;
+        let session_log = session_log_path(
+            &config.session_storage_root,
+            Path::new(&session.working_dir),
+            &session.session_id,
+        );
+        ensure_session_log_accessible(
+            &session_log,
+            config.poll_interval,
+            session_storage_probe_timeout(config.poll_interval),
+        )
+        .await
+    }
+    .await;
+
+    if probe_dir.exists() {
+        fs::remove_dir_all(&probe_dir).map_err(|error| {
+            EvalError::io(
+                format!(
+                    "清理 session storage probe 工作区 {} 失败",
+                    probe_dir.display()
+                ),
+                error,
+            )
+        })?;
+    }
+
+    result
+}
+
+async fn ensure_session_log_accessible(
+    session_log_path: &Path,
+    poll_interval: Duration,
+    timeout: Duration,
+) -> EvalResult<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if session_log_path.is_file() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(EvalError::validation(format!(
+                "session log 不可访问，控制面/数据面不一致: {}",
+                session_log_path.display()
+            )));
+        }
+        sleep(poll_interval).await;
+    }
+}
+
+fn session_storage_probe_timeout(poll_interval: Duration) -> Duration {
+    poll_interval
+        .saturating_mul(4)
+        .max(Duration::from_millis(250))
+}
+
 fn canonical_session_id(session_id: &str) -> String {
     session_id
         .trim()
@@ -446,6 +537,7 @@ mod tests {
                                         agent: AgentEventContext::root_execution("agent-root", "default"),
                                         payload: StorageEventPayload::TurnDone {
                                             timestamp: Utc.with_ymd_and_hms(2026, 4, 20, 8, 0, 0).unwrap(),
+                                            terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
                                             reason: Some("completed".to_string()),
                                         },
                                     },
@@ -582,5 +674,96 @@ expected_outcome:
             .results
             .iter()
             .any(|result| result.status == crate::runner::report::EvalTaskResultStatus::Timeout));
+    }
+
+    #[tokio::test]
+    async fn runner_surfaces_task_load_warnings_in_report() {
+        let temp = tempdir().expect("tempdir should create");
+        let task_dir = temp.path().join("eval-tasks");
+        fs::create_dir_all(temp.path().join("projects")).expect("projects dir should create");
+        fs::create_dir_all(task_dir.join("core")).expect("task dir should create");
+        fs::write(
+            task_dir.join("task-set.yaml"),
+            "tasks:\n  - core/valid.yaml\n  - core/missing.yaml\n",
+        )
+        .expect("task set should write");
+        fs::write(
+            task_dir.join("core").join("valid.yaml"),
+            r#"
+task_id: valid
+prompt: hello
+expected_outcome:
+  max_turns: 1
+"#,
+        )
+        .expect("valid task should write");
+
+        let addr = mock_server(temp.path().join("projects")).await;
+        let report = EvalRunner::run(EvalRunnerConfig {
+            server_url: format!("http://{addr}"),
+            session_storage_root: temp.path().join("projects"),
+            task_set: task_dir.join("task-set.yaml"),
+            workspace_root: Some(temp.path().join("workspaces")),
+            baseline: None,
+            concurrency: 1,
+            keep_workspace: false,
+            output: None,
+            timeout: Duration::from_secs(3),
+            poll_interval: Duration::from_millis(20),
+            auth_token: None,
+        })
+        .await
+        .expect("runner should succeed with warnings");
+
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("missing.yaml"));
+    }
+
+    #[tokio::test]
+    async fn runner_fails_fast_when_session_log_is_not_reachable_from_configured_root() {
+        let temp = tempdir().expect("tempdir should create");
+        let server_projects = temp.path().join("server-projects");
+        let wrong_projects = temp.path().join("wrong-projects");
+        let task_dir = temp.path().join("eval-tasks");
+        fs::create_dir_all(&server_projects).expect("server projects dir should create");
+        fs::create_dir_all(&wrong_projects).expect("wrong projects dir should create");
+        fs::create_dir_all(task_dir.join("core")).expect("task dir should create");
+        fs::write(
+            task_dir.join("task-set.yaml"),
+            "tasks:\n  - core/simple.yaml\n",
+        )
+        .expect("task set should write");
+        fs::write(
+            task_dir.join("core").join("simple.yaml"),
+            r#"
+task_id: simple
+prompt: hello
+expected_outcome:
+  max_turns: 1
+"#,
+        )
+        .expect("task file should write");
+
+        let addr = mock_server(server_projects).await;
+        let error = EvalRunner::run(EvalRunnerConfig {
+            server_url: format!("http://{addr}"),
+            session_storage_root: wrong_projects,
+            task_set: task_dir.join("task-set.yaml"),
+            workspace_root: Some(temp.path().join("workspaces")),
+            baseline: None,
+            concurrency: 1,
+            keep_workspace: false,
+            output: None,
+            timeout: Duration::from_secs(3),
+            poll_interval: Duration::from_millis(20),
+            auth_token: None,
+        })
+        .await
+        .expect_err("runner should fail fast on control/data plane mismatch");
+
+        let message = error.to_string();
+        assert!(message.contains("控制面/数据面不一致"));
+        assert!(!message.contains("等待 turn"));
     }
 }

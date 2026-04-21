@@ -9,6 +9,7 @@ use astrcode_core::{
     AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ModeId,
     PromptDeclaration, SessionMeta, StoredEvent,
 };
+use astrcode_session_runtime::SessionModeSnapshot;
 
 use crate::{
     App, ApplicationError, CompactSessionAccepted, CompactSessionSummary, ExecutionControl,
@@ -21,12 +22,24 @@ use crate::{
     format_local_rfc3339,
     governance_surface::{GovernanceBusyPolicy, SessionGovernanceInput},
     session_plan::{
-        active_plan_requires_approval, build_plan_exit_declaration, build_plan_prompt_context,
-        build_plan_prompt_declarations, copy_session_plan_artifacts,
-        current_mode_requires_plan_context, list_project_plan_archives, load_session_plan_state,
-        mark_active_session_plan_approved, parse_plan_approval, read_project_plan_archive,
+        active_plan_requires_approval, advance_plan_workflow_to_execution,
+        bootstrap_plan_workflow_state, build_execute_phase_prompt_declaration,
+        build_plan_exit_declaration, build_plan_prompt_context, build_plan_prompt_declarations,
+        copy_session_plan_artifacts, current_mode_requires_plan_context,
+        list_project_plan_archives, load_session_plan_state, mark_active_session_plan_approved,
+        parse_plan_approval, parse_plan_workflow_signal, planning_phase_allows_review_mode,
+        read_project_plan_archive, revert_execution_to_planning_workflow_state,
+    },
+    workflow::{
+        EXECUTING_PHASE_ID, PLANNING_PHASE_ID, WorkflowInstanceState, WorkflowStateService,
     },
 };
+
+#[derive(Debug, Default)]
+struct PreparedSessionSubmission {
+    current_mode_id: ModeId,
+    prompt_declarations: Vec<PromptDeclaration>,
+}
 
 impl App {
     pub async fn list_sessions(&self) -> Result<Vec<SessionMeta>, ApplicationError> {
@@ -174,27 +187,16 @@ impl App {
             .await
             .map_err(ApplicationError::from)?
             .current_mode_id;
-        let mut prompt_declarations = Vec::new();
-        let plan_state = load_session_plan_state(session_id, Path::new(&working_dir))?;
-        let plan_approval = parse_plan_approval(&text);
-
-        if active_plan_requires_approval(plan_state.as_ref()) && plan_approval.approved {
-            let approved_plan =
-                mark_active_session_plan_approved(session_id, Path::new(&working_dir))?;
-            if current_mode_id == ModeId::plan() {
-                self.switch_mode(session_id, ModeId::code()).await?;
-                current_mode_id = ModeId::code();
-            }
-            if let Some(summary) = approved_plan {
-                prompt_declarations.push(build_plan_exit_declaration(session_id, &summary));
-            }
-        } else if current_mode_id == ModeId::plan()
-            && current_mode_requires_plan_context(&current_mode_id)
-            && !plan_approval.approved
-        {
-            let context = build_plan_prompt_context(session_id, Path::new(&working_dir), &text)?;
-            prompt_declarations.extend(build_plan_prompt_declarations(session_id, &context));
-        }
+        let submission = self
+            .prepare_session_submission(
+                session_id,
+                Path::new(&working_dir),
+                &text,
+                current_mode_id.clone(),
+            )
+            .await?;
+        current_mode_id = submission.current_mode_id;
+        let mut prompt_declarations = submission.prompt_declarations;
 
         if let Some(skill_invocation) = skill_invocation {
             prompt_declarations.push(
@@ -230,6 +232,205 @@ impl App {
             )
             .await
             .map_err(ApplicationError::from)
+    }
+
+    async fn prepare_session_submission(
+        &self,
+        session_id: &str,
+        working_dir: &Path,
+        text: &str,
+        current_mode_id: ModeId,
+    ) -> Result<PreparedSessionSubmission, ApplicationError> {
+        let workflow_state_path = WorkflowStateService::state_path(session_id, working_dir)?;
+        let workflow_state_exists = workflow_state_path.exists();
+        let mut workflow_state = self
+            .workflow()
+            .load_active_workflow(session_id, working_dir)?;
+        if workflow_state.is_none() && !workflow_state_exists {
+            workflow_state =
+                bootstrap_plan_workflow_state(session_id, working_dir, &current_mode_id)?;
+            if let Some(state) = workflow_state.as_ref() {
+                self.workflow()
+                    .persist_active_workflow(session_id, working_dir, state)?;
+            }
+        }
+
+        match workflow_state {
+            Some(workflow_state) => {
+                self.prepare_active_workflow_submission(
+                    session_id,
+                    working_dir,
+                    text,
+                    current_mode_id,
+                    workflow_state,
+                )
+                .await
+            },
+            None => {
+                self.prepare_mode_only_submission(session_id, working_dir, text, current_mode_id)
+                    .await
+            },
+        }
+    }
+
+    async fn prepare_mode_only_submission(
+        &self,
+        session_id: &str,
+        working_dir: &Path,
+        text: &str,
+        mut current_mode_id: ModeId,
+    ) -> Result<PreparedSessionSubmission, ApplicationError> {
+        let mut prompt_declarations = Vec::new();
+        let plan_state = load_session_plan_state(session_id, working_dir)?;
+        let plan_approval = parse_plan_approval(text);
+
+        if active_plan_requires_approval(plan_state.as_ref()) && plan_approval.approved {
+            let approved_plan = mark_active_session_plan_approved(session_id, working_dir)?;
+            if current_mode_id == ModeId::plan() {
+                self.switch_mode(session_id, ModeId::code()).await?;
+                current_mode_id = ModeId::code();
+            }
+            if let Some(summary) = approved_plan {
+                prompt_declarations.push(build_plan_exit_declaration(session_id, &summary));
+            }
+        } else if current_mode_id == ModeId::plan()
+            && current_mode_requires_plan_context(&current_mode_id)
+            && !plan_approval.approved
+        {
+            let context = build_plan_prompt_context(session_id, working_dir, text)?;
+            prompt_declarations.extend(build_plan_prompt_declarations(session_id, &context));
+        }
+
+        Ok(PreparedSessionSubmission {
+            current_mode_id,
+            prompt_declarations,
+        })
+    }
+
+    async fn prepare_active_workflow_submission(
+        &self,
+        session_id: &str,
+        working_dir: &Path,
+        text: &str,
+        mut current_mode_id: ModeId,
+        mut workflow_state: WorkflowInstanceState,
+    ) -> Result<PreparedSessionSubmission, ApplicationError> {
+        let plan_state = load_session_plan_state(session_id, working_dir)?;
+        let signal = parse_plan_workflow_signal(text, plan_state.as_ref());
+        let mut prompt_declarations = Vec::new();
+
+        if let Some(signal) = signal {
+            if let Some(transition) = self
+                .workflow()
+                .transition_for_signal(&workflow_state, signal)?
+            {
+                workflow_state = match (
+                    transition.source_phase_id.as_str(),
+                    transition.target_phase_id.as_str(),
+                ) {
+                    (PLANNING_PHASE_ID, EXECUTING_PHASE_ID) => {
+                        advance_plan_workflow_to_execution(session_id, working_dir)?
+                            .map(|(state, declaration)| {
+                                prompt_declarations.push(declaration);
+                                state
+                            })
+                            .ok_or_else(|| {
+                                ApplicationError::Internal(
+                                    "plan approval signal did not produce an executing workflow \
+                                     state"
+                                        .to_string(),
+                                )
+                            })?
+                    },
+                    (EXECUTING_PHASE_ID, PLANNING_PHASE_ID) => {
+                        revert_execution_to_planning_workflow_state(session_id, working_dir)?
+                    },
+                    _ => {
+                        return Err(ApplicationError::Internal(format!(
+                            "unsupported workflow transition '{} -> {}'",
+                            transition.source_phase_id, transition.target_phase_id
+                        )));
+                    },
+                };
+                self.workflow().persist_active_workflow(
+                    session_id,
+                    working_dir,
+                    &workflow_state,
+                )?;
+            }
+        }
+
+        current_mode_id = self
+            .reconcile_workflow_phase_mode(
+                session_id,
+                working_dir,
+                current_mode_id,
+                &workflow_state,
+                plan_state.as_ref(),
+            )
+            .await?;
+
+        match workflow_state.current_phase_id.as_str() {
+            PLANNING_PHASE_ID => {
+                let context = build_plan_prompt_context(session_id, working_dir, text)?;
+                prompt_declarations.extend(build_plan_prompt_declarations(session_id, &context));
+            },
+            EXECUTING_PHASE_ID => {
+                if prompt_declarations.is_empty() {
+                    if let Some(declaration) =
+                        build_execute_phase_prompt_declaration(session_id, &workflow_state)?
+                    {
+                        prompt_declarations.push(declaration);
+                    }
+                }
+            },
+            other => {
+                return Err(ApplicationError::Internal(format!(
+                    "unsupported workflow phase '{other}'"
+                )));
+            },
+        }
+
+        Ok(PreparedSessionSubmission {
+            current_mode_id,
+            prompt_declarations,
+        })
+    }
+
+    async fn reconcile_workflow_phase_mode(
+        &self,
+        session_id: &str,
+        working_dir: &Path,
+        current_mode_id: ModeId,
+        workflow_state: &WorkflowInstanceState,
+        plan_state: Option<&astrcode_core::SessionPlanState>,
+    ) -> Result<ModeId, ApplicationError> {
+        let phase = self.workflow().phase(workflow_state)?;
+        if phase.mode_id == current_mode_id {
+            return Ok(current_mode_id);
+        }
+        if workflow_state.current_phase_id == PLANNING_PHASE_ID
+            && planning_phase_allows_review_mode(&current_mode_id, plan_state)
+        {
+            return Ok(current_mode_id);
+        }
+
+        match self.switch_mode(session_id, phase.mode_id.clone()).await {
+            Ok(SessionModeSnapshot {
+                current_mode_id, ..
+            }) => Ok(current_mode_id),
+            Err(error) => {
+                let state_path = WorkflowStateService::state_path(session_id, working_dir)?;
+                log::warn!(
+                    "workflow phase '{}' persisted in '{}' but mode reconcile to '{}' failed: {}",
+                    workflow_state.current_phase_id,
+                    state_path.display(),
+                    phase.mode_id,
+                    error
+                );
+                Err(error)
+            },
+        }
     }
 
     pub async fn submit_prompt_summary(
@@ -584,4 +785,477 @@ fn normalize_compact_instructions(instructions: Option<String>) -> Option<String
     instructions
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
+
+    use astrcode_core::{
+        ExecutionTaskItem, ExecutionTaskStatus, ModeId, SessionPlanState, SessionPlanStatus,
+        TaskSnapshot,
+    };
+    use async_trait::async_trait;
+    use chrono::Utc;
+
+    use super::*;
+    use crate::{
+        App, AppKernelPort, AppSessionPort, ComposerResolvedSkill, ComposerSkillPort,
+        McpConfigScope, McpPort, McpServerStatusView, McpService,
+        agent::test_support::{AgentTestHarness, TestLlmBehavior, build_agent_test_harness},
+        composer::ComposerSkillSummary,
+        governance_surface::GovernanceSurfaceAssembler,
+        mcp::RegisterMcpServerInput,
+        mode::builtin_mode_catalog,
+        session_plan::session_plan_dir,
+        test_support::StubSessionPort,
+    };
+
+    struct EmptyComposerSkillPort;
+
+    impl ComposerSkillPort for EmptyComposerSkillPort {
+        fn list_skill_summaries(&self, _working_dir: &Path) -> Vec<ComposerSkillSummary> {
+            Vec::new()
+        }
+
+        fn resolve_skill(
+            &self,
+            _working_dir: &Path,
+            _skill_id: &str,
+        ) -> Option<ComposerResolvedSkill> {
+            None
+        }
+    }
+
+    struct NoopMcpPort;
+
+    #[async_trait]
+    impl McpPort for NoopMcpPort {
+        async fn list_server_status(&self) -> Vec<McpServerStatusView> {
+            Vec::new()
+        }
+
+        async fn approve_server(&self, _server_signature: &str) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+
+        async fn reject_server(&self, _server_signature: &str) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+
+        async fn reconnect_server(&self, _name: &str) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+
+        async fn reset_project_choices(&self) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+
+        async fn upsert_server(
+            &self,
+            _input: &RegisterMcpServerInput,
+        ) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+
+        async fn remove_server(
+            &self,
+            _scope: McpConfigScope,
+            _name: &str,
+        ) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+
+        async fn set_server_enabled(
+            &self,
+            _scope: McpConfigScope,
+            _name: &str,
+            _enabled: bool,
+        ) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+    }
+
+    struct SessionUseCasesHarness {
+        _agent_harness: AgentTestHarness,
+        _workspace_root: tempfile::TempDir,
+        app: App,
+        session_port: Arc<StubSessionPort>,
+        session_id: String,
+        working_dir: PathBuf,
+    }
+
+    impl SessionUseCasesHarness {
+        fn new(initial_mode: ModeId) -> Self {
+            let agent_harness = build_agent_test_harness(TestLlmBehavior::Succeed {
+                content: "ok".to_string(),
+            })
+            .expect("agent harness should build");
+            let workspace_root = tempfile::tempdir().expect("workspace root should exist");
+            let working_dir = workspace_root.path().join("workspace");
+            fs::create_dir_all(&working_dir).expect("workspace should exist");
+            let session_port = Arc::new(StubSessionPort {
+                working_dir: Some(working_dir.display().to_string()),
+                mode_state: Arc::new(std::sync::Mutex::new(Some(
+                    astrcode_session_runtime::SessionModeSnapshot {
+                        current_mode_id: initial_mode,
+                        last_mode_changed_at: None,
+                    },
+                ))),
+                ..StubSessionPort::default()
+            });
+            let kernel: Arc<dyn AppKernelPort> = agent_harness.kernel.clone();
+            let session_runtime: Arc<dyn AppSessionPort> = session_port.clone();
+            let app = App::new(
+                kernel,
+                session_runtime,
+                agent_harness.profiles.clone(),
+                agent_harness.config_service.clone(),
+                Arc::new(EmptyComposerSkillPort),
+                Arc::new(GovernanceSurfaceAssembler::default()),
+                Arc::new(builtin_mode_catalog().expect("mode catalog should build")),
+                Arc::new(McpService::new(Arc::new(NoopMcpPort))),
+                Arc::new(agent_harness.service.clone()),
+            );
+            Self {
+                _agent_harness: agent_harness,
+                _workspace_root: workspace_root,
+                app,
+                session_port,
+                session_id: "session-a".to_string(),
+                working_dir,
+            }
+        }
+
+        fn write_plan_state(
+            &self,
+            status: SessionPlanStatus,
+            content: &str,
+        ) -> Result<(), ApplicationError> {
+            let plan_dir = session_plan_dir(&self.session_id, &self.working_dir)?;
+            fs::create_dir_all(&plan_dir).expect("plan dir should exist");
+            fs::write(plan_dir.join("plan.md"), content).expect("plan content should be written");
+            let now = Utc::now();
+            let state = SessionPlanState {
+                active_plan_slug: "plan".to_string(),
+                title: "Plan".to_string(),
+                status,
+                created_at: now,
+                updated_at: now,
+                reviewed_plan_digest: None,
+                approved_at: None,
+                archived_plan_digest: None,
+                archived_at: None,
+            };
+            fs::write(
+                plan_dir.join("state.json"),
+                serde_json::to_string_pretty(&state).expect("plan state should serialize"),
+            )
+            .expect("plan state should be written");
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn corrupted_workflow_state_downgrades_to_mode_only_submission() {
+        let harness = SessionUseCasesHarness::new(ModeId::plan());
+        harness
+            .write_plan_state(
+                SessionPlanStatus::AwaitingApproval,
+                "# Plan\n\n## Implementation Steps\n- Keep refining\n",
+            )
+            .expect("plan state should be seeded");
+        let workflow_path =
+            WorkflowStateService::state_path(&harness.session_id, &harness.working_dir)
+                .expect("workflow path should resolve");
+        fs::create_dir_all(
+            workflow_path
+                .parent()
+                .expect("workflow parent should exist"),
+        )
+        .expect("workflow parent should exist");
+        fs::write(&workflow_path, "{not-json").expect("invalid workflow should be written");
+
+        harness
+            .app
+            .submit_prompt(&harness.session_id, "继续完善计划".to_string())
+            .await
+            .expect("submission should degrade to mode-only path");
+
+        let submissions = harness
+            .session_port
+            .recorded_submissions
+            .lock()
+            .expect("submission record lock should work")
+            .clone();
+        assert_eq!(submissions.len(), 1);
+        assert!(
+            submissions[0]
+                .prompt_declarations
+                .iter()
+                .any(|declaration| declaration.origin.as_deref() == Some("session-plan:facts"))
+        );
+        assert!(
+            !submissions[0]
+                .prompt_declarations
+                .iter()
+                .any(|declaration| declaration.origin.as_deref()
+                    == Some("session-plan:execute-bridge"))
+        );
+    }
+
+    #[tokio::test]
+    async fn semantically_invalid_workflow_state_downgrades_to_mode_only_submission() {
+        let harness = SessionUseCasesHarness::new(ModeId::code());
+        harness
+            .write_plan_state(
+                SessionPlanStatus::Approved,
+                "# Plan\n\n## Implementation Steps\n- Keep executing through mode-only fallback\n",
+            )
+            .expect("plan state should be seeded");
+        let workflow_path =
+            WorkflowStateService::state_path(&harness.session_id, &harness.working_dir)
+                .expect("workflow path should resolve");
+        fs::create_dir_all(
+            workflow_path
+                .parent()
+                .expect("workflow parent should exist"),
+        )
+        .expect("workflow parent should exist");
+        fs::write(
+            &workflow_path,
+            serde_json::json!({
+                "workflowId": "plan_execute",
+                "currentPhaseId": EXECUTING_PHASE_ID,
+                "artifactRefs": {
+                    "canonical-plan": {
+                        "artifactKind": "canonical-plan",
+                        "path": harness
+                            .working_dir
+                            .join("sessions")
+                            .join(&harness.session_id)
+                            .join("plan")
+                            .join("plan.md")
+                            .display()
+                            .to_string()
+                    }
+                },
+                "bridgeState": {
+                    "bridgeKind": "noop",
+                    "sourcePhaseId": PLANNING_PHASE_ID,
+                    "targetPhaseId": EXECUTING_PHASE_ID,
+                    "schemaVersion": 1,
+                    "payload": {}
+                },
+                "updatedAt": Utc::now().to_rfc3339()
+            })
+            .to_string(),
+        )
+        .expect("invalid semantic workflow should be written");
+
+        harness
+            .app
+            .submit_prompt(&harness.session_id, "开始实现".to_string())
+            .await
+            .expect("submission should degrade to mode-only path");
+
+        let submissions = harness
+            .session_port
+            .recorded_submissions
+            .lock()
+            .expect("submission record lock should work")
+            .clone();
+        assert_eq!(submissions.len(), 1);
+        assert!(
+            !submissions[0]
+                .prompt_declarations
+                .iter()
+                .any(|declaration| declaration.origin.as_deref()
+                    == Some("session-plan:execute-bridge"))
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_persists_executing_phase_before_mode_switch_and_reconciles_later() {
+        let harness = SessionUseCasesHarness::new(ModeId::plan());
+        harness
+            .write_plan_state(
+                SessionPlanStatus::AwaitingApproval,
+                "# Plan\n\n## Implementation Steps\n1. Implement workflow orchestration\n2. Add \
+                 tests\n",
+            )
+            .expect("plan state should be seeded");
+        let workflow_state = bootstrap_plan_workflow_state(
+            &harness.session_id,
+            &harness.working_dir,
+            &ModeId::plan(),
+        )
+        .expect("bootstrap should succeed")
+        .expect("planning workflow should bootstrap");
+        WorkflowStateService::persist(&harness.session_id, &harness.working_dir, &workflow_state)
+            .expect("workflow state should persist");
+        let existing_snapshot = TaskSnapshot {
+            owner: astrcode_session_runtime::ROOT_AGENT_ID.to_string(),
+            items: vec![ExecutionTaskItem {
+                content: "保持现有 task snapshot".to_string(),
+                status: ExecutionTaskStatus::InProgress,
+                active_form: Some("正在保持现有 task snapshot".to_string()),
+            }],
+        };
+        *harness
+            .session_port
+            .active_task_snapshot
+            .lock()
+            .expect("active task snapshot lock should work") = Some(existing_snapshot.clone());
+        *harness
+            .session_port
+            .switch_mode_error
+            .lock()
+            .expect("mode switch error lock should work") =
+            Some("forced mode switch failure".to_string());
+
+        let error = harness
+            .app
+            .submit_prompt(&harness.session_id, "同意".to_string())
+            .await
+            .expect_err("mode reconcile failure should surface");
+        assert!(
+            error.to_string().contains("forced mode switch failure"),
+            "unexpected error: {error}"
+        );
+
+        let persisted = WorkflowStateService::load(&harness.session_id, &harness.working_dir)
+            .expect("workflow state should load")
+            .expect("workflow state should exist");
+        assert_eq!(persisted.current_phase_id, EXECUTING_PHASE_ID);
+
+        *harness
+            .session_port
+            .switch_mode_error
+            .lock()
+            .expect("mode switch error lock should work") = None;
+
+        harness
+            .app
+            .submit_prompt(&harness.session_id, "开始实现".to_string())
+            .await
+            .expect("second submission should reconcile mode and proceed");
+
+        let submissions = harness
+            .session_port
+            .recorded_submissions
+            .lock()
+            .expect("submission record lock should work")
+            .clone();
+        assert_eq!(submissions.len(), 1);
+        assert!(
+            submissions[0]
+                .prompt_declarations
+                .iter()
+                .any(|declaration| declaration.origin.as_deref()
+                    == Some("session-plan:execute-bridge"))
+        );
+        let mode_switches = harness
+            .session_port
+            .recorded_mode_switches
+            .lock()
+            .expect("mode switch record lock should work")
+            .clone();
+        assert_eq!(mode_switches.len(), 1);
+        assert_eq!(mode_switches[0].to, ModeId::code());
+        assert_eq!(
+            harness
+                .session_port
+                .active_task_snapshot
+                .lock()
+                .expect("active task snapshot lock should work")
+                .clone(),
+            Some(existing_snapshot)
+        );
+    }
+
+    #[tokio::test]
+    async fn executing_replan_signal_returns_to_planning_overlay() {
+        let harness = SessionUseCasesHarness::new(ModeId::code());
+        harness
+            .write_plan_state(
+                SessionPlanStatus::Approved,
+                "# Plan\n\n## Implementation Steps\n- Keep the plan artifact stable\n",
+            )
+            .expect("plan state should be seeded");
+        let workflow_state = bootstrap_plan_workflow_state(
+            &harness.session_id,
+            &harness.working_dir,
+            &ModeId::code(),
+        )
+        .expect("bootstrap should succeed")
+        .expect("executing workflow should bootstrap");
+        WorkflowStateService::persist(&harness.session_id, &harness.working_dir, &workflow_state)
+            .expect("workflow state should persist");
+        let existing_snapshot = TaskSnapshot {
+            owner: astrcode_session_runtime::ROOT_AGENT_ID.to_string(),
+            items: vec![ExecutionTaskItem {
+                content: "保留执行 task snapshot".to_string(),
+                status: ExecutionTaskStatus::InProgress,
+                active_form: Some("正在保留执行 task snapshot".to_string()),
+            }],
+        };
+        *harness
+            .session_port
+            .active_task_snapshot
+            .lock()
+            .expect("active task snapshot lock should work") = Some(existing_snapshot.clone());
+
+        harness
+            .app
+            .submit_prompt(&harness.session_id, "重新计划".to_string())
+            .await
+            .expect("replan should transition back to planning");
+
+        let persisted = WorkflowStateService::load(&harness.session_id, &harness.working_dir)
+            .expect("workflow state should load")
+            .expect("workflow state should exist");
+        assert_eq!(persisted.current_phase_id, PLANNING_PHASE_ID);
+        let submissions = harness
+            .session_port
+            .recorded_submissions
+            .lock()
+            .expect("submission record lock should work")
+            .clone();
+        assert_eq!(submissions.len(), 1);
+        assert!(
+            submissions[0]
+                .prompt_declarations
+                .iter()
+                .any(|declaration| declaration.origin.as_deref() == Some("session-plan:facts"))
+        );
+        assert!(
+            !submissions[0]
+                .prompt_declarations
+                .iter()
+                .any(|declaration| declaration.origin.as_deref()
+                    == Some("session-plan:execute-bridge"))
+        );
+        let mode_switches = harness
+            .session_port
+            .recorded_mode_switches
+            .lock()
+            .expect("mode switch record lock should work")
+            .clone();
+        assert_eq!(mode_switches.len(), 1);
+        assert_eq!(mode_switches[0].to, ModeId::plan());
+        assert_eq!(
+            harness
+                .session_port
+                .active_task_snapshot
+                .lock()
+                .expect("active task snapshot lock should work")
+                .clone(),
+            Some(existing_snapshot)
+        );
+    }
 }

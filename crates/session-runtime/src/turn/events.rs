@@ -2,8 +2,8 @@
 use astrcode_core::ToolOutputStream;
 use astrcode_core::{
     AgentEventContext, CompactAppliedMeta, CompactTrigger, LlmUsage, PromptMetricsPayload,
-    StorageEvent, StorageEventPayload, ToolCallRequest, ToolExecutionResult, UserMessageOrigin,
-    ports::PromptBuildCacheMetrics,
+    StorageEvent, StorageEventPayload, ToolCallRequest, ToolExecutionResult, TurnTerminalKind,
+    UserMessageOrigin, ports::PromptBuildCacheMetrics,
 };
 use chrono::{DateTime, Utc};
 
@@ -89,7 +89,11 @@ pub(crate) fn turn_done_event(
     StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent: agent.clone(),
-        payload: StorageEventPayload::TurnDone { timestamp, reason },
+        payload: StorageEventPayload::TurnDone {
+            timestamp,
+            terminal_kind: TurnTerminalKind::from_legacy_reason(reason.as_deref()),
+            reason,
+        },
     }
 }
 
@@ -399,8 +403,11 @@ mod tests {
             event.payload,
             StorageEventPayload::TurnDone {
                 timestamp: event_timestamp,
+                terminal_kind,
                 reason,
-            } if event_timestamp == timestamp && reason.as_deref() == Some("completed")
+            } if event_timestamp == timestamp
+                && terminal_kind == Some(astrcode_core::TurnTerminalKind::Completed)
+                && reason.as_deref() == Some("completed")
         ));
     }
 

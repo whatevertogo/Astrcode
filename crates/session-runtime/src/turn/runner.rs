@@ -24,7 +24,12 @@
 
 mod step;
 
-use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
+use std::{
+    collections::{HashSet, VecDeque},
+    path::Path,
+    sync::Arc,
+    time::Instant,
+};
 
 use astrcode_core::{
     AgentEventContext, CancelToken, LlmMessage, PromptDeclaration, PromptFactsProvider,
@@ -37,6 +42,7 @@ use step::{StepOutcome, run_single_step};
 
 use super::{
     TurnOutcome,
+    journal::TurnJournal,
     loop_control::{TurnLoopTransition, TurnStopCause},
     summary::{TurnCollaborationSummary, TurnFinishReason, TurnSummary},
 };
@@ -114,31 +120,81 @@ struct TurnExecutionRequestView<'a> {
 }
 
 struct TurnExecutionContext {
-    turn_started_at: Instant,
     messages: Vec<LlmMessage>,
-    events: Vec<StorageEvent>,
-    token_tracker: TokenUsageTracker,
-    total_cache_read_tokens: u64,
-    total_cache_creation_tokens: u64,
-    auto_compaction_count: usize,
-    micro_compact_state: MicroCompactState,
-    file_access_tracker: FileAccessTracker,
+    journal: TurnJournal,
+    lifecycle: TurnLifecycle,
+    budget: TurnBudgetState,
+    tool_result_budget: ToolResultBudgetState,
+    streaming_tools: StreamingToolState,
+}
+
+struct TurnLifecycle {
+    turn_started_at: Instant,
     step_index: usize,
     continuation_count: usize,
     reactive_compact_attempts: usize,
     max_output_continuation_count: usize,
     last_transition: Option<TurnLoopTransition>,
     stop_cause: Option<TurnStopCause>,
-    tool_result_replacement_state: ToolResultReplacementState,
-    tool_result_replacement_count: usize,
-    tool_result_reapply_count: usize,
-    tool_result_bytes_saved: usize,
-    tool_result_over_budget_message_count: usize,
-    streaming_tool_launch_count: usize,
-    streaming_tool_match_count: usize,
-    streaming_tool_fallback_count: usize,
-    streaming_tool_discard_count: usize,
-    streaming_tool_overlap_ms: u64,
+}
+
+struct TurnBudgetState {
+    token_tracker: TokenUsageTracker,
+    total_cache_read_tokens: u64,
+    total_cache_creation_tokens: u64,
+    auto_compaction_count: usize,
+    recent_output_tokens: VecDeque<usize>,
+    micro_compact_state: MicroCompactState,
+    file_access_tracker: FileAccessTracker,
+}
+
+struct ToolResultBudgetState {
+    replacement_state: ToolResultReplacementState,
+    replacement_count: usize,
+    reapply_count: usize,
+    bytes_saved: usize,
+    over_budget_message_count: usize,
+}
+
+struct StreamingToolState {
+    launch_count: usize,
+    match_count: usize,
+    fallback_count: usize,
+    discard_count: usize,
+    overlap_ms: u64,
+}
+
+struct TurnLifecycleSummary {
+    finish_reason: TurnFinishReason,
+    stop_cause: TurnStopCause,
+    last_transition: Option<TurnLoopTransition>,
+    wall_duration: std::time::Duration,
+    step_count: usize,
+    continuation_count: usize,
+    reactive_compact_count: usize,
+    max_output_continuation_count: usize,
+}
+
+struct TurnBudgetSummary {
+    total_tokens_used: u64,
+    cache_read_input_tokens: u64,
+    cache_creation_input_tokens: u64,
+    auto_compaction_count: usize,
+}
+
+struct ToolResultBudgetSummary {
+    replacement_count: usize,
+    reapply_count: usize,
+    bytes_saved: u64,
+    over_budget_message_count: usize,
+}
+
+struct StreamingToolSummary {
+    launch_count: usize,
+    match_count: usize,
+    fallback_count: usize,
+    discard_count: usize,
+    overlap_ms: u64,
 }
 
 impl<'a> TurnExecutionResources<'a> {
@@ -170,51 +226,16 @@ impl<'a> TurnExecutionResources<'a> {
     }
 }
 
-impl TurnExecutionContext {
-    fn new(
-        resources: &TurnExecutionResources<'_>,
-        messages: Vec<LlmMessage>,
-        last_assistant_at: Option<DateTime<Utc>>,
-    ) -> Self {
-        let now = Instant::now();
+impl TurnLifecycle {
+    fn new(turn_started_at: Instant) -> Self {
         Self {
-            turn_started_at: now,
-            micro_compact_state: MicroCompactState::seed_from_messages(
-                &messages,
-                resources.settings.micro_compact_config(),
-                now,
-                last_assistant_at,
-            ),
-            file_access_tracker: FileAccessTracker::seed_from_messages(
-                &messages,
-                resources.settings.max_tracked_files,
-                Path::new(resources.working_dir),
-            ),
-            messages,
-            events: Vec::new(),
-            token_tracker: TokenUsageTracker::default(),
-            total_cache_read_tokens: 0,
-            total_cache_creation_tokens: 0,
-            auto_compaction_count: 0,
+            turn_started_at,
             step_index: 0,
             continuation_count: 0,
             reactive_compact_attempts: 0,
             max_output_continuation_count: 0,
             last_transition: None,
             stop_cause: None,
-            tool_result_replacement_state: ToolResultReplacementState::seed(
-                resources.session_state,
-            )
-            .unwrap_or_default(),
-            tool_result_replacement_count: 0,
-            tool_result_reapply_count: 0,
-            tool_result_bytes_saved: 0,
-            tool_result_over_budget_message_count: 0,
-            streaming_tool_launch_count: 0,
-            streaming_tool_match_count: 0,
-            streaming_tool_fallback_count: 0,
-            streaming_tool_discard_count: 0,
-            streaming_tool_overlap_ms: 0,
         }
     }
 
@@ -230,39 +251,170 @@ impl TurnExecutionContext {
         }
     }
 
+    fn summarize(
+        &mut self,
+        outcome: &TurnOutcome,
+        stop_cause: TurnStopCause,
+    ) -> TurnLifecycleSummary {
+        self.stop_cause = Some(stop_cause);
+        let terminal_kind = outcome.terminal_kind(stop_cause);
+        TurnLifecycleSummary {
+            finish_reason: TurnFinishReason::from(&terminal_kind),
+            stop_cause,
+            last_transition: self.last_transition,
+            wall_duration: self.turn_started_at.elapsed(),
+            step_count: self.step_index + 1,
+            continuation_count: self.continuation_count,
+            reactive_compact_count: self.reactive_compact_attempts,
+            max_output_continuation_count: self.max_output_continuation_count,
+        }
+    }
+}
+
+impl TurnBudgetState {
+    fn new(
+        resources: &TurnExecutionResources<'_>,
+        messages: &[LlmMessage],
+        turn_started_at: Instant,
+        last_assistant_at: Option<DateTime<Utc>>,
+    ) -> Self {
+        Self {
+            token_tracker: TokenUsageTracker::default(),
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
+            auto_compaction_count: 0,
+            recent_output_tokens: VecDeque::new(),
+            micro_compact_state: MicroCompactState::seed_from_messages(
+                messages,
+                resources.settings.micro_compact_config(),
+                turn_started_at,
+                last_assistant_at,
+            ),
+            file_access_tracker: FileAccessTracker::seed_from_messages(
+                messages,
+                resources.settings.max_tracked_files,
+                Path::new(resources.working_dir),
+            ),
+        }
+    }
+
+    fn summarize(&self) -> TurnBudgetSummary {
+        TurnBudgetSummary {
+            total_tokens_used: self.token_tracker.budget_tokens(0) as u64,
+            cache_read_input_tokens: self.total_cache_read_tokens,
+            cache_creation_input_tokens: self.total_cache_creation_tokens,
+            auto_compaction_count: self.auto_compaction_count,
+        }
+    }
+
+    fn record_output_tokens(&mut self, output_tokens: usize) {
+        const RECENT_OUTPUT_WINDOW: usize = 3;
+
+        self.recent_output_tokens.push_back(output_tokens);
+        while self.recent_output_tokens.len() > RECENT_OUTPUT_WINDOW {
+            self.recent_output_tokens.pop_front();
+        }
+    }
+}
+
+impl ToolResultBudgetState {
+    fn new(resources: &TurnExecutionResources<'_>) -> Self {
+        Self {
+            replacement_state: ToolResultReplacementState::seed(resources.session_state)
+                .unwrap_or_default(),
+            replacement_count: 0,
+            reapply_count: 0,
+            bytes_saved: 0,
+            over_budget_message_count: 0,
+        }
+    }
+
+    fn summarize(&self) -> ToolResultBudgetSummary {
+        ToolResultBudgetSummary {
+            replacement_count: self.replacement_count,
+            reapply_count: self.reapply_count,
+            bytes_saved: self.bytes_saved as u64,
+            over_budget_message_count: self.over_budget_message_count,
+        }
+    }
+}
+
+impl StreamingToolState {
+    fn new() -> Self {
+        Self {
+            launch_count: 0,
+            match_count: 0,
+            fallback_count: 0,
+            discard_count: 0,
+            overlap_ms: 0,
+        }
+    }
+
+    fn summarize(&self) -> StreamingToolSummary {
+        StreamingToolSummary {
+            launch_count: self.launch_count,
+            match_count: self.match_count,
+            fallback_count: self.fallback_count,
+            discard_count: self.discard_count,
+            overlap_ms: self.overlap_ms,
+        }
+    }
+}
+
+impl TurnExecutionContext {
+    fn new(
+        resources: &TurnExecutionResources<'_>,
+        messages: Vec<LlmMessage>,
+        last_assistant_at: Option<DateTime<Utc>>,
+    ) -> Self {
+        let now = Instant::now();
+        let budget = TurnBudgetState::new(resources, &messages, now, last_assistant_at);
+        Self {
+            messages,
+            journal: TurnJournal::default(),
+            lifecycle: TurnLifecycle::new(now),
+            budget,
+            tool_result_budget: ToolResultBudgetState::new(resources),
+            streaming_tools: StreamingToolState::new(),
+        }
+    }
+
     fn finish(
         mut self,
         resources: &TurnExecutionResources<'_>,
         outcome: TurnOutcome,
         stop_cause: TurnStopCause,
     ) -> TurnRunResult {
-        self.stop_cause = Some(stop_cause);
+        let lifecycle = self.lifecycle.summarize(&outcome, stop_cause);
+        let budget = self.budget.summarize();
+        let tool_result_budget = self.tool_result_budget.summarize();
+        let streaming_tools = self.streaming_tools.summarize();
         TurnRunResult {
             outcome,
             messages: self.messages,
-            events: self.events,
+            events: self.journal.into_events(),
             summary: TurnSummary {
-                finish_reason: TurnFinishReason::from(stop_cause),
-                stop_cause,
-                last_transition: self.last_transition,
-                wall_duration: self.turn_started_at.elapsed(),
-                step_count: self.step_index + 1,
-                continuation_count: self.continuation_count,
-                total_tokens_used: self.token_tracker.budget_tokens(0) as u64,
-                cache_read_input_tokens: self.total_cache_read_tokens,
-                cache_creation_input_tokens: self.total_cache_creation_tokens,
-                auto_compaction_count: self.auto_compaction_count,
-                reactive_compact_count: self.reactive_compact_attempts,
-                max_output_continuation_count: self.max_output_continuation_count,
-                tool_result_replacement_count: self.tool_result_replacement_count,
-                tool_result_reapply_count: self.tool_result_reapply_count,
-                tool_result_bytes_saved: self.tool_result_bytes_saved as u64,
-                tool_result_over_budget_message_count: self.tool_result_over_budget_message_count,
-                streaming_tool_launch_count: self.streaming_tool_launch_count,
-                streaming_tool_match_count: self.streaming_tool_match_count,
-                streaming_tool_fallback_count: self.streaming_tool_fallback_count,
-                streaming_tool_discard_count: self.streaming_tool_discard_count,
-                streaming_tool_overlap_ms: self.streaming_tool_overlap_ms,
+                finish_reason: lifecycle.finish_reason,
+                stop_cause: lifecycle.stop_cause,
+                last_transition: lifecycle.last_transition,
+                wall_duration: lifecycle.wall_duration,
+                step_count: lifecycle.step_count,
+                continuation_count: lifecycle.continuation_count,
+                total_tokens_used: budget.total_tokens_used,
+                cache_read_input_tokens: budget.cache_read_input_tokens,
+                cache_creation_input_tokens: budget.cache_creation_input_tokens,
+                auto_compaction_count: budget.auto_compaction_count,
+                reactive_compact_count: lifecycle.reactive_compact_count,
+                max_output_continuation_count: lifecycle.max_output_continuation_count,
+                tool_result_replacement_count: tool_result_budget.replacement_count,
+                tool_result_reapply_count: tool_result_budget.reapply_count,
+                tool_result_bytes_saved: tool_result_budget.bytes_saved,
+                tool_result_over_budget_message_count: tool_result_budget.over_budget_message_count,
+                streaming_tool_launch_count: streaming_tools.launch_count,
+                streaming_tool_match_count: streaming_tools.match_count,
+                streaming_tool_fallback_count: streaming_tools.fallback_count,
+                streaming_tool_discard_count: streaming_tools.discard_count,
+                streaming_tool_overlap_ms: streaming_tools.overlap_ms,
                 collaboration: turn_collaboration_summary(
                     resources.session_state,
                     resources.turn_id,
@@ -319,7 +471,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
             ));
         }
 
-        if execution.step_index >= resources.max_steps {
+        if execution.lifecycle.step_index >= resources.max_steps {
             return Ok(execution.finish(
                 &resources,
                 TurnOutcome::Error {
@@ -331,7 +483,7 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
 
         match run_single_step(&mut execution, &resources).await? {
             StepOutcome::Continue(transition) => {
-                execution.record_transition(transition);
+                execution.lifecycle.record_transition(transition);
             },
             StepOutcome::Completed(stop_cause) => {
                 return Ok(execution.finish(&resources, TurnOutcome::Completed, stop_cause));

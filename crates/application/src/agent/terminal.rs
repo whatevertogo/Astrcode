@@ -454,7 +454,6 @@ mod tests {
         ChildSessionNotificationKind, ParentExecutionRef, Phase, SessionId, StorageEvent,
         StorageEventPayload, SubRunStorageMode,
     };
-    use astrcode_session_runtime::{append_and_broadcast, complete_session_execution};
 
     use super::*;
     use crate::{
@@ -489,6 +488,7 @@ mod tests {
                 agent,
                 payload: StorageEventPayload::TurnDone {
                     timestamp: chrono::Utc::now(),
+                    terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
                     reason: Some("completed".to_string()),
                 },
             },
@@ -542,19 +542,19 @@ mod tests {
             .await
             .expect("child lifecycle should update");
 
-        let child_state = harness
-            .session_runtime
-            .get_session_state(&SessionId::from(child.session_id.clone()))
-            .await
-            .expect("child state should load");
-        let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
         let child_agent = AgentEventContext::from(&child_handle);
-        for event in child_completion_events(child_agent, "turn-child") {
-            append_and_broadcast(child_state.as_ref(), &event, &mut translator)
-                .await
-                .expect("child completion event should persist");
-        }
-        complete_session_execution(child_state.as_ref(), Phase::Idle);
+        harness
+            .append_events_to_session(
+                &child.session_id,
+                Phase::Idle,
+                &child_completion_events(child_agent, "turn-child"),
+            )
+            .await
+            .expect("child completion events should persist");
+        harness
+            .complete_turn_state(&child.session_id, 0, Phase::Idle)
+            .await
+            .expect("idle completion should not fail");
 
         harness
             .service
@@ -685,19 +685,19 @@ mod tests {
         let mut resumed_child_handle = child_handle.clone();
         resumed_child_handle.lineage_kind = ChildSessionLineageKind::Resume;
 
-        let child_state = harness
-            .session_runtime
-            .get_session_state(&SessionId::from(child.session_id.clone()))
-            .await
-            .expect("child state should load");
-        let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
         let child_agent = AgentEventContext::from(&resumed_child_handle);
-        for event in child_completion_events(child_agent, "turn-child-resume") {
-            append_and_broadcast(child_state.as_ref(), &event, &mut translator)
-                .await
-                .expect("child completion event should persist");
-        }
-        complete_session_execution(child_state.as_ref(), Phase::Idle);
+        harness
+            .append_events_to_session(
+                &child.session_id,
+                Phase::Idle,
+                &child_completion_events(child_agent, "turn-child-resume"),
+            )
+            .await
+            .expect("child completion events should persist");
+        harness
+            .complete_turn_state(&child.session_id, 0, Phase::Idle)
+            .await
+            .expect("idle completion should not fail");
 
         harness
             .service
@@ -949,19 +949,19 @@ mod tests {
             .await
             .expect("leaf lifecycle should update");
 
-        let middle_state = harness
-            .session_runtime
-            .get_session_state(&SessionId::from(middle_session.session_id.clone()))
-            .await
-            .expect("middle state should load");
-        let mut translator = astrcode_core::EventTranslator::new(Phase::Idle);
         let middle_agent = AgentEventContext::from(&middle);
-        for event in child_completion_events(middle_agent, "turn-middle-wake") {
-            append_and_broadcast(middle_state.as_ref(), &event, &mut translator)
-                .await
-                .expect("middle completion event should persist");
-        }
-        complete_session_execution(middle_state.as_ref(), Phase::Idle);
+        harness
+            .append_events_to_session(
+                &middle_session.session_id,
+                Phase::Idle,
+                &child_completion_events(middle_agent, "turn-middle-wake"),
+            )
+            .await
+            .expect("middle completion events should persist");
+        harness
+            .complete_turn_state(&middle_session.session_id, 0, Phase::Idle)
+            .await
+            .expect("idle completion should not fail");
 
         harness
             .service

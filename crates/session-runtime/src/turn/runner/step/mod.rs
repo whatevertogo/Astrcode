@@ -17,16 +17,12 @@ use tool_execution::{ToolExecutionDisposition, finalize_and_execute_tool_calls};
 
 use super::{TurnExecutionContext, TurnExecutionResources};
 use crate::turn::{
-    continuation_cycle::{
-        OUTPUT_CONTINUATION_PROMPT, OutputContinuationDecision, continuation_transition,
-        decide_output_continuation,
-    },
     events::{
         apply_prompt_metrics_usage, assistant_final_event, turn_done_event, user_message_event,
     },
-    loop_control::{
-        AUTO_CONTINUE_NUDGE, BudgetContinuationDecision, TurnLoopTransition, TurnStopCause,
-        decide_budget_continuation,
+    loop_control::{TurnLoopTransition, TurnStopCause},
+    post_llm_policy::{
+        PostLlmDecision, PostLlmDecisionInput, PostLlmDecisionPolicy, output_token_count,
     },
 };
 
@@ -75,104 +71,92 @@ async fn run_single_step_with(
 
     let llm_finished_at = Instant::now();
     record_llm_usage(execution, &output);
-    apply_prompt_metrics_usage(&mut execution.events, execution.step_index, output.usage);
-    let has_tool_calls = append_assistant_output(execution, resources, &output);
+    apply_prompt_metrics_usage(
+        execution.journal.events_mut(),
+        execution.lifecycle.step_index,
+        output.usage,
+    );
+    append_assistant_output(execution, resources, &output);
     warn_if_output_truncated(resources, execution, &output);
 
-    if !has_tool_calls {
-        streaming_planner.abort_all();
-        return Ok(handle_assistant_without_tool_calls(
-            execution, resources, &output,
-        ));
-    }
-
-    match finalize_and_execute_tool_calls(
-        execution,
-        resources,
-        driver,
-        &streaming_planner,
-        &output,
-        llm_finished_at,
-    )
-    .await?
-    {
-        ToolExecutionDisposition::Completed => {
-            execution.step_index += 1;
-            Ok(StepOutcome::Continue(
-                TurnLoopTransition::ToolCycleCompleted,
-            ))
+    match decide_post_llm_action(execution, resources, &output) {
+        PostLlmDecision::ExecuteTools => match finalize_and_execute_tool_calls(
+            execution,
+            resources,
+            driver,
+            &streaming_planner,
+            &output,
+            llm_finished_at,
+        )
+        .await?
+        {
+            ToolExecutionDisposition::Completed => {
+                execution.lifecycle.step_index += 1;
+                Ok(StepOutcome::Continue(
+                    TurnLoopTransition::ToolCycleCompleted,
+                ))
+            },
+            ToolExecutionDisposition::Interrupted => {
+                Ok(StepOutcome::Cancelled(TurnStopCause::Cancelled))
+            },
         },
-        ToolExecutionDisposition::Interrupted => {
-            Ok(StepOutcome::Cancelled(TurnStopCause::Cancelled))
+        PostLlmDecision::ContinueWithPrompt {
+            nudge,
+            origin,
+            transition,
+        } => {
+            streaming_planner.abort_all();
+            if matches!(origin, UserMessageOrigin::ContinuationPrompt) {
+                execution.lifecycle.max_output_continuation_count = execution
+                    .lifecycle
+                    .max_output_continuation_count
+                    .saturating_add(1);
+            }
+            append_internal_user_message(execution, resources, nudge, origin);
+            execution.lifecycle.step_index += 1;
+            Ok(StepOutcome::Continue(transition))
+        },
+        PostLlmDecision::Stop(stop_cause) => {
+            streaming_planner.abort_all();
+            append_turn_done_event(execution, resources, stop_cause);
+            Ok(StepOutcome::Completed(stop_cause))
         },
     }
 }
 
-fn handle_assistant_without_tool_calls(
+fn decide_post_llm_action(
     execution: &mut TurnExecutionContext,
     resources: &TurnExecutionResources<'_>,
     output: &LlmOutput,
-) -> StepOutcome {
-    match decide_output_continuation(
-        output,
-        execution.max_output_continuation_count,
-        resources.runtime,
-    ) {
-        OutputContinuationDecision::Continue => {
-            execution.max_output_continuation_count =
-                execution.max_output_continuation_count.saturating_add(1);
-            append_internal_user_message(
-                execution,
-                resources,
-                OUTPUT_CONTINUATION_PROMPT,
-                UserMessageOrigin::ContinuationPrompt,
-            );
-            execution.step_index += 1;
-            return StepOutcome::Continue(continuation_transition());
-        },
-        OutputContinuationDecision::Stop(stop_cause) => {
-            append_turn_done_event(execution, resources, stop_cause);
-            return StepOutcome::Completed(stop_cause);
-        },
-        OutputContinuationDecision::NotNeeded => {},
+) -> PostLlmDecision {
+    let output_tokens = output_token_count(output);
+    if output_tokens > 0 && output.tool_calls.is_empty() {
+        execution.budget.record_output_tokens(output_tokens);
     }
+    let recent_output_tokens = execution
+        .budget
+        .recent_output_tokens
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    let policy = PostLlmDecisionPolicy::new(resources.runtime, resources.gateway.model_limits());
 
-    match decide_budget_continuation(
+    policy.decide(PostLlmDecisionInput {
         output,
-        execution.step_index,
-        execution.continuation_count,
-        resources.runtime,
-        resources.gateway.model_limits(),
-        execution.token_tracker.budget_tokens(0),
-    ) {
-        BudgetContinuationDecision::Continue => {
-            append_internal_user_message(
-                execution,
-                resources,
-                AUTO_CONTINUE_NUDGE,
-                UserMessageOrigin::AutoContinueNudge,
-            );
-            execution.step_index += 1;
-            StepOutcome::Continue(TurnLoopTransition::BudgetAllowsContinuation)
-        },
-        BudgetContinuationDecision::Stop(stop_cause) => {
-            append_turn_done_event(execution, resources, stop_cause);
-            StepOutcome::Completed(stop_cause)
-        },
-        BudgetContinuationDecision::NotNeeded => {
-            append_turn_done_event(execution, resources, TurnStopCause::Completed);
-            StepOutcome::Completed(TurnStopCause::Completed)
-        },
-    }
+        step_index: execution.lifecycle.step_index,
+        continuation_count: execution.lifecycle.continuation_count,
+        max_output_continuation_count: execution.lifecycle.max_output_continuation_count,
+        used_budget_tokens: execution.budget.token_tracker.budget_tokens(0),
+        recent_output_tokens: &recent_output_tokens,
+    })
 }
 
 fn append_assistant_output(
     execution: &mut TurnExecutionContext,
     resources: &TurnExecutionResources<'_>,
     output: &LlmOutput,
-) -> bool {
+) {
     let content = output.content.trim().to_string();
-    let has_tool_calls = !output.tool_calls.is_empty();
     let reasoning_content = output
         .reasoning
         .as_ref()
@@ -191,10 +175,11 @@ fn append_assistant_output(
         reasoning: output.reasoning.clone(),
     });
     execution
+        .budget
         .micro_compact_state
         .record_assistant_activity(Instant::now());
     if has_persistable_assistant_output {
-        execution.events.push(assistant_final_event(
+        execution.journal.push(assistant_final_event(
             resources.turn_id,
             resources.agent,
             content,
@@ -203,7 +188,6 @@ fn append_assistant_output(
             Some(Utc::now()),
         ));
     }
-    has_tool_calls
 }
 
 fn append_turn_done_event(
@@ -211,10 +195,12 @@ fn append_turn_done_event(
     resources: &TurnExecutionResources<'_>,
     stop_cause: TurnStopCause,
 ) {
-    execution.events.push(turn_done_event(
+    execution.journal.push(turn_done_event(
         resources.turn_id,
         resources.agent,
-        stop_cause.turn_done_reason().map(ToString::to_string),
+        stop_cause
+            .legacy_turn_done_reason()
+            .map(ToString::to_string),
         Utc::now(),
     ));
 }
@@ -229,7 +215,7 @@ fn append_internal_user_message(
         content: content.to_string(),
         origin,
     });
-    execution.events.push(user_message_event(
+    execution.journal.push(user_message_event(
         resources.turn_id,
         resources.agent,
         content.to_string(),

@@ -98,6 +98,33 @@ pub struct CompactAppliedMeta {
     pub output_summary_chars: u32,
 }
 
+/// Turn 的 durable/query typed 终态语义。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnTerminalKind {
+    Completed,
+    Cancelled,
+    Error { message: String },
+    StepLimitExceeded,
+    BudgetStoppedContinuation,
+    ContinuationLimitReached,
+    MaxOutputContinuationLimitReached,
+}
+
+impl TurnTerminalKind {
+    pub fn from_legacy_reason(reason: Option<&str>) -> Option<Self> {
+        match reason.map(str::trim).filter(|reason| !reason.is_empty()) {
+            Some("completed") => Some(Self::Completed),
+            Some("budget_stopped") => Some(Self::BudgetStoppedContinuation),
+            Some("continuation_limit_reached") => Some(Self::ContinuationLimitReached),
+            Some("token_exceeded") => Some(Self::MaxOutputContinuationLimitReached),
+            Some("cancelled") | Some("interrupted") => Some(Self::Cancelled),
+            Some("step_limit_exceeded") => Some(Self::StepLimitExceeded),
+            Some(_) | None => None,
+        }
+    }
+}
+
 /// 存储事件载荷。
 ///
 /// 只描述事件本体，不包含跨变体共享的头部字段（`turn_id` 与 `agent`）。
@@ -260,6 +287,8 @@ pub enum StorageEventPayload {
         #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_kind: Option<TurnTerminalKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
     /// Durable input queue 消息入队。
@@ -313,7 +342,7 @@ pub enum StorageEventPayload {
 ///
 /// 1. 运行时产生事件 → 2. 通过 `EventLogWriter::append` 持久化 →
 /// 3. 通过 `EventTranslator` 转换为 `AgentEvent` → 4. SSE 推送到前端
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct StorageEvent {
     /// turn 级别关联 ID。SessionStart 没有该字段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +353,41 @@ pub struct StorageEvent {
     /// 事件具体载荷。
     #[serde(flatten)]
     pub payload: StorageEventPayload,
+}
+
+#[derive(Deserialize)]
+struct StorageEventSerde {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+    pub agent: AgentEventContext,
+    #[serde(flatten)]
+    pub payload: StorageEventPayload,
+}
+
+impl<'de> Deserialize<'de> for StorageEvent {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut raw = StorageEventSerde::deserialize(deserializer)?;
+        if let StorageEventPayload::TurnDone {
+            terminal_kind,
+            reason,
+            ..
+        } = &mut raw.payload
+        {
+            if terminal_kind.is_none() {
+                *terminal_kind = TurnTerminalKind::from_legacy_reason(reason.as_deref());
+            }
+        }
+
+        Ok(Self {
+            turn_id: raw.turn_id,
+            agent: raw.agent,
+            payload: raw.payload,
+        })
+    }
 }
 
 impl StorageEvent {
@@ -396,7 +460,7 @@ mod tests {
 
     use super::{
         CompactAppliedMeta, CompactMode, CompactTrigger, PromptMetricsPayload, StorageEvent,
-        StorageEventPayload,
+        StorageEventPayload, TurnTerminalKind,
     };
     use crate::{
         AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
@@ -434,10 +498,67 @@ mod tests {
 
         match event {
             StorageEvent {
-                payload: StorageEventPayload::TurnDone { reason, .. },
+                payload:
+                    StorageEventPayload::TurnDone {
+                        terminal_kind,
+                        reason,
+                        ..
+                    },
                 ..
             } => {
+                assert_eq!(terminal_kind, None);
                 assert_eq!(reason, None);
+            },
+            other => panic!("expected turn done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_done_deserialization_maps_legacy_reason_to_typed_terminal_kind() {
+        let event: StorageEvent = serde_json::from_str(
+            r#"{"type":"turnDone","turn_id":"turn-1","timestamp":"2026-01-01T00:00:00Z","reason":"token_exceeded"}"#,
+        )
+        .expect("legacy turn done should deserialize");
+
+        match event {
+            StorageEvent {
+                payload:
+                    StorageEventPayload::TurnDone {
+                        terminal_kind,
+                        reason,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(
+                    terminal_kind,
+                    Some(TurnTerminalKind::MaxOutputContinuationLimitReached)
+                );
+                assert_eq!(reason.as_deref(), Some("token_exceeded"));
+            },
+            other => panic!("expected turn done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_done_deserialization_keeps_unknown_legacy_reason_untyped() {
+        let event: StorageEvent = serde_json::from_str(
+            r#"{"type":"turnDone","turn_id":"turn-1","timestamp":"2026-01-01T00:00:00Z","reason":"custom-free-text"}"#,
+        )
+        .expect("legacy turn done should deserialize");
+
+        match event {
+            StorageEvent {
+                payload:
+                    StorageEventPayload::TurnDone {
+                        terminal_kind,
+                        reason,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(terminal_kind, None);
+                assert_eq!(reason.as_deref(), Some("custom-free-text"));
             },
             other => panic!("expected turn done, got {other:?}"),
         }

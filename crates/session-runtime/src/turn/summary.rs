@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
+    TurnTerminalKind,
 };
 
 use super::{TurnLoopTransition, TurnStopCause};
@@ -29,16 +30,16 @@ pub enum TurnFinishReason {
     StepLimitExceeded,
 }
 
-impl From<TurnStopCause> for TurnFinishReason {
-    fn from(value: TurnStopCause) -> Self {
+impl From<&TurnTerminalKind> for TurnFinishReason {
+    fn from(value: &TurnTerminalKind) -> Self {
         match value {
-            TurnStopCause::Completed
-            | TurnStopCause::BudgetStoppedContinuation
-            | TurnStopCause::ContinuationLimitReached
-            | TurnStopCause::MaxOutputContinuationLimitReached => Self::NaturalEnd,
-            TurnStopCause::Cancelled => Self::Cancelled,
-            TurnStopCause::Error => Self::Error,
-            TurnStopCause::StepLimitExceeded => Self::StepLimitExceeded,
+            TurnTerminalKind::Completed
+            | TurnTerminalKind::BudgetStoppedContinuation
+            | TurnTerminalKind::ContinuationLimitReached
+            | TurnTerminalKind::MaxOutputContinuationLimitReached => Self::NaturalEnd,
+            TurnTerminalKind::Cancelled => Self::Cancelled,
+            TurnTerminalKind::Error { .. } => Self::Error,
+            TurnTerminalKind::StepLimitExceeded => Self::StepLimitExceeded,
         }
     }
 }

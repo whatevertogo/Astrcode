@@ -59,36 +59,41 @@ impl StepDriver for RuntimeStepDriver {
             messages: std::mem::take(&mut execution.messages),
             cancel: resources.cancel.clone(),
             agent: resources.agent,
-            step_index: execution.step_index,
-            token_tracker: &execution.token_tracker,
+            step_index: execution.lifecycle.step_index,
+            token_tracker: &execution.budget.token_tracker,
             tools: Arc::clone(&resources.tools),
             settings: &resources.settings,
             clearable_tools: &resources.clearable_tools,
-            micro_compact_state: &mut execution.micro_compact_state,
-            file_access_tracker: &execution.file_access_tracker,
+            micro_compact_state: &mut execution.budget.micro_compact_state,
+            file_access_tracker: &execution.budget.file_access_tracker,
             session_state: resources.session_state,
-            tool_result_replacement_state: &mut execution.tool_result_replacement_state,
+            tool_result_replacement_state: &mut execution.tool_result_budget.replacement_state,
             prompt_declarations: resources.prompt_declarations,
             prompt_governance: resources.prompt_governance,
         })
         .await?;
         execution.messages = std::mem::take(&mut assembled.messages);
         if assembled.auto_compacted {
-            execution.auto_compaction_count = execution.auto_compaction_count.saturating_add(1);
+            execution.budget.auto_compaction_count =
+                execution.budget.auto_compaction_count.saturating_add(1);
         }
-        execution.tool_result_replacement_count = execution
-            .tool_result_replacement_count
+        execution.tool_result_budget.replacement_count = execution
+            .tool_result_budget
+            .replacement_count
             .saturating_add(assembled.tool_result_budget_stats.replacement_count);
-        execution.tool_result_reapply_count = execution
-            .tool_result_reapply_count
+        execution.tool_result_budget.reapply_count = execution
+            .tool_result_budget
+            .reapply_count
             .saturating_add(assembled.tool_result_budget_stats.reapply_count);
-        execution.tool_result_bytes_saved = execution
-            .tool_result_bytes_saved
+        execution.tool_result_budget.bytes_saved = execution
+            .tool_result_budget
+            .bytes_saved
             .saturating_add(assembled.tool_result_budget_stats.bytes_saved);
-        execution.tool_result_over_budget_message_count = execution
-            .tool_result_over_budget_message_count
+        execution.tool_result_budget.over_budget_message_count = execution
+            .tool_result_budget
+            .over_budget_message_count
             .saturating_add(assembled.tool_result_budget_stats.over_budget_message_count);
-        execution.events.extend(assembled.events.iter().cloned());
+        execution.journal.extend(assembled.events.iter().cloned());
         Ok(assembled)
     }
 
@@ -122,11 +127,11 @@ impl StepDriver for RuntimeStepDriver {
             session_id: resources.session_id,
             working_dir: resources.working_dir,
             turn_id: resources.turn_id,
-            step_index: execution.step_index,
+            step_index: execution.lifecycle.step_index,
             agent: resources.agent,
             cancel: resources.cancel.clone(),
             settings: &resources.settings,
-            file_access_tracker: &execution.file_access_tracker,
+            file_access_tracker: &execution.budget.file_access_tracker,
         })
         .await
     }
@@ -147,7 +152,7 @@ impl StepDriver for RuntimeStepDriver {
                 turn_id: resources.turn_id,
                 agent: resources.agent,
                 cancel: resources.cancel,
-                events: &mut execution.events,
+                events: execution.journal.events_mut(),
                 max_concurrency: resources.runtime.max_tool_concurrency,
                 tool_result_inline_limit: resources.runtime.tool_result_inline_limit,
                 event_emission_mode,

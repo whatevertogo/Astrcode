@@ -8,8 +8,8 @@ use astrcode_core::{
 use chrono::Utc;
 
 use crate::{
-    InputQueueEventAppend, SessionRuntime, append_and_broadcast, append_input_queue_event,
-    state::checkpoint_if_compacted,
+    InputQueueEventAppend, SessionRuntime,
+    state::{append_and_broadcast, append_input_queue_event, checkpoint_if_compacted},
 };
 
 pub(crate) struct SessionCommands<'a> {
@@ -143,11 +143,7 @@ impl<'a> SessionCommands<'a> {
     ) -> Result<bool> {
         let session_id = astrcode_core::SessionId::from(crate::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
-        if actor
-            .state()
-            .running
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
+        if actor.state().is_running() {
             actor
                 .state()
                 .request_manual_compact(crate::state::PendingManualCompactRequest {

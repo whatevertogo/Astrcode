@@ -347,6 +347,7 @@ fn append_turn_events(log_path: &Path, turn_id: &str, prompt: &str, working_dir:
             agent,
             payload: StorageEventPayload::TurnDone {
                 timestamp: Utc.with_ymd_and_hms(2026, 4, 20, 8, 0, 0).unwrap(),
+                terminal_kind: None,
                 reason: Some("completed".to_string()),
             },
         },

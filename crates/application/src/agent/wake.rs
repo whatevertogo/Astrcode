@@ -557,13 +557,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use astrcode_core::{
-        AgentEventContext, AgentLifecycleStatus, CancelToken, ChildAgentRef,
-        ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, EventStore, ParentExecutionRef, Phase, QueuedInputEnvelope,
-        SessionId, StorageEvent, StoredEvent,
-    };
-    use astrcode_session_runtime::{
-        append_and_broadcast, complete_session_execution, prepare_session_execution,
+        AgentEventContext, AgentLifecycleStatus, ChildAgentRef, ChildExecutionIdentity,
+        ChildSessionLineageKind, ChildSessionNotification, ChildSessionNotificationKind,
+        ParentExecutionRef, Phase, QueuedInputEnvelope, SessionId, StorageEvent, StoredEvent,
     };
 
     use super::*;
@@ -698,31 +694,10 @@ mod tests {
             )
             .await
             .expect("root agent should register");
-        let parent_state = harness
-            .session_runtime
-            .get_session_state(&SessionId::from(parent.session_id.clone()))
+        let generation = harness
+            .prepare_busy_turn(&parent.session_id, "turn-busy")
             .await
-            .expect("parent state should load");
-        let lease = match harness
-            .event_store
-            .try_acquire_turn(&SessionId::from(parent.session_id.clone()), "turn-busy")
-            .await
-            .expect("turn lease should acquire")
-        {
-            astrcode_core::SessionTurnAcquireResult::Acquired(lease) => lease,
-            astrcode_core::SessionTurnAcquireResult::Busy(_) => {
-                panic!("fresh parent session should not be busy")
-            },
-        };
-        prepare_session_execution(
-            parent_state.as_ref(),
-            &parent.session_id,
-            "turn-busy",
-            CancelToken::new(),
-            lease,
-        )
-        .expect("busy state should prepare");
-        *parent_state.phase.lock().expect("phase lock should work") = Phase::Thinking;
+            .expect("busy state should prepare");
 
         let notification = sample_notification(
             &parent.session_id,
@@ -749,7 +724,10 @@ mod tests {
             "busy wake should not branch a new session"
         );
 
-        complete_session_execution(parent_state.as_ref(), Phase::Idle);
+        harness
+            .complete_turn_state(&parent.session_id, generation, Phase::Idle)
+            .await
+            .expect("completion should succeed");
         let started = harness
             .service
             .try_start_parent_delivery_turn(&parent.session_id, MAX_AUTOMATIC_INPUT_FOLLOW_UPS)
@@ -1006,34 +984,26 @@ mod tests {
             &root.agent_id,
             ChildSessionNotificationKind::Delivered,
         );
-        let parent_state = harness
-            .session_runtime
-            .get_session_state(&SessionId::from(parent.session_id.clone()))
-            .await
-            .expect("parent state should load");
-
         harness
             .service
             .append_parent_delivery_input_queue(&parent.session_id, "turn-parent", &notification)
             .await
             .expect("durable input queue should append");
-        let mut translator = astrcode_core::EventTranslator::new(
-            parent_state.current_phase().expect("phase should load"),
-        );
-        append_and_broadcast(
-            parent_state.as_ref(),
-            &StorageEvent {
-                turn_id: Some("turn-parent".to_string()),
-                agent: AgentEventContext::default(),
-                payload: StorageEventPayload::ChildSessionNotification {
-                    notification: notification.clone(),
-                    timestamp: Some(chrono::Utc::now()),
-                },
-            },
-            &mut translator,
-        )
-        .await
-        .expect("child notification should persist");
+        harness
+            .append_events_to_session(
+                &parent.session_id,
+                Phase::Idle,
+                &[StorageEvent {
+                    turn_id: Some("turn-parent".to_string()),
+                    agent: AgentEventContext::default(),
+                    payload: StorageEventPayload::ChildSessionNotification {
+                        notification: notification.clone(),
+                        timestamp: Some(chrono::Utc::now()),
+                    },
+                }],
+            )
+            .await
+            .expect("child notification should persist");
 
         let started = harness
             .service

@@ -88,6 +88,7 @@ pub mod support;
 pub mod test_support;
 mod tool;
 pub mod tool_result_persist;
+mod workflow;
 
 pub use action::{
     AssistantContentParts, LlmMessage, ReasoningContent, ToolCallRequest, ToolDefinition,
@@ -137,8 +138,9 @@ pub use config::{
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
     AgentEvent, CompactAppliedMeta, CompactMode, CompactTrigger, EventTranslator, Phase,
-    PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent, generate_session_id,
-    generate_turn_id, normalize_recovered_phase, phase_of_storage_event, replay_records,
+    PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent, TurnTerminalKind,
+    generate_session_id, generate_turn_id, normalize_recovered_phase, phase_of_storage_event,
+    replay_records,
 };
 pub use execution_control::ExecutionControl;
 pub use execution_result::{ExecutionContinuation, ExecutionResultCommon};
@@ -172,13 +174,13 @@ pub use policy::{
 };
 pub use ports::{
     EventStore, LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, McpSettingsStore, ModelLimits, PromptAgentProfileSummary, PromptBuildCacheMetrics,
-    PromptBuildOutput, PromptBuildRequest, PromptCacheHints, PromptDeclaration,
-    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource,
-    PromptEntrySummary, PromptFacts, PromptFactsProvider, PromptFactsRequest,
-    PromptGovernanceContext, PromptLayerFingerprints, PromptProvider, PromptSkillSummary,
-    RecoveredSessionState, ResourceProvider, ResourceReadResult, ResourceRequestContext,
-    SessionRecoveryCheckpoint, SkillCatalog,
+    LlmUsage, McpSettingsStore, ModelLimits, ProjectionRegistrySnapshot, PromptAgentProfileSummary,
+    PromptBuildCacheMetrics, PromptBuildOutput, PromptBuildRequest, PromptCacheHints,
+    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    PromptDeclarationSource, PromptEntrySummary, PromptFacts, PromptFactsProvider,
+    PromptFactsRequest, PromptGovernanceContext, PromptLayerFingerprints, PromptProvider,
+    PromptSkillSummary, RecoveredSessionState, ResourceProvider, ResourceReadResult,
+    ResourceRequestContext, SessionRecoveryCheckpoint, SkillCatalog, TurnProjectionSnapshot,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
@@ -209,4 +211,8 @@ pub use tool_result_persist::{
     DEFAULT_TOOL_RESULT_INLINE_LIMIT, PersistedToolOutput, PersistedToolResult,
     TOOL_RESULT_PREVIEW_LIMIT, TOOL_RESULTS_DIR, is_persisted_output, maybe_persist_tool_result,
     persist_tool_result, persisted_output_absolute_path,
+};
+pub use workflow::{
+    WorkflowBridgeState, WorkflowDef, WorkflowPhaseDef, WorkflowSignal, WorkflowTransitionDef,
+    WorkflowTransitionTrigger,
 };

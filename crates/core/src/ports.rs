@@ -19,7 +19,7 @@ use crate::{
     DeleteProjectResult, InputQueueProjection, LlmMessage, McpApprovalData, Phase,
     ReasoningContent, Result, SessionId, SessionMeta, SessionTurnAcquireResult, SkillSpec,
     StorageEvent, StoredEvent, SystemPromptBlock, SystemPromptLayer, TaskSnapshot, ToolCallRequest,
-    ToolDefinition, TurnId,
+    ToolDefinition, TurnId, TurnTerminalKind,
 };
 
 /// MCP 配置文件作用域。
@@ -65,11 +65,18 @@ pub trait EventStore: Send + Sync {
 }
 
 /// durable 恢复基线。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionRecoveryCheckpoint {
-    pub agent_state: AgentState,
-    pub phase: Phase,
+pub struct TurnProjectionSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_kind: Option<TurnTerminalKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectionRegistrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_mode_changed_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -78,7 +85,87 @@ pub struct SessionRecoveryCheckpoint {
     pub active_tasks: HashMap<String, TaskSnapshot>,
     #[serde(default)]
     pub input_queue_projection_index: HashMap<String, InputQueueProjection>,
+    #[serde(default)]
+    pub turn_projections: HashMap<String, TurnProjectionSnapshot>,
+}
+
+impl ProjectionRegistrySnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.last_mode_changed_at.is_none()
+            && self.child_nodes.is_empty()
+            && self.active_tasks.is_empty()
+            && self.input_queue_projection_index.is_empty()
+            && self.turn_projections.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LegacySessionRecoveryProjection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phase: Option<Phase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_mode_changed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    child_nodes: HashMap<String, ChildSessionNode>,
+    #[serde(default)]
+    active_tasks: HashMap<String, TaskSnapshot>,
+    #[serde(default)]
+    input_queue_projection_index: HashMap<String, InputQueueProjection>,
+}
+
+impl LegacySessionRecoveryProjection {
+    fn is_empty(&self) -> bool {
+        self.phase.is_none()
+            && self.last_mode_changed_at.is_none()
+            && self.child_nodes.is_empty()
+            && self.active_tasks.is_empty()
+            && self.input_queue_projection_index.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRecoveryCheckpoint {
+    pub agent_state: AgentState,
+    #[serde(default, skip_serializing_if = "ProjectionRegistrySnapshot::is_empty")]
+    pub projection_registry: ProjectionRegistrySnapshot,
     pub checkpoint_storage_seq: u64,
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "LegacySessionRecoveryProjection::is_empty"
+    )]
+    legacy: LegacySessionRecoveryProjection,
+}
+
+impl SessionRecoveryCheckpoint {
+    pub fn new(
+        agent_state: AgentState,
+        projection_registry: ProjectionRegistrySnapshot,
+        checkpoint_storage_seq: u64,
+    ) -> Self {
+        Self {
+            agent_state,
+            projection_registry,
+            checkpoint_storage_seq,
+            legacy: LegacySessionRecoveryProjection::default(),
+        }
+    }
+
+    pub fn projection_registry_snapshot(&self) -> ProjectionRegistrySnapshot {
+        if !self.projection_registry.is_empty() {
+            return self.projection_registry.clone();
+        }
+
+        ProjectionRegistrySnapshot {
+            last_mode_changed_at: self.legacy.last_mode_changed_at,
+            child_nodes: self.legacy.child_nodes.clone(),
+            active_tasks: self.legacy.active_tasks.clone(),
+            input_queue_projection_index: self.legacy.input_queue_projection_index.clone(),
+            turn_projections: HashMap::new(),
+        }
+    }
 }
 
 /// 会话恢复结果：最近 checkpoint + checkpoint 之后的 tail events。

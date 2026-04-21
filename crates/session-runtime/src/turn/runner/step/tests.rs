@@ -331,9 +331,9 @@ async fn run_single_step_returns_completed_when_llm_has_no_tool_calls() {
         outcome,
         StepOutcome::Completed(TurnStopCause::Completed)
     ));
-    assert_eq!(execution.step_index, 0);
-    assert_eq!(execution.total_cache_read_tokens, 2);
-    assert_eq!(execution.total_cache_creation_tokens, 3);
+    assert_eq!(execution.lifecycle.step_index, 0);
+    assert_eq!(execution.budget.total_cache_read_tokens, 2);
+    assert_eq!(execution.budget.total_cache_creation_tokens, 3);
     assert_eq!(driver.counts.assemble.load(Ordering::SeqCst), 1);
     assert_eq!(driver.counts.llm.load(Ordering::SeqCst), 1);
     assert_eq!(driver.counts.tool_cycle.load(Ordering::SeqCst), 0);
@@ -341,7 +341,8 @@ async fn run_single_step_returns_completed_when_llm_has_no_tool_calls() {
         execution.messages.last(),
         Some(LlmMessage::Assistant { content, .. }) if content == "assistant reply"
     ));
-    assert_has_turn_done(&execution.events);
+    let events = execution.journal.snapshot();
+    assert_has_turn_done(&events);
 }
 
 #[tokio::test]
@@ -393,11 +394,11 @@ async fn run_single_step_returns_cancelled_when_tool_cycle_interrupts() {
         outcome,
         StepOutcome::Cancelled(TurnStopCause::Cancelled)
     ));
-    assert_eq!(execution.step_index, 0);
+    assert_eq!(execution.lifecycle.step_index, 0);
     assert_eq!(driver.counts.tool_cycle.load(Ordering::SeqCst), 1);
     assert!(
         execution
-            .events
+            .journal
             .iter()
             .all(|event| !matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
         "tool-only interrupted step should not persist an empty assistant final"
@@ -506,12 +507,12 @@ async fn run_single_step_reuses_streamed_safe_tool_execution_when_final_call_mat
         outcome,
         StepOutcome::Continue(TurnLoopTransition::ToolCycleCompleted)
     ));
-    assert_eq!(execution.step_index, 1);
+    assert_eq!(execution.lifecycle.step_index, 1);
     assert_eq!(driver.tool_cycle_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(execution.streaming_tool_launch_count, 1);
-    assert_eq!(execution.streaming_tool_match_count, 1);
-    assert_eq!(execution.streaming_tool_fallback_count, 0);
-    assert_eq!(execution.streaming_tool_discard_count, 0);
+    assert_eq!(execution.streaming_tools.launch_count, 1);
+    assert_eq!(execution.streaming_tools.match_count, 1);
+    assert_eq!(execution.streaming_tools.fallback_count, 0);
+    assert_eq!(execution.streaming_tools.discard_count, 0);
     assert!(
         execution.messages.iter().any(|message| matches!(
             message,
@@ -580,14 +581,14 @@ async fn run_single_step_returns_continue_after_reactive_compact_recovery() {
         outcome,
         StepOutcome::Continue(TurnLoopTransition::ReactiveCompactRecovered)
     ));
-    assert_eq!(execution.step_index, 0);
-    assert_eq!(execution.reactive_compact_attempts, 1);
+    assert_eq!(execution.lifecycle.step_index, 0);
+    assert_eq!(execution.lifecycle.reactive_compact_attempts, 1);
     assert_eq!(driver.counts.llm.load(Ordering::SeqCst), 1);
     assert_eq!(driver.counts.reactive_compact.load(Ordering::SeqCst), 1);
     assert_eq!(driver.counts.tool_cycle.load(Ordering::SeqCst), 0);
     assert_eq!(execution.messages, recovered_messages);
     let stored_like = execution
-        .events
+        .journal
         .iter()
         .cloned()
         .enumerate()
@@ -599,7 +600,7 @@ async fn run_single_step_returns_continue_after_reactive_compact_recovery() {
     assert_contains_compact_summary(&stored_like, "compacted");
     assert!(
         execution
-            .events
+            .journal
             .iter()
             .all(|event| !matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
         "recovery path should continue without persisting a failed assistant reply"
@@ -627,7 +628,7 @@ async fn run_single_step_injects_auto_continue_nudge_after_prior_loop_activity()
     );
     let mut execution =
         TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
-    execution.step_index = 1;
+    execution.lifecycle.step_index = 1;
     let driver = ScriptedStepDriver {
         counts: DriverCallCounts::default(),
         assemble_result: Mutex::new(Some(Ok(assembled_prompt(vec![user_message("hello")])))),
@@ -663,7 +664,7 @@ async fn run_single_step_injects_auto_continue_nudge_after_prior_loop_activity()
         }) if content == AUTO_CONTINUE_NUDGE
     ));
     assert!(
-        execution.events.iter().any(|event| matches!(
+        execution.journal.iter().any(|event| matches!(
             &event.payload,
             StorageEventPayload::UserMessage { origin, content, .. }
                 if *origin == UserMessageOrigin::AutoContinueNudge && content == AUTO_CONTINUE_NUDGE
@@ -720,7 +721,7 @@ async fn run_single_step_continues_after_max_tokens_without_tool_calls() {
         outcome,
         StepOutcome::Continue(TurnLoopTransition::OutputContinuationRequested)
     ));
-    assert_eq!(execution.max_output_continuation_count, 1);
+    assert_eq!(execution.lifecycle.max_output_continuation_count, 1);
     assert!(matches!(
         execution.messages.last(),
         Some(LlmMessage::User {
@@ -751,7 +752,7 @@ async fn run_single_step_stops_when_max_tokens_continuation_limit_is_reached() {
     );
     let mut execution =
         TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
-    execution.max_output_continuation_count = 1;
+    execution.lifecycle.max_output_continuation_count = 1;
     let driver = ScriptedStepDriver {
         counts: DriverCallCounts::default(),
         assemble_result: Mutex::new(Some(Ok(assembled_prompt(vec![user_message("hello")])))),
@@ -780,7 +781,7 @@ async fn run_single_step_stops_when_max_tokens_continuation_limit_is_reached() {
         StepOutcome::Completed(TurnStopCause::MaxOutputContinuationLimitReached)
     ));
     assert!(
-        execution.events.iter().any(|event| matches!(
+        execution.journal.iter().any(|event| matches!(
             &event.payload,
             StorageEventPayload::TurnDone { reason, .. }
                 if reason.as_deref() == Some("token_exceeded")
@@ -894,7 +895,7 @@ async fn run_single_step_does_not_launch_non_concurrency_safe_streaming_tool() {
         outcome,
         StepOutcome::Continue(TurnLoopTransition::ToolCycleCompleted)
     ));
-    assert_eq!(execution.streaming_tool_launch_count, 0);
+    assert_eq!(execution.streaming_tools.launch_count, 0);
     assert_eq!(driver.tool_cycle_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         driver
@@ -1019,7 +1020,7 @@ async fn run_single_step_discards_provisional_tool_when_final_plan_changes() {
         outcome,
         StepOutcome::Continue(TurnLoopTransition::ToolCycleCompleted)
     ));
-    assert_eq!(execution.streaming_tool_launch_count, 1);
+    assert_eq!(execution.streaming_tools.launch_count, 1);
     assert_eq!(driver.tool_cycle_calls.load(Ordering::SeqCst), 1);
     let captured_calls = driver
         .captured_calls
@@ -1028,8 +1029,8 @@ async fn run_single_step_discards_provisional_tool_when_final_plan_changes() {
     assert_eq!(captured_calls.len(), 1);
     assert_eq!(captured_calls[0].len(), 1);
     assert_eq!(captured_calls[0][0].args, json!({"path": "src/main.rs"}));
-    assert_eq!(execution.streaming_tool_discard_count, 1);
-    assert_eq!(execution.streaming_tool_fallback_count, 1);
+    assert_eq!(execution.streaming_tools.discard_count, 1);
+    assert_eq!(execution.streaming_tools.fallback_count, 1);
     assert!(
         execution.messages.iter().any(|message| matches!(
             message,
@@ -1175,7 +1176,7 @@ async fn run_single_step_merges_buffered_events_and_results_in_final_tool_order(
     );
 
     let tool_event_ids = execution
-        .events
+        .journal
         .iter()
         .filter_map(|event| match &event.payload {
             StorageEventPayload::ToolCall { tool_call_id, .. }

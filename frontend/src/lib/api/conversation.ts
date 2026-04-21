@@ -418,7 +418,9 @@ function projectConversationMessages(
 
       case 'assistant': {
         const queuedThinking =
-          turnId !== null && turnId !== undefined ? queuedThinkingByTurn.get(turnId)?.shift() : undefined;
+          turnId !== null && turnId !== undefined
+            ? queuedThinkingByTurn.get(turnId)?.shift()
+            : undefined;
         if (
           turnId !== null &&
           turnId !== undefined &&

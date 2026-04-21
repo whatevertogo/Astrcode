@@ -203,10 +203,9 @@ impl SessionActor {
             .unwrap_or(0);
         let active_turn = self
             .state
-            .active_turn_id
-            .lock()
+            .active_turn_id_snapshot()
             .ok()
-            .and_then(|guard| guard.clone())
+            .flatten()
             .map(TurnId::from);
         SessionSnapshot {
             session_id: self.session_id.clone(),
@@ -235,7 +234,7 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::append_and_broadcast;
+    use crate::state::append_and_broadcast;
 
     #[derive(Debug, Default)]
     struct StubEventStore;
@@ -363,6 +362,7 @@ mod tests {
                 },
                 payload: StorageEventPayload::TurnDone {
                     timestamp: chrono::Utc::now(),
+                    terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
                     reason: Some("completed".to_string()),
                 },
             },

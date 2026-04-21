@@ -3,11 +3,13 @@
 //! 提供 `StubSessionPort`，实现 `AppSessionPort` + `AgentSessionPort` 两个 trait，
 //! 用于 `application` 内部单元测试，避免依赖真实 `SessionRuntime`。
 
+use std::sync::{Arc, Mutex};
+
 use astrcode_core::{
-    AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, DeleteProjectResult,
-    ExecutionAccepted, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,
-    InputQueuedPayload, ModeId, ResolvedRuntimeConfig, SessionId, SessionMeta, StoredEvent,
-    TaskSnapshot, TurnId,
+    AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, AstrError,
+    DeleteProjectResult, ExecutionAccepted, InputBatchAckedPayload, InputBatchStartedPayload,
+    InputDiscardedPayload, InputQueuedPayload, ModeId, PromptDeclaration, ResolvedRuntimeConfig,
+    SessionId, SessionMeta, StorageEvent, StorageEventPayload, StoredEvent, TaskSnapshot, TurnId,
 };
 use astrcode_kernel::PendingParentDelivery;
 use astrcode_session_runtime::{
@@ -16,6 +18,7 @@ use astrcode_session_runtime::{
     SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot, TurnTerminalSnapshot,
 };
 use async_trait::async_trait;
+use chrono::Utc;
 use tokio::sync::broadcast;
 
 use crate::{AgentSessionPort, AppAgentPromptSubmission, AppSessionPort};
@@ -24,12 +27,45 @@ fn unimplemented_for_test(area: &str) -> ! {
     panic!("not used in {area}")
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedPromptSubmission {
+    pub(crate) session_id: String,
+    pub(crate) text: String,
+    pub(crate) prompt_declarations: Vec<PromptDeclaration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedModeSwitch {
+    pub(crate) session_id: String,
+    pub(crate) from: ModeId,
+    pub(crate) to: ModeId,
+}
+
+#[derive(Debug)]
 pub(crate) struct StubSessionPort {
     pub(crate) stored_events: Vec<StoredEvent>,
     pub(crate) working_dir: Option<String>,
     pub(crate) control_state: Option<SessionControlStateSnapshot>,
-    pub(crate) active_task_snapshot: Option<TaskSnapshot>,
+    pub(crate) active_task_snapshot: Arc<Mutex<Option<TaskSnapshot>>>,
+    pub(crate) mode_state: Arc<Mutex<Option<SessionModeSnapshot>>>,
+    pub(crate) switch_mode_error: Arc<Mutex<Option<String>>>,
+    pub(crate) recorded_submissions: Arc<Mutex<Vec<RecordedPromptSubmission>>>,
+    pub(crate) recorded_mode_switches: Arc<Mutex<Vec<RecordedModeSwitch>>>,
+}
+
+impl Default for StubSessionPort {
+    fn default() -> Self {
+        Self {
+            stored_events: Vec::new(),
+            working_dir: None,
+            control_state: None,
+            active_task_snapshot: Arc::new(Mutex::new(None)),
+            mode_state: Arc::new(Mutex::new(None)),
+            switch_mode_error: Arc::new(Mutex::new(None)),
+            recorded_submissions: Arc::new(Mutex::new(Vec::new())),
+            recorded_mode_switches: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
 }
 
 #[async_trait]
@@ -72,12 +108,25 @@ impl AppSessionPort for StubSessionPort {
 
     async fn submit_prompt_for_agent(
         &self,
-        _session_id: &str,
-        _text: String,
+        session_id: &str,
+        text: String,
         _runtime: ResolvedRuntimeConfig,
-        _submission: AppAgentPromptSubmission,
+        submission: AppAgentPromptSubmission,
     ) -> astrcode_core::Result<ExecutionAccepted> {
-        unimplemented_for_test("application test stub")
+        self.recorded_submissions
+            .lock()
+            .expect("submission record lock should work")
+            .push(RecordedPromptSubmission {
+                session_id: session_id.to_string(),
+                text,
+                prompt_declarations: submission.prompt_declarations,
+            });
+        Ok(ExecutionAccepted {
+            session_id: SessionId::from(session_id.to_string()),
+            turn_id: TurnId::from("turn-stub".to_string()),
+            agent_id: None,
+            branched_from_session_id: None,
+        })
     }
 
     async fn interrupt_session(&self, _session_id: &str) -> astrcode_core::Result<()> {
@@ -130,26 +179,66 @@ impl AppSessionPort for StubSessionPort {
         _session_id: &str,
         _owner: &str,
     ) -> astrcode_core::Result<Option<TaskSnapshot>> {
-        Ok(self.active_task_snapshot.clone())
+        Ok(self
+            .active_task_snapshot
+            .lock()
+            .expect("active task snapshot lock should work")
+            .clone())
     }
 
     async fn session_mode_state(
         &self,
         _session_id: &str,
     ) -> astrcode_core::Result<SessionModeSnapshot> {
-        Ok(SessionModeSnapshot {
-            current_mode_id: ModeId::code(),
-            last_mode_changed_at: None,
-        })
+        Ok(self
+            .mode_state
+            .lock()
+            .expect("mode state lock should work")
+            .clone()
+            .unwrap_or(SessionModeSnapshot {
+                current_mode_id: ModeId::code(),
+                last_mode_changed_at: None,
+            }))
     }
 
     async fn switch_mode(
         &self,
-        _session_id: &str,
-        _from: ModeId,
-        _to: ModeId,
+        session_id: &str,
+        from: ModeId,
+        to: ModeId,
     ) -> astrcode_core::Result<StoredEvent> {
-        unimplemented_for_test("application test stub")
+        if let Some(message) = self
+            .switch_mode_error
+            .lock()
+            .expect("mode switch error lock should work")
+            .clone()
+        {
+            return Err(AstrError::Internal(message));
+        }
+        self.recorded_mode_switches
+            .lock()
+            .expect("mode switch record lock should work")
+            .push(RecordedModeSwitch {
+                session_id: session_id.to_string(),
+                from: from.clone(),
+                to: to.clone(),
+            });
+        *self.mode_state.lock().expect("mode state lock should work") = Some(SessionModeSnapshot {
+            current_mode_id: to.clone(),
+            last_mode_changed_at: None,
+        });
+        Ok(StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent {
+                turn_id: None,
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::ModeChanged {
+                    from,
+                    to,
+                    timestamp: Utc::now(),
+                },
+            },
+        })
     }
 
     async fn session_child_nodes(

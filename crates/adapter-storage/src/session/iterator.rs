@@ -193,6 +193,7 @@ mod tests {
                 },
                 payload: StorageEventPayload::TurnDone {
                     timestamp: chrono::Utc::now(),
+                    terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
                     reason: Some("completed".to_string()),
                 },
             },

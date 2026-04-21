@@ -13,7 +13,10 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::builtin_tools::mode_transition::emit_mode_changed;
+use crate::builtin_tools::{
+    mode_transition::emit_mode_changed,
+    session_plan::{load_session_plan_state, persist_planning_workflow_state, session_plan_paths},
+};
 
 #[derive(Default)]
 pub struct EnterPlanModeTool;
@@ -97,6 +100,8 @@ impl Tool for EnterPlanModeTool {
             });
         }
 
+        let plan_state = load_session_plan_state(&session_plan_paths(ctx)?.state_path)?;
+        persist_planning_workflow_state(ctx, plan_state.as_ref())?;
         emit_mode_changed(
             ctx,
             "enterPlanMode",
@@ -149,7 +154,10 @@ mod tests {
     use astrcode_core::{StorageEvent, StorageEventPayload};
 
     use super::*;
-    use crate::test_support::test_tool_context_for;
+    use crate::{
+        builtin_tools::session_plan::{load_workflow_state, workflow_state_path},
+        test_support::test_tool_context_for,
+    };
 
     struct RecordingSink {
         events: Arc<Mutex<Vec<StorageEvent>>>,
@@ -194,5 +202,11 @@ mod tests {
                 ..
             }] if *from == ModeId::code() && *to == ModeId::plan()
         ));
+        let workflow =
+            load_workflow_state(&workflow_state_path(&ctx).expect("workflow path should resolve"))
+                .expect("workflow state should load")
+                .expect("workflow state should exist");
+        assert_eq!(workflow.current_phase_id, "planning");
+        assert_eq!(workflow.workflow_id, "plan_execute");
     }
 }

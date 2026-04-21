@@ -44,25 +44,10 @@ pub(crate) fn input_queue_projection_target_agent_id(
 impl SessionState {
     /// 读取指定 agent 的 input queue durable 投影。
     pub fn input_queue_projection_for_agent(&self, agent_id: &str) -> Result<InputQueueProjection> {
-        Ok(support::lock_anyhow(
-            &self.input_queue_projection_index,
-            "input queue projection index",
-        )?
-        .get(agent_id)
-        .cloned()
-        .unwrap_or_default())
-    }
-
-    /// 增量应用一条 input queue durable 事件到投影索引。
-    pub(crate) fn apply_input_queue_event(&self, stored: &StoredEvent) {
-        let mut index = match support::lock_anyhow(
-            &self.input_queue_projection_index,
-            "input queue projection index",
-        ) {
-            Ok(index) => index,
-            Err(_) => return,
-        };
-        apply_input_queue_event_to_index(&mut index, stored);
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .input_queue_projection_for_agent(agent_id),
+        )
     }
 }
 

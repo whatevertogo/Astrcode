@@ -12,13 +12,15 @@ use astrcode_kernel::CapabilityRouter;
 use chrono::Utc;
 
 use crate::{
-    SessionRuntime, TurnOutcome,
+    SessionRuntime,
     actor::SessionActor,
-    prepare_session_execution,
     query::current_turn_messages,
     run_turn,
-    state::{append_and_broadcast, checkpoint_if_compacted, complete_session_execution},
-    turn::events::{error_event, user_message_event},
+    state::{append_and_broadcast, checkpoint_if_compacted},
+    turn::{
+        branch::SubmitTarget,
+        events::{error_event, user_message_event},
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +43,19 @@ struct TurnExecutionTask {
     kernel: Arc<astrcode_kernel::Kernel>,
     request: crate::turn::RunnerRequest,
     finalize: TurnFinalizeContext,
+}
+
+struct TurnCoordinator {
+    kernel: Arc<astrcode_kernel::Kernel>,
+    prompt_facts_provider: Arc<dyn astrcode_core::PromptFactsProvider>,
+    event_store: Arc<dyn EventStore>,
+    metrics: Arc<dyn RuntimeMetricsRecorder>,
+    submit_target: SubmitTarget,
+    turn_id: TurnId,
+    runtime: ResolvedRuntimeConfig,
+    live_user_input: Option<String>,
+    queued_inputs: Vec<String>,
+    submission: AgentPromptSubmission,
 }
 
 #[derive(Clone, Default)]
@@ -73,6 +88,105 @@ struct TurnFinalizeContext {
     actor: Arc<SessionActor>,
     session_id: String,
     turn_started_at: Instant,
+    generation: u64,
+    persisted: PersistedTurnContext,
+}
+
+impl TurnCoordinator {
+    async fn start(self) -> Result<ExecutionAccepted> {
+        let accepted = self.accepted();
+        let task = self.prepare().await?;
+        tokio::spawn(execute_turn_and_finalize(task));
+        Ok(accepted)
+    }
+
+    fn accepted(&self) -> ExecutionAccepted {
+        ExecutionAccepted {
+            session_id: self.submit_target.session_id.clone(),
+            turn_id: self.turn_id.clone(),
+            agent_id: None,
+            branched_from_session_id: self.submit_target.branched_from_session_id.clone(),
+        }
+    }
+
+    async fn prepare(self) -> Result<TurnExecutionTask> {
+        let Self {
+            kernel,
+            prompt_facts_provider,
+            event_store,
+            metrics,
+            submit_target,
+            turn_id,
+            runtime,
+            live_user_input,
+            queued_inputs,
+            submission,
+        } = self;
+        let cancel = CancelToken::new();
+        let generation = submit_target.actor.state().prepare_execution(
+            submit_target.session_id.as_str(),
+            turn_id.as_str(),
+            cancel.clone(),
+            submit_target.turn_lease,
+        )?;
+
+        let prepared = prepare_turn_submission(
+            submit_target.actor.state(),
+            turn_id.as_str(),
+            live_user_input,
+            queued_inputs,
+            submission,
+        )
+        .await;
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = submit_target.actor.state().force_complete_execution_state();
+                return Err(error);
+            },
+        };
+
+        Ok(TurnExecutionTask {
+            kernel: Arc::clone(&kernel),
+            request: crate::turn::RunnerRequest {
+                session_id: submit_target.session_id.to_string(),
+                working_dir: submit_target.actor.working_dir().to_string(),
+                turn_id: turn_id.to_string(),
+                messages: prepared.messages,
+                last_assistant_at: submit_target
+                    .actor
+                    .state()
+                    .snapshot_projected_state()?
+                    .last_assistant_at,
+                session_state: Arc::clone(submit_target.actor.state()),
+                runtime,
+                cancel,
+                agent: prepared.persisted.agent.clone(),
+                prompt_facts_provider: Arc::clone(&prompt_facts_provider),
+                capability_router: prepared.capability_router,
+                prompt_declarations: prepared.prompt_declarations,
+                prompt_governance: prepared.prompt_governance,
+            },
+            finalize: TurnFinalizeContext {
+                kernel,
+                prompt_facts_provider,
+                event_store,
+                metrics,
+                actor: Arc::clone(&submit_target.actor),
+                session_id: submit_target.session_id.to_string(),
+                turn_started_at: Instant::now(),
+                generation,
+                persisted: prepared.persisted,
+            },
+        })
+    }
+}
+
+struct PreparedTurnSubmission {
+    capability_router: Option<CapabilityRouter>,
+    prompt_declarations: Vec<PromptDeclaration>,
+    prompt_governance: Option<astrcode_core::PromptGovernanceContext>,
+    messages: Vec<LlmMessage>,
     persisted: PersistedTurnContext,
 }
 
@@ -94,7 +208,6 @@ async fn finalize_turn_execution(
     finalize: TurnFinalizeContext,
     result: Result<crate::TurnRunResult>,
 ) {
-    let terminal_phase = terminal_phase_for_result(&result);
     let mut translator = EventTranslator::new(
         finalize
             .actor
@@ -140,7 +253,21 @@ async fn finalize_turn_execution(
         },
     }
 
-    complete_session_execution(finalize.actor.state(), terminal_phase);
+    let pending_manual_compact = match finalize
+        .actor
+        .state()
+        .complete_execution_state(finalize.generation)
+    {
+        Ok(pending) => pending,
+        Err(error) => {
+            log::warn!(
+                "failed to complete turn runtime state for session '{}': {}",
+                finalize.session_id,
+                error
+            );
+            None
+        },
+    };
     persist_pending_manual_compact_if_any(
         finalize.kernel.gateway(),
         finalize.prompt_facts_provider.as_ref(),
@@ -148,18 +275,89 @@ async fn finalize_turn_execution(
         finalize.actor.working_dir(),
         finalize.actor.state(),
         &finalize.session_id,
+        pending_manual_compact,
     )
     .await;
 }
 
-fn terminal_phase_for_result(result: &Result<crate::TurnRunResult>) -> Phase {
-    match result {
-        Ok(outcome) => match outcome.outcome {
-            TurnOutcome::Completed => Phase::Idle,
-            TurnOutcome::Cancelled | TurnOutcome::Error { .. } => Phase::Interrupted,
-        },
-        Err(_) => Phase::Interrupted,
+async fn prepare_turn_submission(
+    session_state: &Arc<crate::SessionState>,
+    turn_id: &str,
+    live_user_input: Option<String>,
+    queued_inputs: Vec<String>,
+    submission: AgentPromptSubmission,
+) -> Result<PreparedTurnSubmission> {
+    let AgentPromptSubmission {
+        agent,
+        capability_router,
+        prompt_declarations,
+        resolved_limits,
+        resolved_overrides,
+        injected_messages,
+        source_tool_call_id,
+        policy_context: _,
+        governance_revision: _,
+        approval: _,
+        prompt_governance,
+    } = submission;
+
+    let mut translator = EventTranslator::new(session_state.current_phase()?);
+    for content in &queued_inputs {
+        let queued_event = user_message_event(
+            turn_id,
+            &agent,
+            content.clone(),
+            UserMessageOrigin::QueuedInput,
+            Utc::now(),
+        );
+        session_state
+            .append_and_broadcast(&queued_event, &mut translator)
+            .await?;
     }
+    if let Some(text) = &live_user_input {
+        let user_message = user_message_event(
+            turn_id,
+            &agent,
+            text.clone(),
+            UserMessageOrigin::User,
+            Utc::now(),
+        );
+        session_state
+            .append_and_broadcast(&user_message, &mut translator)
+            .await?;
+    }
+    if let Some(event) = subrun_started_event(
+        turn_id,
+        &agent,
+        resolved_limits.clone(),
+        resolved_overrides.clone(),
+        source_tool_call_id.clone(),
+    ) {
+        session_state
+            .append_and_broadcast(&event, &mut translator)
+            .await?;
+    }
+    let mut messages = current_turn_messages(session_state)?;
+    if !injected_messages.is_empty() {
+        let insert_at = if live_user_input.is_some() {
+            messages.len().saturating_sub(1)
+        } else {
+            messages.len()
+        };
+        messages.splice(insert_at..insert_at, injected_messages);
+    }
+
+    Ok(PreparedTurnSubmission {
+        capability_router,
+        prompt_declarations,
+        prompt_governance,
+        messages,
+        persisted: PersistedTurnContext {
+            turn_id: turn_id.to_string(),
+            agent,
+            source_tool_call_id,
+        },
+    })
 }
 
 async fn persist_turn_events(
@@ -293,8 +491,8 @@ pub(crate) async fn persist_pending_manual_compact_if_any(
     working_dir: &str,
     session_state: &Arc<crate::SessionState>,
     session_id: &str,
+    pending_runtime: Option<crate::state::PendingManualCompactRequest>,
 ) {
-    let pending_runtime = session_state.take_pending_manual_compact().ok().flatten();
     if let Some(request) = pending_runtime {
         persist_deferred_manual_compact(
             gateway,
@@ -459,7 +657,6 @@ impl SessionRuntime {
 
         let requested_session_id = SessionId::from(crate::state::normalize_session_id(&session_id));
         let turn_id = turn_id.unwrap_or_else(|| TurnId::from(astrcode_core::generate_turn_id()));
-        let cancel = CancelToken::new();
         let submit_target = match busy_policy {
             SubmitBusyPolicy::BranchOnBusy => Some(
                 self.resolve_submit_target(
@@ -481,120 +678,22 @@ impl SessionRuntime {
             return Ok(None);
         };
 
-        let AgentPromptSubmission {
-            agent,
-            capability_router,
-            prompt_declarations,
-            resolved_limits,
-            resolved_overrides,
-            injected_messages,
-            source_tool_call_id,
-            policy_context: _,
-            governance_revision: _,
-            approval: _,
-            prompt_governance,
-        } = submission;
-
-        prepare_session_execution(
-            submit_target.actor.state(),
-            submit_target.session_id.as_str(),
-            turn_id.as_str(),
-            cancel.clone(),
-            submit_target.turn_lease,
-        )?;
-        *submit_target
-            .actor
-            .state()
-            .phase
-            .lock()
-            .map_err(|_| astrcode_core::AstrError::LockPoisoned("session phase".to_string()))? =
-            Phase::Thinking;
-
-        let mut translator = EventTranslator::new(submit_target.actor.state().current_phase()?);
-        for content in &queued_inputs {
-            let queued_event = user_message_event(
-                turn_id.as_str(),
-                &agent,
-                content.clone(),
-                UserMessageOrigin::QueuedInput,
-                Utc::now(),
-            );
-            append_and_broadcast(submit_target.actor.state(), &queued_event, &mut translator)
-                .await?;
-        }
-        if let Some(text) = &live_user_input {
-            let user_message = user_message_event(
-                turn_id.as_str(),
-                &agent,
-                text.clone(),
-                UserMessageOrigin::User,
-                Utc::now(),
-            );
-            append_and_broadcast(submit_target.actor.state(), &user_message, &mut translator)
-                .await?;
-        }
-        if let Some(event) = subrun_started_event(
-            turn_id.as_str(),
-            &agent,
-            resolved_limits.clone(),
-            resolved_overrides.clone(),
-            source_tool_call_id.clone(),
-        ) {
-            append_and_broadcast(submit_target.actor.state(), &event, &mut translator).await?;
-        }
-        let mut messages = current_turn_messages(submit_target.actor.state())?;
-        if !injected_messages.is_empty() {
-            let insert_at = if live_user_input.is_some() {
-                messages.len().saturating_sub(1)
-            } else {
-                messages.len()
-            };
-            messages.splice(insert_at..insert_at, injected_messages);
-        }
-
-        tokio::spawn(execute_turn_and_finalize(TurnExecutionTask {
-            kernel: Arc::clone(&self.kernel),
-            request: crate::turn::RunnerRequest {
-                session_id: submit_target.session_id.to_string(),
-                working_dir: submit_target.actor.working_dir().to_string(),
-                turn_id: turn_id.to_string(),
-                messages,
-                last_assistant_at: submit_target
-                    .actor
-                    .state()
-                    .snapshot_projected_state()?
-                    .last_assistant_at,
-                session_state: Arc::clone(submit_target.actor.state()),
-                runtime,
-                cancel: cancel.clone(),
-                agent: agent.clone(),
-                prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
-                capability_router,
-                prompt_declarations,
-                prompt_governance,
-            },
-            finalize: TurnFinalizeContext {
+        Ok(Some(
+            TurnCoordinator {
                 kernel: Arc::clone(&self.kernel),
                 prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
                 event_store: Arc::clone(&self.event_store),
                 metrics: Arc::clone(&self.metrics),
-                actor: Arc::clone(&submit_target.actor),
-                session_id: submit_target.session_id.to_string(),
-                turn_started_at: Instant::now(),
-                persisted: PersistedTurnContext {
-                    turn_id: turn_id.to_string(),
-                    agent: agent.clone(),
-                    source_tool_call_id,
-                },
-            },
-        }));
-
-        Ok(Some(ExecutionAccepted {
-            session_id: submit_target.session_id,
-            turn_id,
-            agent_id: None,
-            branched_from_session_id: submit_target.branched_from_session_id,
-        }))
+                submit_target,
+                turn_id,
+                runtime,
+                live_user_input,
+                queued_inputs,
+                submission,
+            }
+            .start()
+            .await?,
+        ))
     }
 }
 
@@ -711,18 +810,20 @@ mod tests {
     };
 
     use astrcode_core::{
-        LlmFinishReason, LlmMessage, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
+        CancelToken, LlmFinishReason, LlmMessage, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
         PromptBuildOutput, PromptBuildRequest, PromptProvider, ResourceProvider,
-        ResourceReadResult, ResourceRequestContext, StorageEventPayload, UserMessageOrigin,
+        ResourceReadResult, ResourceRequestContext, SessionTurnLease, StorageEventPayload,
+        UserMessageOrigin,
     };
     use astrcode_kernel::Kernel;
     use async_trait::async_trait;
 
     use super::*;
     use crate::{
-        TurnCollaborationSummary, TurnFinishReason, TurnRunResult, TurnSummary,
+        TurnCollaborationSummary, TurnFinishReason, TurnOutcome, TurnRunResult, TurnSummary,
         turn::{
             TurnLoopTransition, TurnStopCause,
+            events::turn_done_event,
             test_support::{
                 BranchingTestEventStore, NoopMetrics, append_root_turn_event_to_actor,
                 assert_contains_compact_summary, assert_contains_error_message, test_actor,
@@ -733,6 +834,10 @@ mod tests {
 
     #[derive(Debug)]
     struct SummaryLlmProvider;
+
+    struct StubTurnLease;
+
+    impl SessionTurnLease for StubTurnLease {}
 
     #[async_trait]
     impl LlmProvider for SummaryLlmProvider {
@@ -806,6 +911,15 @@ mod tests {
     }
 
     fn finalize_context(actor: Arc<SessionActor>) -> TurnFinalizeContext {
+        let generation = actor
+            .state()
+            .prepare_execution(
+                "session-1",
+                "turn-1",
+                CancelToken::new(),
+                Box::new(StubTurnLease),
+            )
+            .expect("turn runtime should prepare for finalize");
         TurnFinalizeContext {
             kernel: summary_kernel(),
             prompt_facts_provider: Arc::new(crate::turn::test_support::NoopPromptFactsProvider),
@@ -814,6 +928,7 @@ mod tests {
             actor,
             session_id: "session-1".to_string(),
             turn_started_at: Instant::now(),
+            generation,
             persisted: PersistedTurnContext {
                 turn_id: "turn-1".to_string(),
                 agent: AgentEventContext::default(),
@@ -859,7 +974,12 @@ mod tests {
         TurnRunResult {
             outcome: TurnOutcome::Completed,
             messages: Vec::new(),
-            events: Vec::new(),
+            events: vec![turn_done_event(
+                "turn-1",
+                &AgentEventContext::default(),
+                Some("completed".to_string()),
+                chrono::Utc::now(),
+            )],
             summary: TurnSummary {
                 finish_reason: TurnFinishReason::NaturalEnd,
                 stop_cause: TurnStopCause::Completed,
@@ -902,7 +1022,7 @@ mod tests {
                 .state()
                 .current_phase()
                 .expect("phase should be readable"),
-            Phase::Interrupted
+            Phase::Idle
         );
         let stored = actor
             .state()
@@ -984,7 +1104,7 @@ mod tests {
                 .state()
                 .current_phase()
                 .expect("phase should be readable"),
-            Phase::Interrupted
+            Phase::Idle
         );
         let stored = actor
             .state()

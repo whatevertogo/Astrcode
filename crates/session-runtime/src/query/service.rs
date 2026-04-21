@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentEvent, AgentLifecycleStatus, ChildSessionNode, Phase, Result, SessionEventRecord,
-    SessionId, StorageEventPayload, StoredEvent, TaskSnapshot,
+    SessionId, StorageEventPayload, StoredEvent, TaskSnapshot, TurnProjectionSnapshot,
 };
 use tokio::sync::broadcast::error::RecvError;
 
@@ -14,7 +14,7 @@ use crate::{
         agent::build_agent_observe_snapshot,
         conversation::{build_conversation_replay_frames, project_conversation_snapshot},
         input_queue::recoverable_parent_deliveries,
-        turn::{has_terminal_turn_signal, project_turn_outcome},
+        turn::{is_terminal_projection, project_turn_outcome, replay_turn_projection},
     },
 };
 
@@ -123,9 +123,7 @@ impl<'a> SessionQueries<'a> {
         loop {
             match receiver.recv().await {
                 Ok(record) => {
-                    if !record_targets_turn(&record, turn_id)
-                        && !matches!(state.current_phase()?, Phase::Interrupted)
-                    {
+                    if !record_targets_turn(&record, turn_id) {
                         continue;
                     }
                     if let Some(snapshot) =
@@ -239,7 +237,11 @@ impl<'a> SessionQueries<'a> {
         let terminal = self
             .wait_for_turn_terminal_snapshot(session_id, turn_id)
             .await?;
-        Ok(project_turn_outcome(terminal.phase, &terminal.events))
+        Ok(project_turn_outcome(
+            terminal.phase,
+            terminal.projection.as_ref(),
+            &terminal.events,
+        ))
     }
 
     async fn try_turn_terminal_snapshot(
@@ -257,10 +259,17 @@ impl<'a> SessionQueries<'a> {
             return Ok(None);
         }
 
-        let phase = state.current_phase()?;
         let events = turn_events(self.stored_events(session_id).await?, turn_id);
-        if turn_snapshot_is_terminal(phase, &events) {
-            return Ok(Some(TurnTerminalSnapshot { phase, events }));
+        let phase = state.current_phase()?;
+        let projection = state
+            .turn_projection(turn_id)?
+            .or_else(|| replay_turn_projection(&events));
+        if turn_snapshot_is_terminal(phase, projection.as_ref(), &events) {
+            return Ok(Some(TurnTerminalSnapshot {
+                phase,
+                projection,
+                events,
+            }));
         }
 
         Ok(None)
@@ -290,10 +299,17 @@ fn try_turn_terminal_snapshot_from_recent(
     state: &SessionState,
     turn_id: &str,
 ) -> Result<Option<TurnTerminalSnapshot>> {
-    let phase = state.current_phase()?;
     let events = turn_events(state.snapshot_recent_stored_events()?, turn_id);
-    if turn_snapshot_is_terminal(phase, &events) {
-        return Ok(Some(TurnTerminalSnapshot { phase, events }));
+    let phase = state.current_phase()?;
+    let projection = state
+        .turn_projection(turn_id)?
+        .or_else(|| replay_turn_projection(&events));
+    if turn_snapshot_is_terminal(phase, projection.as_ref(), &events) {
+        return Ok(Some(TurnTerminalSnapshot {
+            phase,
+            projection,
+            events,
+        }));
     }
 
     Ok(None)
@@ -306,8 +322,13 @@ fn turn_events(stored_events: Vec<StoredEvent>, turn_id: &str) -> Vec<StoredEven
         .collect()
 }
 
-fn turn_snapshot_is_terminal(phase: Phase, events: &[StoredEvent]) -> bool {
-    has_terminal_turn_signal(events) || (!events.is_empty() && matches!(phase, Phase::Interrupted))
+fn turn_snapshot_is_terminal(
+    phase: Phase,
+    projection: Option<&TurnProjectionSnapshot>,
+    events: &[StoredEvent],
+) -> bool {
+    is_terminal_projection(projection)
+        || (!events.is_empty() && matches!(phase, Phase::Interrupted))
 }
 
 fn record_targets_turn(record: &SessionEventRecord, turn_id: &str) -> bool {
@@ -371,7 +392,7 @@ mod tests {
         AgentEventContext, DeleteProjectResult, EventStore, EventTranslator, ExecutionTaskItem,
         ExecutionTaskStatus, Phase, Result, SessionEventRecord, SessionId, SessionMeta,
         SessionTurnAcquireResult, StorageEvent, StorageEventPayload, StoredEvent,
-        UserMessageOrigin,
+        TurnProjectionSnapshot, UserMessageOrigin,
     };
     use async_trait::async_trait;
     use tokio::time::{Duration, timeout};
@@ -422,6 +443,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn turn_snapshot_is_terminal_accepts_replayed_terminal_projection() {
+        let projection = TurnProjectionSnapshot {
+            terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+            last_error: None,
+        };
+
+        assert!(turn_snapshot_is_terminal(
+            Phase::Idle,
+            Some(&projection),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn turn_snapshot_is_terminal_accepts_interrupted_phase_with_turn_history() {
+        let events = vec![StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent {
+                turn_id: Some("turn-1".to_string()),
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::Error {
+                    message: "interrupted".to_string(),
+                    timestamp: Some(chrono::Utc::now()),
+                },
+            },
+        }];
+
+        assert!(turn_snapshot_is_terminal(Phase::Interrupted, None, &events));
+    }
+
     #[tokio::test]
     async fn wait_for_turn_terminal_snapshot_wakes_on_broadcast_event() {
         let runtime = test_runtime(Arc::new(StubEventStore::default()));
@@ -457,6 +509,7 @@ mod tests {
                     agent: AgentEventContext::default(),
                     payload: StorageEventPayload::TurnDone {
                         timestamp: chrono::Utc::now(),
+                        terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
                         reason: Some("completed".to_string()),
                     },
                 },
@@ -471,7 +524,11 @@ mod tests {
             .expect("wait should complete")
             .expect("snapshot should load");
 
-        assert!(turn_snapshot_is_terminal(snapshot.phase, &snapshot.events));
+        assert!(turn_snapshot_is_terminal(
+            snapshot.phase,
+            snapshot.projection.as_ref(),
+            &snapshot.events,
+        ));
         assert_eq!(snapshot.events.len(), 1);
         assert_eq!(snapshot.events[0].event.turn_id(), Some("turn-1"));
     }
@@ -512,6 +569,7 @@ mod tests {
                     agent: AgentEventContext::default(),
                     payload: StorageEventPayload::TurnDone {
                         timestamp: chrono::Utc::now(),
+                        terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
                         reason: Some("completed".to_string()),
                     },
                 },
@@ -530,6 +588,58 @@ mod tests {
             event_store.replay_count(),
             1,
             "live wait should not repeatedly rescan durable history"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_turn_terminal_snapshot_projects_legacy_reason_history() {
+        let runtime = test_runtime(Arc::new(StubEventStore::default()));
+        let session = runtime
+            .create_session(".")
+            .await
+            .expect("session should be created");
+        let session_id = session.session_id.clone();
+        let state = runtime
+            .get_session_state(&session_id.clone().into())
+            .await
+            .expect("state should load");
+
+        let mut translator = EventTranslator::new(Phase::Idle);
+        append_and_broadcast(
+            state.as_ref(),
+            &StorageEvent {
+                turn_id: Some("turn-legacy".to_string()),
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::TurnDone {
+                    timestamp: chrono::Utc::now(),
+                    terminal_kind: None,
+                    reason: Some("token_exceeded".to_string()),
+                },
+            },
+            &mut translator,
+        )
+        .await
+        .expect("legacy turn done should append");
+
+        let snapshot = runtime
+            .wait_for_turn_terminal_snapshot(&session_id, "turn-legacy")
+            .await
+            .expect("terminal snapshot should load");
+        let outcome = runtime
+            .project_turn_outcome(&session_id, "turn-legacy")
+            .await
+            .expect("turn outcome should project");
+
+        assert_eq!(
+            snapshot
+                .projection
+                .as_ref()
+                .and_then(|projection| projection.terminal_kind.clone()),
+            Some(astrcode_core::TurnTerminalKind::MaxOutputContinuationLimitReached)
+        );
+        assert_eq!(
+            outcome.outcome,
+            astrcode_core::AgentTurnOutcome::TokenExceeded
         );
     }
 

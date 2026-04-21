@@ -504,7 +504,9 @@ impl TurnBuilder {
                     Some(message),
                 );
             },
-            StorageEventPayload::TurnDone { timestamp, reason } => {
+            StorageEventPayload::TurnDone {
+                timestamp, reason, ..
+            } => {
                 self.trace.completed_at = Some(timestamp);
                 self.trace.completion_reason = reason;
                 self.trace.incomplete = false;

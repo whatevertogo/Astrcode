@@ -553,6 +553,7 @@ mod tests {
             agent,
             StorageEventPayload::TurnDone {
                 timestamp: ts(),
+                terminal_kind: crate::TurnTerminalKind::from_legacy_reason(Some(reason)),
                 reason: Some(reason.into()),
             },
         )

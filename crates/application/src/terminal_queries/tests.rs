@@ -650,7 +650,7 @@ async fn terminal_control_facts_include_authoritative_active_tasks() {
             current_mode_id: astrcode_core::ModeId::code(),
             last_mode_changed_at: None,
         }),
-        active_task_snapshot: Some(TaskSnapshot {
+        active_task_snapshot: Arc::new(std::sync::Mutex::new(Some(TaskSnapshot {
             owner: astrcode_session_runtime::ROOT_AGENT_ID.to_string(),
             items: vec![
                 ExecutionTaskItem {
@@ -664,7 +664,7 @@ async fn terminal_control_facts_include_authoritative_active_tasks() {
                     active_form: None,
                 },
             ],
-        }),
+        }))),
         ..StubSessionPort::default()
     });
     let app = build_terminal_app(

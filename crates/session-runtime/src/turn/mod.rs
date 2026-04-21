@@ -9,9 +9,11 @@ mod continuation_cycle;
 mod events;
 mod fork;
 mod interrupt;
+mod journal;
 pub(crate) mod llm_cycle;
 mod loop_control;
 pub(crate) mod manual_compact;
+mod post_llm_policy;
 mod replay;
 mod request;
 mod runner;
@@ -37,6 +39,19 @@ pub(crate) enum TurnOutcome {
     Cancelled,
     /// 不可恢复错误。
     Error { message: String },
+}
+
+impl TurnOutcome {
+    pub(crate) fn terminal_kind(
+        &self,
+        stop_cause: TurnStopCause,
+    ) -> astrcode_core::TurnTerminalKind {
+        match self {
+            Self::Completed => stop_cause.terminal_kind(None),
+            Self::Cancelled => astrcode_core::TurnTerminalKind::Cancelled,
+            Self::Error { message } => stop_cause.terminal_kind(Some(message)),
+        }
+    }
 }
 
 pub(crate) use runner::{TurnRunRequest as RunnerRequest, TurnRunResult, run_turn};

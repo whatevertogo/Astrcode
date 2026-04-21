@@ -75,20 +75,25 @@ pub(super) async fn finalize_and_execute_tool_calls(
 }
 
 fn apply_streaming_stats(execution: &mut TurnExecutionContext, stats: StreamingToolStats) {
-    execution.streaming_tool_launch_count = execution
-        .streaming_tool_launch_count
+    execution.streaming_tools.launch_count = execution
+        .streaming_tools
+        .launch_count
         .saturating_add(stats.launched_count);
-    execution.streaming_tool_match_count = execution
-        .streaming_tool_match_count
+    execution.streaming_tools.match_count = execution
+        .streaming_tools
+        .match_count
         .saturating_add(stats.matched_count);
-    execution.streaming_tool_fallback_count = execution
-        .streaming_tool_fallback_count
+    execution.streaming_tools.fallback_count = execution
+        .streaming_tools
+        .fallback_count
         .saturating_add(stats.fallback_count);
-    execution.streaming_tool_discard_count = execution
-        .streaming_tool_discard_count
+    execution.streaming_tools.discard_count = execution
+        .streaming_tools
+        .discard_count
         .saturating_add(stats.discard_count);
-    execution.streaming_tool_overlap_ms = execution
-        .streaming_tool_overlap_ms
+    execution.streaming_tools.overlap_ms = execution
+        .streaming_tools
+        .overlap_ms
         .saturating_add(stats.overlap_ms);
 }
 
@@ -165,7 +170,7 @@ fn merge_buffered_and_remaining_tool_results(
         }
     }
     combined_events.append(&mut ungrouped_events);
-    execution.events.extend(combined_events);
+    execution.journal.extend(combined_events);
     executed_remaining.tool_messages = merged_tool_messages;
     executed_remaining.raw_results = merged_raw_results;
     Ok(())
@@ -216,10 +221,13 @@ fn track_tool_results(
     tool_result: &ToolCycleResult,
 ) {
     for (call, result) in &tool_result.raw_results {
+        execution.budget.file_access_tracker.record_tool_result(
+            call,
+            result,
+            Path::new(working_dir),
+        );
         execution
-            .file_access_tracker
-            .record_tool_result(call, result, Path::new(working_dir));
-        execution
+            .budget
             .micro_compact_state
             .record_tool_result(result.tool_call_id.clone(), Instant::now());
     }
