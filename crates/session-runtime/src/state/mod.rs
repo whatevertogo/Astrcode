@@ -24,15 +24,14 @@ use std::sync::{
 };
 
 use astrcode_core::{
-    AgentEvent, AgentState, AgentStateProjector, CancelToken, EventTranslator, ModeId, Phase,
-    ResolvedRuntimeConfig, Result, SessionEventRecord, SessionRecoveryCheckpoint, SessionTurnLease,
-    StoredEvent, TurnProjectionSnapshot, normalize_recovered_phase,
+    AgentEvent, AgentState, AgentStateProjector, CancelToken, EventTranslator, LlmMessage, ModeId,
+    Phase, ResolvedRuntimeConfig, Result, SessionEventRecord, SessionRecoveryCheckpoint,
+    SessionTurnLease, StoredEvent, TurnProjectionSnapshot, normalize_recovered_phase,
     support::{self},
 };
 use chrono::Utc;
 pub use execution::checkpoint_if_compacted;
 pub(crate) use execution::{SessionStateEventSink, append_and_broadcast};
-pub(crate) use input_queue::{InputQueueEventAppend, append_input_queue_event};
 pub(crate) use paths::compact_history_event_log_path;
 pub use paths::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
 use projection_registry::ProjectionRegistry;
@@ -364,6 +363,10 @@ impl SessionState {
             support::lock_anyhow(&self.projection_registry, "session projection registry")?
                 .snapshot_projected_state(),
         )
+    }
+
+    pub fn current_turn_messages(&self) -> Result<Vec<LlmMessage>> {
+        Ok(self.snapshot_projected_state()?.messages)
     }
 
     /// 订阅 live-only 事件流（token 级 delta 等瞬时事件，不参与 durable replay）。

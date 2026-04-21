@@ -17,6 +17,7 @@ use crate::config::ConfigService;
 mod agent_use_cases;
 mod governance_surface;
 mod ports;
+mod session_identity;
 mod session_plan;
 mod session_use_cases;
 mod terminal_queries;
@@ -85,7 +86,8 @@ pub use observability::{
 };
 pub use ports::{
     AgentKernelPort, AgentSessionPort, AppAgentPromptSubmission, AppKernelPort, AppSessionPort,
-    ComposerResolvedSkill, ComposerSkillPort,
+    ComposerResolvedSkill, ComposerSkillPort, RecoverableParentDelivery, SessionObserveSnapshot,
+    SessionTurnOutcomeSummary, SessionTurnTerminalState,
 };
 pub use session_plan::{ProjectPlanArchiveDetail, ProjectPlanArchiveSummary};
 pub use session_use_cases::summarize_session_meta;

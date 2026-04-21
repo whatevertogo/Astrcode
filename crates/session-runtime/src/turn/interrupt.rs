@@ -4,7 +4,7 @@ use chrono::Utc;
 use crate::{
     SessionRuntime,
     state::append_and_broadcast,
-    turn::{events::error_event, submit::persist_pending_manual_compact_if_any},
+    turn::{events::error_event, finalize::persist_pending_manual_compact_if_any},
 };
 
 impl SessionRuntime {

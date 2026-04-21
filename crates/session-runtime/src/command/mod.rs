@@ -1,3 +1,5 @@
+mod input_queue;
+
 use std::path::Path;
 
 use astrcode_core::{
@@ -7,9 +9,11 @@ use astrcode_core::{
 };
 use chrono::Utc;
 
+pub(crate) use self::input_queue::InputQueueEventAppend;
+use self::input_queue::append_input_queue_event;
 use crate::{
-    InputQueueEventAppend, SessionRuntime,
-    state::{append_and_broadcast, append_input_queue_event, checkpoint_if_compacted},
+    SessionRuntime,
+    state::{append_and_broadcast, checkpoint_if_compacted},
 };
 
 pub(crate) struct SessionCommands<'a> {
@@ -92,7 +96,8 @@ impl<'a> SessionCommands<'a> {
         agent: AgentEventContext,
         notification: ChildSessionNotification,
     ) -> Result<StoredEvent> {
-        let session_id = astrcode_core::SessionId::from(crate::normalize_session_id(session_id));
+        let session_id =
+            astrcode_core::SessionId::from(crate::state::normalize_session_id(session_id));
         let session_state = self.runtime.query().session_state(&session_id).await?;
         let mut translator = EventTranslator::new(session_state.current_phase()?);
         append_and_broadcast(
@@ -117,7 +122,8 @@ impl<'a> SessionCommands<'a> {
         agent: AgentEventContext,
         fact: AgentCollaborationFact,
     ) -> Result<StoredEvent> {
-        let session_id = astrcode_core::SessionId::from(crate::normalize_session_id(session_id));
+        let session_id =
+            astrcode_core::SessionId::from(crate::state::normalize_session_id(session_id));
         let session_state = self.runtime.query().session_state(&session_id).await?;
         let mut translator = EventTranslator::new(session_state.current_phase()?);
         append_and_broadcast(
@@ -141,7 +147,8 @@ impl<'a> SessionCommands<'a> {
         runtime: &astrcode_core::ResolvedRuntimeConfig,
         instructions: Option<&str>,
     ) -> Result<bool> {
-        let session_id = astrcode_core::SessionId::from(crate::normalize_session_id(session_id));
+        let session_id =
+            astrcode_core::SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
         if actor.state().is_running() {
             actor
@@ -190,7 +197,8 @@ impl<'a> SessionCommands<'a> {
         from: ModeId,
         to: ModeId,
     ) -> Result<StoredEvent> {
-        let session_id = astrcode_core::SessionId::from(crate::normalize_session_id(session_id));
+        let session_id =
+            astrcode_core::SessionId::from(crate::state::normalize_session_id(session_id));
         let session_state = self.runtime.query().session_state(&session_id).await?;
         let mut translator = EventTranslator::new(session_state.current_phase()?);
         append_and_broadcast(
@@ -216,7 +224,8 @@ impl<'a> SessionCommands<'a> {
         agent: AgentEventContext,
         event: InputQueueEventAppend,
     ) -> Result<StoredEvent> {
-        let session_id = astrcode_core::SessionId::from(crate::normalize_session_id(session_id));
+        let session_id =
+            astrcode_core::SessionId::from(crate::state::normalize_session_id(session_id));
         let session_state = self.runtime.query().session_state(&session_id).await?;
         let mut translator = EventTranslator::new(session_state.current_phase()?);
         append_input_queue_event(&session_state, turn_id, agent, event, &mut translator).await

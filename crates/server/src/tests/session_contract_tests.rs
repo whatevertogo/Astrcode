@@ -1,8 +1,8 @@
 use astrcode_core::{
     AgentEventContext, CancelToken, EventTranslator, SessionId, SpawnAgentParams, StorageEvent,
-    StorageEventPayload, ToolContext, UserMessageOrigin, agent::executor::SubAgentExecutor,
+    StorageEventPayload, ToolContext, TurnTerminalKind, UserMessageOrigin,
+    agent::executor::SubAgentExecutor,
 };
-use astrcode_session_runtime::append_and_broadcast;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -26,9 +26,18 @@ async fn append_root_event(state: &crate::AppState, session_id: &str, event: Sto
             .current_phase()
             .expect("session phase should be readable"),
     );
-    append_and_broadcast(&session_state, &event, &mut translator)
+    let stored = session_state
+        .writer
+        .clone()
+        .append(event)
         .await
-        .expect("event should persist");
+        .expect("event should append");
+    let records = session_state
+        .translate_store_and_cache(&stored, &mut translator)
+        .expect("event should translate");
+    for record in records {
+        let _ = session_state.broadcaster.send(record);
+    }
 }
 
 async fn seed_completed_root_turn(state: &crate::AppState, session_id: &str, turn_id: &str) {
@@ -70,6 +79,7 @@ async fn seed_completed_root_turn(state: &crate::AppState, session_id: &str, tur
             agent,
             payload: StorageEventPayload::TurnDone {
                 timestamp: chrono::Utc::now(),
+                terminal_kind: Some(TurnTerminalKind::Completed),
                 reason: Some("completed".to_string()),
             },
         },

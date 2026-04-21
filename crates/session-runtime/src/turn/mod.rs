@@ -4,9 +4,11 @@
 //! `runner` 负责 step 循环，`submit/replay/interrupt/branch` 负责对外 façade。
 
 mod branch;
+mod compact_events;
 mod compaction_cycle;
 mod continuation_cycle;
 mod events;
+mod finalize;
 mod fork;
 mod interrupt;
 mod journal;
@@ -14,10 +16,11 @@ pub(crate) mod llm_cycle;
 mod loop_control;
 pub(crate) mod manual_compact;
 mod post_llm_policy;
-mod replay;
+pub(crate) mod projector;
 mod request;
 mod runner;
 mod submit;
+mod subrun_events;
 #[cfg(test)]
 pub(crate) mod test_support;
 // pub mod subagent;

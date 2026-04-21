@@ -36,7 +36,7 @@
 
 ### Requirement: `query` 子域 SHALL 成为编排侧读取 helper 的唯一所有者
 
-凡是面向编排消费者的单 session 读取 helper，例如 turn terminal、turn outcome、observe 摘要、recoverable delivery 聚合等，`session-runtime` SHALL 以 `query` 子域为唯一长期所有者。`turn`、`command` 与外层 crate MAY 触发这些读取，但 SHALL NOT 长期保留同类投影与聚合实现。
+凡是面向编排消费者的单 session 读取 helper，例如 turn terminal、turn outcome、observe 摘要、recoverable delivery 聚合等，`session-runtime` SHALL 以 `query` 子域为唯一长期所有者。`turn`、`command` 与外层 crate MAY 触发这些读取，但 SHALL NOT 长期保留同类投影与聚合实现。与这些读取 helper 对应的纯投影算法 MAY 位于共享 reducer / projector 模块中，但 `query` 继续拥有面向外部的读取 API。
 
 #### Scenario: query/service 只编排读取流程，不复制投影算法
 - **WHEN** `query/service` 提供 turn terminal wait、turn outcome projection 或 recoverable delivery 读取能力
@@ -47,6 +47,15 @@
 - **WHEN** `turn` finalize 或等价执行路径需要读取某类已存在的 query 事实
 - **THEN** 它 SHALL 复用 `query` 子域的 canonical helper 或已缓存事实
 - **AND** SHALL NOT 因为身处执行路径就重新维护一套同语义的聚合代码
+
+### Requirement: transcript / session replay 的只读 API SHALL 属于 `query` 子域
+
+`session_transcript_snapshot`、`session_replay` 和等价的 transcript/session replay 只读能力 MUST 归属于 `query` 子域，SHALL NOT 继续长期放在 `turn/` 名下。
+
+#### Scenario: replay 读取 API 不再留在 turn 子域
+- **WHEN** 检查 transcript/session replay 的实现归属
+- **THEN** 它们 SHALL 位于 `query` 子域
+- **AND** `turn/` SHALL 只保留执行、提交、终结与运行时控制相关逻辑
 
 ### Requirement: `turn` 子域 SHALL NOT 反向依赖 `query` 组装执行输入
 
@@ -62,6 +71,11 @@
 - **THEN** 它 SHALL 调用独立的 finalize / compact helper
 - **AND** SHALL NOT 通过 `submit` 内部私有语义形成子域双向耦合
 
+#### Scenario: wait-for-terminal 语义暂不在本次迁移
+- **WHEN** 检查 `wait_for_turn_terminal_snapshot()` 的实现归属
+- **THEN** 本次 change MAY 暂时保持其在 `query/service` 中
+- **AND** 该等待/观察语义的进一步迁移 SHALL 留给后续独立 change
+
 ### Requirement: `ProjectionRegistry` SHALL 退化为薄协调器并委托域 reducer
 
 `ProjectionRegistry` MUST 作为统一入口保留，但其职责 SHALL 收窄为固定顺序的 apply / snapshot 协调；turn、children、tasks、input_queue、recent cache 等域逻辑 SHALL 由独立 reducer/owner 承担，registry 本身 SHALL NOT 长期堆积跨域细节与命令式后门。
@@ -75,6 +89,15 @@
 - **WHEN** 某个投影域需要支持局部更新或兼容迁移
 - **THEN** 该更新入口 SHALL 收敛到对应域 reducer 内部
 - **AND** `ProjectionRegistry` 根对象 SHALL NOT 继续扩张出新的跨域命令式 mutation helper
+
+### Requirement: input queue 的命令追加路径 SHALL 属于 `command` 子域
+
+`InputQueueEventAppend`、`append_input_queue_event` 与等价的 input queue durable 写路径 MUST 属于 `command` 子域；`state/input_queue` SHALL 只保留 input queue 投影、索引更新和读取相关逻辑。
+
+#### Scenario: state/input_queue 不再承载写命令
+- **WHEN** 检查 `state/input_queue` 子域
+- **THEN** 其中 SHALL 只保留 input queue projection / reducer / 读取辅助逻辑
+- **AND** durable append 命令 SHALL 位于 `command` 子域
 
 ### Requirement: `session-runtime` SHALL 通过稳定 facade 阻断 `application` 对内部 helper 的直接依赖
 

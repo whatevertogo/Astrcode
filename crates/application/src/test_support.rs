@@ -11,17 +11,19 @@ use astrcode_core::{
     InputDiscardedPayload, InputQueuedPayload, ModeId, PromptDeclaration, ResolvedRuntimeConfig,
     SessionId, SessionMeta, StorageEvent, StorageEventPayload, StoredEvent, TaskSnapshot, TurnId,
 };
-use astrcode_kernel::PendingParentDelivery;
 use astrcode_session_runtime::{
-    AgentObserveSnapshot, ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint,
-    ForkResult, ProjectedTurnOutcome, SessionCatalogEvent, SessionControlStateSnapshot,
-    SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot, TurnTerminalSnapshot,
+    ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint, ForkResult,
+    SessionCatalogEvent, SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay,
+    SessionTranscriptSnapshot,
 };
 use async_trait::async_trait;
 use chrono::Utc;
 use tokio::sync::broadcast;
 
-use crate::{AgentSessionPort, AppAgentPromptSubmission, AppSessionPort};
+use crate::{
+    AgentSessionPort, AppAgentPromptSubmission, AppSessionPort, RecoverableParentDelivery,
+    SessionObserveSnapshot, SessionTurnOutcomeSummary, SessionTurnTerminalState,
+};
 
 fn unimplemented_for_test(area: &str) -> ! {
     panic!("not used in {area}")
@@ -85,7 +87,7 @@ impl AppSessionPort for StubSessionPort {
 
     async fn fork_session(
         &self,
-        _session_id: &SessionId,
+        _session_id: &str,
         _fork_point: ForkPoint,
     ) -> astrcode_core::Result<ForkResult> {
         unimplemented_for_test("application test stub")
@@ -250,7 +252,7 @@ impl AppSessionPort for StubSessionPort {
 
     async fn session_stored_events(
         &self,
-        _session_id: &SessionId,
+        _session_id: &str,
     ) -> astrcode_core::Result<Vec<StoredEvent>> {
         Ok(self.stored_events.clone())
     }
@@ -385,7 +387,7 @@ impl AgentSessionPort for StubSessionPort {
     async fn recoverable_parent_deliveries(
         &self,
         _parent_session_id: &str,
-    ) -> astrcode_core::Result<Vec<PendingParentDelivery>> {
+    ) -> astrcode_core::Result<Vec<RecoverableParentDelivery>> {
         unimplemented_for_test("application test stub")
     }
 
@@ -394,7 +396,7 @@ impl AgentSessionPort for StubSessionPort {
         _open_session_id: &str,
         _target_agent_id: &str,
         _lifecycle_status: AgentLifecycleStatus,
-    ) -> astrcode_core::Result<AgentObserveSnapshot> {
+    ) -> astrcode_core::Result<SessionObserveSnapshot> {
         unimplemented_for_test("application test stub")
     }
 
@@ -402,7 +404,7 @@ impl AgentSessionPort for StubSessionPort {
         &self,
         _session_id: &str,
         _turn_id: &str,
-    ) -> astrcode_core::Result<ProjectedTurnOutcome> {
+    ) -> astrcode_core::Result<SessionTurnOutcomeSummary> {
         unimplemented_for_test("application test stub")
     }
 
@@ -410,7 +412,7 @@ impl AgentSessionPort for StubSessionPort {
         &self,
         _session_id: &str,
         _turn_id: &str,
-    ) -> astrcode_core::Result<TurnTerminalSnapshot> {
+    ) -> astrcode_core::Result<SessionTurnTerminalState> {
         unimplemented_for_test("application test stub")
     }
 }

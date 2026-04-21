@@ -32,7 +32,8 @@ impl SessionState {
     /// 写入或覆盖一个 child-session durable 节点（按 sub_run_id 去重）。
     pub fn upsert_child_session_node(&self, node: ChildSessionNode) -> Result<()> {
         support::lock_anyhow(&self.projection_registry, "session projection registry")?
-            .upsert_child_session_node(node);
+            .children
+            .upsert(node);
         Ok(())
     }
 

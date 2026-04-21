@@ -13,13 +13,13 @@ use astrcode_core::{
     InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
     ResolvedRuntimeConfig, SessionMeta, StoredEvent, TurnId,
 };
-use astrcode_kernel::PendingParentDelivery;
-use astrcode_session_runtime::{
-    AgentObserveSnapshot, ProjectedTurnOutcome, SessionRuntime, TurnTerminalSnapshot,
-};
+use astrcode_session_runtime::SessionRuntime;
 use async_trait::async_trait;
 
-use super::{AppAgentPromptSubmission, AppSessionPort};
+use super::{
+    AppAgentPromptSubmission, AppSessionPort, RecoverableParentDelivery, SessionObserveSnapshot,
+    SessionTurnOutcomeSummary, SessionTurnTerminalState,
+};
 
 /// Agent 编排子域依赖的 session 稳定端口。
 ///
@@ -108,7 +108,7 @@ pub trait AgentSessionPort: AppSessionPort {
     async fn recoverable_parent_deliveries(
         &self,
         parent_session_id: &str,
-    ) -> astrcode_core::Result<Vec<PendingParentDelivery>>;
+    ) -> astrcode_core::Result<Vec<RecoverableParentDelivery>>;
 
     // 观察与投影读取。
     async fn observe_agent_session(
@@ -116,19 +116,19 @@ pub trait AgentSessionPort: AppSessionPort {
         open_session_id: &str,
         target_agent_id: &str,
         lifecycle_status: AgentLifecycleStatus,
-    ) -> astrcode_core::Result<AgentObserveSnapshot>;
+    ) -> astrcode_core::Result<SessionObserveSnapshot>;
     async fn project_turn_outcome(
         &self,
         session_id: &str,
         turn_id: &str,
-    ) -> astrcode_core::Result<ProjectedTurnOutcome>;
+    ) -> astrcode_core::Result<SessionTurnOutcomeSummary>;
 
     // Turn 终态等待。
     async fn wait_for_turn_terminal_snapshot(
         &self,
         session_id: &str,
         turn_id: &str,
-    ) -> astrcode_core::Result<TurnTerminalSnapshot>;
+    ) -> astrcode_core::Result<SessionTurnTerminalState>;
 }
 
 #[async_trait]
@@ -269,8 +269,19 @@ impl AgentSessionPort for SessionRuntime {
     async fn recoverable_parent_deliveries(
         &self,
         parent_session_id: &str,
-    ) -> astrcode_core::Result<Vec<PendingParentDelivery>> {
-        self.recoverable_parent_deliveries(parent_session_id).await
+    ) -> astrcode_core::Result<Vec<RecoverableParentDelivery>> {
+        Ok(self
+            .recoverable_parent_deliveries(parent_session_id)
+            .await?
+            .into_iter()
+            .map(|value| RecoverableParentDelivery {
+                delivery_id: value.delivery_id,
+                parent_session_id: value.parent_session_id,
+                parent_turn_id: value.parent_turn_id,
+                queued_at_ms: value.queued_at_ms,
+                notification: value.notification,
+            })
+            .collect())
     }
 
     // 观察与投影读取。
@@ -279,17 +290,30 @@ impl AgentSessionPort for SessionRuntime {
         open_session_id: &str,
         target_agent_id: &str,
         lifecycle_status: AgentLifecycleStatus,
-    ) -> astrcode_core::Result<AgentObserveSnapshot> {
-        self.observe_agent_session(open_session_id, target_agent_id, lifecycle_status)
-            .await
+    ) -> astrcode_core::Result<SessionObserveSnapshot> {
+        let value = self
+            .observe_agent_session(open_session_id, target_agent_id, lifecycle_status)
+            .await?;
+        Ok(SessionObserveSnapshot {
+            phase: value.phase,
+            turn_count: value.turn_count,
+            active_task: value.active_task,
+            last_output_tail: value.last_output_tail,
+            last_turn_tail: value.last_turn_tail,
+        })
     }
 
     async fn project_turn_outcome(
         &self,
         session_id: &str,
         turn_id: &str,
-    ) -> astrcode_core::Result<ProjectedTurnOutcome> {
-        self.project_turn_outcome(session_id, turn_id).await
+    ) -> astrcode_core::Result<SessionTurnOutcomeSummary> {
+        let value = self.project_turn_outcome(session_id, turn_id).await?;
+        Ok(SessionTurnOutcomeSummary {
+            outcome: value.outcome,
+            summary: value.summary,
+            technical_message: value.technical_message,
+        })
     }
 
     // Turn 终态等待。
@@ -297,8 +321,14 @@ impl AgentSessionPort for SessionRuntime {
         &self,
         session_id: &str,
         turn_id: &str,
-    ) -> astrcode_core::Result<TurnTerminalSnapshot> {
-        self.wait_for_turn_terminal_snapshot(session_id, turn_id)
-            .await
+    ) -> astrcode_core::Result<SessionTurnTerminalState> {
+        let value = self
+            .wait_for_turn_terminal_snapshot(session_id, turn_id)
+            .await?;
+        Ok(SessionTurnTerminalState {
+            phase: value.phase,
+            projection: value.projection,
+            events: value.events,
+        })
     }
 }

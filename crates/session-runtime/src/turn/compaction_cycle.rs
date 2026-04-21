@@ -13,7 +13,7 @@
 
 use astrcode_core::{
     AgentEventContext, CancelToken, CompactTrigger, LlmMessage, PromptFactsProvider, Result,
-    StorageEvent, UserMessageOrigin,
+    StorageEvent,
 };
 use astrcode_kernel::KernelGateway;
 
@@ -25,7 +25,7 @@ use crate::{
     },
     state::compact_history_event_log_path,
     turn::{
-        events::{CompactAppliedStats, compact_applied_event, user_message_event},
+        compact_events::{build_post_compact_events, build_post_compact_recovery_messages},
         request::{PromptOutputRequest, build_prompt_output},
     },
 };
@@ -62,43 +62,12 @@ fn recovery_result_from_compaction(
     file_access_tracker: &FileAccessTracker,
     compaction: CompactResult,
 ) -> RecoveryResult {
-    let events = vec![compact_applied_event(
-        Some(turn_id),
-        agent,
-        CompactTrigger::Auto,
-        compaction.summary.clone(),
-        CompactAppliedStats {
-            meta: compaction.meta,
-            preserved_recent_turns: compaction.preserved_recent_turns,
-            pre_tokens: compaction.pre_tokens,
-            post_tokens_estimate: compaction.post_tokens_estimate,
-            messages_removed: compaction.messages_removed,
-            tokens_freed: compaction.tokens_freed,
-        },
-        compaction.timestamp,
-    )];
-    let mut events = events;
-    if let Some(digest) = compaction.recent_user_context_digest.clone() {
-        events.push(user_message_event(
-            turn_id,
-            agent,
-            digest,
-            UserMessageOrigin::RecentUserContextDigest,
-            compaction.timestamp,
-        ));
-    }
-    for content in &compaction.recent_user_context_messages {
-        events.push(user_message_event(
-            turn_id,
-            agent,
-            content.clone(),
-            UserMessageOrigin::RecentUserContext,
-            compaction.timestamp,
-        ));
-    }
-
+    let events = build_post_compact_events(Some(turn_id), agent, CompactTrigger::Auto, &compaction);
     let mut messages = compaction.messages;
-    messages.extend(file_access_tracker.build_recovery_messages(settings.file_recovery_config()));
+    messages.extend(build_post_compact_recovery_messages(
+        file_access_tracker,
+        settings.file_recovery_config(),
+    ));
 
     RecoveryResult { messages, events }
 }

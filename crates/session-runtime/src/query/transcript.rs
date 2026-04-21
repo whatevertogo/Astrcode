@@ -3,10 +3,8 @@
 //! Why: 这里集中表达“从单 session 真相里能读到什么 transcript/快照”，
 //! 避免把这类只读投影继续塞回 `factory` 或 `application`。
 
-use astrcode_core::{AgentEvent, LlmMessage, Phase, Result, SessionEventRecord};
+use astrcode_core::{AgentEvent, Phase, SessionEventRecord};
 use tokio::sync::broadcast;
-
-use crate::SessionState;
 
 #[derive(Debug)]
 pub struct SessionReplay {
@@ -22,15 +20,10 @@ pub struct SessionTranscriptSnapshot {
     pub phase: Phase,
 }
 
-pub(crate) fn current_turn_messages(session: &SessionState) -> Result<Vec<LlmMessage>> {
-    Ok(session.snapshot_projected_state()?.messages)
-}
-
 #[cfg(test)]
 mod tests {
     use astrcode_core::SessionId;
 
-    use super::current_turn_messages;
     use crate::actor::SessionActor;
 
     #[test]
@@ -41,7 +34,10 @@ mod tests {
             "root-agent".into(),
         );
 
-        let messages = current_turn_messages(actor.state()).expect("projection should succeed");
+        let messages = actor
+            .state()
+            .current_turn_messages()
+            .expect("projection should succeed");
         assert!(messages.is_empty());
     }
 }

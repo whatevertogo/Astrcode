@@ -1,6 +1,4 @@
-use std::sync::atomic::Ordering;
-
-use astrcode_core::{SessionId, StorageEventPayload};
+use astrcode_core::{CancelToken, SessionId, SessionTurnLease, StorageEventPayload};
 use astrcode_protocol::http::{
     CompactSessionResponse, ConfigReloadResponse, PromptAcceptedResponse,
 };
@@ -12,11 +10,32 @@ use tower::ServiceExt;
 
 use crate::{AUTH_HEADER_NAME, routes::build_api_router, test_support::test_state};
 
+struct StubTurnLease;
+
+impl SessionTurnLease for StubTurnLease {}
+
 async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Response<Body>) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("response body should be readable");
     serde_json::from_slice(&bytes).expect("response should deserialize")
+}
+
+async fn mark_session_running(state: &crate::AppState, session_id: &str) {
+    let session_state = state
+        ._runtime_handles
+        .session_runtime
+        .get_session_state(&SessionId::from(session_id.to_string()))
+        .await
+        .expect("session state should load");
+    session_state
+        .prepare_execution(
+            session_id,
+            "test-running-turn",
+            CancelToken::new(),
+            Box::new(StubTurnLease),
+        )
+        .expect("session should enter running state");
 }
 
 #[tokio::test]
@@ -62,7 +81,8 @@ async fn config_reload_rejects_when_session_is_running() {
         .get_session_state(&session.session_id.clone().into())
         .await
         .expect("session state should load");
-    session_state.running.store(true, Ordering::SeqCst);
+    assert!(!session_state.is_running());
+    mark_session_running(&state, &session.session_id).await;
     let app = build_api_router().with_state(state);
 
     let response = app
@@ -100,7 +120,8 @@ async fn compact_route_defers_when_session_is_busy() {
         .get_session_state(&session.session_id.clone().into())
         .await
         .expect("session state should load");
-    session_state.running.store(true, Ordering::SeqCst);
+    assert!(!session_state.is_running());
+    mark_session_running(&state, &session.session_id).await;
     let app = build_api_router().with_state(state.clone());
 
     let response = app

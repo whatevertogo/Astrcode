@@ -6,6 +6,7 @@
 mod agent;
 mod conversation;
 mod input_queue;
+mod replay;
 mod service;
 mod terminal;
 mod text;
@@ -27,6 +28,5 @@ pub use conversation::{
 pub use input_queue::recoverable_parent_deliveries;
 pub(crate) use service::SessionQueries;
 pub use terminal::{LastCompactMetaSnapshot, SessionControlStateSnapshot, SessionModeSnapshot};
-pub(crate) use transcript::current_turn_messages;
 pub use transcript::{SessionReplay, SessionTranscriptSnapshot};
 pub use turn::{ProjectedTurnOutcome, TurnTerminalSnapshot};

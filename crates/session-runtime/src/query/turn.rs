@@ -4,8 +4,11 @@
 //! 不让这类终态推断逻辑回流到 `application`。
 
 use astrcode_core::{
-    AgentTurnOutcome, Phase, StorageEventPayload, StoredEvent, TurnProjectionSnapshot,
-    TurnTerminalKind,
+    AgentTurnOutcome, Phase, StoredEvent, TurnProjectionSnapshot, TurnTerminalKind,
+};
+
+use crate::turn::projector::{
+    last_non_empty_assistant_event, last_non_empty_error_event, project_turn_projection,
 };
 
 #[derive(Debug, Clone)]
@@ -28,64 +31,15 @@ pub(crate) fn is_terminal_projection(projection: Option<&TurnProjectionSnapshot>
     })
 }
 
-pub(crate) fn replay_turn_projection(events: &[StoredEvent]) -> Option<TurnProjectionSnapshot> {
-    let mut terminal_kind = None;
-    let mut last_error = None;
-    let mut observed = false;
-
-    for stored in events {
-        observed = true;
-        match &stored.event.payload {
-            StorageEventPayload::TurnDone {
-                terminal_kind: kind,
-                reason,
-                ..
-            } => {
-                terminal_kind = kind
-                    .clone()
-                    .or_else(|| TurnTerminalKind::from_legacy_reason(reason.as_deref()));
-            },
-            StorageEventPayload::Error { message, .. } => {
-                let message = message.trim();
-                if !message.is_empty() {
-                    last_error = Some(message.to_string());
-                }
-            },
-            _ => {},
-        }
-    }
-
-    observed.then_some(TurnProjectionSnapshot {
-        terminal_kind,
-        last_error,
-    })
-}
-
 pub(crate) fn project_turn_outcome(
     phase: Phase,
     projection: Option<&TurnProjectionSnapshot>,
     events: &[StoredEvent],
 ) -> ProjectedTurnOutcome {
-    let replayed_projection = replay_turn_projection(events);
+    let replayed_projection = project_turn_projection(events);
     let projection = projection.or(replayed_projection.as_ref());
-    let last_assistant = events
-        .iter()
-        .rev()
-        .find_map(|stored| match &stored.event.payload {
-            StorageEventPayload::AssistantFinal { content, .. } if !content.trim().is_empty() => {
-                Some(content.trim().to_string())
-            },
-            _ => None,
-        });
-    let last_error = events
-        .iter()
-        .rev()
-        .find_map(|stored| match &stored.event.payload {
-            StorageEventPayload::Error { message, .. } if !message.trim().is_empty() => {
-                Some(message.trim().to_string())
-            },
-            _ => None,
-        });
+    let last_assistant = last_non_empty_assistant_event(events);
+    let last_error = last_non_empty_error_event(events);
     let terminal_kind = resolve_terminal_kind(phase, projection, last_error.as_deref());
     let outcome = project_agent_turn_outcome(terminal_kind.as_ref());
 
@@ -175,7 +129,8 @@ mod tests {
         TurnProjectionSnapshot,
     };
 
-    use super::{is_terminal_projection, project_turn_outcome, replay_turn_projection};
+    use super::{is_terminal_projection, project_turn_outcome};
+    use crate::turn::projector::project_turn_projection;
 
     #[test]
     fn is_terminal_projection_detects_typed_terminal_kind() {
@@ -186,8 +141,8 @@ mod tests {
     }
 
     #[test]
-    fn replay_turn_projection_projects_legacy_turn_done_reason() {
-        let projection = replay_turn_projection(&[StoredEvent {
+    fn project_turn_projection_projects_legacy_turn_done_reason() {
+        let projection = project_turn_projection(&[StoredEvent {
             storage_seq: 1,
             event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),

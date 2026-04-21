@@ -19,6 +19,7 @@ use super::{
     AgentOrchestrationError, AgentOrchestrationService, child_collaboration_artifacts,
     subrun_event_context_for_parent_turn, terminal_notification_message,
 };
+use crate::SessionTurnOutcomeSummary;
 
 /// child turn 终态投递到父侧的内部投影层。
 ///
@@ -124,7 +125,7 @@ impl AgentOrchestrationService {
     pub(super) async fn finalize_child_turn_with_outcome(
         &self,
         watch: ChildTurnTerminalContext,
-        outcome: astrcode_session_runtime::ProjectedTurnOutcome,
+        outcome: SessionTurnOutcomeSummary,
     ) -> Result<(), AgentOrchestrationError> {
         let result = build_child_subrun_result(
             &watch.child,
@@ -238,9 +239,7 @@ impl AgentOrchestrationService {
     ) -> Result<bool, AgentOrchestrationError> {
         let stored = self
             .session_runtime
-            .session_stored_events(&astrcode_core::SessionId::from(
-                watch.parent_session_id.clone(),
-            ))
+            .session_stored_events(&watch.parent_session_id)
             .await
             .map_err(AgentOrchestrationError::from)?;
 
@@ -268,7 +267,7 @@ fn build_child_subrun_result(
     child: &astrcode_core::SubRunHandle,
     parent_session_id: &str,
     source_turn_id: &str,
-    outcome: &astrcode_session_runtime::ProjectedTurnOutcome,
+    outcome: &SessionTurnOutcomeSummary,
 ) -> SubRunResult {
     match outcome.outcome {
         AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded => SubRunResult::Completed {

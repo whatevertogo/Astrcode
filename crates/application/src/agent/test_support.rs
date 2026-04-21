@@ -54,7 +54,11 @@ impl AgentTestHarness {
             .await?;
         let mut translator = astrcode_core::EventTranslator::new(phase);
         for event in events {
-            state.append_and_broadcast(event, &mut translator).await?;
+            let stored = state.writer.clone().append(event.clone()).await?;
+            let records = state.translate_store_and_cache(&stored, &mut translator)?;
+            for record in records {
+                let _ = state.broadcaster.send(record);
+            }
         }
         Ok(())
     }

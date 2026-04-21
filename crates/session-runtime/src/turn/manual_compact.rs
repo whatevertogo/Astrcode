@@ -16,7 +16,7 @@ use crate::{
     },
     state::compact_history_event_log_path,
     turn::{
-        events::{CompactAppliedStats, compact_applied_event},
+        compact_events::{build_post_compact_events, build_post_compact_recovery_messages},
         request::{PromptOutputRequest, build_prompt_output},
     },
 };
@@ -81,46 +81,16 @@ pub(crate) async fn build_manual_compact_events(
         return Ok(None);
     };
 
-    let mut events = vec![compact_applied_event(
+    let mut events = build_post_compact_events(
         None,
         &AgentEventContext::default(),
         request.trigger,
-        compaction.summary.clone(),
-        CompactAppliedStats {
-            meta: compaction.meta,
-            preserved_recent_turns: compaction.preserved_recent_turns,
-            pre_tokens: compaction.pre_tokens,
-            post_tokens_estimate: compaction.post_tokens_estimate,
-            messages_removed: compaction.messages_removed,
-            tokens_freed: compaction.tokens_freed,
-        },
-        compaction.timestamp,
-    )];
+        &compaction,
+    );
 
-    if let Some(digest) = compaction.recent_user_context_digest {
-        events.push(StorageEvent {
-            turn_id: None,
-            agent: AgentEventContext::default(),
-            payload: StorageEventPayload::UserMessage {
-                content: digest,
-                origin: astrcode_core::UserMessageOrigin::RecentUserContextDigest,
-                timestamp: compaction.timestamp,
-            },
-        });
-    }
-    for content in compaction.recent_user_context_messages {
-        events.push(StorageEvent {
-            turn_id: None,
-            agent: AgentEventContext::default(),
-            payload: StorageEventPayload::UserMessage {
-                content,
-                origin: astrcode_core::UserMessageOrigin::RecentUserContext,
-                timestamp: compaction.timestamp,
-            },
-        });
-    }
-
-    for message in file_access_tracker.build_recovery_messages(settings.file_recovery_config()) {
+    for message in
+        build_post_compact_recovery_messages(&file_access_tracker, settings.file_recovery_config())
+    {
         let astrcode_core::LlmMessage::User { content, origin } = message else {
             continue;
         };

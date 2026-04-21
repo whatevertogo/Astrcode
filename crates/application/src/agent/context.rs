@@ -16,7 +16,10 @@ use super::{
     AgentOrchestrationError, AgentOrchestrationService, IMPLICIT_ROOT_PROFILE_ID,
     root_execution_event_context, subrun_event_context,
 };
-use crate::governance_surface::{GOVERNANCE_POLICY_REVISION, collaboration_policy_context};
+use crate::{
+    governance_surface::{GOVERNANCE_POLICY_REVISION, collaboration_policy_context},
+    session_identity::normalize_external_session_id,
+};
 
 pub(crate) struct CollaborationFactRecord<'a> {
     pub(crate) action: AgentCollaborationActionKind,
@@ -199,10 +202,7 @@ impl ToolCollaborationContext {
 }
 
 pub(crate) fn implicit_session_root_agent_id(session_id: &str) -> String {
-    format!(
-        "root-agent:{}",
-        astrcode_session_runtime::normalize_session_id(session_id)
-    )
+    format!("root-agent:{}", normalize_external_session_id(session_id))
 }
 
 fn default_resolved_limits_for_gateway(

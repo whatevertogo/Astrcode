@@ -21,6 +21,7 @@ mod catalog;
 mod command;
 mod context_window;
 mod heuristics;
+pub mod identity;
 mod observe;
 mod query;
 mod state;
@@ -45,10 +46,9 @@ pub use query::{
     SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
     ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
 };
-pub(crate) use state::{InputQueueEventAppend, SessionStateEventSink};
+pub(crate) use state::SessionStateEventSink;
 pub use state::{
-    SessionSnapshot, SessionState, display_name_from_working_dir, normalize_session_id,
-    normalize_working_dir,
+    SessionSnapshot, SessionState, display_name_from_working_dir, normalize_working_dir,
 };
 pub use turn::{
     AgentPromptSubmission, ForkPoint, ForkResult, TurnCollaborationSummary, TurnFinishReason,
@@ -438,7 +438,7 @@ impl SessionRuntime {
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
+        let session_id = SessionId::from(state::normalize_session_id(session_id));
         self.ensure_session_exists(&session_id).await?;
         self.event_store.delete_session(&session_id).await?;
         self.sessions.remove(&session_id);
@@ -506,7 +506,7 @@ impl SessionRuntime {
             .list_session_metas()
             .await?
             .into_iter()
-            .find(|meta| normalize_session_id(&meta.session_id) == session_id.as_str())
+            .find(|meta| state::normalize_session_id(&meta.session_id) == session_id.as_str())
             .ok_or_else(|| SessionRuntimeError::SessionNotFound(session_id.to_string()))?;
         Ok(meta.phase)
     }
@@ -523,7 +523,7 @@ impl SessionRuntime {
             .list_session_metas()
             .await?
             .into_iter()
-            .find(|meta| normalize_session_id(&meta.session_id) == session_id.as_str())
+            .find(|meta| state::normalize_session_id(&meta.session_id) == session_id.as_str())
             .ok_or_else(|| SessionRuntimeError::SessionNotFound(session_id.to_string()))?;
         let recovered = self.event_store.recover_session(session_id).await?;
         let actor = Arc::new(SessionActor::from_recovery(
@@ -554,7 +554,7 @@ impl SessionRuntime {
             .list_session_metas()
             .await?
             .into_iter()
-            .any(|meta| normalize_session_id(&meta.session_id) == session_id.as_str());
+            .any(|meta| state::normalize_session_id(&meta.session_id) == session_id.as_str());
         if exists {
             Ok(())
         } else {

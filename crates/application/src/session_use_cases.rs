@@ -21,6 +21,7 @@ use crate::{
     },
     format_local_rfc3339,
     governance_surface::{GovernanceBusyPolicy, SessionGovernanceInput},
+    session_identity::normalize_external_session_id,
     session_plan::{
         active_plan_requires_approval, advance_plan_workflow_to_execution,
         bootstrap_plan_workflow_state, build_execute_phase_prompt_declaration,
@@ -78,13 +79,9 @@ impl App {
             .session_runtime
             .get_session_working_dir(session_id)
             .await?;
-        let normalized_session_id = astrcode_session_runtime::normalize_session_id(session_id);
         let result = self
             .session_runtime
-            .fork_session(
-                &astrcode_core::SessionId::from(normalized_session_id),
-                fork_point,
-            )
+            .fork_session(session_id, fork_point)
             .await
             .map_err(ApplicationError::from)?;
         let meta = self
@@ -610,11 +607,8 @@ impl App {
         &self,
         session_id: &str,
     ) -> Result<Vec<StoredEvent>, ApplicationError> {
-        let session_id = astrcode_core::SessionId::from(
-            astrcode_session_runtime::normalize_session_id(session_id),
-        );
         self.session_runtime
-            .session_stored_events(&session_id)
+            .session_stored_events(session_id)
             .await
             .map_err(ApplicationError::from)
     }
@@ -653,7 +647,7 @@ impl App {
         session_id: &str,
     ) -> Result<AgentEventContext, ApplicationError> {
         self.validate_non_empty("sessionId", session_id)?;
-        let normalized_session_id = astrcode_session_runtime::normalize_session_id(session_id);
+        let normalized_session_id = normalize_external_session_id(session_id);
 
         if let Some(handle) = self
             .kernel

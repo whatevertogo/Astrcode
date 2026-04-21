@@ -7,8 +7,8 @@
 //! 同时提供 `SessionRuntime` 对 `AppSessionPort` 的 blanket impl。
 
 use astrcode_core::{
-    ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionId,
-    SessionMeta, StoredEvent, TaskSnapshot,
+    ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionMeta,
+    StoredEvent, TaskSnapshot,
 };
 use astrcode_session_runtime::{
     ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint, ForkResult,
@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use super::AppAgentPromptSubmission;
+use crate::session_identity::normalize_external_session_id;
 
 /// `App` 依赖的 session-runtime 稳定端口。
 ///
@@ -31,7 +32,7 @@ pub trait AppSessionPort: Send + Sync {
     async fn create_session(&self, working_dir: String) -> astrcode_core::Result<SessionMeta>;
     async fn fork_session(
         &self,
-        session_id: &SessionId,
+        session_id: &str,
         fork_point: ForkPoint,
     ) -> astrcode_core::Result<ForkResult>;
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()>;
@@ -85,7 +86,7 @@ pub trait AppSessionPort: Send + Sync {
     ) -> astrcode_core::Result<Vec<ChildSessionNode>>;
     async fn session_stored_events(
         &self,
-        session_id: &SessionId,
+        session_id: &str,
     ) -> astrcode_core::Result<Vec<StoredEvent>>;
     async fn session_replay(
         &self,
@@ -115,10 +116,14 @@ impl AppSessionPort for SessionRuntime {
 
     async fn fork_session(
         &self,
-        session_id: &SessionId,
+        session_id: &str,
         fork_point: ForkPoint,
     ) -> astrcode_core::Result<ForkResult> {
-        self.fork_session(session_id, fork_point).await
+        self.fork_session(
+            &astrcode_core::SessionId::from(normalize_external_session_id(session_id)),
+            fork_point,
+        )
+        .await
     }
 
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()> {
@@ -215,9 +220,12 @@ impl AppSessionPort for SessionRuntime {
 
     async fn session_stored_events(
         &self,
-        session_id: &SessionId,
+        session_id: &str,
     ) -> astrcode_core::Result<Vec<StoredEvent>> {
-        self.replay_stored_events(session_id).await
+        self.replay_stored_events(&astrcode_core::SessionId::from(
+            normalize_external_session_id(session_id),
+        ))
+        .await
     }
 
     async fn session_replay(

@@ -1,12 +1,10 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, ApprovalPending, CancelToken, CapabilityCall,
-    CompletedParentDeliveryPayload, EventStore, EventTranslator, ExecutionAccepted, LlmMessage,
-    ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
-    Phase, PolicyContext, PromptDeclaration, ResolvedExecutionLimitsSnapshot,
-    ResolvedRuntimeConfig, ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder,
-    SessionId, StorageEvent, StorageEventPayload, StoredEvent, TurnId, UserMessageOrigin,
+    AgentEventContext, ApprovalPending, CancelToken, CapabilityCall, EventStore, EventTranslator,
+    ExecutionAccepted, LlmMessage, Phase, PolicyContext, PromptDeclaration,
+    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
+    Result, RuntimeMetricsRecorder, SessionId, TurnId, UserMessageOrigin,
 };
 use astrcode_kernel::CapabilityRouter;
 use chrono::Utc;
@@ -14,12 +12,14 @@ use chrono::Utc;
 use crate::{
     SessionRuntime,
     actor::SessionActor,
-    query::current_turn_messages,
     run_turn,
-    state::{append_and_broadcast, checkpoint_if_compacted},
     turn::{
         branch::SubmitTarget,
-        events::{error_event, user_message_event},
+        events::user_message_event,
+        finalize::{
+            persist_pending_manual_compact_if_any, persist_turn_events, persist_turn_failure,
+        },
+        subrun_events::subrun_started_event,
     },
 };
 
@@ -224,7 +224,9 @@ async fn finalize_turn_execution(
                 &finalize.session_id,
                 &mut translator,
                 turn_result,
-                &finalize.persisted,
+                &finalize.persisted.turn_id,
+                &finalize.persisted.agent,
+                finalize.persisted.source_tool_call_id.clone(),
             )
             .await;
         },
@@ -337,7 +339,7 @@ async fn prepare_turn_submission(
             .append_and_broadcast(&event, &mut translator)
             .await?;
     }
-    let mut messages = current_turn_messages(session_state)?;
+    let mut messages = session_state.current_turn_messages()?;
     if !injected_messages.is_empty() {
         let insert_at = if live_user_input.is_some() {
             messages.len().saturating_sub(1)
@@ -358,153 +360,6 @@ async fn prepare_turn_submission(
             source_tool_call_id,
         },
     })
-}
-
-async fn persist_turn_events(
-    event_store: &Arc<dyn EventStore>,
-    session_state: &Arc<crate::SessionState>,
-    session_id: &str,
-    translator: &mut EventTranslator,
-    turn_result: crate::TurnRunResult,
-    persisted: &PersistedTurnContext,
-) {
-    let mut persisted_events = Vec::<StoredEvent>::new();
-    for event in &turn_result.events {
-        match append_and_broadcast(session_state, event, translator).await {
-            Ok(stored) => persisted_events.push(stored),
-            Err(error) => {
-                log::error!(
-                    "failed to persist turn event for session '{}': {}",
-                    session_id,
-                    error
-                );
-                break;
-            },
-        }
-    }
-    if let Some(event) = subrun_finished_event(
-        &persisted.turn_id,
-        &persisted.agent,
-        &turn_result,
-        persisted.source_tool_call_id.clone(),
-    ) {
-        if let Err(error) = append_and_broadcast(session_state, &event, translator).await {
-            log::error!(
-                "failed to persist subrun finished event for session '{}': {}",
-                session_id,
-                error
-            );
-        }
-    }
-    checkpoint_if_compacted(
-        event_store,
-        &SessionId::from(session_id.to_string()),
-        session_state,
-        &persisted_events,
-    )
-    .await;
-}
-
-async fn persist_turn_failure(
-    session_state: &Arc<crate::SessionState>,
-    session_id: &str,
-    turn_id: &str,
-    agent: AgentEventContext,
-    translator: &mut EventTranslator,
-    message: String,
-) {
-    let failure = error_event(Some(turn_id), &agent, message, Some(Utc::now()));
-    if let Err(append_error) = append_and_broadcast(session_state, &failure, translator).await {
-        log::error!(
-            "failed to persist turn failure for session '{}': {}",
-            session_id,
-            append_error
-        );
-    }
-}
-
-async fn persist_deferred_manual_compact(
-    gateway: &astrcode_kernel::KernelGateway,
-    prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
-    event_store: &Arc<dyn EventStore>,
-    working_dir: &str,
-    session_state: &Arc<crate::SessionState>,
-    session_id: &str,
-    request: &crate::state::PendingManualCompactRequest,
-) {
-    session_state.set_compacting(true);
-    let built = crate::turn::manual_compact::build_manual_compact_events(
-        crate::turn::manual_compact::ManualCompactRequest {
-            gateway,
-            prompt_facts_provider,
-            session_state,
-            session_id,
-            working_dir: std::path::Path::new(working_dir),
-            runtime: &request.runtime,
-            trigger: astrcode_core::CompactTrigger::Deferred,
-            instructions: request.instructions.as_deref(),
-        },
-    )
-    .await;
-    session_state.set_compacting(false);
-    let events = match built {
-        Ok(Some(events)) => events,
-        Ok(None) => return,
-        Err(error) => {
-            log::warn!(
-                "failed to build deferred compact for session '{}': {}",
-                session_id,
-                error
-            );
-            return;
-        },
-    };
-    let mut compact_translator =
-        EventTranslator::new(session_state.current_phase().unwrap_or(Phase::Idle));
-    let mut persisted = Vec::<StoredEvent>::with_capacity(events.len());
-    for event in &events {
-        match append_and_broadcast(session_state, event, &mut compact_translator).await {
-            Ok(stored) => persisted.push(stored),
-            Err(error) => {
-                log::warn!(
-                    "failed to persist deferred compact for session '{}': {}",
-                    session_id,
-                    error
-                );
-                break;
-            },
-        }
-    }
-    checkpoint_if_compacted(
-        event_store,
-        &SessionId::from(session_id.to_string()),
-        session_state,
-        &persisted,
-    )
-    .await;
-}
-
-pub(crate) async fn persist_pending_manual_compact_if_any(
-    gateway: &astrcode_kernel::KernelGateway,
-    prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
-    event_store: &Arc<dyn EventStore>,
-    working_dir: &str,
-    session_state: &Arc<crate::SessionState>,
-    session_id: &str,
-    pending_runtime: Option<crate::state::PendingManualCompactRequest>,
-) {
-    if let Some(request) = pending_runtime {
-        persist_deferred_manual_compact(
-            gateway,
-            prompt_facts_provider,
-            event_store,
-            working_dir,
-            session_state,
-            session_id,
-            &request,
-        )
-        .await;
-    }
 }
 
 impl SessionRuntime {
@@ -697,111 +552,6 @@ impl SessionRuntime {
     }
 }
 
-fn subrun_started_event(
-    turn_id: &str,
-    agent: &AgentEventContext,
-    resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
-    resolved_overrides: Option<ResolvedSubagentContextOverrides>,
-    source_tool_call_id: Option<String>,
-) -> Option<StorageEvent> {
-    if agent.invocation_kind != Some(astrcode_core::InvocationKind::SubRun) {
-        return None;
-    }
-
-    Some(StorageEvent {
-        turn_id: Some(turn_id.to_string()),
-        agent: agent.clone(),
-        payload: StorageEventPayload::SubRunStarted {
-            tool_call_id: source_tool_call_id,
-            resolved_overrides: resolved_overrides.unwrap_or_default(),
-            resolved_limits: resolved_limits.unwrap_or_default(),
-            timestamp: Some(Utc::now()),
-        },
-    })
-}
-
-fn subrun_finished_event(
-    turn_id: &str,
-    agent: &AgentEventContext,
-    turn_result: &crate::TurnRunResult,
-    source_tool_call_id: Option<String>,
-) -> Option<StorageEvent> {
-    if agent.invocation_kind != Some(astrcode_core::InvocationKind::SubRun) {
-        return None;
-    }
-
-    let summary = turn_result
-        .messages
-        .iter()
-        .rev()
-        .find_map(|message| match message {
-            astrcode_core::LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => {
-                Some(content.trim().to_string())
-            },
-            _ => None,
-        })
-        .unwrap_or_else(|| match &turn_result.outcome {
-            crate::TurnOutcome::Completed => "子 Agent 已完成，但没有返回可读总结。".to_string(),
-            crate::TurnOutcome::Cancelled => "子 Agent 已关闭。".to_string(),
-            crate::TurnOutcome::Error { message } => message.trim().to_string(),
-        });
-
-    let result = match &turn_result.outcome {
-        crate::TurnOutcome::Completed => astrcode_core::SubRunResult::Completed {
-            outcome: astrcode_core::CompletedSubRunOutcome::Completed,
-            handoff: astrcode_core::SubRunHandoff {
-                findings: Vec::new(),
-                artifacts: Vec::new(),
-                delivery: Some(ParentDelivery {
-                    idempotency_key: format!(
-                        "subrun-finished:{}:{}",
-                        agent.sub_run_id.as_deref().unwrap_or("unknown-subrun"),
-                        turn_id
-                    ),
-                    origin: ParentDeliveryOrigin::Fallback,
-                    terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
-                    source_turn_id: Some(turn_id.to_string()),
-                    payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
-                        message: summary,
-                        findings: Vec::new(),
-                        artifacts: Vec::new(),
-                    }),
-                }),
-            },
-        },
-        crate::TurnOutcome::Cancelled => astrcode_core::SubRunResult::Failed {
-            outcome: astrcode_core::FailedSubRunOutcome::Cancelled,
-            failure: astrcode_core::SubRunFailure {
-                code: astrcode_core::SubRunFailureCode::Interrupted,
-                display_message: summary,
-                technical_message: "interrupted".to_string(),
-                retryable: false,
-            },
-        },
-        crate::TurnOutcome::Error { message } => astrcode_core::SubRunResult::Failed {
-            outcome: astrcode_core::FailedSubRunOutcome::Failed,
-            failure: astrcode_core::SubRunFailure {
-                code: astrcode_core::SubRunFailureCode::Internal,
-                display_message: summary,
-                technical_message: message.clone(),
-                retryable: true,
-            },
-        },
-    };
-
-    Some(StorageEvent {
-        turn_id: Some(turn_id.to_string()),
-        agent: agent.clone(),
-        payload: StorageEventPayload::SubRunFinished {
-            tool_call_id: source_tool_call_id,
-            result,
-            step_count: turn_result.summary.step_count as u32,
-            estimated_tokens: turn_result.summary.total_tokens_used,
-            timestamp: Some(Utc::now()),
-        },
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -824,6 +574,7 @@ mod tests {
         turn::{
             TurnLoopTransition, TurnStopCause,
             events::turn_done_event,
+            subrun_events::subrun_finished_event,
             test_support::{
                 BranchingTestEventStore, NoopMetrics, append_root_turn_event_to_actor,
                 assert_contains_compact_summary, assert_contains_error_message, test_actor,

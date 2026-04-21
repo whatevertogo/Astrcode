@@ -14,8 +14,9 @@ use crate::{
         agent::build_agent_observe_snapshot,
         conversation::{build_conversation_replay_frames, project_conversation_snapshot},
         input_queue::recoverable_parent_deliveries,
-        turn::{is_terminal_projection, project_turn_outcome, replay_turn_projection},
+        turn::{is_terminal_projection, project_turn_outcome},
     },
+    turn::projector::project_turn_projection,
 };
 
 pub(crate) struct SessionQueries<'a> {
@@ -46,7 +47,7 @@ impl<'a> SessionQueries<'a> {
         &self,
         session_id: &str,
     ) -> Result<SessionControlStateSnapshot> {
-        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
         let last_compact_meta = actor
             .state()
@@ -71,13 +72,13 @@ impl<'a> SessionQueries<'a> {
     }
 
     pub async fn session_child_nodes(&self, session_id: &str) -> Result<Vec<ChildSessionNode>> {
-        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
         actor.state().list_child_session_nodes()
     }
 
     pub async fn session_mode_state(&self, session_id: &str) -> Result<SessionModeSnapshot> {
-        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
         Ok(SessionModeSnapshot {
             current_mode_id: actor.state().current_mode_id()?,
@@ -86,7 +87,7 @@ impl<'a> SessionQueries<'a> {
     }
 
     pub async fn session_working_dir(&self, session_id: &str) -> Result<String> {
-        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
         Ok(actor.working_dir().to_string())
     }
@@ -96,7 +97,7 @@ impl<'a> SessionQueries<'a> {
         session_id: &str,
         owner: &str,
     ) -> Result<Option<TaskSnapshot>> {
-        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
         actor.state().active_tasks_for(owner)
     }
@@ -111,7 +112,7 @@ impl<'a> SessionQueries<'a> {
         session_id: &str,
         turn_id: &str,
     ) -> Result<TurnTerminalSnapshot> {
-        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let state = self.session_state(&session_id).await?;
         let mut receiver = state.broadcaster.subscribe();
         if let Some(snapshot) = self
@@ -159,7 +160,7 @@ impl<'a> SessionQueries<'a> {
         target_agent_id: &str,
         lifecycle_status: AgentLifecycleStatus,
     ) -> Result<AgentObserveSnapshot> {
-        let session_id = SessionId::from(crate::normalize_session_id(open_session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(open_session_id));
         let session_state = self.session_state(&session_id).await?;
         let projected = session_state.snapshot_projected_state()?;
         let input_queue_projection =
@@ -175,7 +176,7 @@ impl<'a> SessionQueries<'a> {
         &self,
         session_id: &str,
     ) -> Result<ConversationSnapshotFacts> {
-        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let records = self.runtime.replay_history(&session_id, None).await?;
         let phase = self.runtime.session_phase(&session_id).await?;
         Ok(project_conversation_snapshot(&records, phase))
@@ -186,7 +187,7 @@ impl<'a> SessionQueries<'a> {
         session_id: &str,
         last_event_id: Option<&str>,
     ) -> Result<ConversationStreamReplayFacts> {
-        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.runtime.ensure_loaded_session(&session_id).await?;
         let full_history = self.runtime.replay_history(&session_id, None).await?;
         let (seed_records, replay_history) = split_records_at_cursor(full_history, last_event_id);
@@ -210,7 +211,7 @@ impl<'a> SessionQueries<'a> {
         session_id: &str,
         agent_id: &str,
     ) -> Result<Vec<String>> {
-        let session_id = SessionId::from(crate::normalize_session_id(session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let session_state = self.session_state(&session_id).await?;
         Ok(session_state
             .input_queue_projection_for_agent(agent_id)?
@@ -224,7 +225,7 @@ impl<'a> SessionQueries<'a> {
         &self,
         parent_session_id: &str,
     ) -> Result<Vec<astrcode_kernel::PendingParentDelivery>> {
-        let session_id = SessionId::from(crate::normalize_session_id(parent_session_id));
+        let session_id = SessionId::from(crate::state::normalize_session_id(parent_session_id));
         let events = self.stored_events(&session_id).await?;
         Ok(recoverable_parent_deliveries(&events))
     }
@@ -263,7 +264,7 @@ impl<'a> SessionQueries<'a> {
         let phase = state.current_phase()?;
         let projection = state
             .turn_projection(turn_id)?
-            .or_else(|| replay_turn_projection(&events));
+            .or_else(|| project_turn_projection(&events));
         if turn_snapshot_is_terminal(phase, projection.as_ref(), &events) {
             return Ok(Some(TurnTerminalSnapshot {
                 phase,
@@ -303,7 +304,7 @@ fn try_turn_terminal_snapshot_from_recent(
     let phase = state.current_phase()?;
     let projection = state
         .turn_projection(turn_id)?
-        .or_else(|| replay_turn_projection(&events));
+        .or_else(|| project_turn_projection(&events));
     if turn_snapshot_is_terminal(phase, projection.as_ref(), &events) {
         return Ok(Some(TurnTerminalSnapshot {
             phase,
