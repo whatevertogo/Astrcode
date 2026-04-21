@@ -3,6 +3,8 @@ import type {
   ChildSessionNotificationKind,
   ChildSessionNotificationMessage,
   CompactMeta,
+  ConversationStepCursor,
+  ConversationStepProgress,
   ConversationControlState,
   ConversationPlanReference,
   ConversationTaskItem,
@@ -30,6 +32,7 @@ export interface ConversationSnapshotState {
   cursor: string | null;
   phase: Phase;
   control: ConversationControlState;
+  stepProgress: ConversationStepProgress;
   blocks: ConversationRecord[];
   childSummaries: ConversationRecord[];
 }
@@ -38,11 +41,43 @@ export interface ConversationViewProjection {
   cursor: string | null;
   phase: Phase;
   control: ConversationControlState;
+  stepProgress: ConversationStepProgress;
   messages: Message[];
   messageTree: SubRunThreadTree;
   messageFingerprint: string;
   childSubRuns: SubRunViewData[];
   childFingerprint: string;
+}
+
+function emptyStepProgress(): ConversationStepProgress {
+  return {
+    durable: null,
+    live: null,
+  };
+}
+
+function parseStepCursor(value: unknown): ConversationStepCursor | null {
+  const record = asRecord(value);
+  const turnId = pickString(record ?? {}, 'turnId');
+  const stepIndex = record?.stepIndex;
+  if (!turnId || typeof stepIndex !== 'number' || !Number.isFinite(stepIndex) || stepIndex < 0) {
+    return null;
+  }
+  return {
+    turnId,
+    stepIndex,
+  };
+}
+
+function parseStepProgress(value: unknown): ConversationStepProgress {
+  const record = asRecord(value);
+  if (!record) {
+    return emptyStepProgress();
+  }
+  return {
+    durable: parseStepCursor(record.durable),
+    live: parseStepCursor(record.live),
+  };
 }
 
 function parsePhase(value: unknown): Phase {
@@ -345,6 +380,7 @@ function normalizeSnapshotState(payload: unknown): ConversationSnapshotState {
     cursor: pickOptionalString(record, 'cursor') ?? null,
     phase: control.phase,
     control,
+    stepProgress: parseStepProgress(record.stepProgress),
     blocks: Array.isArray(record.blocks)
       ? (record.blocks.filter(asRecord) as ConversationRecord[])
       : [],
@@ -432,6 +468,7 @@ function projectConversationMessages(
           id: queuedThinking?.id ?? `conversation-assistant:${id}`,
           kind: 'assistant',
           turnId,
+          stepIndex: typeof block.stepIndex === 'number' ? block.stepIndex : undefined,
           text: pickString(block, 'markdown') ?? '',
           reasoningText: queuedThinking?.markdown,
           streaming:
@@ -440,6 +477,9 @@ function projectConversationMessages(
         });
         return;
       }
+
+      case 'prompt_metrics':
+        return;
 
       case 'plan': {
         const blockers = asRecord(block.blockers);
@@ -604,6 +644,7 @@ function projectConversationMessages(
         id: thinking.id,
         kind: 'assistant',
         turnId,
+        stepIndex: undefined,
         text: '',
         reasoningText: thinking.markdown,
         streaming: thinking.streaming,
@@ -668,6 +709,7 @@ export function projectConversationState(
     cursor: state.cursor,
     phase: state.control.phase,
     control: state.control,
+    stepProgress: state.stepProgress,
     messages,
     messageTree,
     messageFingerprint: messageTree.rootStreamFingerprint,
@@ -801,6 +843,9 @@ export function applyConversationEnvelope(
   const envelopeCursor = pickOptionalString(envelope, 'cursor');
   if (envelopeCursor) {
     state.cursor = envelopeCursor;
+  }
+  if ('stepProgress' in envelope) {
+    state.stepProgress = parseStepProgress(envelope.stepProgress);
   }
 
   switch (kind) {

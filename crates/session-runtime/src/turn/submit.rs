@@ -16,9 +16,10 @@ use crate::{
     run_turn,
     turn::{
         branch::SubmitTarget,
-        events::user_message_event,
+        events::{turn_terminal_event, user_message_event},
         finalize::{
-            persist_pending_manual_compact_if_any, persist_turn_events, persist_turn_failure,
+            persist_pending_manual_compact_if_any, persist_storage_events,
+            persist_subrun_finished_event, persist_turn_failure,
         },
         subrun_events::subrun_started_event,
     },
@@ -152,6 +153,7 @@ impl TurnCoordinator {
         Ok(TurnExecutionTask {
             kernel: Arc::clone(&kernel),
             request: crate::turn::RunnerRequest {
+                event_store: Arc::clone(&event_store),
                 session_id: submit_target.session_id.to_string(),
                 working_dir: submit_target.actor.working_dir().to_string(),
                 turn_id: turn_id.to_string(),
@@ -225,17 +227,39 @@ async fn finalize_turn_execution(
 
     match result {
         Ok(turn_result) => {
-            persist_turn_events(
-                &finalize.event_store,
+            if !turn_result.events.is_empty() {
+                if let Err(error) = persist_storage_events(
+                    &finalize.event_store,
+                    finalize.actor.state(),
+                    &finalize.session_id,
+                    &mut translator,
+                    &turn_result.events,
+                )
+                .await
+                {
+                    log::error!(
+                        "failed to persist trailing turn events for session '{}': {}",
+                        finalize.session_id,
+                        error
+                    );
+                }
+            }
+            if let Err(error) = persist_subrun_finished_event(
                 finalize.actor.state(),
-                &finalize.session_id,
                 &mut translator,
-                turn_result,
                 &finalize.persisted.turn_id,
                 &finalize.persisted.agent,
+                &turn_result,
                 finalize.persisted.source_tool_call_id.clone(),
             )
-            .await;
+            .await
+            {
+                log::error!(
+                    "failed to persist subrun finished event for session '{}': {}",
+                    finalize.session_id,
+                    error
+                );
+            }
         },
         Err(error) if error.is_cancelled() => {
             log::warn!(
@@ -243,6 +267,26 @@ async fn finalize_turn_execution(
                 finalize.session_id,
                 error
             );
+            if let Err(append_error) = persist_storage_events(
+                &finalize.event_store,
+                finalize.actor.state(),
+                &finalize.session_id,
+                &mut translator,
+                &[turn_terminal_event(
+                    &finalize.persisted.turn_id,
+                    &finalize.persisted.agent,
+                    crate::turn::TurnStopCause::Cancelled,
+                    Utc::now(),
+                )],
+            )
+            .await
+            {
+                log::error!(
+                    "failed to persist cancelled turn terminal event for session '{}': {}",
+                    finalize.session_id,
+                    append_error
+                );
+            }
         },
         Err(error) => {
             log::error!(
@@ -563,18 +607,23 @@ impl SessionRuntime {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::Duration,
     };
 
     use astrcode_core::{
         CancelToken, LlmFinishReason, LlmMessage, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
         PromptBuildOutput, PromptBuildRequest, PromptProvider, ResourceProvider,
-        ResourceReadResult, ResourceRequestContext, SessionTurnLease, StorageEventPayload,
-        UserMessageOrigin,
+        ResourceReadResult, ResourceRequestContext, SessionTurnLease, StorageEventPayload, Tool,
+        ToolContext, ToolDefinition, ToolExecutionResult, UserMessageOrigin,
     };
-    use astrcode_kernel::Kernel;
+    use astrcode_kernel::{Kernel, ToolCapabilityInvoker};
     use async_trait::async_trait;
+    use serde_json::json;
+    use tokio::time::timeout;
 
     use super::*;
     use crate::{
@@ -612,6 +661,7 @@ mod tests {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::Stop,
+                prompt_cache_diagnostics: None,
             })
         }
 
@@ -669,6 +719,25 @@ mod tests {
         )
     }
 
+    fn step_flush_kernel(provider: Arc<StepFlushLlmProvider>) -> Arc<Kernel> {
+        let router = astrcode_kernel::CapabilityRouter::builder()
+            .register_invoker(Arc::new(
+                ToolCapabilityInvoker::new(Arc::new(StepFlushProbeTool))
+                    .expect("tool invoker should build"),
+            ))
+            .build()
+            .expect("router should build");
+        Arc::new(
+            Kernel::builder()
+                .with_capabilities(router)
+                .with_llm_provider(provider)
+                .with_prompt_provider(Arc::new(TestPromptProvider))
+                .with_resource_provider(Arc::new(TestResourceProvider))
+                .build()
+                .expect("kernel should build"),
+        )
+    }
+
     fn finalize_context(actor: Arc<SessionActor>) -> TurnFinalizeContext {
         let generation = actor
             .turn_runtime()
@@ -718,7 +787,85 @@ mod tests {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::Stop,
+                prompt_cache_diagnostics: None,
             })
+        }
+
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                context_window: 64_000,
+                max_output_tokens: 8_000,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct StepFlushProbeTool;
+
+    #[async_trait]
+    impl Tool for StepFlushProbeTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "step_flush_probe".to_string(),
+                description: "records whether completed steps survive later cancellation"
+                    .to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _input: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolExecutionResult> {
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "step_flush_probe".to_string(),
+                ok: true,
+                output: "step flushed result".to_string(),
+                error: None,
+                metadata: None,
+                continuation: None,
+                duration_ms: 0,
+                truncated: false,
+            })
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct StepFlushLlmProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LlmProvider for StepFlushLlmProvider {
+        async fn generate(
+            &self,
+            request: LlmRequest,
+            _sink: Option<astrcode_core::LlmEventSink>,
+        ) -> Result<LlmOutput> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => Ok(LlmOutput {
+                    content: String::new(),
+                    tool_calls: vec![astrcode_core::ToolCallRequest {
+                        id: "call-step-1".to_string(),
+                        name: "step_flush_probe".to_string(),
+                        args: json!({}),
+                    }],
+                    reasoning: None,
+                    usage: None,
+                    finish_reason: LlmFinishReason::ToolCalls,
+                    prompt_cache_diagnostics: None,
+                }),
+                1 => loop {
+                    if request.cancel.is_cancelled() {
+                        return Err(astrcode_core::AstrError::Cancelled);
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                },
+                call_index => panic!("unexpected llm call index {call_index}"),
+            }
         }
 
         fn model_limits(&self) -> ModelLimits {
@@ -745,7 +892,6 @@ mod tests {
                 last_transition: Some(TurnLoopTransition::ToolCycleCompleted),
                 wall_duration: Duration::default(),
                 step_count: 1,
-                continuation_count: 0,
                 total_tokens_used: 0,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
@@ -1136,6 +1282,84 @@ mod tests {
                 && inherited_answer == "parent answer"
                 && child_task == "child task"
         ));
+    }
+
+    #[tokio::test]
+    async fn submit_prompt_inner_persists_completed_step_before_later_cancellation() {
+        let event_store = Arc::new(BranchingTestEventStore::default());
+        let provider = Arc::new(StepFlushLlmProvider::default());
+        let runtime = SessionRuntime::new(
+            step_flush_kernel(Arc::clone(&provider)),
+            Arc::new(crate::turn::test_support::NoopPromptFactsProvider),
+            event_store.clone() as Arc<dyn EventStore>,
+            Arc::new(NoopMetrics),
+        );
+        let session = runtime
+            .create_session(".")
+            .await
+            .expect("test session should be created");
+
+        let accepted = runtime
+            .submit_prompt_inner(SubmitPromptRequest {
+                session_id: session.session_id.clone(),
+                turn_id: None,
+                live_user_input: Some("hello".to_string()),
+                queued_inputs: Vec::new(),
+                runtime: ResolvedRuntimeConfig::default(),
+                busy_policy: SubmitBusyPolicy::RejectOnBusy,
+                submission: AgentPromptSubmission::default(),
+            })
+            .await
+            .expect("submit should not error")
+            .expect("submit should be accepted");
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if provider.calls.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("turn should advance into the second llm step before cancellation");
+
+        let actor = runtime
+            .ensure_loaded_session(&accepted.session_id)
+            .await
+            .expect("session actor should load");
+        assert!(
+            actor
+                .turn_runtime()
+                .interrupt_if_running()
+                .expect("interrupt should succeed")
+                .is_some(),
+            "turn should still be running while the second llm step is blocked"
+        );
+
+        let snapshot = runtime
+            .wait_for_turn_terminal_snapshot(
+                accepted.session_id.as_str(),
+                accepted.turn_id.as_str(),
+            )
+            .await
+            .expect("cancelled turn should still reach a terminal snapshot");
+
+        assert!(snapshot.events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::ToolCall { tool_call_id, tool_name, .. }
+                if tool_call_id == "call-step-1" && tool_name == "step_flush_probe"
+        )));
+        assert!(snapshot.events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::ToolResult { tool_call_id, output, .. }
+                if tool_call_id == "call-step-1" && output == "step flushed result"
+        )));
+        assert!(snapshot.events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::TurnDone { terminal_kind, .. }
+                if *terminal_kind == Some(astrcode_core::TurnTerminalKind::Cancelled)
+        )));
     }
 
     #[tokio::test]

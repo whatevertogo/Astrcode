@@ -4,7 +4,8 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, CancelToken, LlmMessage, Result, SystemPromptBlock, ToolDefinition,
+    AstrError, CancelToken, LlmMessage, PromptCacheGlobalStrategy, PromptCacheHints, Result,
+    SystemPromptBlock, ToolDefinition,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -12,19 +13,20 @@ use log::{debug, warn};
 use tokio::select;
 
 use super::{
-    dto::{AnthropicCacheControl, AnthropicRequest, AnthropicResponse, AnthropicUsage},
+    dto::{AnthropicRequest, AnthropicResponse, AnthropicUsage},
     request::{
-        ANTHROPIC_CACHE_BREAKPOINT_LIMIT, MessageBuildOptions, enable_message_caching,
-        is_official_anthropic_api_url, summarize_request_for_diagnostics,
-        supports_extended_thinking_api_url, thinking_config_for_model, to_anthropic_messages,
-        to_anthropic_system, to_anthropic_tools,
+        ANTHROPIC_CACHE_BREAKPOINT_LIMIT, MessageBuildOptions, apply_message_cache_breakpoint,
+        apply_tool_result_cache_references, is_official_anthropic_api_url,
+        summarize_request_for_diagnostics, supports_extended_thinking_api_url,
+        thinking_config_for_model, to_anthropic_messages, to_anthropic_system, to_anthropic_tools,
     },
     response::response_to_output,
     stream::{consume_sse_text_chunk, flush_sse_buffer},
 };
 use crate::{
     EventSink, FinishReason, LlmAccumulator, LlmClientConfig, LlmOutput, LlmProvider, LlmRequest,
-    ModelLimits, Utf8StreamDecoder, build_http_client, cache_tracker::CacheTracker,
+    ModelLimits, Utf8StreamDecoder, build_http_client,
+    cache_tracker::{CacheCheckContext, CacheTracker, stable_hash},
     classify_http_error, is_retryable_status, wait_retry_delay,
 };
 
@@ -104,7 +106,9 @@ impl AnthropicProvider {
         tools: &[ToolDefinition],
         system_prompt: Option<&str>,
         system_prompt_blocks: &[SystemPromptBlock],
+        prompt_cache_hints: Option<&PromptCacheHints>,
         max_output_tokens_override: Option<usize>,
+        skip_cache_write: bool,
         stream: bool,
     ) -> AnthropicRequest {
         let effective_max_output_tokens = max_output_tokens_override
@@ -112,15 +116,17 @@ impl AnthropicProvider {
             .min(self.limits.max_output_tokens);
         let use_official_endpoint = is_official_anthropic_api_url(&self.messages_api_url);
         let supports_extended_thinking = supports_extended_thinking_api_url(&self.messages_api_url);
-        let use_automatic_cache = use_official_endpoint;
+        let global_cache_strategy = prompt_cache_hints
+            .map(|hints| hints.global_cache_strategy)
+            .unwrap_or(PromptCacheGlobalStrategy::SystemPrompt);
         let mut remaining_cache_breakpoints = ANTHROPIC_CACHE_BREAKPOINT_LIMIT;
-        let request_cache_control = if use_automatic_cache {
-            remaining_cache_breakpoints = remaining_cache_breakpoints.saturating_sub(1);
-            Some(AnthropicCacheControl::ephemeral())
-        } else {
-            None
-        };
 
+        let system = to_anthropic_system(
+            system_prompt,
+            system_prompt_blocks,
+            &mut remaining_cache_breakpoints,
+            global_cache_strategy,
+        );
         let mut anthropic_messages = to_anthropic_messages(
             messages,
             MessageBuildOptions {
@@ -130,22 +136,23 @@ impl AnthropicProvider {
         let tools = if tools.is_empty() {
             None
         } else {
-            Some(to_anthropic_tools(tools, &mut remaining_cache_breakpoints))
+            Some(to_anthropic_tools(
+                tools,
+                &mut remaining_cache_breakpoints,
+                global_cache_strategy,
+            ))
         };
-        let system = to_anthropic_system(
-            system_prompt,
-            system_prompt_blocks,
+        let _ = apply_message_cache_breakpoint(
+            &mut anthropic_messages,
             &mut remaining_cache_breakpoints,
+            skip_cache_write,
         );
-
-        if !use_automatic_cache {
-            enable_message_caching(&mut anthropic_messages, remaining_cache_breakpoints);
-        }
+        apply_tool_result_cache_references(&mut anthropic_messages);
 
         AnthropicRequest {
             model: self.model.clone(),
             max_tokens: effective_max_output_tokens.min(u32::MAX as usize) as u32,
-            cache_control: request_cache_control,
+            cache_control: None,
             messages: anthropic_messages,
             system,
             tools,
@@ -161,6 +168,58 @@ impl AnthropicProvider {
             } else {
                 None
             },
+        }
+    }
+
+    fn apply_cache_diagnostics(
+        &self,
+        output: &mut LlmOutput,
+        pending_cache_check: Option<crate::cache_tracker::PendingCacheCheck>,
+    ) {
+        let Some(pending_cache_check) = pending_cache_check else {
+            return;
+        };
+        let Some(mut tracker) = self.cache_tracker.lock().ok() else {
+            return;
+        };
+        let Some(diagnostics) = tracker.finalize(pending_cache_check, output.usage) else {
+            return;
+        };
+
+        if diagnostics.cache_break_detected {
+            debug!(
+                "[CACHE] detected cache break: reasons={:?} prev_cache_read={:?} \
+                 current_cache_read={:?}",
+                diagnostics.reasons,
+                diagnostics.previous_cache_read_input_tokens,
+                diagnostics.current_cache_read_input_tokens
+            );
+        } else if diagnostics.expected_drop {
+            debug!(
+                "[CACHE] expected cache read drop: reasons={:?} prev_cache_read={:?} \
+                 current_cache_read={:?}",
+                diagnostics.reasons,
+                diagnostics.previous_cache_read_input_tokens,
+                diagnostics.current_cache_read_input_tokens
+            );
+        }
+
+        output.prompt_cache_diagnostics = Some(diagnostics);
+    }
+
+    fn build_cache_check_context(
+        request: &AnthropicRequest,
+        global_cache_strategy: PromptCacheGlobalStrategy,
+        compacted: bool,
+        tool_result_rebudgeted: bool,
+    ) -> CacheCheckContext {
+        CacheCheckContext {
+            system_blocks_hash: stable_hash(&request.system),
+            tool_schema_hash: stable_hash(&request.tools),
+            model: request.model.clone(),
+            global_cache_strategy,
+            compacted,
+            tool_result_rebudgeted,
         }
     }
 
@@ -294,45 +353,34 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
-        let cancel = request.cancel;
-
-        // 检测缓存失效并记录原因
-        let system_prompt_text = request
-            .prompt_cache_hints
+        let prompt_cache_hints = request.prompt_cache_hints.clone();
+        let global_cache_strategy = prompt_cache_hints
             .as_ref()
-            .map(cacheable_prefix_cache_key)
-            .unwrap_or_else(|| request.system_prompt.clone().unwrap_or_default());
-        let tool_names: Vec<String> = request.tools.iter().map(|t| t.name.clone()).collect();
-
-        if let Ok(mut tracker) = self.cache_tracker.lock() {
-            let break_reasons = tracker.check_and_update(
-                &system_prompt_text,
-                &tool_names,
-                &self.model,
-                "anthropic",
-            );
-
-            if !break_reasons.is_empty() {
-                debug!(
-                    "[CACHE] Cache break detected: {:?}, unchanged_layers={:?}",
-                    break_reasons,
-                    request
-                        .prompt_cache_hints
-                        .as_ref()
-                        .map(|hints| hints.unchanged_layers.as_slice())
-                        .unwrap_or(&[])
-                );
-            }
-        }
-
+            .map(|hints| hints.global_cache_strategy)
+            .unwrap_or(PromptCacheGlobalStrategy::SystemPrompt);
+        let cancel = request.cancel;
         let body = self.build_request(
             &request.messages,
             &request.tools,
             request.system_prompt.as_deref(),
             &request.system_prompt_blocks,
+            prompt_cache_hints.as_ref(),
             request.max_output_tokens_override,
+            request.skip_cache_write,
             sink.is_some(),
         );
+        let pending_cache_check = self.cache_tracker.lock().ok().map(|tracker| {
+            tracker.prepare(&Self::build_cache_check_context(
+                &body,
+                global_cache_strategy,
+                prompt_cache_hints
+                    .as_ref()
+                    .is_some_and(|hints| hints.compacted),
+                prompt_cache_hints
+                    .as_ref()
+                    .is_some_and(|hints| hints.tool_result_rebudgeted),
+            ))
+        });
         let response = self.send_request(&body, cancel.clone()).await?;
 
         match sink {
@@ -344,7 +392,9 @@ impl LlmProvider for AnthropicProvider {
                         error,
                     )
                 })?;
-                Ok(response_to_output(payload))
+                let mut output = response_to_output(payload);
+                self.apply_cache_diagnostics(&mut output, pending_cache_check);
+                Ok(output)
             },
             Some(sink) => {
                 let mut stream = response.bytes_stream();
@@ -394,6 +444,7 @@ impl LlmProvider for AnthropicProvider {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
                         output.usage = stream_usage.into_llm_usage();
+                        self.apply_cache_diagnostics(&mut output, pending_cache_check.clone());
 
                         // 记录流式响应的缓存状态
                         if let Some(ref u) = output.usage {
@@ -450,6 +501,7 @@ impl LlmProvider for AnthropicProvider {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
                         output.usage = stream_usage.into_llm_usage();
+                        self.apply_cache_diagnostics(&mut output, pending_cache_check.clone());
                         return Ok(output);
                     }
                 }
@@ -466,6 +518,7 @@ impl LlmProvider for AnthropicProvider {
                     output.finish_reason = FinishReason::from_api_value(reason);
                 }
                 output.usage = stream_usage.into_llm_usage();
+                self.apply_cache_diagnostics(&mut output, pending_cache_check);
                 Ok(output)
             },
         }
@@ -474,18 +527,6 @@ impl LlmProvider for AnthropicProvider {
     fn model_limits(&self) -> ModelLimits {
         self.limits
     }
-}
-
-fn cacheable_prefix_cache_key(hints: &astrcode_core::PromptCacheHints) -> String {
-    [
-        hints.layer_fingerprints.stable.as_deref(),
-        hints.layer_fingerprints.semi_stable.as_deref(),
-        hints.layer_fingerprints.inherited.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join("|")
 }
 
 #[cfg(test)]

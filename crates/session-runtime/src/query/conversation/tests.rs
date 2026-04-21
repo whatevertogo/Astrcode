@@ -4,8 +4,9 @@ use astrcode_core::{
     AgentEvent, AgentEventContext, AgentLifecycleStatus, ChildAgentRef, ChildSessionNotification,
     ChildSessionNotificationKind, DeleteProjectResult, EventStore, ParentDelivery,
     ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics, Phase,
-    SessionEventRecord, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
-    StorageEventPayload, StoredEvent, ToolExecutionResult, ToolOutputStream, UserMessageOrigin,
+    PromptMetricsPayload, SessionEventRecord, SessionId, SessionMeta, SessionTurnAcquireResult,
+    StorageEvent, StorageEventPayload, StoredEvent, ToolExecutionResult, ToolOutputStream,
+    UserMessageOrigin,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -402,6 +403,138 @@ fn live_then_durable_tool_delta_dedupes_chunk_on_same_tool_block() {
 }
 
 #[test]
+fn snapshot_tracks_last_durable_step_cursor_from_prompt_metrics() {
+    let records = vec![
+        record(
+            "1.1",
+            AgentEvent::PromptMetrics {
+                turn_id: Some("turn-1".to_string()),
+                agent: sample_agent_context(),
+                metrics: PromptMetricsPayload {
+                    step_index: 0,
+                    estimated_tokens: 1200,
+                    context_window: 200_000,
+                    effective_window: 180_000,
+                    threshold_tokens: 144_000,
+                    truncated_tool_results: 0,
+                    provider_input_tokens: Some(800),
+                    provider_output_tokens: Some(120),
+                    cache_creation_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(640),
+                    provider_cache_metrics_supported: true,
+                    prompt_cache_reuse_hits: 2,
+                    prompt_cache_reuse_misses: 0,
+                    prompt_cache_unchanged_layers: Vec::new(),
+                    prompt_cache_diagnostics: None,
+                },
+            },
+        ),
+        record(
+            "1.2",
+            AgentEvent::AssistantMessage {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                content: "first step".to_string(),
+                reasoning_content: None,
+                step_index: Some(0),
+            },
+        ),
+        record(
+            "1.3",
+            AgentEvent::PromptMetrics {
+                turn_id: Some("turn-1".to_string()),
+                agent: sample_agent_context(),
+                metrics: PromptMetricsPayload {
+                    step_index: 1,
+                    estimated_tokens: 1600,
+                    context_window: 200_000,
+                    effective_window: 180_000,
+                    threshold_tokens: 144_000,
+                    truncated_tool_results: 0,
+                    provider_input_tokens: Some(1100),
+                    provider_output_tokens: Some(96),
+                    cache_creation_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(896),
+                    provider_cache_metrics_supported: true,
+                    prompt_cache_reuse_hits: 3,
+                    prompt_cache_reuse_misses: 0,
+                    prompt_cache_unchanged_layers: Vec::new(),
+                    prompt_cache_diagnostics: None,
+                },
+            },
+        ),
+    ];
+
+    let snapshot = project_conversation_snapshot(&records, Phase::Streaming);
+
+    assert_eq!(
+        snapshot
+            .step_progress
+            .durable
+            .as_ref()
+            .map(|cursor| (cursor.turn_id.as_str(), cursor.step_index,)),
+        Some(("turn-1", 1))
+    );
+    assert!(snapshot.step_progress.live.is_none());
+}
+
+#[test]
+fn stream_projector_marks_live_step_after_last_durable_step() {
+    let facts = sample_stream_replay_facts(
+        vec![record(
+            "1.1",
+            AgentEvent::PromptMetrics {
+                turn_id: Some("turn-1".to_string()),
+                agent: sample_agent_context(),
+                metrics: PromptMetricsPayload {
+                    step_index: 0,
+                    estimated_tokens: 1200,
+                    context_window: 200_000,
+                    effective_window: 180_000,
+                    threshold_tokens: 144_000,
+                    truncated_tool_results: 0,
+                    provider_input_tokens: Some(800),
+                    provider_output_tokens: Some(120),
+                    cache_creation_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(640),
+                    provider_cache_metrics_supported: true,
+                    prompt_cache_reuse_hits: 2,
+                    prompt_cache_reuse_misses: 0,
+                    prompt_cache_unchanged_layers: Vec::new(),
+                    prompt_cache_diagnostics: None,
+                },
+            },
+        )],
+        Vec::new(),
+    );
+    let mut stream = ConversationStreamProjector::new(Some("1.1".to_string()), &facts);
+
+    let live_frames = stream.project_live_event(&AgentEvent::ModelDelta {
+        turn_id: "turn-1".to_string(),
+        agent: sample_agent_context(),
+        delta: "next step".to_string(),
+    });
+
+    assert_eq!(live_frames.len(), 1);
+    assert_eq!(
+        live_frames[0]
+            .step_progress
+            .durable
+            .as_ref()
+            .map(|cursor| (cursor.turn_id.as_str(), cursor.step_index)),
+        Some(("turn-1", 0))
+    );
+    assert_eq!(
+        live_frames[0]
+            .step_progress
+            .live
+            .as_ref()
+            .map(|cursor| (cursor.turn_id.as_str(), cursor.step_index)),
+        Some(("turn-1", 1))
+    );
+}
+
+#[test]
 fn child_notification_patches_tool_block_and_appends_handoff_block() {
     let mut projector = ConversationDeltaProjector::new();
     projector.seed(&[record(
@@ -554,6 +687,7 @@ async fn runtime_query_builds_snapshot_and_stream_replay_facts() {
                     content: "done".to_string(),
                     reasoning_content: Some("think".to_string()),
                     reasoning_signature: None,
+                    step_index: None,
                     timestamp: None,
                 },
             ),

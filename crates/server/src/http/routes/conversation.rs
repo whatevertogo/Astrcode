@@ -36,6 +36,7 @@ use crate::{
         project_conversation_control_summary_delta, project_conversation_frame,
         project_conversation_rehydrate_envelope, project_conversation_slash_candidate_summaries,
         project_conversation_slash_candidates, project_conversation_snapshot,
+        project_conversation_step_progress,
     },
 };
 
@@ -491,10 +492,16 @@ impl ConversationStreamProjectorState {
             return Vec::new();
         }
         let cursor_owned = cursor.to_string();
+        let step_progress = project_conversation_step_progress(self.projector.step_progress());
         deltas
             .into_iter()
             .map(|delta| {
-                make_conversation_envelope(self.session_id.as_str(), cursor_owned.as_str(), delta)
+                make_conversation_envelope(
+                    self.session_id.as_str(),
+                    cursor_owned.as_str(),
+                    step_progress.clone(),
+                    delta,
+                )
             })
             .collect()
     }
@@ -526,6 +533,7 @@ fn single_envelope_stream(envelope: ConversationStreamEnvelopeDto) -> Conversati
 fn make_conversation_envelope(
     session_id: &str,
     cursor: &str,
+    step_progress: astrcode_protocol::http::conversation::v1::ConversationStepProgressDto,
     delta: ConversationDeltaDto,
 ) -> ConversationStreamEnvelopeDto {
     ConversationStreamEnvelopeDto {
@@ -533,6 +541,7 @@ fn make_conversation_envelope(
         cursor: astrcode_protocol::http::conversation::v1::ConversationCursorDto(
             cursor.to_string(),
         ),
+        step_progress,
         delta,
     }
 }
@@ -678,6 +687,7 @@ mod tests {
             json!({
                 "sessionId": "session-root",
                 "cursor": "1.3",
+                "stepProgress": {},
                 "kind": "patch_block",
                 "blockId": "tool:call-1:call",
                 "patch": {
@@ -734,6 +744,7 @@ mod tests {
             json!({
                 "sessionId": "session-root",
                 "cursor": "1.4",
+                "stepProgress": {},
                 "kind": "upsert_child_summary",
                 "child": {
                     "childSessionId": "session-child-1",
@@ -793,6 +804,7 @@ mod tests {
             json!({
                 "sessionId": "session-root",
                 "cursor": "1.4",
+                "stepProgress": {},
                 "kind": "update_control_state",
                 "control": {
                     "phase": "callingTool",
@@ -835,6 +847,7 @@ mod tests {
                     .iter()
                     .map(|record| ConversationDeltaFrameFacts {
                         cursor: record.event_id.clone(),
+                        step_progress: Default::default(),
                         delta: match &record.event {
                             AgentEvent::ToolCallDelta {
                                 tool_call_id,

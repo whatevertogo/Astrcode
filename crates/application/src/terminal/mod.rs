@@ -17,9 +17,10 @@ pub use contracts::{
     ConversationDeltaFacts, ConversationDeltaFrameFacts, ConversationErrorBlockFacts,
     ConversationPlanBlockFacts, ConversationPlanBlockersFacts, ConversationPlanEventKind,
     ConversationPlanReviewFacts, ConversationPlanReviewKind, ConversationSnapshotFacts,
-    ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts, ConversationSystemNoteKind,
-    ConversationThinkingBlockFacts, ConversationTranscriptErrorKind, ConversationUserBlockFacts,
-    ToolCallBlockFacts, ToolCallStreamsFacts,
+    ConversationStepCursorFacts, ConversationStepProgressFacts, ConversationStreamReplayFacts,
+    ConversationSystemNoteBlockFacts, ConversationSystemNoteKind, ConversationThinkingBlockFacts,
+    ConversationTranscriptErrorKind, ConversationUserBlockFacts, ToolCallBlockFacts,
+    ToolCallStreamsFacts,
 };
 pub use stream_projection::ConversationStreamProjector;
 

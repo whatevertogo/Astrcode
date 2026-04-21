@@ -33,8 +33,10 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[cfg(test)]
+use crate::SessionStateEventSink;
 use crate::{
-    SessionState, SessionStateEventSink,
+    SessionState,
     turn::events::{tool_call_event, tool_result_event},
 };
 
@@ -60,6 +62,7 @@ pub(crate) struct ToolCycleResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolEventEmissionMode {
+    #[cfg(test)]
     Immediate,
     Buffered,
 }
@@ -255,11 +258,13 @@ pub async fn execute_tool_calls(
         raw_results.push((call, result));
     }
 
-    let events = if matches!(ctx.event_emission_mode, ToolEventEmissionMode::Buffered) {
-        collected_events
-    } else {
-        ctx.events.extend(collected_events);
-        Vec::new()
+    let events = match ctx.event_emission_mode {
+        #[cfg(test)]
+        ToolEventEmissionMode::Immediate => {
+            ctx.events.extend(collected_events);
+            Vec::new()
+        },
+        ToolEventEmissionMode::Buffered => collected_events,
     };
 
     // 构建工具结果消息
@@ -391,6 +396,7 @@ async fn invoke_single_tool(
     let mut fallback_events = Vec::new();
     let start = Instant::now();
     let event_sink = match event_emission_mode {
+        #[cfg(test)]
         ToolEventEmissionMode::Immediate => SessionStateEventSink::new(Arc::clone(&session_state))
             .map(|sink| Arc::new(sink) as Arc<dyn ToolEventSink>)
             .ok(),

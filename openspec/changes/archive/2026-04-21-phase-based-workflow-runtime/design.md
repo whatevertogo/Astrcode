@@ -312,8 +312,6 @@ enum TurnTerminalKind {
     Cancelled,
     Error { message: String },
     StepLimitExceeded,
-    BudgetStoppedContinuation,
-    ContinuationLimitReached,
     MaxOutputContinuationLimitReached,
 }
 ```
@@ -336,8 +334,6 @@ TurnDone {
 - `reason` 保留为兼容镜像字段；迁移窗口内新写入可以继续写 canonical reason code，便于旧读取方工作。
 - 反序列化时优先使用 `terminal_kind`；若其缺失，则按 legacy `reason` 映射：
   - `"completed"` → `Completed`
-  - `"budget_stopped"` → `BudgetStoppedContinuation`
-  - `"continuation_limit_reached"` → `ContinuationLimitReached`
   - `"token_exceeded"` → `MaxOutputContinuationLimitReached`
   - `"cancelled"` / `"interrupted"` → `Cancelled`
   - `"step_limit_exceeded"` → `StepLimitExceeded`
@@ -359,7 +355,7 @@ TurnDone {
 
 ### Decision 11：PostLlmDecisionPolicy 统一 agent loop 决策层
 
-当前“LLM 返回无工具输出后下一步做什么”分裂在 `continuation_cycle.rs`（输出截断）、`loop_control.rs`（budget auto-continue）、`step/mod.rs`（turn done）三处，靠执行顺序隐式耦合。
+当前“LLM 返回无工具输出后下一步做什么”分裂在 `continuation_cycle.rs`（输出截断）与 `step/mod.rs`（turn done）等位置，靠执行顺序隐式耦合。
 
 引入 `PostLlmDecisionPolicy`，在 step 收到无工具输出后返回 typed 决策：
 
@@ -371,7 +367,7 @@ enum PostLlmDecision {
 }
 ```
 
-该 policy 综合考虑：输出截断状态、budget 余量、continuation 计数、step 限制。`step/mod.rs` 的主循环变成可读的决策表：
+该 policy 综合考虑：输出截断状态与 step 限制。`step/mod.rs` 的主循环变成可读的决策表：
 
 ```rust
 match policy.decide(output, step_state, runtime_config) {
@@ -381,9 +377,7 @@ match policy.decide(output, step_state, runtime_config) {
 }
 ```
 
-现有 `decide_budget_continuation()` 和 `continuation_cycle` 逻辑合并入 policy。
-
-policy 还应包含**收益递减检测**：当 `continuation_count` 超过阈值且最近 k 次 output 的 token 数持续偏低时，即使 budget 仍有余量，也应返回 `Stop`。现有 `decide_budget_continuation` 的硬性 continuation limit 已防止无限循环，收益递减检测在此基础上提前终止低质量的反复续写。
+现有 `continuation_cycle` 逻辑合并入 policy。
 
 **备选方案：**
 

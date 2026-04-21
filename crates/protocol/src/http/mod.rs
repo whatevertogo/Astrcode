@@ -52,10 +52,10 @@ pub use conversation::v1::{
     ConversationPlanReferenceDto, ConversationPlanReviewDto, ConversationPlanReviewKindDto,
     ConversationSlashActionKindDto, ConversationSlashCandidateDto,
     ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
-    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
-    ConversationTaskItemDto, ConversationTaskStatusDto, ConversationThinkingBlockDto,
-    ConversationToolCallBlockDto, ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto,
-    ConversationUserBlockDto,
+    ConversationStepCursorDto, ConversationStepProgressDto, ConversationStreamEnvelopeDto,
+    ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto, ConversationTaskItemDto,
+    ConversationTaskStatusDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
+    ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
 };
 pub use event::{
     ArtifactRefDto, CloseRequestParentDeliveryPayloadDto, CompletedParentDeliveryPayloadDto,

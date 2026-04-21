@@ -514,6 +514,7 @@ impl LlmAccumulator {
             },
             usage: None,
             finish_reason,
+            prompt_cache_diagnostics: None,
         }
     }
 }

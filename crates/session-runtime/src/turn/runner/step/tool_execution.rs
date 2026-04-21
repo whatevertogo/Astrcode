@@ -35,11 +35,9 @@ pub(super) async fn finalize_and_execute_tool_calls(
     } = finalized_streaming;
     apply_streaming_stats(execution, stats);
 
-    let event_emission_mode = if used_streaming_path {
-        ToolEventEmissionMode::Buffered
-    } else {
-        ToolEventEmissionMode::Immediate
-    };
+    // Why: durable truth 现在以 step 为提交边界，工具结构事件也必须与
+    // PromptMetrics / AssistantFinal 同批落盘，避免 turn 中断时留下半个 step。
+    let event_emission_mode = ToolEventEmissionMode::Buffered;
     let mut executed_remaining = if remaining_tool_calls.is_empty() {
         empty_tool_cycle_result()
     } else {
@@ -53,13 +51,17 @@ pub(super) async fn finalize_and_execute_tool_calls(
             .await?
     };
 
-    if event_emission_mode == ToolEventEmissionMode::Buffered {
+    if used_streaming_path {
         merge_buffered_and_remaining_tool_results(
             execution,
             output,
             &matched_results,
             &mut executed_remaining,
         )?;
+    } else {
+        execution
+            .journal
+            .extend(std::mem::take(&mut executed_remaining.events));
     }
 
     track_tool_results(execution, resources.working_dir, &executed_remaining);

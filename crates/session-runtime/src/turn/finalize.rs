@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentEventContext, EventStore, EventTranslator, Phase, SessionId, StoredEvent,
+    AgentEventContext, EventStore, EventTranslator, Phase, Result, SessionId, StorageEvent,
+    StoredEvent,
 };
 use chrono::Utc;
 
@@ -15,43 +16,16 @@ use crate::{
     },
 };
 
-pub(crate) async fn persist_turn_events(
+pub(crate) async fn persist_storage_events(
     event_store: &Arc<dyn EventStore>,
     session_state: &Arc<SessionState>,
     session_id: &str,
     translator: &mut EventTranslator,
-    turn_result: crate::TurnRunResult,
-    persisted_turn_id: &str,
-    persisted_agent: &AgentEventContext,
-    source_tool_call_id: Option<String>,
-) {
+    events: &[StorageEvent],
+) -> Result<Vec<StoredEvent>> {
     let mut persisted_events = Vec::<StoredEvent>::new();
-    for event in &turn_result.events {
-        match append_and_broadcast(session_state, event, translator).await {
-            Ok(stored) => persisted_events.push(stored),
-            Err(error) => {
-                log::error!(
-                    "failed to persist turn event for session '{}': {}",
-                    session_id,
-                    error
-                );
-                break;
-            },
-        }
-    }
-    if let Some(event) = subrun_finished_event(
-        persisted_turn_id,
-        persisted_agent,
-        &turn_result,
-        source_tool_call_id,
-    ) {
-        if let Err(error) = append_and_broadcast(session_state, &event, translator).await {
-            log::error!(
-                "failed to persist subrun finished event for session '{}': {}",
-                session_id,
-                error
-            );
-        }
+    for event in events {
+        persisted_events.push(append_and_broadcast(session_state, event, translator).await?);
     }
     checkpoint_if_compacted(
         event_store,
@@ -60,6 +34,27 @@ pub(crate) async fn persist_turn_events(
         &persisted_events,
     )
     .await;
+    Ok(persisted_events)
+}
+
+pub(crate) async fn persist_subrun_finished_event(
+    session_state: &Arc<SessionState>,
+    translator: &mut EventTranslator,
+    persisted_turn_id: &str,
+    persisted_agent: &AgentEventContext,
+    turn_result: &crate::TurnRunResult,
+    source_tool_call_id: Option<String>,
+) -> Result<()> {
+    let Some(event) = subrun_finished_event(
+        persisted_turn_id,
+        persisted_agent,
+        turn_result,
+        source_tool_call_id,
+    ) else {
+        return Ok(());
+    };
+    append_and_broadcast(session_state, &event, translator).await?;
+    Ok(())
 }
 
 pub(crate) async fn persist_turn_failure(
@@ -117,27 +112,21 @@ async fn persist_deferred_manual_compact(
     };
     let mut compact_translator =
         EventTranslator::new(session_state.current_phase().unwrap_or(Phase::Idle));
-    let mut persisted = Vec::<StoredEvent>::with_capacity(events.len());
-    for event in &events {
-        match append_and_broadcast(session_state, event, &mut compact_translator).await {
-            Ok(stored) => persisted.push(stored),
-            Err(error) => {
-                log::warn!(
-                    "failed to persist deferred compact for session '{}': {}",
-                    session_id,
-                    error
-                );
-                break;
-            },
-        }
-    }
-    checkpoint_if_compacted(
+    if let Err(error) = persist_storage_events(
         event_store,
-        &SessionId::from(session_id.to_string()),
         session_state,
-        &persisted,
+        session_id,
+        &mut compact_translator,
+        &events,
     )
-    .await;
+    .await
+    {
+        log::warn!(
+            "failed to persist deferred compact for session '{}': {}",
+            session_id,
+            error
+        );
+    }
 }
 
 pub(crate) async fn persist_pending_manual_compact_if_any(

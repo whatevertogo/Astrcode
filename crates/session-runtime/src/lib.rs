@@ -39,13 +39,15 @@ pub use query::{
     ConversationChildHandoffKind, ConversationDeltaFacts, ConversationDeltaFrameFacts,
     ConversationDeltaProjector, ConversationErrorBlockFacts, ConversationPlanBlockFacts,
     ConversationPlanBlockersFacts, ConversationPlanEventKind, ConversationPlanReviewFacts,
-    ConversationPlanReviewKind, ConversationSnapshotFacts, ConversationStreamProjector,
+    ConversationPlanReviewKind, ConversationPromptMetricsBlockFacts, ConversationSnapshotFacts,
+    ConversationStepCursorFacts, ConversationStepProgressFacts, ConversationStreamProjector,
     ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts, ConversationSystemNoteKind,
     ConversationThinkingBlockFacts, ConversationTranscriptErrorKind, ConversationUserBlockFacts,
     LastCompactMetaSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot,
     SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
     ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
 };
+#[cfg(test)]
 pub(crate) use state::SessionStateEventSink;
 pub use state::{
     SessionSnapshot, SessionState, display_name_from_working_dir, normalize_working_dir,

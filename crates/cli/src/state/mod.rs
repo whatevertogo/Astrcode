@@ -475,6 +475,7 @@ mod tests {
                     turn_id: Some("turn-1".to_string()),
                     status: ConversationBlockStatusDto::Streaming,
                     markdown: "hello".to_string(),
+                    step_index: None,
                 },
             )],
             child_summaries: Vec::new(),
@@ -630,12 +631,14 @@ mod tests {
                 turn_id: Some("turn-1".to_string()),
                 status: ConversationBlockStatusDto::Streaming,
                 markdown: "draft".to_string(),
+                step_index: None,
             }),
             ConversationBlockDto::Assistant(ConversationAssistantBlockDto {
                 id: "assistant-complete".to_string(),
                 turn_id: Some("turn-1".to_string()),
                 status: ConversationBlockStatusDto::Complete,
                 markdown: "done".to_string(),
+                step_index: None,
             }),
         ];
 

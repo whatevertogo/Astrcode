@@ -1,5 +1,6 @@
 use astrcode_core::{
-    ChildAgentRef, CompactAppliedMeta, CompactTrigger, Phase, SessionEventRecord, ToolOutputStream,
+    ChildAgentRef, CompactAppliedMeta, CompactTrigger, Phase, SessionEventRecord,
+    SystemPromptLayer, ToolOutputStream,
 };
 use serde_json::Value;
 
@@ -64,6 +65,7 @@ pub struct ConversationAssistantBlockFacts {
     pub turn_id: Option<String>,
     pub status: ConversationBlockStatus,
     pub markdown: String,
+    pub step_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +74,26 @@ pub struct ConversationThinkingBlockFacts {
     pub turn_id: Option<String>,
     pub status: ConversationBlockStatus,
     pub markdown: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationPromptMetricsBlockFacts {
+    pub id: String,
+    pub turn_id: Option<String>,
+    pub step_index: u32,
+    pub estimated_tokens: u32,
+    pub context_window: u32,
+    pub effective_window: u32,
+    pub threshold_tokens: u32,
+    pub truncated_tool_results: u32,
+    pub provider_input_tokens: Option<u32>,
+    pub provider_output_tokens: Option<u32>,
+    pub cache_creation_input_tokens: Option<u32>,
+    pub cache_read_input_tokens: Option<u32>,
+    pub provider_cache_metrics_supported: bool,
+    pub prompt_cache_reuse_hits: u32,
+    pub prompt_cache_reuse_misses: u32,
+    pub prompt_cache_unchanged_layers: Vec<SystemPromptLayer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +173,7 @@ pub enum ConversationBlockFacts {
     User(ConversationUserBlockFacts),
     Assistant(ConversationAssistantBlockFacts),
     Thinking(ConversationThinkingBlockFacts),
+    PromptMetrics(ConversationPromptMetricsBlockFacts),
     Plan(Box<ConversationPlanBlockFacts>),
     ToolCall(Box<ToolCallBlockFacts>),
     Error(ConversationErrorBlockFacts),
@@ -208,9 +231,22 @@ pub enum ConversationDeltaFacts {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationStepCursorFacts {
+    pub turn_id: String,
+    pub step_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConversationStepProgressFacts {
+    pub durable: Option<ConversationStepCursorFacts>,
+    pub live: Option<ConversationStepCursorFacts>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationDeltaFrameFacts {
     pub cursor: String,
+    pub step_progress: ConversationStepProgressFacts,
     pub delta: ConversationDeltaFacts,
 }
 
@@ -218,6 +254,7 @@ pub struct ConversationDeltaFrameFacts {
 pub struct ConversationSnapshotFacts {
     pub cursor: Option<String>,
     pub phase: Phase,
+    pub step_progress: ConversationStepProgressFacts,
     pub blocks: Vec<ConversationBlockFacts>,
 }
 

@@ -261,6 +261,7 @@ pub(crate) async fn seed_completed_root_turn(
                 content: "world".to_string(),
                 reasoning_content: None,
                 reasoning_signature: None,
+                step_index: None,
                 timestamp: Some(chrono::Utc::now()),
             },
         },

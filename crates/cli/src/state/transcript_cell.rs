@@ -65,6 +65,7 @@ impl TranscriptCell {
             ConversationBlockDto::User(block) => block.id.clone(),
             ConversationBlockDto::Assistant(block) => block.id.clone(),
             ConversationBlockDto::Thinking(block) => block.id.clone(),
+            ConversationBlockDto::PromptMetrics(block) => block.id.clone(),
             ConversationBlockDto::Plan(block) => block.id.clone(),
             ConversationBlockDto::ToolCall(block) => block.id.clone(),
             ConversationBlockDto::Error(block) => block.id.clone(),
@@ -99,6 +100,20 @@ impl TranscriptCell {
                 kind: TranscriptCellKind::Thinking {
                     body: block.markdown.clone(),
                     status: block.status.into(),
+                },
+            },
+            ConversationBlockDto::PromptMetrics(block) => Self {
+                id,
+                expanded,
+                kind: TranscriptCellKind::SystemNote {
+                    note_kind: "prompt_metrics".to_string(),
+                    markdown: format!(
+                        "step #{} | context {} / {} | cache read {}",
+                        block.step_index,
+                        block.effective_window,
+                        block.context_window,
+                        block.cache_read_input_tokens.unwrap_or_default()
+                    ),
                 },
             },
             ConversationBlockDto::Plan(block) => Self {

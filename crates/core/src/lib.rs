@@ -175,12 +175,13 @@ pub use policy::{
 pub use ports::{
     EventStore, LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
     LlmUsage, McpSettingsStore, ModelLimits, ProjectionRegistrySnapshot, PromptAgentProfileSummary,
-    PromptBuildCacheMetrics, PromptBuildOutput, PromptBuildRequest, PromptCacheHints,
-    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, PromptEntrySummary, PromptFacts, PromptFactsProvider,
-    PromptFactsRequest, PromptGovernanceContext, PromptLayerFingerprints, PromptProvider,
-    PromptSkillSummary, RecoveredSessionState, ResourceProvider, ResourceReadResult,
-    ResourceRequestContext, SessionRecoveryCheckpoint, SkillCatalog, TurnProjectionSnapshot,
+    PromptBuildCacheMetrics, PromptBuildOutput, PromptBuildRequest, PromptCacheBreakReason,
+    PromptCacheDiagnostics, PromptCacheGlobalStrategy, PromptCacheHints, PromptDeclaration,
+    PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource,
+    PromptEntrySummary, PromptFacts, PromptFactsProvider, PromptFactsRequest,
+    PromptGovernanceContext, PromptLayerFingerprints, PromptProvider, PromptSkillSummary,
+    RecoveredSessionState, ResourceProvider, ResourceReadResult, ResourceRequestContext,
+    SessionRecoveryCheckpoint, SkillCatalog, TurnProjectionSnapshot,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};

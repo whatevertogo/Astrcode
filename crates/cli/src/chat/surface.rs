@@ -189,6 +189,7 @@ mod tests {
             turn_id: Some("turn-1".to_string()),
             status,
             markdown: markdown.to_string(),
+            step_index: None,
         })
     }
 

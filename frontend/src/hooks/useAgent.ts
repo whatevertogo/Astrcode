@@ -36,6 +36,7 @@ import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api
 import type {
   ComposerOption,
   ConfigView,
+  ConversationStepProgress,
   CurrentModelInfo,
   DeleteProjectResult,
   ExecutionControl,
@@ -63,7 +64,13 @@ function shouldRetryEventStream(error: unknown): boolean {
 }
 
 function projectionSignature(projection: ConversationViewProjection): string {
-  return `${projection.phase}::${projection.messageFingerprint}::${projection.childFingerprint}`;
+  return `${projection.phase}::${projection.messageFingerprint}::${projection.childFingerprint}::${stepProgressSignature(projection.stepProgress)}`;
+}
+
+function stepProgressSignature(stepProgress: ConversationStepProgress): string {
+  const fingerprintOf = (cursor: ConversationStepProgress['durable']): string =>
+    cursor ? `${cursor.turnId}:${cursor.stepIndex}` : 'none';
+  return `${fingerprintOf(stepProgress.durable)}|${fingerprintOf(stepProgress.live)}`;
 }
 
 export function useAgent() {

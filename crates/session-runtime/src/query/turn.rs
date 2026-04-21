@@ -100,12 +100,7 @@ fn resolve_terminal_kind(
 
 fn project_agent_turn_outcome(terminal_kind: Option<&TurnTerminalKind>) -> AgentTurnOutcome {
     match terminal_kind {
-        Some(
-            TurnTerminalKind::Completed
-            | TurnTerminalKind::BudgetStoppedContinuation
-            | TurnTerminalKind::ContinuationLimitReached,
-        )
-        | None => AgentTurnOutcome::Completed,
+        Some(TurnTerminalKind::Completed) | None => AgentTurnOutcome::Completed,
         Some(TurnTerminalKind::MaxOutputContinuationLimitReached) => {
             AgentTurnOutcome::TokenExceeded
         },
@@ -170,6 +165,7 @@ mod tests {
                         content: "完成总结".to_string(),
                         reasoning_content: None,
                         reasoning_signature: None,
+                        step_index: None,
                         timestamp: Some(chrono::Utc::now()),
                     },
                 },
@@ -199,6 +195,7 @@ mod tests {
                         content: "仍然视为完成".to_string(),
                         reasoning_content: None,
                         reasoning_signature: None,
+                        step_index: None,
                         timestamp: Some(chrono::Utc::now()),
                     },
                 },
@@ -240,6 +237,7 @@ mod tests {
                         content: "普通完成".to_string(),
                         reasoning_content: None,
                         reasoning_signature: None,
+                        step_index: None,
                         timestamp: Some(chrono::Utc::now()),
                     },
                 },

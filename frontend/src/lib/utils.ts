@@ -12,18 +12,23 @@ export function cn(...inputs: ClassValue[]) {
 export function calculateCacheHitRatePercent(
   metrics?: Pick<
     PromptMetricsMessage,
-    'providerInputTokens' | 'cacheReadInputTokens' | 'providerCacheMetricsSupported'
+    | 'providerInputTokens'
+    | 'cacheReadInputTokens'
+    | 'cacheCreationInputTokens'
+    | 'providerCacheMetricsSupported'
   >
 ): number | null {
   if (!metrics?.providerCacheMetricsSupported) {
     return null;
   }
-  if (!metrics?.providerInputTokens || metrics.providerInputTokens <= 0) {
+  const totalInput =
+    (metrics.providerInputTokens ?? 0) +
+    (metrics.cacheReadInputTokens ?? 0) +
+    (metrics.cacheCreationInputTokens ?? 0);
+  if (totalInput <= 0) {
     return null;
   }
-  const rawRate = Math.round(
-    ((metrics.cacheReadInputTokens ?? 0) / metrics.providerInputTokens) * 100
-  );
+  const rawRate = Math.round(((metrics.cacheReadInputTokens ?? 0) / totalInput) * 100);
   return Math.min(Math.max(rawRate, 0), 100);
 }
 

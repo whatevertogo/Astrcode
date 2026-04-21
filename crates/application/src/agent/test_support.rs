@@ -274,6 +274,7 @@ impl LlmProvider for TestLlmProvider {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::Stop,
+                prompt_cache_diagnostics: None,
             }),
             TestLlmBehavior::Stream {
                 reasoning_chunks,
@@ -298,6 +299,7 @@ impl LlmProvider for TestLlmProvider {
                     }),
                     usage: None,
                     finish_reason: LlmFinishReason::Stop,
+                    prompt_cache_diagnostics: None,
                 })
             },
             TestLlmBehavior::Fail { message } => {

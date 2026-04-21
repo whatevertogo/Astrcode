@@ -6,8 +6,9 @@ use astrcode_application::terminal::{
     ConversationChildSummarySummary, ConversationControlSummary, ConversationDeltaFacts,
     ConversationDeltaFrameFacts, ConversationPlanBlockFacts, ConversationPlanEventKind,
     ConversationPlanReviewKind, ConversationSlashActionSummary, ConversationSlashCandidateSummary,
-    ConversationSystemNoteKind, ConversationTranscriptErrorKind, TerminalChildSummaryFacts,
-    TerminalFacts, TerminalRehydrateFacts, TerminalSlashCandidateFacts, ToolCallBlockFacts,
+    ConversationStepCursorFacts, ConversationStepProgressFacts, ConversationSystemNoteKind,
+    ConversationTranscriptErrorKind, TerminalChildSummaryFacts, TerminalFacts,
+    TerminalRehydrateFacts, TerminalSlashCandidateFacts, ToolCallBlockFacts,
     summarize_conversation_child_ref, summarize_conversation_child_summary,
     summarize_conversation_control, summarize_conversation_slash_candidate,
 };
@@ -22,10 +23,11 @@ use astrcode_protocol::http::{
     ConversationPlanEventKindDto, ConversationPlanReferenceDto, ConversationPlanReviewDto,
     ConversationPlanReviewKindDto, ConversationSlashActionKindDto, ConversationSlashCandidateDto,
     ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
-    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
-    ConversationTaskItemDto, ConversationTaskStatusDto, ConversationThinkingBlockDto,
-    ConversationToolCallBlockDto, ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto,
-    ConversationUserBlockDto,
+    ConversationStepCursorDto, ConversationStepProgressDto, ConversationStreamEnvelopeDto,
+    ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto, ConversationTaskItemDto,
+    ConversationTaskStatusDto, ConversationThinkingBlockDto, ConversationToolCallBlockDto,
+    ConversationToolStreamsDto, ConversationTranscriptErrorCodeDto, ConversationUserBlockDto,
+    conversation::v1::ConversationPromptMetricsBlockDto,
 };
 pub(crate) fn project_conversation_snapshot(
     facts: &TerminalFacts,
@@ -44,6 +46,7 @@ pub(crate) fn project_conversation_snapshot(
         ),
         phase: facts.control.phase,
         control: to_conversation_control_state_dto(summarize_conversation_control(&facts.control)),
+        step_progress: project_conversation_step_progress(facts.transcript.step_progress.clone()),
         blocks: facts
             .transcript
             .blocks
@@ -74,6 +77,7 @@ pub(crate) fn project_conversation_frame(
     ConversationStreamEnvelopeDto {
         session_id: session_id.to_string(),
         cursor: ConversationCursorDto(frame.cursor),
+        step_progress: project_conversation_step_progress(frame.step_progress),
         delta: project_delta(frame.delta, child_lookup),
     }
 }
@@ -109,6 +113,7 @@ pub(crate) fn project_conversation_rehydrate_envelope(
                 .clone()
                 .unwrap_or_else(|| rehydrate.requested_cursor.clone()),
         ),
+        step_progress: ConversationStepProgressDto::default(),
         delta: ConversationDeltaDto::RehydrateRequired {
             error: project_conversation_rehydrate_banner(rehydrate).error,
         },
@@ -277,6 +282,7 @@ fn project_block(
                 turn_id: block.turn_id.clone(),
                 status: to_block_status_dto(block.status),
                 markdown: block.markdown.clone(),
+                step_index: block.step_index,
             })
         },
         ConversationBlockFacts::Thinking(block) => {
@@ -285,6 +291,34 @@ fn project_block(
                 turn_id: block.turn_id.clone(),
                 status: to_block_status_dto(block.status),
                 markdown: block.markdown.clone(),
+            })
+        },
+        ConversationBlockFacts::PromptMetrics(block) => {
+            ConversationBlockDto::PromptMetrics(ConversationPromptMetricsBlockDto {
+                id: block.id.clone(),
+                turn_id: block.turn_id.clone(),
+                step_index: block.step_index,
+                estimated_tokens: block.estimated_tokens,
+                context_window: block.context_window,
+                effective_window: block.effective_window,
+                threshold_tokens: block.threshold_tokens,
+                truncated_tool_results: block.truncated_tool_results,
+                provider_input_tokens: block.provider_input_tokens,
+                provider_output_tokens: block.provider_output_tokens,
+                cache_creation_input_tokens: block.cache_creation_input_tokens,
+                cache_read_input_tokens: block.cache_read_input_tokens,
+                provider_cache_metrics_supported: block.provider_cache_metrics_supported,
+                prompt_cache_reuse_hits: block.prompt_cache_reuse_hits,
+                prompt_cache_reuse_misses: block.prompt_cache_reuse_misses,
+                prompt_cache_unchanged_layers: block
+                    .prompt_cache_unchanged_layers
+                    .iter()
+                    .filter_map(|layer| {
+                        serde_json::to_value(layer)
+                            .ok()
+                            .and_then(|value| value.as_str().map(ToString::to_string))
+                    })
+                    .collect(),
             })
         },
         ConversationBlockFacts::Plan(block) => {
@@ -451,6 +485,22 @@ fn to_conversation_child_summary_dto(
         lifecycle: summary.lifecycle,
         latest_output_summary: summary.latest_output_summary,
         child_ref: summary.child_ref.map(to_child_ref_dto),
+    }
+}
+
+pub(crate) fn project_conversation_step_progress(
+    facts: ConversationStepProgressFacts,
+) -> ConversationStepProgressDto {
+    ConversationStepProgressDto {
+        durable: facts.durable.map(to_step_cursor_dto),
+        live: facts.live.map(to_step_cursor_dto),
+    }
+}
+
+fn to_step_cursor_dto(facts: ConversationStepCursorFacts) -> ConversationStepCursorDto {
+    ConversationStepCursorDto {
+        turn_id: facts.turn_id,
+        step_index: facts.step_index,
     }
 }
 

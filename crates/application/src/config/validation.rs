@@ -89,7 +89,6 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
         runtime.compact_keep_recent_turns => "runtime.compactKeepRecentTurns",
         runtime.compact_max_retry_attempts => "runtime.compactMaxRetryAttempts",
         runtime.max_output_continuation_attempts => "runtime.maxOutputContinuationAttempts",
-        runtime.max_continuations => "runtime.maxContinuations",
     )?;
 
     validate_positive_fields!(
@@ -185,7 +184,14 @@ fn validate_profiles(profiles: &[astrcode_core::Profile]) -> Result<()> {
                     }
                 }
             },
-            PROVIDER_KIND_ANTHROPIC => {},
+            PROVIDER_KIND_ANTHROPIC => {
+                if profile.openai_capabilities.is_some() {
+                    return Err(AstrError::Validation(format!(
+                        "anthropic profile '{}' cannot set openaiCapabilities",
+                        profile.name
+                    )));
+                }
+            },
             other => {
                 return Err(AstrError::Validation(format!(
                     "profile '{}' has unsupported provider_kind '{}'",
@@ -257,6 +263,8 @@ fn validate_model(
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::config::OpenAiProfileCapabilities;
+
     use super::*;
 
     #[test]
@@ -276,6 +284,22 @@ mod tests {
     fn duplicate_profile_name_fails() {
         let mut config = Config::default();
         config.profiles.push(config.profiles[0].clone());
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn anthropic_profile_rejects_openai_capabilities() {
+        let mut config = Config::default();
+        let anthropic = config
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.provider_kind == PROVIDER_KIND_ANTHROPIC)
+            .expect("anthropic profile should exist");
+        anthropic.openai_capabilities = Some(OpenAiProfileCapabilities {
+            supports_prompt_cache_key: Some(true),
+            supports_stream_usage: Some(true),
+        });
+
         assert!(validate_config(&config).is_err());
     }
 

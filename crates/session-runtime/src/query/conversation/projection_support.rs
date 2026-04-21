@@ -6,15 +6,21 @@ impl ConversationStreamProjector {
     pub fn new(last_sent_cursor: Option<String>, facts: &ConversationStreamReplayFacts) -> Self {
         let mut projector = ConversationDeltaProjector::new();
         projector.seed(&facts.seed_records);
+        let step_progress = durable_step_progress_from_blocks(projector.blocks());
         Self {
             projector,
             last_sent_cursor,
             fallback_live_cursor: fallback_live_cursor(facts),
+            step_progress,
         }
     }
 
     pub fn last_sent_cursor(&self) -> Option<&str> {
         self.last_sent_cursor.as_deref()
+    }
+
+    pub fn step_progress(&self) -> &ConversationStepProgressFacts {
+        &self.step_progress
     }
 
     pub fn seed_initial_replay(
@@ -35,12 +41,14 @@ impl ConversationStreamProjector {
     }
 
     pub fn project_live_event(&mut self, event: &AgentEvent) -> Vec<ConversationDeltaFrameFacts> {
+        self.observe_live_event_step(event);
         let cursor = self.live_cursor();
         self.projector
             .project_live_event(event)
             .into_iter()
             .map(|delta| ConversationDeltaFrameFacts {
                 cursor: cursor.clone(),
+                step_progress: self.step_progress.clone(),
                 delta,
             })
             .collect()
@@ -70,9 +78,13 @@ impl ConversationStreamProjector {
         self.last_sent_cursor = Some(cursor_owned.clone());
         deltas
             .into_iter()
-            .map(|delta| ConversationDeltaFrameFacts {
-                cursor: cursor_owned.clone(),
-                delta,
+            .map(|delta| {
+                self.observe_durable_delta_step(&delta);
+                ConversationDeltaFrameFacts {
+                    cursor: cursor_owned.clone(),
+                    step_progress: self.step_progress.clone(),
+                    delta,
+                }
             })
             .collect()
     }
@@ -80,6 +92,9 @@ impl ConversationStreamProjector {
     fn observe_durable_frames(&mut self, frames: &[ConversationDeltaFrameFacts]) {
         if let Some(cursor) = frames.last().map(|frame| frame.cursor.clone()) {
             self.last_sent_cursor = Some(cursor);
+        }
+        if let Some(step_progress) = frames.last().map(|frame| frame.step_progress.clone()) {
+            self.step_progress = step_progress;
         }
     }
 
@@ -100,6 +115,7 @@ pub(crate) fn project_conversation_snapshot(
     ConversationSnapshotFacts {
         cursor: records.last().map(|record| record.event_id.clone()),
         phase,
+        step_progress: durable_step_progress_from_blocks(projector.blocks()),
         blocks: projector.into_blocks(),
     }
 }
@@ -110,11 +126,14 @@ pub(crate) fn build_conversation_replay_frames(
 ) -> Vec<ConversationDeltaFrameFacts> {
     let mut projector = ConversationDeltaProjector::new();
     projector.seed(seed_records);
+    let mut step_progress = durable_step_progress_from_blocks(projector.blocks());
     let mut frames = Vec::new();
     for record in history {
         for delta in projector.project_record(record) {
+            observe_durable_delta_step(&mut step_progress, &delta);
             frames.push(ConversationDeltaFrameFacts {
                 cursor: record.event_id.clone(),
+                step_progress: step_progress.clone(),
                 delta,
             });
         }
@@ -141,11 +160,119 @@ pub(super) fn block_id(block: &ConversationBlockFacts) -> &str {
         ConversationBlockFacts::User(block) => &block.id,
         ConversationBlockFacts::Assistant(block) => &block.id,
         ConversationBlockFacts::Thinking(block) => &block.id,
+        ConversationBlockFacts::PromptMetrics(block) => &block.id,
         ConversationBlockFacts::Plan(block) => &block.id,
         ConversationBlockFacts::ToolCall(block) => &block.id,
         ConversationBlockFacts::Error(block) => &block.id,
         ConversationBlockFacts::SystemNote(block) => &block.id,
         ConversationBlockFacts::ChildHandoff(block) => &block.id,
+    }
+}
+
+fn durable_step_progress_from_blocks(
+    blocks: &[ConversationBlockFacts],
+) -> ConversationStepProgressFacts {
+    let mut step_progress = ConversationStepProgressFacts::default();
+    for block in blocks {
+        observe_durable_block_step(&mut step_progress, block);
+    }
+    step_progress
+}
+
+fn observe_durable_delta_step(
+    step_progress: &mut ConversationStepProgressFacts,
+    delta: &ConversationDeltaFacts,
+) {
+    if let ConversationDeltaFacts::AppendBlock { block } = delta {
+        observe_durable_block_step(step_progress, block.as_ref());
+    }
+}
+
+fn observe_durable_block_step(
+    step_progress: &mut ConversationStepProgressFacts,
+    block: &ConversationBlockFacts,
+) {
+    let step_cursor = match block {
+        ConversationBlockFacts::PromptMetrics(block) => Some(ConversationStepCursorFacts {
+            turn_id: block
+                .turn_id
+                .clone()
+                .unwrap_or_else(|| "session".to_string()),
+            step_index: block.step_index,
+        }),
+        ConversationBlockFacts::Assistant(block) => {
+            block
+                .step_index
+                .map(|step_index| ConversationStepCursorFacts {
+                    turn_id: block
+                        .turn_id
+                        .clone()
+                        .unwrap_or_else(|| "session".to_string()),
+                    step_index,
+                })
+        },
+        _ => None,
+    };
+
+    if let Some(step_cursor) = step_cursor {
+        step_progress.durable = Some(step_cursor.clone());
+        if let Some(live) = step_progress.live.as_ref() {
+            if live.turn_id != step_cursor.turn_id || live.step_index <= step_cursor.step_index {
+                step_progress.live = None;
+            }
+        }
+    }
+}
+
+impl ConversationStreamProjector {
+    fn observe_durable_delta_step(&mut self, delta: &ConversationDeltaFacts) {
+        observe_durable_delta_step(&mut self.step_progress, delta);
+    }
+
+    fn observe_live_event_step(&mut self, event: &AgentEvent) {
+        let turn_id = match event {
+            AgentEvent::ThinkingDelta { turn_id, .. }
+            | AgentEvent::ModelDelta { turn_id, .. }
+            | AgentEvent::ToolCallStart { turn_id, .. }
+            | AgentEvent::ToolCallDelta { turn_id, .. }
+            | AgentEvent::ToolCallResult { turn_id, .. } => Some(turn_id.as_str()),
+            AgentEvent::TurnDone { turn_id, .. } => {
+                if self
+                    .step_progress
+                    .live
+                    .as_ref()
+                    .is_some_and(|cursor| cursor.turn_id == *turn_id)
+                {
+                    self.step_progress.live = None;
+                }
+                None
+            },
+            _ => None,
+        };
+        let Some(turn_id) = turn_id else {
+            return;
+        };
+
+        let step_index = self
+            .step_progress
+            .durable
+            .as_ref()
+            .filter(|cursor| cursor.turn_id == turn_id)
+            .map(|cursor| cursor.step_index.saturating_add(1))
+            .unwrap_or(0);
+        let next_live = ConversationStepCursorFacts {
+            turn_id: turn_id.to_string(),
+            step_index,
+        };
+        if self.step_progress.durable.as_ref().is_some_and(|cursor| {
+            cursor.turn_id == next_live.turn_id && cursor.step_index >= next_live.step_index
+        }) {
+            return;
+        }
+        if self.step_progress.live.as_ref() == Some(&next_live) {
+            return;
+        }
+        self.step_progress.live = Some(next_live);
     }
 }
 

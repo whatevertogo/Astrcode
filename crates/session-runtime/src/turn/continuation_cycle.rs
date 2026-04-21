@@ -61,6 +61,7 @@ mod tests {
                 cache_read_input_tokens: 0,
             }),
             finish_reason,
+            prompt_cache_diagnostics: None,
         }
     }
 

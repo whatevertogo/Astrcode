@@ -137,7 +137,6 @@ mod tests {
             last_transition: None,
             wall_duration: Duration::from_secs(1),
             step_count: 0,
-            continuation_count: 0,
             total_tokens_used: 0,
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,

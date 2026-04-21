@@ -28,12 +28,12 @@ use crate::{
         compaction_cycle,
         events::{prompt_metrics_event, tool_call_event, tool_result_event},
         llm_cycle::{StreamedToolCallDelta, ToolCallDeltaSink},
-        loop_control::{AUTO_CONTINUE_NUDGE, TurnLoopTransition, TurnStopCause},
+        loop_control::{TurnLoopTransition, TurnStopCause},
         request::AssemblePromptResult,
         runner::TurnExecutionRequestView,
         test_support::{
-            NoopPromptFactsProvider, assert_contains_compact_summary, assert_has_turn_done,
-            root_compact_applied_event, test_gateway, test_session_state,
+            NoopPromptFactsProvider, assert_contains_compact_summary, root_compact_applied_event,
+            test_gateway, test_session_state,
         },
         tool_cycle::{ToolCycleOutcome, ToolCycleResult, ToolEventEmissionMode},
     },
@@ -321,6 +321,7 @@ async fn run_single_step_returns_completed_when_llm_has_no_tool_calls() {
                 cache_read_input_tokens: 2,
             }),
             finish_reason: LlmFinishReason::Stop,
+            prompt_cache_diagnostics: None,
         }))),
         reactive_compact_result: Mutex::new(None),
         tool_cycle_result: Mutex::new(None),
@@ -344,8 +345,13 @@ async fn run_single_step_returns_completed_when_llm_has_no_tool_calls() {
         execution.messages.last(),
         Some(LlmMessage::Assistant { content, .. }) if content == "assistant reply"
     ));
-    let events = execution.journal.snapshot();
-    assert_has_turn_done(&events);
+    assert!(
+        execution.journal.iter().any(|event| matches!(
+            &event.payload,
+            StorageEventPayload::AssistantFinal { content, .. } if content == "assistant reply"
+        )),
+        "completed step should leave durable assistant output in the pending step journal"
+    );
 }
 
 #[tokio::test]
@@ -379,6 +385,7 @@ async fn run_single_step_returns_cancelled_when_tool_cycle_interrupts() {
             reasoning: None,
             usage: None,
             finish_reason: LlmFinishReason::ToolCalls,
+            prompt_cache_diagnostics: None,
         }))),
         reactive_compact_result: Mutex::new(None),
         tool_cycle_result: Mutex::new(Some(Ok(ToolCycleResult {
@@ -448,6 +455,7 @@ async fn run_single_step_reuses_streamed_safe_tool_execution_when_final_call_mat
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::ToolCalls,
+                prompt_cache_diagnostics: None,
             })
         }
 
@@ -611,72 +619,6 @@ async fn run_single_step_returns_continue_after_reactive_compact_recovery() {
 }
 
 #[tokio::test]
-async fn run_single_step_injects_auto_continue_nudge_after_prior_loop_activity() {
-    let gateway = test_gateway(8192);
-    let session_state = test_session_state();
-    let runtime = ResolvedRuntimeConfig {
-        max_continuations: 2,
-        ..ResolvedRuntimeConfig::default()
-    };
-    let cancel = CancelToken::new();
-    let agent = AgentEventContext::default();
-    let prompt_facts_provider = NoopPromptFactsProvider;
-    let resources = test_resources(
-        &gateway,
-        &session_state,
-        &runtime,
-        &cancel,
-        &agent,
-        &prompt_facts_provider,
-    );
-    let mut execution =
-        TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
-    execution.lifecycle.step_index = 1;
-    let driver = ScriptedStepDriver {
-        counts: DriverCallCounts::default(),
-        assemble_result: Mutex::new(Some(Ok(assembled_prompt(vec![user_message("hello")])))),
-        llm_result: Mutex::new(Some(Ok(LlmOutput {
-            content: "brief follow-up".to_string(),
-            tool_calls: Vec::new(),
-            reasoning: None,
-            usage: Some(LlmUsage {
-                input_tokens: 32,
-                output_tokens: 12,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
-            }),
-            finish_reason: LlmFinishReason::Stop,
-        }))),
-        reactive_compact_result: Mutex::new(None),
-        tool_cycle_result: Mutex::new(None),
-    };
-
-    let outcome = run_single_step_with(&mut execution, &resources, &driver)
-        .await
-        .expect("step should inject auto-continue nudge");
-
-    assert!(matches!(
-        outcome,
-        StepOutcome::Continue(TurnLoopTransition::BudgetAllowsContinuation)
-    ));
-    assert!(matches!(
-        execution.messages.last(),
-        Some(LlmMessage::User {
-            origin: UserMessageOrigin::AutoContinueNudge,
-            content,
-        }) if content == AUTO_CONTINUE_NUDGE
-    ));
-    assert!(
-        execution.journal.iter().any(|event| matches!(
-            &event.payload,
-            StorageEventPayload::UserMessage { origin, content, .. }
-                if *origin == UserMessageOrigin::AutoContinueNudge && content == AUTO_CONTINUE_NUDGE
-        )),
-        "auto-continue should append a durable internal user message event"
-    );
-}
-
-#[tokio::test]
 async fn run_single_step_continues_after_max_tokens_without_tool_calls() {
     let gateway = test_gateway(8192);
     let session_state = test_session_state();
@@ -711,6 +653,7 @@ async fn run_single_step_continues_after_max_tokens_without_tool_calls() {
                 cache_read_input_tokens: 0,
             }),
             finish_reason: LlmFinishReason::MaxTokens,
+            prompt_cache_diagnostics: None,
         }))),
         reactive_compact_result: Mutex::new(None),
         tool_cycle_result: Mutex::new(None),
@@ -770,6 +713,7 @@ async fn run_single_step_stops_when_max_tokens_continuation_limit_is_reached() {
                 cache_read_input_tokens: 0,
             }),
             finish_reason: LlmFinishReason::MaxTokens,
+            prompt_cache_diagnostics: None,
         }))),
         reactive_compact_result: Mutex::new(None),
         tool_cycle_result: Mutex::new(None),
@@ -786,10 +730,10 @@ async fn run_single_step_stops_when_max_tokens_continuation_limit_is_reached() {
     assert!(
         execution.journal.iter().any(|event| matches!(
             &event.payload,
-            StorageEventPayload::TurnDone { reason, .. }
-                if reason.as_deref() == Some("token_exceeded")
+            StorageEventPayload::AssistantFinal { content, .. } if content == "partial answer"
         )),
-        "limit stop should persist token_exceeded as stable turn-done reason"
+        "terminal step should only stage assistant output; turn terminal event is appended by the \
+         runner"
     );
 }
 
@@ -836,6 +780,7 @@ async fn run_single_step_does_not_launch_non_concurrency_safe_streaming_tool() {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::ToolCalls,
+                prompt_cache_diagnostics: None,
             })
         }
 
@@ -906,7 +851,7 @@ async fn run_single_step_does_not_launch_non_concurrency_safe_streaming_tool() {
             .lock()
             .expect("event mode lock should work")
             .as_slice(),
-        &[ToolEventEmissionMode::Immediate]
+        &[ToolEventEmissionMode::Buffered]
     );
 }
 
@@ -951,6 +896,7 @@ async fn run_single_step_discards_provisional_tool_when_final_plan_changes() {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::ToolCalls,
+                prompt_cache_diagnostics: None,
             })
         }
 
@@ -1089,6 +1035,7 @@ async fn run_single_step_merges_buffered_events_and_results_in_final_tool_order(
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::ToolCalls,
+                prompt_cache_diagnostics: None,
             })
         }
 
@@ -1244,6 +1191,7 @@ async fn run_single_step_returns_internal_error_when_buffered_merge_loses_tool_r
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::ToolCalls,
+                prompt_cache_diagnostics: None,
             })
         }
 
@@ -1349,6 +1297,7 @@ async fn run_single_step_panics_when_buffered_merge_loses_tool_result_in_debug()
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::ToolCalls,
+                prompt_cache_diagnostics: None,
             })
         }
 

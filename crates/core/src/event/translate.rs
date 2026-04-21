@@ -279,6 +279,7 @@ impl EventTranslator {
             StorageEventPayload::AssistantFinal {
                 content,
                 reasoning_content,
+                step_index,
                 ..
             } => {
                 let parts = split_assistant_content(content, reasoning_content.as_deref());
@@ -291,6 +292,7 @@ impl EventTranslator {
                             agent: agent.clone(),
                             content: parts.visible_content,
                             reasoning_content: parts.reasoning_content,
+                            step_index: *step_index,
                         });
                     }
                 } else if has_content {
@@ -575,7 +577,6 @@ mod tests {
     fn internal_user_origins_do_not_replay_as_user_visible_messages() {
         for origin in [
             UserMessageOrigin::CompactSummary,
-            UserMessageOrigin::AutoContinueNudge,
             UserMessageOrigin::ContinuationPrompt,
             UserMessageOrigin::RecentUserContextDigest,
             UserMessageOrigin::RecentUserContext,

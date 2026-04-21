@@ -110,9 +110,9 @@ function deriveSubRunTitle(
 
 function buildMessageFingerprint(message: Message): string {
   if (message.kind === 'assistant') {
-    return `${message.id}:assistant:${message.text.length}:${message.reasoningText?.length ?? 0}:${
-      message.streaming ? 1 : 0
-    }`;
+    return `${message.id}:assistant:${message.stepIndex ?? -1}:${message.text.length}:${
+      message.reasoningText?.length ?? 0
+    }:${message.streaming ? 1 : 0}`;
   }
   if (message.kind === 'plan') {
     return `${message.id}:plan:${message.eventKind}:${message.title.length}:${message.planPath.length}:${message.content?.length ?? 0}:${message.review?.kind ?? ''}:${message.blockers.missingHeadings.length}:${message.blockers.invalidSections.length}`;

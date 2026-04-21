@@ -105,6 +105,7 @@ describe('SubRunBlock result rendering', () => {
     expect(html).toContain('独立子会话正在初始化；会话入口可用后即可直接打开。');
     expect(html).toContain('取消子会话');
     expect(html).toContain('思考与工具');
+    expect(html).toContain('运行中');
   });
 
   it('renders failure details without parent handoff section for failed sub-runs', () => {
@@ -178,7 +179,7 @@ describe('SubRunBlock result rendering', () => {
     );
 
     expect(html).toContain('查看子执行');
-    expect(html).toContain('independent session');
+    expect(html).toContain('独立会话');
     expect(html).not.toContain('调用参数');
   });
 
@@ -222,8 +223,8 @@ describe('SubRunBlock result rendering', () => {
       />
     );
 
-    expect(html).toContain('打开独立会话');
-    expect(html).toContain('independent session');
+    expect(html).toContain('打开子会话');
+    expect(html).toContain('独立会话');
     expect(html).not.toContain('Object (');
   });
 
@@ -243,12 +244,12 @@ describe('SubRunBlock result rendering', () => {
       />
     );
 
-    expect(html).toContain('打开独立会话');
-    expect(html).toContain('independent session');
+    expect(html).toContain('打开子会话');
+    expect(html).toContain('独立会话');
     expect(html).toContain('独立子会话正在后台运行，请打开会话查看实时输出。');
   });
 
-  it('renders directory-mode summary without nested stream copy', () => {
+  it('renders directory-mode summary together with nested content', () => {
     const finishMessage: SubRunFinishMessage = {
       id: 'subrun-finish-2',
       kind: 'subRunFinish',
@@ -291,7 +292,7 @@ describe('SubRunBlock result rendering', () => {
 
     expect(html).toContain('进入子执行');
     expect(html).toContain('完成了静态分析并整理出两个风险点。');
-    expect(html).not.toContain('思考与工具');
+    expect(html).toContain('思考与工具');
   });
 
   // 子会话视图不展示 raw JSON — 目录模式下不应出现 Object/Array 等 JSON 结构标记
@@ -430,7 +431,7 @@ describe('SubRunBlock result rendering', () => {
       />
     );
 
-    expect(html).toContain('打开独立会话');
+    expect(html).toContain('打开子会话');
     expect(html).toContain('这是完整子会话报告，不应该再内嵌在父会话里。');
     expect(html).toContain('已向父会话汇报');
     expect(html).toContain('<li>finding-1</li>');

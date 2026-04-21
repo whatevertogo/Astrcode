@@ -11,7 +11,9 @@ use std::{
 
 use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_llm::{
-    LlmClientConfig, ModelLimits, anthropic::AnthropicProvider, openai::OpenAiProvider,
+    LlmClientConfig, ModelLimits,
+    anthropic::AnthropicProvider,
+    openai::{OpenAiProvider, OpenAiProviderCapabilities},
 };
 use astrcode_adapter_mcp::{core_port::McpResourceProvider, manager::McpConnectionManager};
 use astrcode_adapter_prompt::{
@@ -26,6 +28,7 @@ use astrcode_application::{
     },
     execution::ProfileProvider,
 };
+use astrcode_core::config::OpenAiProfileCapabilities;
 
 use super::deps::core::{
     AgentProfile, AstrError, LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelConfig,
@@ -149,10 +152,16 @@ impl ConfigBackedLlmProvider {
                 )));
             },
         };
+        let openai_capabilities = (profile.provider_kind == "openai-compatible").then(|| {
+            resolve_openai_provider_capabilities(
+                endpoint.as_str(),
+                profile.openai_capabilities.as_ref(),
+            )
+        });
 
         Ok(ResolvedLlmProviderSpec {
             cache_key: format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 profile.provider_kind,
                 endpoint,
                 profile.name,
@@ -160,7 +169,13 @@ impl ConfigBackedLlmProvider {
                 client_config.connect_timeout.as_secs(),
                 client_config.read_timeout.as_secs(),
                 client_config.max_retries,
-                client_config.retry_base_delay.as_millis()
+                client_config.retry_base_delay.as_millis(),
+                openai_capabilities
+                    .map(|caps| caps.supports_prompt_cache_key)
+                    .unwrap_or(false),
+                openai_capabilities
+                    .map(|caps| caps.supports_stream_usage)
+                    .unwrap_or(false)
             ),
             provider_kind: profile.provider_kind.clone(),
             endpoint,
@@ -168,6 +183,7 @@ impl ConfigBackedLlmProvider {
             model: model.id.clone(),
             limits,
             client_config,
+            openai_capabilities,
         })
     }
 
@@ -186,12 +202,15 @@ impl ConfigBackedLlmProvider {
         }
 
         let provider: Arc<dyn LlmProvider> = match spec.provider_kind.as_str() {
-            "openai-compatible" => Arc::new(OpenAiProvider::new(
+            "openai-compatible" => Arc::new(OpenAiProvider::new_with_capabilities(
                 spec.endpoint.clone(),
                 spec.api_key.clone(),
                 spec.model.clone(),
                 spec.limits,
                 spec.client_config,
+                spec.openai_capabilities.unwrap_or_else(|| {
+                    OpenAiProviderCapabilities::for_endpoint(spec.endpoint.as_str())
+                }),
             )?),
             "anthropic" => Arc::new(AnthropicProvider::new(
                 spec.endpoint.clone(),
@@ -261,6 +280,7 @@ struct ResolvedLlmProviderSpec {
     model: String,
     limits: ModelLimits,
     client_config: LlmClientConfig,
+    openai_capabilities: Option<OpenAiProviderCapabilities>,
 }
 
 fn resolve_model_limits(provider_kind: &str, model: &ModelConfig) -> ModelLimits {
@@ -275,4 +295,20 @@ fn resolve_model_limits(provider_kind: &str, model: &ModelConfig) -> ModelLimits
             .map(|value| value as usize)
             .unwrap_or(8_192),
     }
+}
+
+fn resolve_openai_provider_capabilities(
+    endpoint: &str,
+    configured: Option<&OpenAiProfileCapabilities>,
+) -> OpenAiProviderCapabilities {
+    let mut resolved = OpenAiProviderCapabilities::for_endpoint(endpoint);
+    if let Some(configured) = configured {
+        if let Some(value) = configured.supports_prompt_cache_key {
+            resolved.supports_prompt_cache_key = value;
+        }
+        if let Some(value) = configured.supports_stream_usage {
+            resolved.supports_stream_usage = value;
+        }
+    }
+    resolved
 }

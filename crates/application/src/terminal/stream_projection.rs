@@ -1,7 +1,10 @@
 use astrcode_core::{AgentEvent, SessionEventRecord};
 use astrcode_session_runtime::ConversationStreamProjector as RuntimeConversationStreamProjector;
 
-use super::{ConversationDeltaFrameFacts, ConversationStreamReplayFacts, runtime_mapping};
+use super::{
+    ConversationDeltaFrameFacts, ConversationStepProgressFacts, ConversationStreamReplayFacts,
+    runtime_mapping,
+};
 
 pub struct ConversationStreamProjector {
     projector: RuntimeConversationStreamProjector,
@@ -19,6 +22,10 @@ impl ConversationStreamProjector {
 
     pub fn last_sent_cursor(&self) -> Option<&str> {
         self.projector.last_sent_cursor()
+    }
+
+    pub fn step_progress(&self) -> ConversationStepProgressFacts {
+        runtime_mapping::map_step_progress(self.projector.step_progress().clone())
     }
 
     pub fn seed_initial_replay(

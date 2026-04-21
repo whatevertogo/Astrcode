@@ -49,8 +49,6 @@ turn 级指标的原始来源在执行循环内部，因此先由 `session-runti
 
 ## Risks / Trade-offs
 
-- [Risk] auto-continue 判断不稳，造成意外长循环
-  - Mitigation：引入硬上限 `max_continuations`，并把 nudge 注入条件限制在明确的 budget 决策之后
 - [Risk] observability 汇总与现有事件定义重复
   - Mitigation：事件继续作为原始事实源，聚合结果只作为治理和诊断视图，不替代事件日志
 - [Risk] compaction tail 过度设计
@@ -60,11 +58,10 @@ turn 级指标的原始来源在执行循环内部，因此先由 `session-runti
 
 ## Migration Plan
 
-1. 在 `session-runtime` 中把 token budget 判断接到 `run_turn`
-2. 增加 auto-continue nudge 注入和 continuation 上限控制
-3. 把 prompt metrics / compaction 命中 / turn 耗时汇总成稳定结构
-4. 根据实现结果决定是复用现有 tail 语义，还是补显式快照结构
-5. 回写 `application-use-cases` 与 `session-runtime` delta specs
+1. 在 `session-runtime` 中收敛 turn 终止与恢复判断
+2. 把 prompt metrics / compaction 命中 / turn 耗时汇总成稳定结构
+3. 根据实现结果决定是复用现有 tail 语义，还是补显式快照结构
+4. 回写 `application-use-cases` 与 `session-runtime` delta specs
 
 回滚策略：
 

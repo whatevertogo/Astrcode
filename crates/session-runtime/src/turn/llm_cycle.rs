@@ -352,6 +352,7 @@ mod tests {
             reasoning: None,
             usage: None,
             finish_reason: LlmFinishReason::Stop,
+            prompt_cache_diagnostics: None,
         };
 
         hydrate_reasoning_from_stream(
@@ -380,6 +381,7 @@ mod tests {
             }),
             usage: None,
             finish_reason: LlmFinishReason::Stop,
+            prompt_cache_diagnostics: None,
         };
 
         hydrate_reasoning_from_stream(&mut output, &["流式 reasoning".to_string()], Some("sig-2"));

@@ -262,8 +262,48 @@ pub struct PromptLayerFingerprints {
 pub struct PromptCacheHints {
     #[serde(default)]
     pub layer_fingerprints: PromptLayerFingerprints,
+    #[serde(default)]
+    pub global_cache_strategy: PromptCacheGlobalStrategy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unchanged_layers: Vec<SystemPromptLayer>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub compacted: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tool_result_rebudgeted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptCacheGlobalStrategy {
+    #[default]
+    SystemPrompt,
+    ToolBased,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptCacheBreakReason {
+    SystemPromptChanged,
+    ToolSchemasChanged,
+    ModelChanged,
+    GlobalCacheStrategyChanged,
+    CompactedPrompt,
+    ToolResultRebudgeted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCacheDiagnostics {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<PromptCacheBreakReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_cache_read_input_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_cache_read_input_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub expected_drop: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cache_break_detected: bool,
 }
 
 /// 模型调用请求。
@@ -276,6 +316,7 @@ pub struct LlmRequest {
     pub system_prompt_blocks: Vec<SystemPromptBlock>,
     pub prompt_cache_hints: Option<PromptCacheHints>,
     pub max_output_tokens_override: Option<usize>,
+    pub skip_cache_write: bool,
 }
 
 impl LlmRequest {
@@ -292,6 +333,7 @@ impl LlmRequest {
             system_prompt_blocks: Vec::new(),
             prompt_cache_hints: None,
             max_output_tokens_override: None,
+            skip_cache_write: false,
         }
     }
 
@@ -305,6 +347,11 @@ impl LlmRequest {
         self
     }
 
+    pub fn with_skip_cache_write(mut self, skip_cache_write: bool) -> Self {
+        self.skip_cache_write = skip_cache_write;
+        self
+    }
+
     pub fn from_model_request(request: crate::ModelRequest, cancel: CancelToken) -> Self {
         Self {
             messages: request.messages,
@@ -314,6 +361,7 @@ impl LlmRequest {
             system_prompt_blocks: request.system_prompt_blocks,
             prompt_cache_hints: None,
             max_output_tokens_override: None,
+            skip_cache_write: false,
         }
     }
 }
@@ -326,6 +374,7 @@ pub struct LlmOutput {
     pub reasoning: Option<ReasoningContent>,
     pub usage: Option<LlmUsage>,
     pub finish_reason: LlmFinishReason,
+    pub prompt_cache_diagnostics: Option<PromptCacheDiagnostics>,
 }
 
 /// LLM provider 端口。
@@ -545,6 +594,10 @@ pub struct PromptBuildOutput {
 #[async_trait]
 pub trait PromptProvider: Send + Sync {
     async fn build_prompt(&self, request: PromptBuildRequest) -> Result<PromptBuildOutput>;
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// 资源读取请求上下文。

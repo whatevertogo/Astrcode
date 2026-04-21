@@ -101,6 +101,16 @@ export interface PromptMetricsSnapshot {
   promptCacheReuseMisses?: number;
 }
 
+export interface ConversationStepCursor {
+  turnId: string;
+  stepIndex: number;
+}
+
+export interface ConversationStepProgress {
+  durable: ConversationStepCursor | null;
+  live: ConversationStepCursor | null;
+}
+
 export interface ArtifactRef {
   kind: string;
   id: string;
@@ -260,6 +270,7 @@ export interface AssistantMessage {
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
+  stepIndex?: number;
   text: string;
   reasoningText?: string;
   streaming: boolean;

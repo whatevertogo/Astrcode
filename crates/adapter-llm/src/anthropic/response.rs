@@ -121,6 +121,7 @@ pub(super) fn response_to_output(response: AnthropicResponse) -> LlmOutput {
         reasoning,
         usage,
         finish_reason,
+        prompt_cache_diagnostics: None,
     }
 }
 

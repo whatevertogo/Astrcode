@@ -60,6 +60,7 @@ mod tests {
             base_url: "https://api.test.com".to_string(),
             api_key: api_key.map(|s| s.to_string()),
             models: vec![ModelConfig::new("test-model")],
+            openai_capabilities: None,
         }
     }
 

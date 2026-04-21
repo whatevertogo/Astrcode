@@ -1,7 +1,7 @@
 import React, { Component, memo, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AssistantMessage as AssistantMessageType, PromptMetricsMessage } from '../../types';
+import type { AssistantMessage as AssistantMessageType } from '../../types';
 import {
   assistantAvatar,
   chevronIcon,
@@ -11,12 +11,11 @@ import {
   expandableBody,
   ghostIconButton,
 } from '../../lib/styles';
-import { calculateCacheHitRatePercent, calculatePromptReuseRatePercent, cn } from '../../lib/utils';
+import { cn } from '../../lib/utils';
 
 interface AssistantMessageProps {
   message: AssistantMessageType;
   hideAvatar?: boolean;
-  metrics?: PromptMetricsMessage;
   presentation?: 'root' | 'subRun';
 }
 
@@ -197,50 +196,7 @@ const MarkdownContent = memo(function MarkdownContent({
   );
 });
 
-function formatTokenCount(value?: number): string {
-  if (value === undefined) {
-    return '—';
-  }
-  if (value >= 1000) {
-    return `${Math.round(value / 1000)}k`;
-  }
-  return value.toLocaleString();
-}
-
-function getCacheIndicator(metrics?: PromptMetricsMessage): React.ReactNode {
-  const providerHitRate = calculateCacheHitRatePercent(metrics);
-  if (providerHitRate !== null) {
-    if (providerHitRate >= 80) {
-      return (
-        <span className="ml-2 font-medium text-cache-high">🟢 KV 缓存 {providerHitRate}%</span>
-      );
-    }
-    if (providerHitRate >= 30) {
-      return (
-        <span className="ml-2 font-medium text-cache-medium">🟡 KV 缓存 {providerHitRate}%</span>
-      );
-    }
-    if (providerHitRate > 0) {
-      return <span className="ml-2 font-medium text-cache-low">🟠 KV 缓存 {providerHitRate}%</span>;
-    }
-    return <span className="ml-2 font-semibold text-cache-none">🔴 KV 缓存 0%</span>;
-  }
-
-  const promptReuseRate = calculatePromptReuseRatePercent(metrics);
-  if (promptReuseRate === null) {
-    return null;
-  }
-  return (
-    <span className="ml-2 font-medium text-cache-medium">🧩 Prompt 复用 {promptReuseRate}%</span>
-  );
-}
-
-function AssistantMessage({
-  message,
-  hideAvatar,
-  metrics,
-  presentation = 'root',
-}: AssistantMessageProps) {
+function AssistantMessage({ message, hideAvatar, presentation = 'root' }: AssistantMessageProps) {
   const { visibleText, thinkingBlocks } = React.useMemo(
     () => extractThinkingBlocks(message.text, message.reasoningText),
     [message.text, message.reasoningText]
@@ -353,12 +309,6 @@ function AssistantMessage({
             </span>
           )}
         </div>
-        {metrics && useThinkingChrome && (
-          <div className="mt-3 border-t border-border pt-2 text-xs leading-relaxed text-text-secondary">
-            📊 {formatTokenCount(metrics.estimatedTokens)} tokens
-            {getCacheIndicator(metrics)}
-          </div>
-        )}
       </div>
     </div>
   );

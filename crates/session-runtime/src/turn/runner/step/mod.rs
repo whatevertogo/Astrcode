@@ -17,13 +17,9 @@ use tool_execution::{ToolExecutionDisposition, finalize_and_execute_tool_calls};
 
 use super::{TurnExecutionContext, TurnExecutionResources};
 use crate::turn::{
-    events::{
-        apply_prompt_metrics_usage, assistant_final_event, turn_done_event, user_message_event,
-    },
+    events::{apply_prompt_metrics_usage, assistant_final_event, user_message_event},
     loop_control::{TurnLoopTransition, TurnStopCause},
-    post_llm_policy::{
-        PostLlmDecision, PostLlmDecisionInput, PostLlmDecisionPolicy, output_token_count,
-    },
+    post_llm_policy::{PostLlmDecision, PostLlmDecisionInput, PostLlmDecisionPolicy},
 };
 
 pub(super) enum StepOutcome {
@@ -75,6 +71,7 @@ async fn run_single_step_with(
         execution.journal.events_mut(),
         execution.lifecycle.step_index,
         output.usage,
+        output.prompt_cache_diagnostics.clone(),
     );
     append_assistant_output(execution, resources, &output);
     warn_if_output_truncated(resources, execution, &output);
@@ -118,7 +115,6 @@ async fn run_single_step_with(
         },
         PostLlmDecision::Stop(stop_cause) => {
             streaming_planner.abort_all();
-            append_turn_done_event(execution, resources, stop_cause);
             Ok(StepOutcome::Completed(stop_cause))
         },
     }
@@ -129,25 +125,11 @@ fn decide_post_llm_action(
     resources: &TurnExecutionResources<'_>,
     output: &LlmOutput,
 ) -> PostLlmDecision {
-    let output_tokens = output_token_count(output);
-    if output_tokens > 0 && output.tool_calls.is_empty() {
-        execution.budget.record_output_tokens(output_tokens);
-    }
-    let recent_output_tokens = execution
-        .budget
-        .recent_output_tokens
-        .iter()
-        .copied()
-        .collect::<Vec<_>>();
     let policy = PostLlmDecisionPolicy::new(resources.runtime, resources.gateway.model_limits());
 
     policy.decide(PostLlmDecisionInput {
         output,
-        step_index: execution.lifecycle.step_index,
-        continuation_count: execution.lifecycle.continuation_count,
         max_output_continuation_count: execution.lifecycle.max_output_continuation_count,
-        used_budget_tokens: execution.budget.token_tracker.budget_tokens(0),
-        recent_output_tokens: &recent_output_tokens,
     })
 }
 
@@ -185,24 +167,10 @@ fn append_assistant_output(
             content,
             reasoning_content,
             reasoning_signature,
+            execution.lifecycle.step_index,
             Some(Utc::now()),
         ));
     }
-}
-
-fn append_turn_done_event(
-    execution: &mut TurnExecutionContext,
-    resources: &TurnExecutionResources<'_>,
-    stop_cause: TurnStopCause,
-) {
-    execution.journal.push(turn_done_event(
-        resources.turn_id,
-        resources.agent,
-        stop_cause
-            .legacy_turn_done_reason()
-            .map(ToString::to_string),
-        Utc::now(),
-    ));
 }
 
 fn append_internal_user_message(

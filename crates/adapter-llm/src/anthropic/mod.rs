@@ -23,7 +23,7 @@
 //! - `message_start / message_delta`: 提取 usage / stop_reason 等元数据
 //! - `content_block_stop / ping`: 元数据事件，静默忽略
 
-mod dto;
+pub(crate) mod dto;
 mod provider;
 mod request;
 mod response;

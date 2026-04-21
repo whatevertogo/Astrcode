@@ -18,12 +18,30 @@ pub struct ConversationCursorDto(pub String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ConversationStepCursorDto {
+    pub turn_id: String,
+    pub step_index: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationStepProgressDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable: Option<ConversationStepCursorDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<ConversationStepCursorDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationSnapshotResponseDto {
     pub session_id: String,
     pub session_title: String,
     pub cursor: ConversationCursorDto,
     pub phase: PhaseDto,
     pub control: ConversationControlStateDto,
+    #[serde(default)]
+    pub step_progress: ConversationStepProgressDto,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<ConversationBlockDto>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -45,6 +63,8 @@ pub struct ConversationSlashCandidatesResponseDto {
 pub struct ConversationStreamEnvelopeDto {
     pub session_id: String,
     pub cursor: ConversationCursorDto,
+    #[serde(default)]
+    pub step_progress: ConversationStepProgressDto,
     #[serde(flatten)]
     pub delta: ConversationDeltaDto,
 }
@@ -143,6 +163,7 @@ pub enum ConversationBlockDto {
     User(ConversationUserBlockDto),
     Assistant(ConversationAssistantBlockDto),
     Thinking(ConversationThinkingBlockDto),
+    PromptMetrics(ConversationPromptMetricsBlockDto),
     Plan(ConversationPlanBlockDto),
     ToolCall(ConversationToolCallBlockDto),
     Error(ConversationErrorBlockDto),
@@ -167,6 +188,8 @@ pub struct ConversationAssistantBlockDto {
     pub turn_id: Option<String>,
     pub status: ConversationBlockStatusDto,
     pub markdown: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,6 +200,36 @@ pub struct ConversationThinkingBlockDto {
     pub turn_id: Option<String>,
     pub status: ConversationBlockStatusDto,
     pub markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptMetricsBlockDto {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    pub step_index: u32,
+    pub estimated_tokens: u32,
+    pub context_window: u32,
+    pub effective_window: u32,
+    pub threshold_tokens: u32,
+    pub truncated_tool_results: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
+    #[serde(default)]
+    pub provider_cache_metrics_supported: bool,
+    #[serde(default)]
+    pub prompt_cache_reuse_hits: u32,
+    #[serde(default)]
+    pub prompt_cache_reuse_misses: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt_cache_unchanged_layers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

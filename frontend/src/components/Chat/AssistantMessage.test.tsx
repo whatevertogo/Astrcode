@@ -29,17 +29,6 @@ describe('AssistantMessage streaming markdown', () => {
     const html = renderToStaticMarkup(
       <AssistantMessage
         presentation="subRun"
-        metrics={{
-          id: 'metrics-1',
-          kind: 'promptMetrics',
-          stepIndex: 1,
-          estimatedTokens: 512,
-          contextWindow: 200000,
-          effectiveWindow: 180000,
-          thresholdTokens: 162000,
-          truncatedToolResults: 0,
-          timestamp: Date.now(),
-        }}
         message={{
           id: 'assistant-subrun-1',
           kind: 'assistant',

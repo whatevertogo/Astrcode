@@ -24,17 +24,12 @@
 
 mod step;
 
-use std::{
-    collections::{HashSet, VecDeque},
-    path::Path,
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, BoundModeToolContractSnapshot, CancelToken, LlmMessage, ModeId,
-    PromptDeclaration, PromptFactsProvider, PromptGovernanceContext, ResolvedRuntimeConfig, Result,
-    StorageEvent, StorageEventPayload, ToolDefinition,
+    AgentEventContext, BoundModeToolContractSnapshot, CancelToken, EventStore, EventTranslator,
+    LlmMessage, ModeId, Phase, PromptDeclaration, PromptFactsProvider, PromptGovernanceContext,
+    ResolvedRuntimeConfig, Result, StorageEvent, StorageEventPayload, ToolDefinition,
 };
 use astrcode_kernel::{CapabilityRouter, Kernel, KernelGateway};
 use chrono::{DateTime, Utc};
@@ -52,7 +47,10 @@ use crate::{
         ContextWindowSettings, file_access::FileAccessTracker, micro_compact::MicroCompactState,
         token_usage::TokenUsageTracker,
     },
-    turn::tool_result_budget::ToolResultReplacementState,
+    turn::{
+        events::turn_terminal_event, finalize::persist_storage_events,
+        tool_result_budget::ToolResultReplacementState,
+    },
 };
 
 /// 可清除的工具名称（这些工具的旧结果可以被 prune pass 替换为占位文本）。
@@ -62,6 +60,7 @@ const CLEARABLE_TOOLS: &[&str] = &["readFile", "listDir", "grep", "findFiles"];
 
 /// Turn 执行请求。
 pub(crate) struct TurnRunRequest {
+    pub event_store: Arc<dyn EventStore>,
     pub session_id: String,
     pub working_dir: String,
     pub turn_id: String,
@@ -84,7 +83,7 @@ pub(crate) struct TurnRunResult {
     pub outcome: TurnOutcome,
     /// Turn 结束时的完整消息历史（含本次 turn 新增的）。
     pub messages: Vec<LlmMessage>,
-    /// Turn 执行期间产生的 storage events（用于持久化）。
+    /// run_turn 返回后仍需由 finalize 兜底持久化的尾部事件。
     pub events: Vec<StorageEvent>,
     /// Turn 级稳定汇总（包含耗时、token、续写等指标）。
     pub summary: TurnSummary,
@@ -137,7 +136,6 @@ struct TurnExecutionContext {
 struct TurnLifecycle {
     turn_started_at: Instant,
     step_index: usize,
-    continuation_count: usize,
     reactive_compact_attempts: usize,
     max_output_continuation_count: usize,
     last_transition: Option<TurnLoopTransition>,
@@ -149,7 +147,6 @@ struct TurnBudgetState {
     total_cache_read_tokens: u64,
     total_cache_creation_tokens: u64,
     auto_compaction_count: usize,
-    recent_output_tokens: VecDeque<usize>,
     micro_compact_state: MicroCompactState,
     file_access_tracker: FileAccessTracker,
 }
@@ -176,7 +173,6 @@ struct TurnLifecycleSummary {
     last_transition: Option<TurnLoopTransition>,
     wall_duration: std::time::Duration,
     step_count: usize,
-    continuation_count: usize,
     reactive_compact_count: usize,
     max_output_continuation_count: usize,
 }
@@ -239,7 +235,6 @@ impl TurnLifecycle {
         Self {
             turn_started_at,
             step_index: 0,
-            continuation_count: 0,
             reactive_compact_attempts: 0,
             max_output_continuation_count: 0,
             last_transition: None,
@@ -249,14 +244,6 @@ impl TurnLifecycle {
 
     fn record_transition(&mut self, transition: TurnLoopTransition) {
         self.last_transition = Some(transition);
-        match transition {
-            TurnLoopTransition::BudgetAllowsContinuation
-            | TurnLoopTransition::OutputContinuationRequested => {
-                self.continuation_count = self.continuation_count.saturating_add(1);
-            },
-            TurnLoopTransition::ToolCycleCompleted
-            | TurnLoopTransition::ReactiveCompactRecovered => {},
-        }
     }
 
     fn summarize(
@@ -272,7 +259,6 @@ impl TurnLifecycle {
             last_transition: self.last_transition,
             wall_duration: self.turn_started_at.elapsed(),
             step_count: self.step_index + 1,
-            continuation_count: self.continuation_count,
             reactive_compact_count: self.reactive_compact_attempts,
             max_output_continuation_count: self.max_output_continuation_count,
         }
@@ -291,7 +277,6 @@ impl TurnBudgetState {
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
             auto_compaction_count: 0,
-            recent_output_tokens: VecDeque::new(),
             micro_compact_state: MicroCompactState::seed_from_messages(
                 messages,
                 resources.settings.micro_compact_config(),
@@ -312,15 +297,6 @@ impl TurnBudgetState {
             cache_read_input_tokens: self.total_cache_read_tokens,
             cache_creation_input_tokens: self.total_cache_creation_tokens,
             auto_compaction_count: self.auto_compaction_count,
-        }
-    }
-
-    fn record_output_tokens(&mut self, output_tokens: usize) {
-        const RECENT_OUTPUT_WINDOW: usize = 3;
-
-        self.recent_output_tokens.push_back(output_tokens);
-        while self.recent_output_tokens.len() > RECENT_OUTPUT_WINDOW {
-            self.recent_output_tokens.pop_front();
         }
     }
 }
@@ -400,14 +376,13 @@ impl TurnExecutionContext {
         TurnRunResult {
             outcome,
             messages: self.messages,
-            events: self.journal.into_events(),
+            events: Vec::new(),
             summary: TurnSummary {
                 finish_reason: lifecycle.finish_reason,
                 stop_cause: lifecycle.stop_cause,
                 last_transition: lifecycle.last_transition,
                 wall_duration: lifecycle.wall_duration,
                 step_count: lifecycle.step_count,
-                continuation_count: lifecycle.continuation_count,
                 total_tokens_used: budget.total_tokens_used,
                 cache_read_input_tokens: budget.cache_read_input_tokens,
                 cache_creation_input_tokens: budget.cache_creation_input_tokens,
@@ -438,6 +413,7 @@ impl TurnExecutionContext {
 /// 每个重要步骤通过事件回调发出。
 pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<TurnRunResult> {
     let TurnRunRequest {
+        event_store,
         session_id,
         working_dir,
         turn_id,
@@ -473,9 +449,25 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         },
     );
     let mut execution = TurnExecutionContext::new(&resources, messages, last_assistant_at);
+    let mut translator = EventTranslator::new(session_state.current_phase().unwrap_or(Phase::Idle));
 
     loop {
         if resources.cancel.is_cancelled() {
+            execution.journal.clear();
+            execution.journal.push(turn_terminal_event(
+                resources.turn_id,
+                resources.agent,
+                TurnStopCause::Cancelled,
+                Utc::now(),
+            ));
+            flush_pending_events(
+                &event_store,
+                resources.session_state,
+                resources.session_id,
+                &mut translator,
+                &mut execution.journal,
+            )
+            .await?;
             return Ok(execution.finish(
                 &resources,
                 TurnOutcome::Cancelled,
@@ -484,6 +476,21 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
         }
 
         if execution.lifecycle.step_index >= resources.max_steps {
+            execution.journal.clear();
+            execution.journal.push(turn_terminal_event(
+                resources.turn_id,
+                resources.agent,
+                TurnStopCause::StepLimitExceeded,
+                Utc::now(),
+            ));
+            flush_pending_events(
+                &event_store,
+                resources.session_state,
+                resources.session_id,
+                &mut translator,
+                &mut execution.journal,
+            )
+            .await?;
             return Ok(execution.finish(
                 &resources,
                 TurnOutcome::Error {
@@ -495,16 +502,69 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
 
         match run_single_step(&mut execution, &resources).await? {
             StepOutcome::Continue(transition) => {
+                flush_pending_events(
+                    &event_store,
+                    resources.session_state,
+                    resources.session_id,
+                    &mut translator,
+                    &mut execution.journal,
+                )
+                .await?;
                 execution.lifecycle.record_transition(transition);
             },
             StepOutcome::Completed(stop_cause) => {
+                execution.journal.push(turn_terminal_event(
+                    resources.turn_id,
+                    resources.agent,
+                    stop_cause,
+                    Utc::now(),
+                ));
+                flush_pending_events(
+                    &event_store,
+                    resources.session_state,
+                    resources.session_id,
+                    &mut translator,
+                    &mut execution.journal,
+                )
+                .await?;
                 return Ok(execution.finish(&resources, TurnOutcome::Completed, stop_cause));
             },
             StepOutcome::Cancelled(stop_cause) => {
+                execution.journal.clear();
+                execution.journal.push(turn_terminal_event(
+                    resources.turn_id,
+                    resources.agent,
+                    stop_cause,
+                    Utc::now(),
+                ));
+                flush_pending_events(
+                    &event_store,
+                    resources.session_state,
+                    resources.session_id,
+                    &mut translator,
+                    &mut execution.journal,
+                )
+                .await?;
                 return Ok(execution.finish(&resources, TurnOutcome::Cancelled, stop_cause));
             },
         }
     }
+}
+
+async fn flush_pending_events(
+    event_store: &Arc<dyn EventStore>,
+    session_state: &Arc<SessionState>,
+    session_id: &str,
+    translator: &mut EventTranslator,
+    journal: &mut TurnJournal,
+) -> Result<()> {
+    if journal.is_empty() {
+        return Ok(());
+    }
+    let events = journal.take_events();
+    persist_storage_events(event_store, session_state, session_id, translator, &events)
+        .await
+        .map(|_| ())
 }
 
 fn scoped_gateway(

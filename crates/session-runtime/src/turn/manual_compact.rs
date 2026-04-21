@@ -143,6 +143,7 @@ mod tests {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::Stop,
+                prompt_cache_diagnostics: None,
             })
         }
 
@@ -252,6 +253,7 @@ mod tests {
                     content: "latest answer".to_string(),
                     reasoning_content: None,
                     reasoning_signature: None,
+                    step_index: None,
                     timestamp: Some(Utc::now()),
                 },
             },

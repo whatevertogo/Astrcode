@@ -228,10 +228,14 @@ pub async fn assemble_prompt_request(
         request.gateway.supports_cache_metrics(),
     ));
 
+    let mut prompt_cache_hints = prompt_output.prompt_cache_hints.clone();
+    prompt_cache_hints.compacted = auto_compacted;
+    prompt_cache_hints.tool_result_rebudgeted = tool_result_budgeted(&tool_result_budget_stats);
+
     let mut llm_request = LlmRequest::new(messages.clone(), request.tools, request.cancel.clone())
         .with_system(prompt_output.system_prompt);
     llm_request.system_prompt_blocks = prompt_output.system_prompt_blocks;
-    llm_request.prompt_cache_hints = Some(prompt_output.prompt_cache_hints.clone());
+    llm_request.prompt_cache_hints = Some(prompt_cache_hints);
 
     Ok(AssemblePromptResult {
         llm_request,
@@ -240,6 +244,10 @@ pub async fn assemble_prompt_request(
         auto_compacted,
         tool_result_budget_stats,
     })
+}
+
+fn tool_result_budgeted(stats: &ToolResultBudgetStats) -> bool {
+    stats.replacement_count > 0 || stats.reapply_count > 0 || stats.over_budget_message_count > 0
 }
 
 pub(crate) async fn build_prompt_output(

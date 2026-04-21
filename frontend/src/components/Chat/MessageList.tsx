@@ -1,5 +1,5 @@
 import React, { Component, useCallback, useEffect, useRef } from 'react';
-import type { Message, SubRunViewData, ThreadItem } from '../../types';
+import type { ConversationStepProgress, Message, SubRunViewData, ThreadItem } from '../../types';
 import {
   contextMenu as contextMenuClass,
   emptyStateSurface,
@@ -22,6 +22,7 @@ interface MessageListProps {
   threadItems: ThreadItem[];
   childSubRuns: SubRunViewData[];
   subRunViews: Map<string, SubRunViewData>;
+  stepProgress: ConversationStepProgress;
   contentFingerprint: string;
 }
 
@@ -210,6 +211,7 @@ export default function MessageList({
   threadItems,
   childSubRuns,
   subRunViews,
+  stepProgress,
   contentFingerprint,
 }: MessageListProps) {
   const {
@@ -268,30 +270,17 @@ export default function MessageList({
   }, [contentFingerprint, stickToBottom, updateStickiness]);
 
   const renderMessageContent = useCallback(
-    (
-      msg: Message,
-      hideAvatar: boolean,
-      metrics?: Message,
-      options?: {
-        nested?: boolean;
-      }
-    ) => {
+    (msg: Message, hideAvatar: boolean, options?: { nested?: boolean }) => {
       if (msg.kind === 'user') {
         return <UserMessage message={msg} />;
       }
       if (msg.kind === 'assistant') {
-        const promptMetrics = metrics?.kind === 'promptMetrics' ? metrics : undefined;
         const presentation =
           !isChildSession && activeSubRunPath.length === 0 && options?.nested !== true
             ? 'root'
             : 'subRun';
         return (
-          <AssistantMessage
-            message={msg}
-            hideAvatar={hideAvatar}
-            metrics={promptMetrics}
-            presentation={presentation}
-          />
+          <AssistantMessage message={msg} hideAvatar={hideAvatar} presentation={presentation} />
         );
       }
       if (msg.kind === 'plan') {
@@ -299,9 +288,6 @@ export default function MessageList({
       }
       if (msg.kind === 'toolCall') {
         return <ToolCallBlock message={msg} />;
-      }
-      if (msg.kind === 'promptMetrics') {
-        return null;
       }
       if (msg.kind === 'compact') {
         return <CompactMessage message={msg} />;
@@ -318,20 +304,13 @@ export default function MessageList({
     (
       msg: Message,
       previousMessage: Message | null,
-      nextMessage: Message | null,
       options?: {
         key?: string;
         nested?: boolean;
-      },
-      metricsOverride?: Message
+      }
     ) => {
       const isContinuation =
         previousMessage !== null && isAssistantLike(msg) && isAssistantLike(previousMessage);
-      const metricsToAttach =
-        metricsOverride ??
-        (msg.kind === 'assistant' && nextMessage?.kind === 'promptMetrics'
-          ? nextMessage
-          : undefined);
 
       return (
         <ForkableRow key={options?.key ?? msg.id} message={msg} nested={options?.nested}>
@@ -345,7 +324,7 @@ export default function MessageList({
             )}
           >
             <MessageBoundary message={msg}>
-              {renderMessageContent(msg, isContinuation, metricsToAttach, options)}
+              {renderMessageContent(msg, isContinuation, options)}
             </MessageBoundary>
           </div>
         </ForkableRow>
@@ -366,72 +345,18 @@ export default function MessageList({
       for (let index = 0; index < items.length; index += 1) {
         const item = items[index];
         if (item.kind === 'message') {
-          const previousItem = items[index - 1];
-          const nextItem = items[index + 1];
-          const previousMessage = previousItem?.kind === 'message' ? previousItem.message : null;
-          const nextMessage = nextItem?.kind === 'message' ? nextItem.message : null;
-
           if (item.message.kind === 'promptMetrics') {
             continue;
           }
 
-          let metricsToAttach: Message | undefined;
-          if (item.message.kind === 'assistant') {
-            let hasMoreAssistantInTurn = false;
-            const currentTurnId = item.message.turnId;
-
-            for (let nextIndex = index + 1; nextIndex < items.length; nextIndex += 1) {
-              const nextThreadItem = items[nextIndex];
-              if (nextThreadItem.kind !== 'message') {
-                continue;
-              }
-              if (
-                nextThreadItem.message.kind === 'assistant' &&
-                nextThreadItem.message.turnId === currentTurnId
-              ) {
-                hasMoreAssistantInTurn = true;
-                break;
-              }
-              if (
-                nextThreadItem.message.kind === 'user' ||
-                (nextThreadItem.message.kind === 'assistant' &&
-                  nextThreadItem.message.turnId !== currentTurnId)
-              ) {
-                break;
-              }
-            }
-
-            if (!hasMoreAssistantInTurn) {
-              for (let nextIndex = index + 1; nextIndex < items.length; nextIndex += 1) {
-                const nextThreadItem = items[nextIndex];
-                if (nextThreadItem.kind !== 'message') {
-                  continue;
-                }
-                if (nextThreadItem.message.kind === 'promptMetrics') {
-                  metricsToAttach = nextThreadItem.message;
-                  break;
-                }
-                if (
-                  nextThreadItem.message.kind === 'assistant' ||
-                  nextThreadItem.message.kind === 'user'
-                ) {
-                  break;
-                }
-              }
-            }
-          }
+          const previousItem = items[index - 1];
+          const previousMessage = previousItem?.kind === 'message' ? previousItem.message : null;
 
           rendered.push(
-            renderMessageRow(
-              item.message,
-              previousMessage,
-              nextMessage,
-              {
-                key: item.message.id,
-                nested: options?.nested,
-              },
-              metricsToAttach
-            )
+            renderMessageRow(item.message, previousMessage, {
+              key: item.message.id,
+              nested: options?.nested,
+            })
           );
           continue;
         }
@@ -534,6 +459,25 @@ export default function MessageList({
     );
   });
 
+  const stepProgressRow = (() => {
+    const durable = stepProgress.durable;
+    const live = stepProgress.live;
+    if (!live) {
+      return null;
+    }
+
+    const formatStep = (stepIndex: number) => `Step ${stepIndex + 1}`;
+    return (
+      <div className="mx-auto -mt-2 w-[min(100%,var(--chat-content-max-width))] text-right text-[11px] leading-relaxed text-text-secondary/80">
+        <span className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-panel/70 px-3 py-1.5 backdrop-blur-sm">
+          <span className="h-1.5 w-1.5 rounded-full bg-warning/80" aria-hidden="true" />
+          <span>纯 live 增量：{formatStep(live.stepIndex)}</span>
+          {durable ? <span>已 durable 到 {formatStep(durable.stepIndex)}</span> : null}
+        </span>
+      </div>
+    );
+  })();
+
   return (
     <div
       ref={listRef}
@@ -551,6 +495,7 @@ export default function MessageList({
         </div>
       )}
       {renderedRows}
+      {stepProgressRow}
       {childSubRuns.length > 0 && (
         <section className="mx-auto mt-1 flex w-[min(100%,var(--chat-content-max-width))] flex-col gap-3">
           <div className="text-xs leading-snug tracking-[0.02em] text-text-secondary">

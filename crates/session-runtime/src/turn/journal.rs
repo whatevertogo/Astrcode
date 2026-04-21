@@ -6,6 +6,10 @@ pub(crate) struct TurnJournal {
 }
 
 impl TurnJournal {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
     pub(crate) fn events_mut(&mut self) -> &mut Vec<StorageEvent> {
         &mut self.events
     }
@@ -21,17 +25,16 @@ impl TurnJournal {
         self.events.extend(events);
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.events.clear();
+    }
+
+    pub(crate) fn take_events(&mut self) -> Vec<StorageEvent> {
+        std::mem::take(&mut self.events)
+    }
+
     #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &StorageEvent> {
         self.events.iter()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> Vec<StorageEvent> {
-        self.events.clone()
-    }
-
-    pub(crate) fn into_events(self) -> Vec<StorageEvent> {
-        self.events
     }
 }

@@ -479,6 +479,7 @@ mod tests {
                     content: "子 Agent 总结".to_string(),
                     reasoning_content: None,
                     reasoning_signature: None,
+                    step_index: None,
                     timestamp: Some(chrono::Utc::now()),
                 },
             },

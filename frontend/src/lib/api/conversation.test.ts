@@ -14,7 +14,99 @@ const baseControl = {
   activeTasks: undefined,
 };
 
+const baseStepProgress = {
+  durable: null,
+  live: null,
+} as const;
+
 describe('projectConversationState', () => {
+  it('ignores prompt metrics blocks while preserving assistant step index', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-metrics',
+      phase: 'streaming',
+      blocks: [
+        {
+          id: 'metrics-1',
+          kind: 'prompt_metrics',
+          turnId: 'turn-1',
+          stepIndex: 2,
+          estimatedTokens: 1024,
+          contextWindow: 200000,
+          effectiveWindow: 180000,
+          thresholdTokens: 162000,
+          truncatedToolResults: 1,
+          providerInputTokens: 700,
+          providerOutputTokens: 64,
+          cacheCreationInputTokens: 100,
+          cacheReadInputTokens: 500,
+          providerCacheMetricsSupported: true,
+          promptCacheReuseHits: 3,
+          promptCacheReuseMisses: 1,
+        },
+        {
+          id: 'assistant-1',
+          kind: 'assistant',
+          turnId: 'turn-1',
+          stepIndex: 2,
+          markdown: '这是答案。',
+          status: 'complete',
+        },
+      ],
+      control: baseControl,
+      stepProgress: baseStepProgress,
+      childSummaries: [],
+    };
+
+    const projection = projectConversationState(state);
+
+    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages[0]).toMatchObject({
+      kind: 'assistant',
+      turnId: 'turn-1',
+      stepIndex: 2,
+      text: '这是答案。',
+    });
+    expect(projection.stepProgress).toEqual(baseStepProgress);
+  });
+
+  it('keeps step progress in the projection and updates it from stream envelopes', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-step-progress',
+      phase: 'streaming',
+      blocks: [],
+      control: baseControl,
+      stepProgress: {
+        durable: { turnId: 'turn-1', stepIndex: 0 },
+        live: null,
+      },
+      childSummaries: [],
+    };
+
+    applyConversationEnvelope(state, {
+      cursor: 'cursor-step-progress-2',
+      stepProgress: {
+        durable: { turnId: 'turn-1', stepIndex: 0 },
+        live: { turnId: 'turn-1', stepIndex: 1 },
+      },
+      kind: 'patch_block',
+      blockId: 'missing',
+      patch: {
+        kind: 'append_markdown',
+        markdown: 'noop',
+      },
+    });
+    const nextProjection = projectConversationState(state);
+
+    expect(nextProjection.stepProgress).toEqual({
+      durable: { turnId: 'turn-1', stepIndex: 0 },
+      live: { turnId: 'turn-1', stepIndex: 1 },
+    });
+    expect(state.stepProgress).toEqual({
+      durable: { turnId: 'turn-1', stepIndex: 0 },
+      live: { turnId: 'turn-1', stepIndex: 1 },
+    });
+  });
+
   it('merges same-turn thinking blocks into the following assistant message', () => {
     const state: ConversationSnapshotState = {
       cursor: 'cursor-1',
@@ -36,6 +128,7 @@ describe('projectConversationState', () => {
         },
       ],
       control: baseControl,
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -65,6 +158,7 @@ describe('projectConversationState', () => {
         },
       ],
       control: { ...baseControl, phase: 'thinking' as const },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -103,6 +197,7 @@ describe('projectConversationState', () => {
         },
       ],
       control: { ...baseControl, phase: 'callingTool' as const },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -171,6 +266,7 @@ describe('projectConversationState', () => {
         },
       ],
       control: { ...baseControl, phase: 'callingTool' as const },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -225,6 +321,7 @@ describe('projectConversationState', () => {
         },
       ],
       control: { ...baseControl, phase: 'callingTool' as const },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -284,6 +381,7 @@ describe('projectConversationState', () => {
         },
       ],
       control: { ...baseControl, phase: 'callingTool' as const },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -403,6 +501,7 @@ describe('projectConversationState', () => {
         },
       ],
       control: { ...baseControl, phase: 'callingTool' as const },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -468,6 +567,7 @@ describe('projectConversationState', () => {
         },
       ],
       control: { ...baseControl, phase: 'callingTool' as const },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -527,6 +627,7 @@ describe('projectConversationState', () => {
           },
         },
       },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -580,6 +681,7 @@ describe('projectConversationState', () => {
           },
         },
       },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -619,6 +721,7 @@ describe('projectConversationState', () => {
         },
       ],
       control: { ...baseControl, phase: 'done' as const },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -659,6 +762,7 @@ describe('projectConversationState', () => {
           },
         ],
       },
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 
@@ -683,6 +787,7 @@ describe('projectConversationState', () => {
       phase: 'idle',
       blocks: [],
       control: baseControl,
+      stepProgress: baseStepProgress,
       childSummaries: [],
     };
 

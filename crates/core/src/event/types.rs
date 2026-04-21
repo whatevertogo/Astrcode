@@ -17,7 +17,7 @@ use crate::{
     ExecutionContinuation, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,
     InputQueuedPayload, ModeId, PersistedToolOutput, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides, Result, SubRunResult, SystemPromptLayer, ToolOutputStream,
-    UserMessageOrigin,
+    UserMessageOrigin, ports::PromptCacheDiagnostics,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -52,6 +52,8 @@ pub struct PromptMetricsPayload {
     pub prompt_cache_reuse_misses: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_cache_unchanged_layers: Vec<SystemPromptLayer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_diagnostics: Option<PromptCacheDiagnostics>,
 }
 
 /// 上下文压缩的触发方式。
@@ -106,8 +108,6 @@ pub enum TurnTerminalKind {
     Cancelled,
     Error { message: String },
     StepLimitExceeded,
-    BudgetStoppedContinuation,
-    ContinuationLimitReached,
     MaxOutputContinuationLimitReached,
 }
 
@@ -115,8 +115,6 @@ impl TurnTerminalKind {
     pub fn from_legacy_reason(reason: Option<&str>) -> Option<Self> {
         match reason.map(str::trim).filter(|reason| !reason.is_empty()) {
             Some("completed") => Some(Self::Completed),
-            Some("budget_stopped") => Some(Self::BudgetStoppedContinuation),
-            Some("continuation_limit_reached") => Some(Self::ContinuationLimitReached),
             Some("token_exceeded") => Some(Self::MaxOutputContinuationLimitReached),
             Some("cancelled") | Some("interrupted") => Some(Self::Cancelled),
             Some("step_limit_exceeded") => Some(Self::StepLimitExceeded),
@@ -163,6 +161,8 @@ pub enum StorageEventPayload {
         reasoning_content: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_signature: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_index: Option<u32>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",

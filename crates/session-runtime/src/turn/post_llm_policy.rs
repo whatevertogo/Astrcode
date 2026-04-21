@@ -1,27 +1,17 @@
 //! step 级 LLM 后置决策策略。
 //!
 //! Why: 把“无工具输出后是否继续、何时停止”的判断收敛到单一决策层，
-//! 避免 `continuation_cycle`、`loop_control` 与 `step` 通过执行顺序隐式耦合。
+//! 避免 `continuation_cycle`、`step` 与后续扩展通过执行顺序隐式耦合。
 
 use astrcode_core::{LlmOutput, ModelLimits, ResolvedRuntimeConfig, UserMessageOrigin};
 
-use crate::{
-    context_window::token_usage::estimate_text_tokens,
-    turn::{
-        continuation_cycle::{
-            OUTPUT_CONTINUATION_PROMPT, OutputContinuationDecision, continuation_transition,
-            decide_output_continuation,
-        },
-        loop_control::{
-            AUTO_CONTINUE_NUDGE, BudgetContinuationDecision, TurnLoopTransition, TurnStopCause,
-            decide_budget_continuation,
-        },
+use crate::turn::{
+    continuation_cycle::{
+        OUTPUT_CONTINUATION_PROMPT, OutputContinuationDecision, continuation_transition,
+        decide_output_continuation,
     },
+    loop_control::{TurnLoopTransition, TurnStopCause},
 };
-
-const DIMINISHING_RETURNS_MIN_CONTINUATIONS: usize = 2;
-const DIMINISHING_RETURNS_LOW_OUTPUT_TOKENS: usize = 48;
-const DIMINISHING_RETURNS_WINDOW: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PostLlmDecision {
@@ -37,24 +27,18 @@ pub(crate) enum PostLlmDecision {
 #[derive(Debug, Clone)]
 pub(crate) struct PostLlmDecisionPolicy {
     runtime: ResolvedRuntimeConfig,
-    limits: ModelLimits,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PostLlmDecisionInput<'a> {
     pub(crate) output: &'a LlmOutput,
-    pub(crate) step_index: usize,
-    pub(crate) continuation_count: usize,
     pub(crate) max_output_continuation_count: usize,
-    pub(crate) used_budget_tokens: usize,
-    pub(crate) recent_output_tokens: &'a [usize],
 }
 
 impl PostLlmDecisionPolicy {
-    pub(crate) fn new(runtime: &ResolvedRuntimeConfig, limits: ModelLimits) -> Self {
+    pub(crate) fn new(runtime: &ResolvedRuntimeConfig, _limits: ModelLimits) -> Self {
         Self {
             runtime: runtime.clone(),
-            limits,
         }
     }
 
@@ -68,59 +52,17 @@ impl PostLlmDecisionPolicy {
             input.max_output_continuation_count,
             &self.runtime,
         ) {
-            OutputContinuationDecision::Continue => {
-                return PostLlmDecision::ContinueWithPrompt {
-                    nudge: OUTPUT_CONTINUATION_PROMPT,
-                    origin: UserMessageOrigin::ContinuationPrompt,
-                    transition: continuation_transition(),
-                };
+            OutputContinuationDecision::Continue => PostLlmDecision::ContinueWithPrompt {
+                nudge: OUTPUT_CONTINUATION_PROMPT,
+                origin: UserMessageOrigin::ContinuationPrompt,
+                transition: continuation_transition(),
             },
-            OutputContinuationDecision::Stop(stop_cause) => {
-                return PostLlmDecision::Stop(stop_cause);
-            },
-            OutputContinuationDecision::NotNeeded => {},
-        }
-
-        if has_diminishing_returns(input.continuation_count, input.recent_output_tokens) {
-            return PostLlmDecision::Stop(TurnStopCause::BudgetStoppedContinuation);
-        }
-
-        match decide_budget_continuation(
-            input.output,
-            input.step_index,
-            input.continuation_count,
-            &self.runtime,
-            self.limits,
-            input.used_budget_tokens,
-        ) {
-            BudgetContinuationDecision::Continue => PostLlmDecision::ContinueWithPrompt {
-                nudge: AUTO_CONTINUE_NUDGE,
-                origin: UserMessageOrigin::AutoContinueNudge,
-                transition: TurnLoopTransition::BudgetAllowsContinuation,
-            },
-            BudgetContinuationDecision::Stop(stop_cause) => PostLlmDecision::Stop(stop_cause),
-            BudgetContinuationDecision::NotNeeded => {
+            OutputContinuationDecision::Stop(stop_cause) => PostLlmDecision::Stop(stop_cause),
+            OutputContinuationDecision::NotNeeded => {
                 PostLlmDecision::Stop(TurnStopCause::Completed)
             },
         }
     }
-}
-
-pub(crate) fn output_token_count(output: &LlmOutput) -> usize {
-    output
-        .usage
-        .map(|usage| usage.output_tokens)
-        .unwrap_or_else(|| estimate_text_tokens(output.content.trim()))
-}
-
-fn has_diminishing_returns(continuation_count: usize, recent_output_tokens: &[usize]) -> bool {
-    continuation_count >= DIMINISHING_RETURNS_MIN_CONTINUATIONS
-        && recent_output_tokens.len() >= DIMINISHING_RETURNS_WINDOW
-        && recent_output_tokens
-            .iter()
-            .rev()
-            .take(DIMINISHING_RETURNS_WINDOW)
-            .all(|tokens| *tokens <= DIMINISHING_RETURNS_LOW_OUTPUT_TOKENS)
 }
 
 #[cfg(test)]
@@ -149,6 +91,7 @@ mod tests {
                 cache_read_input_tokens: 0,
             }),
             finish_reason,
+            prompt_cache_diagnostics: None,
         }
     }
 
@@ -173,18 +116,14 @@ mod tests {
                     args: serde_json::json!({"path":"src/lib.rs"}),
                 }],
             ),
-            step_index: 1,
-            continuation_count: 0,
             max_output_continuation_count: 0,
-            used_budget_tokens: 0,
-            recent_output_tokens: &[],
         });
 
         assert_eq!(decision, PostLlmDecision::ExecuteTools);
     }
 
     #[test]
-    fn policy_requests_output_continuation_before_budget_logic() {
+    fn policy_requests_output_continuation_before_completion() {
         let policy = PostLlmDecisionPolicy::new(
             &ResolvedRuntimeConfig::default(),
             ModelLimits {
@@ -195,11 +134,7 @@ mod tests {
 
         let decision = policy.decide(PostLlmDecisionInput {
             output: &output("partial", LlmFinishReason::MaxTokens, 24, Vec::new()),
-            step_index: 1,
-            continuation_count: 0,
             max_output_continuation_count: 0,
-            used_budget_tokens: 0,
-            recent_output_tokens: &[24],
         });
 
         assert_eq!(
@@ -209,31 +144,6 @@ mod tests {
                 origin: UserMessageOrigin::ContinuationPrompt,
                 transition: TurnLoopTransition::OutputContinuationRequested,
             }
-        );
-    }
-
-    #[test]
-    fn policy_stops_on_diminishing_returns_before_budget_continue() {
-        let policy = PostLlmDecisionPolicy::new(
-            &ResolvedRuntimeConfig::default(),
-            ModelLimits {
-                context_window: 128_000,
-                max_output_tokens: 8_000,
-            },
-        );
-
-        let decision = policy.decide(PostLlmDecisionInput {
-            output: &output("brief", LlmFinishReason::Stop, 20, Vec::new()),
-            step_index: 3,
-            continuation_count: 2,
-            max_output_continuation_count: 0,
-            used_budget_tokens: 50,
-            recent_output_tokens: &[24, 20, 18],
-        });
-
-        assert_eq!(
-            decision,
-            PostLlmDecision::Stop(TurnStopCause::BudgetStoppedContinuation)
         );
     }
 
@@ -249,45 +159,9 @@ mod tests {
 
         let decision = policy.decide(PostLlmDecisionInput {
             output: &output("done", LlmFinishReason::Stop, 128, Vec::new()),
-            step_index: 1,
-            continuation_count: 0,
             max_output_continuation_count: 0,
-            used_budget_tokens: 50,
-            recent_output_tokens: &[128],
         });
 
         assert_eq!(decision, PostLlmDecision::Stop(TurnStopCause::Completed));
-    }
-
-    #[test]
-    fn policy_continues_when_budget_still_allows_another_step() {
-        let policy = PostLlmDecisionPolicy::new(
-            &ResolvedRuntimeConfig {
-                max_steps: 4,
-                ..ResolvedRuntimeConfig::default()
-            },
-            ModelLimits {
-                context_window: 128_000,
-                max_output_tokens: 8_000,
-            },
-        );
-
-        let decision = policy.decide(PostLlmDecisionInput {
-            output: &output("brief follow-up", LlmFinishReason::Stop, 12, Vec::new()),
-            step_index: 1,
-            continuation_count: 1,
-            max_output_continuation_count: 0,
-            used_budget_tokens: 50,
-            recent_output_tokens: &[96, 72, 64],
-        });
-
-        assert_eq!(
-            decision,
-            PostLlmDecision::ContinueWithPrompt {
-                nudge: AUTO_CONTINUE_NUDGE,
-                origin: UserMessageOrigin::AutoContinueNudge,
-                transition: TurnLoopTransition::BudgetAllowsContinuation,
-            }
-        );
     }
 }

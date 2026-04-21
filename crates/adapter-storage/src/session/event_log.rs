@@ -435,6 +435,7 @@ mod tests {
                     content: "x".repeat(40_000),
                     reasoning_content: None,
                     reasoning_signature: None,
+                    step_index: None,
                     timestamp: Some(Utc::now()),
                 },
             })
@@ -463,6 +464,7 @@ mod tests {
                     content: "你".repeat(30_000),
                     reasoning_content: None,
                     reasoning_signature: None,
+                    step_index: None,
                     timestamp: Some(Utc::now()),
                 },
             })

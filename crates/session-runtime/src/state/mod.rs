@@ -27,8 +27,10 @@ use astrcode_core::{
     support::{self},
 };
 use chrono::Utc;
+#[cfg(test)]
+pub(crate) use execution::SessionStateEventSink;
+pub(crate) use execution::append_and_broadcast;
 pub use execution::checkpoint_if_compacted;
-pub(crate) use execution::{SessionStateEventSink, append_and_broadcast};
 pub(crate) use input_queue::replay_input_queue_projection_index;
 pub(crate) use paths::compact_history_event_log_path;
 pub use paths::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
@@ -297,6 +299,7 @@ mod tests {
                         content: "root answer".into(),
                         reasoning_content: None,
                         reasoning_signature: None,
+                        step_index: None,
                         timestamp: None,
                     },
                 ),
@@ -334,6 +337,7 @@ mod tests {
                         content: "child answer".into(),
                         reasoning_content: None,
                         reasoning_signature: None,
+                        step_index: None,
                         timestamp: None,
                     },
                 ),

@@ -1,40 +1,19 @@
 ## Requirements
 
-### Requirement: Turn Chain Loop 支持 Auto-continue
+### Requirement: Turn Chain Loop 支持输出截断恢复
 
-session-runtime 的 turn runner SHALL 支持在单次 submit 中执行多轮 LLM 调用。当 LLM 输出后 token budget 尚有余量且输出内容较短时，系统 SHALL 自动注入 continue nudge 消息并继续下一轮 LLM 调用。
-
-#### Scenario: Token budget 有余量时自动续写
-
-- **WHEN** turn 完成一轮 LLM 调用（无 tool calls，finish_reason 为 Stop），且 `decide_budget_continuation` 返回 `BudgetContinuationDecision::Continue`
-- **THEN** 系统注入一条 `UserMessage`（origin=AutoContinueNudge，content 为 `AUTO_CONTINUE_NUDGE` 常量），继续下一轮 LLM 调用
-
-#### Scenario: Token budget 不足时停止
-
-- **WHEN** turn 完成一轮 LLM 调用，且 `decide_budget_continuation` 返回 `BudgetContinuationDecision::Stop(BudgetStoppedContinuation)`
-- **THEN** 系统广播 `TurnDone` 事件（reason="budget_stopped"）并结束 turn
-
-#### Scenario: 达到最大续写次数
-
-- **WHEN** `continuation_count` 达到 `ResolvedRuntimeConfig.max_continuations` 配置上限
-- **THEN** 系统通过 `decide_budget_continuation` 返回 `Stop(ContinuationLimitReached)`，停止 auto-continue 并结束 turn
+session-runtime 的 turn runner SHALL 支持在单次 submit 中执行多轮 LLM 调用，并在 assistant 输出因 `max_tokens` 截断且无 tool calls 时自动注入 continuation prompt，在同一 turn 内继续下一轮 LLM 调用。
 
 #### Scenario: 不需要续写时自然结束
 
-- **WHEN** turn 完成一轮 LLM 调用，且 `decide_budget_continuation` 返回 `NotNeeded`（输出较长或 step_index == 0）
+- **WHEN** turn 完成一轮 LLM 调用，且 `decide_output_continuation` 返回 `NotNeeded`
 - **THEN** 系统广播 `TurnDone` 事件（reason="completed"）并结束 turn
 
 ---
 
-### Requirement: Token Budget 管理
+### Requirement: Token 使用量管理
 
-session-runtime SHALL 在 turn 执行期间通过 `decide_budget_continuation` 函数追踪 token 使用量，并基于 `ModelLimits.max_output_tokens * (max_continuations + 1)` 计算的总预算做出 continue/stop 决策。
-
-#### Scenario: 预算判断逻辑
-
-- **WHEN** `decide_budget_continuation` 被调用，参数包含 `LlmOutput`、`step_index`、`continuation_count`、`ResolvedRuntimeConfig`、`ModelLimits`、`used_budget_tokens`
-- **THEN** 系统首先排除有 tool calls 或 finish_reason 不为 Stop 的输出，然后排除 `output_tokens == 0` 或 `step_index == 0` 的情况
-- **AND** 对剩余情况：短输出（≤96 tokens）且剩余预算充足（≥ output_tokens * 2 且 ≥ 96）返回 `Continue`；短输出但预算不足返回 `Stop(BudgetStoppedContinuation)`；非短输出返回 `NotNeeded`
+session-runtime SHALL 在 turn 执行期间追踪 provider 报告的 token 使用量，并将其用于 observability 汇总。
 
 #### Scenario: 每轮更新 token 使用量
 
@@ -76,7 +55,7 @@ session-runtime SHALL 在 turn 执行期间收集 prompt metrics 并报告给 ob
 #### Scenario: 收集 turn 执行耗时和汇总
 
 - **WHEN** turn 完成（无论成功或失败）
-- **THEN** 系统生成 `TurnSummary`，包含 `wall_duration`、`step_count`、`continuation_count`、`total_tokens_used`、`cache_read_input_tokens`、`cache_creation_input_tokens`、`auto_compaction_count`、`reactive_compact_count`、`max_output_continuation_count`、`streaming_tool_*` 系列指标和 `collaboration` 汇总
+- **THEN** 系统生成 `TurnSummary`，包含 `wall_duration`、`step_count`、`total_tokens_used`、`cache_read_input_tokens`、`cache_creation_input_tokens`、`auto_compaction_count`、`reactive_compact_count`、`max_output_continuation_count`、`streaming_tool_*` 系列指标和 `collaboration` 汇总
 
 #### Scenario: 收集 Provider 使用量回填
 
@@ -100,12 +79,6 @@ session-runtime SHALL 在 turn 执行期间收集 prompt metrics 并报告给 ob
 - **WHEN** 一轮 LLM 调用因 prompt-too-long 被恢复为 reactive compact 成功路径
 - **THEN** turn loop 记录一次 `TurnLoopTransition::ReactiveCompactRecovered`
 - **AND** 系统 SHALL 在不落入普通完成路径的前提下重新组装请求
-
-#### Scenario: budget 允许 auto-continue
-
-- **WHEN** turn loop 在一次 assistant 输出后判断 `decide_budget_continuation` 返回 Continue
-- **THEN** turn loop 记录一次 `TurnLoopTransition::BudgetAllowsContinuation`
-- **AND** 系统注入对应的 AutoContinueNudge 用户消息后进入下一轮
 
 #### Scenario: 输出截断恢复驱动下一轮
 
@@ -211,12 +184,12 @@ session-runtime SHALL 在每次 turn 执行结束后生成不可变的 `TurnSumm
 #### Scenario: TurnSummary 包含执行指标
 
 - **WHEN** turn 执行完成（`run_turn` 返回 `TurnRunResult`）
-- **THEN** `TurnSummary` 包含：`finish_reason`（`TurnFinishReason`）、`stop_cause`（`TurnStopCause`）、`last_transition`、`wall_duration`、`step_count`、`continuation_count`、`total_tokens_used`、cache 指标、压缩次数、tool-result replacement 指标、streaming tool 指标、`collaboration` 汇总
+- **THEN** `TurnSummary` 包含：`finish_reason`（`TurnFinishReason`）、`stop_cause`（`TurnStopCause`）、`last_transition`、`wall_duration`、`step_count`、`total_tokens_used`、cache 指标、压缩次数、tool-result replacement 指标、streaming tool 指标、`collaboration` 汇总
 
 #### Scenario: TurnFinishReason 映射
 
 - **WHEN** `TurnStopCause` 转换为 `TurnFinishReason`
-- **THEN** Completed / BudgetStoppedContinuation / ContinuationLimitReached / MaxOutputContinuationLimitReached → NaturalEnd；Cancelled → Cancelled；Error → Error；StepLimitExceeded → StepLimitExceeded
+- **THEN** Completed / MaxOutputContinuationLimitReached → NaturalEnd；Cancelled → Cancelled；Error → Error；StepLimitExceeded → StepLimitExceeded
 
 #### Scenario: Collaboration 汇总聚合
 

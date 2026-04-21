@@ -10,9 +10,8 @@ import {
   extractToolShellDisplay,
   formatToolCallSummary,
 } from '../../lib/toolDisplay';
-import { chevronIcon, infoButton, pillDanger, pillNeutral, pillSuccess } from '../../lib/styles';
+import { chevronIcon, pillDanger, pillNeutral, pillSuccess } from '../../lib/styles';
 import { cn } from '../../lib/utils';
-import { useChatScreenContext } from './ChatScreenContext';
 import { PresentedPlanSurface, ReviewPendingPlanSurface } from './PlanSurface';
 import ToolCodePanel from './ToolCodePanel';
 import ToolJsonView from './ToolJsonView';
@@ -154,7 +153,6 @@ function planExitReviewPendingSurface(message: ToolCallMessage) {
 }
 
 function ToolCallBlock({ message }: ToolCallBlockProps) {
-  const { onOpenChildSession, onOpenSubRun } = useChatScreenContext();
   const viewportRef = useRef<HTMLDivElement>(null);
   useNestedScrollContainment(viewportRef);
   const shellDisplay = extractToolShellDisplay(message.metadata);
@@ -203,25 +201,6 @@ function ToolCallBlock({ message }: ToolCallBlockProps) {
       <summary className="flex min-w-0 cursor-pointer items-center gap-2 py-1.5 font-mono text-[13px] leading-relaxed text-text-secondary list-none [&::-webkit-details-marker]:hidden hover:opacity-85">
         <span className={cn('shrink-0', statusPill(message.status))}>{message.toolName}</span>
         <span className="min-w-0 flex-1 truncate text-text-primary">{summary}</span>
-        {message.childRef && (
-          <button
-            type="button"
-            className={cn(infoButton, 'min-h-[26px] px-2.5 py-0 text-[11px]')}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (message.childRef?.openSessionId) {
-                void onOpenChildSession(message.childRef.openSessionId);
-                return;
-              }
-              if (message.childRef?.subRunId) {
-                void onOpenSubRun(message.childRef.subRunId);
-              }
-            }}
-          >
-            打开子会话
-          </button>
-        )}
         <span className="shrink-0 text-text-muted">{statusLabel(message.status)}</span>
         <span className={chevronIcon}>
           <svg

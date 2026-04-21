@@ -1725,6 +1725,7 @@ mod tests {
                                     turn_id: None,
                                     status: astrcode_client::ConversationBlockStatusDto::Complete,
                                     markdown: "stale".to_string(),
+                                    step_index: None,
                                 },
                             ),
                         },

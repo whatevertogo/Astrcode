@@ -34,7 +34,6 @@ pub const DEFAULT_LLM_RETRY_BASE_DELAY_MS: u64 = 250;
 pub const DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS: u8 = 3;
 pub const DEFAULT_RESERVED_CONTEXT_SIZE: usize = 20_000;
 pub const DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS: u8 = 3;
-pub const DEFAULT_MAX_CONTINUATIONS: u8 = 3;
 pub const DEFAULT_SUMMARY_RESERVE_TOKENS: usize = 20_000;
 pub const DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES: u8 = 8;
 pub const DEFAULT_COMPACT_MAX_OUTPUT_TOKENS: usize = 20_000;
@@ -137,8 +136,6 @@ pub struct RuntimeConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_continuation_attempts: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_continuations: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub summary_reserve_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_max_output_tokens: Option<usize>,
@@ -226,7 +223,6 @@ pub struct ResolvedRuntimeConfig {
     pub compact_max_retry_attempts: u8,
     pub reserved_context_size: usize,
     pub max_output_continuation_attempts: u8,
-    pub max_continuations: u8,
     pub summary_reserve_tokens: usize,
     pub compact_max_output_tokens: usize,
     pub max_tracked_files: usize,
@@ -291,7 +287,6 @@ impl Default for ResolvedRuntimeConfig {
             compact_max_retry_attempts: DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
             reserved_context_size: DEFAULT_RESERVED_CONTEXT_SIZE,
             max_output_continuation_attempts: DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
-            max_continuations: DEFAULT_MAX_CONTINUATIONS,
             summary_reserve_tokens: DEFAULT_SUMMARY_RESERVE_TOKENS,
             compact_max_output_tokens: DEFAULT_COMPACT_MAX_OUTPUT_TOKENS,
             max_tracked_files: DEFAULT_MAX_TRACKED_FILES,
@@ -347,6 +342,18 @@ impl ModelConfig {
     }
 }
 
+/// OpenAI-compatible provider 的显式能力覆写。
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct OpenAiProfileCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_prompt_cache_key: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_stream_usage: Option<bool>,
+}
+
 /// LLM Provider 配置档。
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -363,6 +370,8 @@ pub struct Profile {
     pub api_key: Option<String>,
     #[serde(default = "default_profile_models")]
     pub models: Vec<ModelConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_capabilities: Option<OpenAiProfileCapabilities>,
 }
 
 impl Default for Profile {
@@ -373,6 +382,7 @@ impl Default for Profile {
             base_url: "https://api.deepseek.com".to_string(),
             api_key: Some(env_reference(DEEPSEEK_API_KEY_ENV)),
             models: default_profile_models(),
+            openai_capabilities: None,
         }
     }
 }
@@ -463,7 +473,6 @@ impl fmt::Debug for RuntimeConfig {
                 "max_output_continuation_attempts",
                 &self.max_output_continuation_attempts,
             )
-            .field("max_continuations", &self.max_continuations)
             .field("summary_reserve_tokens", &self.summary_reserve_tokens)
             .field("compact_max_output_tokens", &self.compact_max_output_tokens)
             .field("max_tracked_files", &self.max_tracked_files)
@@ -510,6 +519,7 @@ impl fmt::Debug for Profile {
             .field("base_url", &self.base_url)
             .field("api_key", &redacted_api_key(self.api_key.as_deref()))
             .field("models", &self.models)
+            .field("openai_capabilities", &self.openai_capabilities)
             .finish()
     }
 }
@@ -553,6 +563,7 @@ fn default_config_profiles() -> Vec<Profile> {
                     context_limit: Some(DEFAULT_OPENAI_CONTEXT_LIMIT),
                 },
             ],
+            openai_capabilities: None,
         },
         Profile {
             name: "anthropic".to_string(),
@@ -563,6 +574,7 @@ fn default_config_profiles() -> Vec<Profile> {
                 ModelConfig::new("claude-sonnet-4-5-20251001"),
                 ModelConfig::new("claude-opus-4-5"),
             ],
+            openai_capabilities: None,
         },
     ]
 }
@@ -708,10 +720,6 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
         max_output_continuation_attempts: runtime
             .max_output_continuation_attempts
             .unwrap_or(defaults.max_output_continuation_attempts)
-            .max(1),
-        max_continuations: runtime
-            .max_continuations
-            .unwrap_or(defaults.max_continuations)
             .max(1),
         summary_reserve_tokens: runtime
             .summary_reserve_tokens

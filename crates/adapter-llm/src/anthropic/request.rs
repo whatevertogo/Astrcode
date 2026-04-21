@@ -1,4 +1,6 @@
-use astrcode_core::{LlmMessage, SystemPromptBlock, SystemPromptLayer, ToolDefinition};
+use astrcode_core::{
+    LlmMessage, PromptCacheGlobalStrategy, SystemPromptBlock, SystemPromptLayer, ToolDefinition,
+};
 use serde_json::{Value, json};
 
 use super::dto::{
@@ -162,6 +164,7 @@ pub(super) fn to_anthropic_messages(
                 pending_user_blocks.push(AnthropicContentBlock::ToolResult {
                     tool_use_id: tool_call_id.clone(),
                     content: content.clone(),
+                    cache_reference: None,
                     cache_control: None,
                 });
             },
@@ -172,39 +175,54 @@ pub(super) fn to_anthropic_messages(
     anthropic_messages
 }
 
-/// 在最近的消息内容块上启用显式 prompt caching。
-///
-/// 只有在自定义 Anthropic 网关上才需要这条兜底路径。官方 Anthropic endpoint 使用顶层
-/// 自动缓存来追踪不断增长的对话尾部，避免显式断点超过 4 个 slot。
-pub(super) fn enable_message_caching(
+/// 按 Claude 风格只在一条 message 上放一个显式 cache marker。
+pub(super) fn apply_message_cache_breakpoint(
     messages: &mut [AnthropicMessage],
-    max_breakpoints: usize,
-) -> usize {
-    if messages.is_empty() || max_breakpoints == 0 {
-        return 0;
+    remaining_cache_breakpoints: &mut usize,
+    skip_cache_write: bool,
+) -> bool {
+    if messages.is_empty() || *remaining_cache_breakpoints == 0 {
+        return false;
     }
 
-    let mut used = 0;
-    for msg in messages.iter_mut().rev() {
-        if used >= max_breakpoints {
-            break;
-        }
+    let marker_index = if skip_cache_write && messages.len() > 1 {
+        messages.len() - 2
+    } else {
+        messages.len() - 1
+    };
+    let Some(block) = messages[marker_index]
+        .content
+        .iter_mut()
+        .rev()
+        .find(|block| block.can_use_explicit_cache_control())
+    else {
+        return false;
+    };
 
-        let Some(block) = msg
+    if !block.set_cache_control_if_allowed(true) {
+        return false;
+    }
+
+    *remaining_cache_breakpoints -= 1;
+    true
+}
+
+/// 为最后一个 cache marker 之前的 `tool_result` 块补上 `cache_reference`。
+pub(super) fn apply_tool_result_cache_references(messages: &mut [AnthropicMessage]) {
+    let Some(last_cache_marker_message_index) = messages.iter().rposition(|message| {
+        message
             .content
-            .iter_mut()
-            .rev()
-            .find(|block| block.can_use_explicit_cache_control())
-        else {
-            continue;
-        };
+            .iter()
+            .any(AnthropicContentBlock::has_cache_control)
+    }) else {
+        return;
+    };
 
-        if block.set_cache_control_if_allowed(true) {
-            used += 1;
+    for message in &mut messages[..last_cache_marker_message_index] {
+        for block in &mut message.content {
+            let _ = block.set_cache_reference_to_tool_use_id();
         }
     }
-
-    used
 }
 
 fn consume_cache_breakpoint(remaining: &mut usize) -> bool {
@@ -247,25 +265,49 @@ fn cache_control_if_allowed(remaining: &mut usize) -> Option<AnthropicCacheContr
     consume_cache_breakpoint(remaining).then(AnthropicCacheControl::ephemeral)
 }
 
-// Dynamic 层不参与缓存，动态内容每轮都变
-fn cacheable_system_layer(layer: SystemPromptLayer) -> bool {
-    !matches!(layer, SystemPromptLayer::Dynamic)
+// Dynamic 层不参与缓存；tool-based 策略还会主动让出 inherited 断点预算给 tools。
+fn cacheable_system_layer(layer: SystemPromptLayer, strategy: PromptCacheGlobalStrategy) -> bool {
+    match strategy {
+        PromptCacheGlobalStrategy::SystemPrompt => !matches!(layer, SystemPromptLayer::Dynamic),
+        PromptCacheGlobalStrategy::ToolBased => {
+            matches!(
+                layer,
+                SystemPromptLayer::Stable | SystemPromptLayer::SemiStable
+            )
+        },
+    }
+}
+
+fn tool_cache_sort_key(tool: &ToolDefinition) -> (u8, &str) {
+    // Why:
+    // - Astrcode 内建/治理工具名相对稳定，MCP 工具名通常随环境变化
+    // - 先把稳定工具压成连续前缀，再把 `mcp__*` 放到后缀，可以减少动态工具插入时的前缀失效面
+    let dynamic_suffix = u8::from(tool.name.starts_with("mcp__"));
+    (dynamic_suffix, tool.name.as_str())
 }
 
 /// 将 `ToolDefinition` 转换为 Anthropic 工具定义格式。
 pub(super) fn to_anthropic_tools(
     tools: &[ToolDefinition],
     remaining_cache_breakpoints: &mut usize,
+    strategy: PromptCacheGlobalStrategy,
 ) -> Vec<AnthropicTool> {
     if tools.is_empty() {
         return Vec::new();
     }
 
-    let last_cacheable_index = tools
-        .iter()
-        .rposition(|tool| cacheable_text(&tool.name) || cacheable_text(&tool.description));
+    let mut ordered_tools = tools.to_vec();
+    ordered_tools.sort_by(|left, right| tool_cache_sort_key(left).cmp(&tool_cache_sort_key(right)));
 
-    tools
+    let last_cacheable_index = if matches!(strategy, PromptCacheGlobalStrategy::ToolBased) {
+        ordered_tools
+            .iter()
+            .rposition(|tool| cacheable_text(&tool.name) || cacheable_text(&tool.description))
+    } else {
+        None
+    };
+
+    ordered_tools
         .iter()
         .enumerate()
         .map(|(index, tool)| {
@@ -289,6 +331,7 @@ pub(super) fn to_anthropic_system(
     system_prompt: Option<&str>,
     system_prompt_blocks: &[SystemPromptBlock],
     remaining_cache_breakpoints: &mut usize,
+    strategy: PromptCacheGlobalStrategy,
 ) -> Option<AnthropicSystemPrompt> {
     if !system_prompt_blocks.is_empty() {
         return Some(AnthropicSystemPrompt::Blocks(
@@ -297,7 +340,7 @@ pub(super) fn to_anthropic_system(
                 .map(|block| {
                     let text = block.render();
                     let cache_control = if block.cache_boundary
-                        && cacheable_system_layer(block.layer)
+                        && cacheable_system_layer(block.layer, strategy)
                         && cacheable_text(&text)
                     {
                         cache_control_if_allowed(remaining_cache_breakpoints)
@@ -351,8 +394,8 @@ pub(super) fn thinking_config_for_model(
 #[cfg(test)]
 mod tests {
     use astrcode_core::{
-        LlmMessage, ReasoningContent, SystemPromptBlock, SystemPromptLayer, ToolCallRequest,
-        ToolDefinition, UserMessageOrigin,
+        LlmMessage, PromptCacheGlobalStrategy, PromptCacheHints, ReasoningContent,
+        SystemPromptBlock, SystemPromptLayer, ToolCallRequest, ToolDefinition, UserMessageOrigin,
     };
     use serde_json::{Value, json};
 
@@ -512,14 +555,20 @@ mod tests {
             Some("Follow the rules"),
             &[],
             None,
+            None,
+            false,
             true,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
 
-        assert_eq!(body["cache_control"]["type"], json!("ephemeral"));
+        assert!(body.get("cache_control").is_none());
         assert_eq!(
             body.get("system").and_then(Value::as_str),
             Some("Follow the rules")
+        );
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["type"],
+            json!("ephemeral")
         );
         assert_eq!(
             body.get("thinking")
@@ -541,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn official_anthropic_uses_automatic_cache_and_caps_explicit_breakpoints() {
+    fn official_anthropic_uses_claude_style_block_cache_breakpoints() {
         let provider = AnthropicProvider::new(
             "https://api.anthropic.com/v1/messages".to_string(),
             "sk-ant-test".to_string(),
@@ -553,14 +602,26 @@ mod tests {
             LlmClientConfig::default(),
         )
         .expect("provider should build");
-        let system_blocks = (0..5)
-            .map(|index| SystemPromptBlock {
-                title: format!("Stable {index}"),
-                content: format!("stable content {index}"),
+        let system_blocks = vec![
+            SystemPromptBlock {
+                title: "Stable".to_string(),
+                content: "stable content".to_string(),
                 cache_boundary: true,
                 layer: SystemPromptLayer::Stable,
-            })
-            .collect::<Vec<_>>();
+            },
+            SystemPromptBlock {
+                title: "Semi".to_string(),
+                content: "semi content".to_string(),
+                cache_boundary: true,
+                layer: SystemPromptLayer::SemiStable,
+            },
+            SystemPromptBlock {
+                title: "Inherited".to_string(),
+                content: "inherited content".to_string(),
+                cache_boundary: true,
+                layer: SystemPromptLayer::Inherited,
+            },
+        ];
         let tools = vec![ToolDefinition {
             name: "search".to_string(),
             description: "Search indexed data.".to_string(),
@@ -575,21 +636,20 @@ mod tests {
             None,
             &system_blocks,
             None,
+            None,
+            false,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
 
-        assert_eq!(body["cache_control"]["type"], json!("ephemeral"));
+        assert!(body.get("cache_control").is_none());
         assert!(
             count_cache_control_fields(&body) <= ANTHROPIC_CACHE_BREAKPOINT_LIMIT,
-            "official request should keep automatic + explicit cache controls within the provider \
-             limit"
+            "official request should keep block-level cache controls within the provider limit"
         );
-        assert!(
-            body["messages"][0]["content"][0]
-                .get("cache_control")
-                .is_none(),
-            "official endpoint uses top-level automatic cache for the message tail"
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["type"],
+            json!("ephemeral")
         );
     }
 
@@ -621,6 +681,8 @@ mod tests {
             None,
             &[],
             None,
+            None,
+            false,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -634,6 +696,268 @@ mod tests {
         assert!(
             count_cache_control_fields(&body) <= ANTHROPIC_CACHE_BREAKPOINT_LIMIT,
             "custom gateways only receive explicit cache controls within the provider limit"
+        );
+    }
+
+    #[test]
+    fn custom_gateway_prioritizes_message_tail_before_tool_definitions() {
+        let provider = AnthropicProvider::new(
+            "https://gateway.example.com/anthropic/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+        let request = provider.build_request(
+            &[
+                LlmMessage::User {
+                    content: "first".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "assistant tail".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+                LlmMessage::User {
+                    content: "last".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+            ],
+            &[ToolDefinition {
+                name: "search".to_string(),
+                description: "Search indexed data.".to_string(),
+                parameters: json!({ "type": "object" }),
+            }],
+            None,
+            &[
+                SystemPromptBlock {
+                    title: "Stable".to_string(),
+                    content: "stable content".to_string(),
+                    cache_boundary: true,
+                    layer: SystemPromptLayer::Stable,
+                },
+                SystemPromptBlock {
+                    title: "Inherited".to_string(),
+                    content: "inherited content".to_string(),
+                    cache_boundary: true,
+                    layer: SystemPromptLayer::Inherited,
+                },
+            ],
+            None,
+            None,
+            false,
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(
+            body["system"][0]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+        assert_eq!(
+            body["system"][1]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+        assert!(
+            body["tools"][0].get("cache_control").is_none(),
+            "message tail should consume the remaining breakpoint budget before tools"
+        );
+        assert_eq!(
+            body["messages"][2]["content"][0]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+        assert!(
+            body["messages"][1]["content"][0]
+                .get("cache_control")
+                .is_none(),
+            "Claude-style 语义每个请求只保留一个 message marker"
+        );
+        assert!(
+            count_cache_control_fields(&body) <= ANTHROPIC_CACHE_BREAKPOINT_LIMIT,
+            "custom gateways must still stay within the provider breakpoint limit"
+        );
+    }
+
+    #[test]
+    fn tool_based_strategy_moves_global_marker_from_inherited_to_tools() {
+        let provider = AnthropicProvider::new(
+            "https://gateway.example.com/anthropic/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+        let request = provider.build_request(
+            &[LlmMessage::User {
+                content: "tail".to_string(),
+                origin: UserMessageOrigin::User,
+            }],
+            &[ToolDefinition {
+                name: "mcp__demo__search".to_string(),
+                description: "Search indexed data.".to_string(),
+                parameters: json!({ "type": "object" }),
+            }],
+            None,
+            &[
+                SystemPromptBlock {
+                    title: "Stable".to_string(),
+                    content: "stable content".to_string(),
+                    cache_boundary: true,
+                    layer: SystemPromptLayer::Stable,
+                },
+                SystemPromptBlock {
+                    title: "Inherited".to_string(),
+                    content: "inherited content".to_string(),
+                    cache_boundary: true,
+                    layer: SystemPromptLayer::Inherited,
+                },
+            ],
+            Some(&PromptCacheHints {
+                global_cache_strategy: PromptCacheGlobalStrategy::ToolBased,
+                ..PromptCacheHints::default()
+            }),
+            None,
+            false,
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(
+            body["system"][0]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+        assert!(
+            body["system"][1].get("cache_control").is_none(),
+            "tool-based 策略会让出 inherited 断点预算"
+        );
+        assert_eq!(
+            body["tools"][0]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+    }
+
+    #[test]
+    fn skip_cache_write_moves_message_marker_to_second_last_message() {
+        let provider = AnthropicProvider::new(
+            "https://gateway.example.com/anthropic/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+        let request = provider.build_request(
+            &[
+                LlmMessage::User {
+                    content: "first".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "middle".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+                LlmMessage::User {
+                    content: "last".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+            ],
+            &[],
+            None,
+            &[],
+            None,
+            None,
+            true,
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(
+            body["messages"][1]["content"][0]["cache_control"]["type"],
+            json!("ephemeral")
+        );
+        assert!(
+            body["messages"][2]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn tool_results_before_last_marker_receive_cache_reference() {
+        let provider = AnthropicProvider::new(
+            "https://gateway.example.com/anthropic/v1/messages".to_string(),
+            "sk-ant-test".to_string(),
+            "claude-sonnet-4-5".to_string(),
+            ModelLimits {
+                context_window: 200_000,
+                max_output_tokens: 8096,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+        let request = provider.build_request(
+            &[
+                LlmMessage::Assistant {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRequest {
+                        id: "call-1".to_string(),
+                        name: "read_file".to_string(),
+                        args: json!({"path": "a.rs"}),
+                    }],
+                    reasoning: None,
+                },
+                LlmMessage::Tool {
+                    tool_call_id: "call-1".to_string(),
+                    content: "file content".to_string(),
+                },
+                LlmMessage::User {
+                    content: "继续".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+                LlmMessage::Assistant {
+                    content: "middle".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                },
+                LlmMessage::User {
+                    content: "tail".to_string(),
+                    origin: UserMessageOrigin::User,
+                },
+            ],
+            &[],
+            None,
+            &[],
+            None,
+            None,
+            false,
+            false,
+        );
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(
+            body["messages"][1]["content"][0]["cache_reference"],
+            json!("call-1")
+        );
+        assert_eq!(
+            body["messages"][3]["content"][0]["cache_control"]["type"],
+            json!("ephemeral")
         );
     }
 
@@ -663,6 +987,8 @@ mod tests {
             None,
             &[],
             None,
+            None,
+            false,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -694,6 +1020,8 @@ mod tests {
             None,
             &[],
             None,
+            None,
+            false,
             true,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -733,6 +1061,8 @@ mod tests {
                 layer: SystemPromptLayer::Stable,
             }],
             None,
+            None,
+            false,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -809,6 +1139,8 @@ mod tests {
                 },
             ],
             None,
+            None,
+            false,
             false,
         );
         let body = serde_json::to_value(&request).expect("request should serialize");
@@ -885,8 +1217,10 @@ mod tests {
             origin: UserMessageOrigin::User,
         }];
 
-        let capped = provider.build_request(&messages, &[], None, &[], Some(2048), false);
-        let clamped = provider.build_request(&messages, &[], None, &[], Some(16_000), false);
+        let capped =
+            provider.build_request(&messages, &[], None, &[], None, Some(2048), false, false);
+        let clamped =
+            provider.build_request(&messages, &[], None, &[], None, Some(16_000), false, false);
 
         assert_eq!(capped.max_tokens, 2048);
         assert_eq!(clamped.max_tokens, 8096);

@@ -147,7 +147,7 @@ describe('ToolCallBlock', () => {
     expect(html).not.toContain('Large tool output was saved to a file instead of being inlined.');
   });
 
-  it('renders child session navigation action from explicit child ref', () => {
+  it('keeps child ref tool calls readable without rendering a session-entry action', () => {
     const html = renderToStaticMarkup(
       <ChatScreenProvider value={chatContextValue}>
         <ToolCallBlock
@@ -181,7 +181,8 @@ describe('ToolCallBlock', () => {
       </ChatScreenProvider>
     );
 
-    expect(html).toContain('打开子会话');
+    expect(html).toContain('spawn');
+    expect(html).not.toContain('打开子会话');
   });
 
   it('renders embedded stdout/stderr sections and failure pills for failed tools', () => {

@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::LlmUsage;
 
-pub(super) fn cacheable_text(text: &str) -> bool {
+pub(crate) fn cacheable_text(text: &str) -> bool {
     !text.is_empty()
 }
 
@@ -11,37 +11,37 @@ pub(super) fn cacheable_text(text: &str) -> bool {
 ///
 /// 注意：`stream` 字段为 `Option<bool>`，`None` 时表示非流式模式，
 /// 这样可以在序列化时省略该字段（Anthropic API 默认非流式）。
-#[derive(Debug, Serialize)]
-pub(super) struct AnthropicRequest {
-    pub(super) model: String,
-    pub(super) max_tokens: u32,
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AnthropicRequest {
+    pub(crate) model: String,
+    pub(crate) max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) cache_control: Option<AnthropicCacheControl>,
-    pub(super) messages: Vec<AnthropicMessage>,
+    pub(crate) cache_control: Option<AnthropicCacheControl>,
+    pub(crate) messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) system: Option<AnthropicSystemPrompt>,
+    pub(crate) system: Option<AnthropicSystemPrompt>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) tools: Option<Vec<AnthropicTool>>,
+    pub(crate) tools: Option<Vec<AnthropicTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) stream: Option<bool>,
+    pub(crate) stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) thinking: Option<AnthropicThinking>,
+    pub(crate) thinking: Option<AnthropicThinking>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
-pub(super) enum AnthropicSystemPrompt {
+pub(crate) enum AnthropicSystemPrompt {
     Text(String),
     Blocks(Vec<AnthropicSystemBlock>),
 }
 
-#[derive(Debug, Serialize)]
-pub(super) struct AnthropicSystemBlock {
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AnthropicSystemBlock {
     #[serde(rename = "type")]
-    pub(super) type_: String,
-    pub(super) text: String,
+    pub(crate) type_: String,
+    pub(crate) text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) cache_control: Option<AnthropicCacheControl>,
+    pub(crate) cache_control: Option<AnthropicCacheControl>,
 }
 
 /// Anthropic extended thinking 配置。
@@ -53,21 +53,21 @@ pub(super) struct AnthropicSystemBlock {
 ///
 /// Extended thinking 让 Claude 在输出前进行深度推理，提升复杂任务的回答质量。
 /// 预算设为 75% 是为了保留至少 25% 的 token 给实际输出内容。
-#[derive(Debug, Serialize)]
-pub(super) struct AnthropicThinking {
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AnthropicThinking {
     #[serde(rename = "type")]
-    pub(super) type_: String,
-    pub(super) budget_tokens: u32,
+    pub(crate) type_: String,
+    pub(crate) budget_tokens: u32,
 }
 
 /// Anthropic 消息（包含角色和内容块数组）。
 ///
 /// Anthropic 的消息结构与 OpenAI 不同：`content` 是内容块数组而非纯文本，
 /// 这使得单条消息可以混合文本、推理、工具调用等多种内容类型。
-#[derive(Debug, Serialize)]
-pub(super) struct AnthropicMessage {
-    pub(super) role: String,
-    pub(super) content: Vec<AnthropicContentBlock>,
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AnthropicMessage {
+    pub(crate) role: String,
+    pub(crate) content: Vec<AnthropicContentBlock>,
 }
 
 /// Anthropic 内容块——消息内容由多个块组成。
@@ -79,9 +79,9 @@ pub(super) struct AnthropicMessage {
 ///
 /// 每个块可选携带 `cache_control` 字段，标记为 `ephemeral` 类型时，
 /// Anthropic 后端会将该块作为缓存前缀的一部分，用于 KV cache 复用。
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum AnthropicContentBlock {
+pub(crate) enum AnthropicContentBlock {
     Text {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,6 +105,8 @@ pub(super) enum AnthropicContentBlock {
         tool_use_id: String,
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        cache_reference: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<AnthropicCacheControl>,
     },
 }
@@ -114,14 +116,14 @@ pub(super) enum AnthropicContentBlock {
 /// `type: "ephemeral"` 告诉 Anthropic 后端该块可作为缓存前缀的一部分。
 /// 缓存是临时的（ephemeral），不保证长期有效，但在短时间内重复请求可以显著减少延迟。
 #[derive(Debug, Clone, Serialize)]
-pub(super) struct AnthropicCacheControl {
+pub(crate) struct AnthropicCacheControl {
     #[serde(rename = "type")]
     type_: String,
 }
 
 impl AnthropicCacheControl {
     /// 创建 ephemeral 类型的缓存控制标记。
-    pub(super) fn ephemeral() -> Self {
+    pub(crate) fn ephemeral() -> Self {
         Self {
             type_: "ephemeral".to_string(),
         }
@@ -129,7 +131,7 @@ impl AnthropicCacheControl {
 }
 
 impl AnthropicContentBlock {
-    pub(super) fn block_type(&self) -> &'static str {
+    pub(crate) fn block_type(&self) -> &'static str {
         match self {
             AnthropicContentBlock::Text { .. } => "text",
             AnthropicContentBlock::Thinking { .. } => "thinking",
@@ -138,7 +140,7 @@ impl AnthropicContentBlock {
         }
     }
 
-    pub(super) fn has_cache_control(&self) -> bool {
+    pub(crate) fn has_cache_control(&self) -> bool {
         match self {
             AnthropicContentBlock::Text { cache_control, .. }
             | AnthropicContentBlock::Thinking { cache_control, .. }
@@ -148,20 +150,19 @@ impl AnthropicContentBlock {
     }
 
     /// 判断内容块是否适合显式 `cache_control`。
-    ///
-    /// 出于兼容网关的稳健性，显式缓存断点仅打在 text 块上；
-    /// thinking / tool_use / tool_result 不设置 cache_control，避免部分兼容实现的参数校验失败。
-    pub(super) fn can_use_explicit_cache_control(&self) -> bool {
+    pub(crate) fn can_use_explicit_cache_control(&self) -> bool {
         match self {
             AnthropicContentBlock::Text { text, .. } => cacheable_text(text),
-            AnthropicContentBlock::Thinking { .. } => false,
-            AnthropicContentBlock::ToolUse { .. } => false,
-            AnthropicContentBlock::ToolResult { .. } => false,
+            AnthropicContentBlock::Thinking { thinking, .. } => cacheable_text(thinking),
+            AnthropicContentBlock::ToolUse { id, name, .. } => {
+                cacheable_text(id) && cacheable_text(name)
+            },
+            AnthropicContentBlock::ToolResult { tool_use_id, .. } => cacheable_text(tool_use_id),
         }
     }
 
     /// 为允许显式缓存的内容块设置或清除 `cache_control` 标记。
-    pub(super) fn set_cache_control_if_allowed(&mut self, enabled: bool) -> bool {
+    pub(crate) fn set_cache_control_if_allowed(&mut self, enabled: bool) -> bool {
         if enabled && !self.can_use_explicit_cache_control() {
             return false;
         }
@@ -179,20 +180,34 @@ impl AnthropicContentBlock {
         }
         true
     }
+
+    pub(crate) fn set_cache_reference_to_tool_use_id(&mut self) -> bool {
+        let AnthropicContentBlock::ToolResult {
+            tool_use_id,
+            cache_reference,
+            ..
+        } = self
+        else {
+            return false;
+        };
+
+        *cache_reference = Some(tool_use_id.clone());
+        true
+    }
 }
 
 /// Anthropic 工具定义。
 ///
 /// 与 OpenAI 不同，Anthropic 工具定义不需要 `type` 字段，
 /// 直接使用 `name`、`description`、`input_schema` 三个字段。
-#[derive(Debug, Serialize)]
-pub(super) struct AnthropicTool {
-    pub(super) name: String,
-    pub(super) description: String,
-    pub(super) input_schema: Value,
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AnthropicTool {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) input_schema: Value,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) cache_control: Option<AnthropicCacheControl>,
+    pub(crate) cache_control: Option<AnthropicCacheControl>,
 }
 
 /// Anthropic Messages API 非流式响应体。
@@ -328,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn enabling_cache_control_still_rejects_unsupported_blocks() {
+    fn enabling_cache_control_supports_tool_use_blocks() {
         let mut block = AnthropicContentBlock::ToolUse {
             id: "call_1".to_string(),
             name: "search".to_string(),
@@ -336,7 +351,7 @@ mod tests {
             cache_control: None,
         };
 
-        assert!(!block.set_cache_control_if_allowed(true));
-        assert!(!block.has_cache_control());
+        assert!(block.set_cache_control_if_allowed(true));
+        assert!(block.has_cache_control());
     }
 }

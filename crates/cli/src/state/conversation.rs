@@ -193,6 +193,7 @@ fn block_id_of(block: &ConversationBlockDto) -> &str {
         ConversationBlockDto::User(block) => &block.id,
         ConversationBlockDto::Assistant(block) => &block.id,
         ConversationBlockDto::Thinking(block) => &block.id,
+        ConversationBlockDto::PromptMetrics(block) => &block.id,
         ConversationBlockDto::Plan(block) => &block.id,
         ConversationBlockDto::ToolCall(block) => &block.id,
         ConversationBlockDto::Error(block) => &block.id,
@@ -219,6 +220,7 @@ fn apply_block_patch(block: &mut ConversationBlockDto, patch: ConversationBlockP
             ConversationBlockDto::Plan(_) => false,
             ConversationBlockDto::ToolCall(_)
             | ConversationBlockDto::Error(_)
+            | ConversationBlockDto::PromptMetrics(_)
             | ConversationBlockDto::ChildHandoff(_) => false,
         },
         ConversationBlockPatchDto::ReplaceMarkdown { markdown } => match block {
@@ -235,6 +237,7 @@ fn apply_block_patch(block: &mut ConversationBlockDto, patch: ConversationBlockP
             ConversationBlockDto::Plan(_) => false,
             ConversationBlockDto::ToolCall(_)
             | ConversationBlockDto::Error(_)
+            | ConversationBlockDto::PromptMetrics(_)
             | ConversationBlockDto::ChildHandoff(_) => false,
         },
         ConversationBlockPatchDto::AppendToolStream { stream, chunk } => {
@@ -374,6 +377,7 @@ fn set_block_status(block: &mut ConversationBlockDto, status: ConversationBlockS
         ConversationBlockDto::ToolCall(block) => replace_if_changed(&mut block.status, status),
         ConversationBlockDto::User(_)
         | ConversationBlockDto::Error(_)
+        | ConversationBlockDto::PromptMetrics(_)
         | ConversationBlockDto::SystemNote(_)
         | ConversationBlockDto::ChildHandoff(_) => false,
     }
@@ -445,6 +449,7 @@ mod tests {
                     turn_id: Some("turn-1".to_string()),
                     status: ConversationBlockStatusDto::Streaming,
                     markdown: "你好，世界".to_string(),
+                    step_index: None,
                 },
             )],
             transcript_index: [("assistant-1".to_string(), 0)].into_iter().collect(),

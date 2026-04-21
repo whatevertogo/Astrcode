@@ -33,10 +33,9 @@ pub enum TurnFinishReason {
 impl From<&TurnTerminalKind> for TurnFinishReason {
     fn from(value: &TurnTerminalKind) -> Self {
         match value {
-            TurnTerminalKind::Completed
-            | TurnTerminalKind::BudgetStoppedContinuation
-            | TurnTerminalKind::ContinuationLimitReached
-            | TurnTerminalKind::MaxOutputContinuationLimitReached => Self::NaturalEnd,
+            TurnTerminalKind::Completed | TurnTerminalKind::MaxOutputContinuationLimitReached => {
+                Self::NaturalEnd
+            },
             TurnTerminalKind::Cancelled => Self::Cancelled,
             TurnTerminalKind::Error { .. } => Self::Error,
             TurnTerminalKind::StepLimitExceeded => Self::StepLimitExceeded,
@@ -116,8 +115,6 @@ pub struct TurnSummary {
     pub wall_duration: Duration,
     /// Turn 内 step 数量
     pub step_count: usize,
-    /// Turn 内 budget/恢复驱动的 continuation 次数
-    pub continuation_count: usize,
     /// Provider 报告的总 token 使用量（含 input + output）
     pub total_tokens_used: u64,
     /// Provider 报告的 cache read input tokens

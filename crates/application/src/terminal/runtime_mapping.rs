@@ -6,7 +6,8 @@ use super::contracts::{
     ConversationBlockStatus, ConversationChildHandoffBlockFacts, ConversationChildHandoffKind,
     ConversationDeltaFacts, ConversationDeltaFrameFacts, ConversationErrorBlockFacts,
     ConversationPlanBlockFacts, ConversationPlanBlockersFacts, ConversationPlanEventKind,
-    ConversationPlanReviewFacts, ConversationPlanReviewKind, ConversationSnapshotFacts,
+    ConversationPlanReviewFacts, ConversationPlanReviewKind, ConversationPromptMetricsBlockFacts,
+    ConversationSnapshotFacts, ConversationStepCursorFacts, ConversationStepProgressFacts,
     ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts, ConversationSystemNoteKind,
     ConversationThinkingBlockFacts, ConversationTranscriptErrorKind, ConversationUserBlockFacts,
     ToolCallBlockFacts, ToolCallStreamsFacts,
@@ -22,6 +23,7 @@ pub(crate) fn map_snapshot(facts: runtime::ConversationSnapshotFacts) -> Convers
     ConversationSnapshotFacts {
         cursor: facts.cursor,
         phase: facts.phase,
+        step_progress: map_step_progress(facts.step_progress),
         blocks: facts.blocks.into_iter().map(map_block).collect(),
     }
 }
@@ -79,6 +81,7 @@ pub(crate) fn map_frame(
 ) -> ConversationDeltaFrameFacts {
     ConversationDeltaFrameFacts {
         cursor: frame.cursor,
+        step_progress: map_step_progress(frame.step_progress),
         delta: map_delta(frame.delta),
     }
 }
@@ -157,6 +160,7 @@ fn map_block(block: runtime::ConversationBlockFacts) -> ConversationBlockFacts {
                 turn_id: block.turn_id,
                 status: map_block_status(block.status),
                 markdown: block.markdown,
+                step_index: block.step_index,
             })
         },
         runtime::ConversationBlockFacts::Thinking(block) => {
@@ -165,6 +169,26 @@ fn map_block(block: runtime::ConversationBlockFacts) -> ConversationBlockFacts {
                 turn_id: block.turn_id,
                 status: map_block_status(block.status),
                 markdown: block.markdown,
+            })
+        },
+        runtime::ConversationBlockFacts::PromptMetrics(block) => {
+            ConversationBlockFacts::PromptMetrics(ConversationPromptMetricsBlockFacts {
+                id: block.id,
+                turn_id: block.turn_id,
+                step_index: block.step_index,
+                estimated_tokens: block.estimated_tokens,
+                context_window: block.context_window,
+                effective_window: block.effective_window,
+                threshold_tokens: block.threshold_tokens,
+                truncated_tool_results: block.truncated_tool_results,
+                provider_input_tokens: block.provider_input_tokens,
+                provider_output_tokens: block.provider_output_tokens,
+                cache_creation_input_tokens: block.cache_creation_input_tokens,
+                cache_read_input_tokens: block.cache_read_input_tokens,
+                provider_cache_metrics_supported: block.provider_cache_metrics_supported,
+                prompt_cache_reuse_hits: block.prompt_cache_reuse_hits,
+                prompt_cache_reuse_misses: block.prompt_cache_reuse_misses,
+                prompt_cache_unchanged_layers: block.prompt_cache_unchanged_layers,
             })
         },
         runtime::ConversationBlockFacts::Plan(block) => {
@@ -242,7 +266,42 @@ fn map_block(block: runtime::ConversationBlockFacts) -> ConversationBlockFacts {
 fn into_runtime_frame(frame: ConversationDeltaFrameFacts) -> runtime::ConversationDeltaFrameFacts {
     runtime::ConversationDeltaFrameFacts {
         cursor: frame.cursor,
+        step_progress: into_runtime_step_progress(frame.step_progress),
         delta: into_runtime_delta(frame.delta),
+    }
+}
+
+pub(crate) fn map_step_progress(
+    facts: runtime::ConversationStepProgressFacts,
+) -> ConversationStepProgressFacts {
+    ConversationStepProgressFacts {
+        durable: facts.durable.map(map_step_cursor),
+        live: facts.live.map(map_step_cursor),
+    }
+}
+
+fn map_step_cursor(facts: runtime::ConversationStepCursorFacts) -> ConversationStepCursorFacts {
+    ConversationStepCursorFacts {
+        turn_id: facts.turn_id,
+        step_index: facts.step_index,
+    }
+}
+
+fn into_runtime_step_progress(
+    facts: ConversationStepProgressFacts,
+) -> runtime::ConversationStepProgressFacts {
+    runtime::ConversationStepProgressFacts {
+        durable: facts.durable.map(into_runtime_step_cursor),
+        live: facts.live.map(into_runtime_step_cursor),
+    }
+}
+
+fn into_runtime_step_cursor(
+    facts: ConversationStepCursorFacts,
+) -> runtime::ConversationStepCursorFacts {
+    runtime::ConversationStepCursorFacts {
+        turn_id: facts.turn_id,
+        step_index: facts.step_index,
     }
 }
 
@@ -320,6 +379,7 @@ fn into_runtime_block(block: ConversationBlockFacts) -> runtime::ConversationBlo
                 turn_id: block.turn_id,
                 status: into_runtime_block_status(block.status),
                 markdown: block.markdown,
+                step_index: block.step_index,
             })
         },
         ConversationBlockFacts::Thinking(block) => {
@@ -329,6 +389,28 @@ fn into_runtime_block(block: ConversationBlockFacts) -> runtime::ConversationBlo
                 status: into_runtime_block_status(block.status),
                 markdown: block.markdown,
             })
+        },
+        ConversationBlockFacts::PromptMetrics(block) => {
+            runtime::ConversationBlockFacts::PromptMetrics(
+                runtime::ConversationPromptMetricsBlockFacts {
+                    id: block.id,
+                    turn_id: block.turn_id,
+                    step_index: block.step_index,
+                    estimated_tokens: block.estimated_tokens,
+                    context_window: block.context_window,
+                    effective_window: block.effective_window,
+                    threshold_tokens: block.threshold_tokens,
+                    truncated_tool_results: block.truncated_tool_results,
+                    provider_input_tokens: block.provider_input_tokens,
+                    provider_output_tokens: block.provider_output_tokens,
+                    cache_creation_input_tokens: block.cache_creation_input_tokens,
+                    cache_read_input_tokens: block.cache_read_input_tokens,
+                    provider_cache_metrics_supported: block.provider_cache_metrics_supported,
+                    prompt_cache_reuse_hits: block.prompt_cache_reuse_hits,
+                    prompt_cache_reuse_misses: block.prompt_cache_reuse_misses,
+                    prompt_cache_unchanged_layers: block.prompt_cache_unchanged_layers,
+                },
+            )
         },
         ConversationBlockFacts::Plan(block) => {
             runtime::ConversationBlockFacts::Plan(Box::new(runtime::ConversationPlanBlockFacts {

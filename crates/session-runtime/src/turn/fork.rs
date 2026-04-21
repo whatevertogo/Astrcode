@@ -358,6 +358,7 @@ mod tests {
                         content: "partial".to_string(),
                         reasoning_content: None,
                         reasoning_signature: None,
+                        step_index: None,
                         timestamp: Some(Utc::now()),
                     },
                 ),

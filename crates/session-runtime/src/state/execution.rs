@@ -1,10 +1,13 @@
 use std::sync::Arc;
 
+#[cfg(test)]
+use astrcode_core::ToolEventSink;
 use astrcode_core::{
     EventStore, EventTranslator, Result, SessionId, StorageEvent, StorageEventPayload, StoredEvent,
-    ToolEventSink,
 };
+#[cfg(test)]
 use async_trait::async_trait;
+#[cfg(test)]
 use tokio::sync::Mutex;
 
 use super::SessionState;
@@ -59,11 +62,13 @@ pub async fn checkpoint_if_compacted(
     }
 }
 
+#[cfg(test)]
 pub struct SessionStateEventSink {
     session: Arc<SessionState>,
     translator: Mutex<EventTranslator>,
 }
 
+#[cfg(test)]
 impl SessionStateEventSink {
     pub fn new(session: Arc<SessionState>) -> Result<Self> {
         let phase = session.current_phase()?;
@@ -74,6 +79,7 @@ impl SessionStateEventSink {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl ToolEventSink for SessionStateEventSink {
     async fn emit(&self, event: StorageEvent) -> astrcode_core::Result<()> {

@@ -27,7 +27,9 @@ fn summary_from_block(block: &ConversationBlockFacts) -> Option<String> {
         ConversationBlockFacts::ChildHandoff(block) => summary_from_child_handoff(block),
         ConversationBlockFacts::Error(block) => summary_from_error_block(block),
         ConversationBlockFacts::SystemNote(block) => summary_from_system_note(block),
-        ConversationBlockFacts::User(_) | ConversationBlockFacts::Thinking(_) => None,
+        ConversationBlockFacts::User(_)
+        | ConversationBlockFacts::Thinking(_)
+        | ConversationBlockFacts::PromptMetrics(_) => None,
     }
 }
 

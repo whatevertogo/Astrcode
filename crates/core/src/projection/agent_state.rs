@@ -132,7 +132,6 @@ impl AgentStateProjector {
                 if !matches!(
                     origin,
                     UserMessageOrigin::ReactivationPrompt
-                        | UserMessageOrigin::AutoContinueNudge
                         | UserMessageOrigin::ContinuationPrompt
                 ) {
                     self.state.messages.push(LlmMessage::User {
@@ -150,6 +149,7 @@ impl AgentStateProjector {
                 reasoning_content,
                 reasoning_signature,
                 timestamp,
+                ..
             } => {
                 self.flush_pending_assistant();
                 let parts = split_assistant_content(content, reasoning_content.as_deref());
@@ -542,6 +542,7 @@ mod tests {
                 content: content.into(),
                 reasoning_content: reasoning_content.map(str::to_string),
                 reasoning_signature: None,
+                step_index: None,
                 timestamp: None,
             },
         )
@@ -671,12 +672,6 @@ mod tests {
     fn internal_continuation_prompts_do_not_pollute_projected_messages() {
         let state = project(&[
             session_start("s1", "/tmp"),
-            user_message(
-                Some("turn-internal"),
-                root_agent(),
-                "请继续。",
-                UserMessageOrigin::AutoContinueNudge,
-            ),
             user_message(
                 Some("turn-internal"),
                 root_agent(),
@@ -970,6 +965,7 @@ mod tests {
                     content: "hi".into(),
                     reasoning_content: Some("thinking".into()),
                     reasoning_signature: Some("sig".into()),
+                    step_index: None,
                     timestamp: None,
                 },
             ),

@@ -26,11 +26,12 @@
 use std::{
     fmt,
     hash::{DefaultHasher, Hash, Hasher},
+    sync::{Arc, Mutex},
 };
 
 use astrcode_core::{
-    AstrError, CancelToken, LlmMessage, PromptCacheHints, ReasoningContent, Result,
-    ToolCallRequest, ToolDefinition,
+    AstrError, CancelToken, LlmMessage, PromptCacheGlobalStrategy, PromptCacheHints,
+    ReasoningContent, Result, ToolCallRequest, ToolDefinition,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -40,13 +41,30 @@ use tokio::select;
 
 use crate::{
     EventSink, FinishReason, LlmAccumulator, LlmClientConfig, LlmEvent, LlmOutput, LlmProvider,
-    LlmRequest, LlmUsage, ModelLimits, Utf8StreamDecoder, build_http_client, emit_event,
-    is_retryable_status, wait_retry_delay,
+    LlmRequest, LlmUsage, ModelLimits, Utf8StreamDecoder, build_http_client,
+    cache_tracker::{CacheCheckContext, CacheTracker, stable_hash},
+    emit_event, is_retryable_status, wait_retry_delay,
 };
 
 /// OpenAI 兼容 API 的 LLM 提供者实现。
 ///
 /// 封装了 HTTP 客户端、认证信息和模型配置，提供统一的 `LlmProvider` 接口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenAiProviderCapabilities {
+    pub supports_prompt_cache_key: bool,
+    pub supports_stream_usage: bool,
+}
+
+impl OpenAiProviderCapabilities {
+    pub fn for_endpoint(url: &str) -> Self {
+        let is_official = is_official_openai_api_url(url);
+        Self {
+            supports_prompt_cache_key: is_official,
+            supports_stream_usage: is_official,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct OpenAiProvider {
     /// 共享的 HTTP 客户端（含统一超时策略）
@@ -66,6 +84,10 @@ pub struct OpenAiProvider {
     ///
     /// 这样 provider 不再自己猜上下文窗口，也不会继续依赖过时的 profile 级配置。
     limits: ModelLimits,
+    /// 兼容网关能力开关。
+    capabilities: OpenAiProviderCapabilities,
+    /// 缓存失效检测跟踪器。
+    cache_tracker: Arc<Mutex<CacheTracker>>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -76,7 +98,9 @@ impl fmt::Debug for OpenAiProvider {
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
             .field("limits", &self.limits)
+            .field("capabilities", &self.capabilities)
             .field("client_config", &self.client_config)
+            .field("cache_tracker", &"<internal>")
             .finish()
     }
 }
@@ -90,6 +114,25 @@ impl OpenAiProvider {
         limits: ModelLimits,
         client_config: LlmClientConfig,
     ) -> Result<Self> {
+        let capabilities = OpenAiProviderCapabilities::for_endpoint(&chat_completions_api_url);
+        Self::new_with_capabilities(
+            chat_completions_api_url,
+            api_key,
+            model,
+            limits,
+            client_config,
+            capabilities,
+        )
+    }
+
+    pub fn new_with_capabilities(
+        chat_completions_api_url: String,
+        api_key: String,
+        model: String,
+        limits: ModelLimits,
+        client_config: LlmClientConfig,
+        capabilities: OpenAiProviderCapabilities,
+    ) -> Result<Self> {
         Ok(Self {
             client: build_http_client(client_config)?,
             client_config,
@@ -97,6 +140,8 @@ impl OpenAiProvider {
             api_key,
             model,
             limits,
+            capabilities,
+            cache_tracker: Arc::new(Mutex::new(CacheTracker::new())),
         })
     }
 
@@ -126,6 +171,7 @@ impl OpenAiProvider {
         let effective_max_output_tokens = max_output_tokens_override
             .unwrap_or(self.limits.max_output_tokens)
             .min(self.limits.max_output_tokens);
+        let ordered_tools = order_tools_for_cache(tools);
         let system_count = if !system_prompt_blocks.is_empty() {
             system_prompt_blocks.len()
         } else if system_prompt.is_some() {
@@ -167,22 +213,71 @@ impl OpenAiProvider {
                     system_prompt,
                     system_prompt_blocks,
                     prompt_cache_hints,
-                    tools,
+                    &ordered_tools,
                 )
             }),
             prompt_cache_retention: None,
-            tools: if tools.is_empty() {
+            tools: if ordered_tools.is_empty() {
                 None
             } else {
-                Some(tools.iter().map(to_openai_tool).collect())
+                Some(
+                    ordered_tools
+                        .iter()
+                        .map(|tool| to_openai_tool(tool))
+                        .collect(),
+                )
             },
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream,
+            stream_options: (stream && self.should_send_stream_usage_options()).then_some(
+                OpenAiStreamOptions {
+                    include_usage: true,
+                },
+            ),
         }
     }
 
     fn should_send_prompt_cache_key(&self) -> bool {
-        is_official_openai_api_url(&self.chat_completions_api_url)
+        self.capabilities.supports_prompt_cache_key
+    }
+
+    fn should_send_stream_usage_options(&self) -> bool {
+        self.capabilities.supports_stream_usage
+    }
+
+    fn build_cache_check_context(
+        request: &OpenAiChatRequest<'_>,
+        global_cache_strategy: PromptCacheGlobalStrategy,
+        compacted: bool,
+        tool_result_rebudgeted: bool,
+    ) -> CacheCheckContext {
+        let leading_system_messages: Vec<&OpenAiRequestMessage> = request
+            .messages
+            .iter()
+            .take_while(|message| message.role == "system")
+            .collect();
+        CacheCheckContext {
+            system_blocks_hash: stable_hash(&leading_system_messages),
+            tool_schema_hash: stable_hash(&request.tools),
+            model: request.model.to_string(),
+            global_cache_strategy,
+            compacted,
+            tool_result_rebudgeted,
+        }
+    }
+
+    fn apply_cache_diagnostics(
+        &self,
+        output: &mut LlmOutput,
+        pending_cache_check: Option<crate::cache_tracker::PendingCacheCheck>,
+    ) {
+        let Some(pending_cache_check) = pending_cache_check else {
+            return;
+        };
+        let Some(mut tracker) = self.cache_tracker.lock().ok() else {
+            return;
+        };
+        output.prompt_cache_diagnostics = tracker.finalize(pending_cache_check, output.usage);
     }
 
     /// 发送 HTTP 请求并处理响应。
@@ -277,10 +372,10 @@ fn build_prompt_cache_key(
     system_prompt: Option<&str>,
     system_prompt_blocks: &[astrcode_core::SystemPromptBlock],
     prompt_cache_hints: Option<&PromptCacheHints>,
-    tools: &[ToolDefinition],
+    tools: &[&ToolDefinition],
 ) -> String {
     let mut hasher = DefaultHasher::new();
-    "astrcode-openai-prompt-cache-v1".hash(&mut hasher);
+    "astrcode-openai-prompt-cache-v2".hash(&mut hasher);
     model.hash(&mut hasher);
 
     if let Some(hints) = prompt_cache_hints {
@@ -296,6 +391,16 @@ fn build_prompt_cache_key(
             "inherited".hash(&mut hasher);
             inherited.hash(&mut hasher);
         }
+        "global_cache_strategy".hash(&mut hasher);
+        match hints.global_cache_strategy {
+            PromptCacheGlobalStrategy::SystemPrompt => "system_prompt",
+            PromptCacheGlobalStrategy::ToolBased => "tool_based",
+        }
+        .hash(&mut hasher);
+        "compacted".hash(&mut hasher);
+        hints.compacted.hash(&mut hasher);
+        "tool_result_rebudgeted".hash(&mut hasher);
+        hints.tool_result_rebudgeted.hash(&mut hasher);
     } else if !system_prompt_blocks.is_empty() {
         for block in system_prompt_blocks {
             format!("{:?}", block.layer).hash(&mut hasher);
@@ -317,10 +422,20 @@ fn build_prompt_cache_key(
     format!("astrcode-{:016x}", hasher.finish())
 }
 
+fn order_tools_for_cache(tools: &[ToolDefinition]) -> Vec<&ToolDefinition> {
+    let mut ordered: Vec<&ToolDefinition> = tools.iter().collect();
+    ordered.sort_by(|left, right| {
+        let left_key = (left.name.starts_with("mcp__"), left.name.as_str());
+        let right_key = (right.name.starts_with("mcp__"), right.name.as_str());
+        left_key.cmp(&right_key)
+    });
+    ordered
+}
+
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     fn supports_cache_metrics(&self) -> bool {
-        self.should_send_prompt_cache_key()
+        true
     }
 
     /// 执行一次模型调用。
@@ -329,15 +444,32 @@ impl LlmProvider for OpenAiProvider {
     /// - **非流式**（`sink = None`）：等待完整响应后解析 JSON，提取文本和工具调用
     /// - **流式**（`sink = Some`）：逐块读取 SSE 响应，实时发射事件并累加
     async fn generate(&self, request: LlmRequest, sink: Option<EventSink>) -> Result<LlmOutput> {
+        let prompt_cache_hints = request.prompt_cache_hints.clone();
+        let global_cache_strategy = prompt_cache_hints
+            .as_ref()
+            .map(|hints| hints.global_cache_strategy)
+            .unwrap_or(PromptCacheGlobalStrategy::SystemPrompt);
         let cancel = request.cancel;
         let req = self.build_request(OpenAiBuildRequestInput {
             messages: &request.messages,
             tools: &request.tools,
             system_prompt: request.system_prompt.as_deref(),
             system_prompt_blocks: &request.system_prompt_blocks,
-            prompt_cache_hints: request.prompt_cache_hints.as_ref(),
+            prompt_cache_hints: prompt_cache_hints.as_ref(),
             max_output_tokens_override: request.max_output_tokens_override,
             stream: sink.is_some(),
+        });
+        let pending_cache_check = self.cache_tracker.lock().ok().map(|tracker| {
+            tracker.prepare(&Self::build_cache_check_context(
+                &req,
+                global_cache_strategy,
+                prompt_cache_hints
+                    .as_ref()
+                    .is_some_and(|hints| hints.compacted),
+                prompt_cache_hints
+                    .as_ref()
+                    .is_some_and(|hints| hints.tool_result_rebudgeted),
+            ))
         });
         let response = self.send_request(&req, cancel.clone()).await?;
 
@@ -351,22 +483,17 @@ impl LlmProvider for OpenAiProvider {
                         error,
                     )
                 })?;
-                let usage = parsed.usage.as_ref().map(|usage| LlmUsage {
-                    input_tokens: usage.prompt_tokens.unwrap_or_default() as usize,
-                    output_tokens: usage.completion_tokens.unwrap_or_default() as usize,
-                    cache_creation_input_tokens: 0,
-                    cache_read_input_tokens: usage.cached_tokens() as usize,
-                });
-                let first_choice = parsed.choices.into_iter().next().ok_or_else(|| {
+                let OpenAiChatResponse { choices, usage } = parsed;
+                let usage = usage.map(openai_usage_to_llm_usage);
+                let first_choice = choices.into_iter().next().ok_or_else(|| {
                     AstrError::LlmStreamError(
                         "openai-compatible response did not include choices".to_string(),
                     )
                 })?;
-                Ok(message_to_output(
-                    first_choice.message,
-                    usage,
-                    first_choice.finish_reason,
-                ))
+                let mut output =
+                    message_to_output(first_choice.message, usage, first_choice.finish_reason);
+                self.apply_cache_diagnostics(&mut output, pending_cache_check);
+                Ok(output)
             },
             Some(sink) => {
                 // 流式路径：逐块读取 SSE 响应
@@ -376,6 +503,7 @@ impl LlmProvider for OpenAiProvider {
                 let mut accumulator = LlmAccumulator::default();
                 // 流式路径下从最后一个 chunk 的 finish_reason 提取 (P4.2)
                 let mut stream_finish_reason: Option<String> = None;
+                let mut stream_usage: Option<LlmUsage> = None;
 
                 loop {
                     let next_item = select! {
@@ -410,12 +538,15 @@ impl LlmProvider for OpenAiProvider {
                         &mut accumulator,
                         &sink,
                         &mut stream_finish_reason,
+                        &mut stream_usage,
                     )? {
                         let mut output = accumulator.finish();
                         // 优先使用 API 返回的 finish_reason，否则使用推断值
                         if let Some(reason) = stream_finish_reason.as_deref() {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
+                        output.usage = stream_usage;
+                        self.apply_cache_diagnostics(&mut output, pending_cache_check);
                         return Ok(output);
                     }
                 }
@@ -429,12 +560,15 @@ impl LlmProvider for OpenAiProvider {
                         &mut accumulator,
                         &sink,
                         &mut stream_finish_reason,
+                        &mut stream_usage,
                     )?;
                     if done {
                         let mut output = accumulator.finish();
                         if let Some(reason) = stream_finish_reason.as_deref() {
                             output.finish_reason = FinishReason::from_api_value(reason);
                         }
+                        output.usage = stream_usage;
+                        self.apply_cache_diagnostics(&mut output, pending_cache_check);
                         return Ok(output);
                     }
                 }
@@ -445,11 +579,14 @@ impl LlmProvider for OpenAiProvider {
                     &mut accumulator,
                     &sink,
                     &mut stream_finish_reason,
+                    &mut stream_usage,
                 )?;
                 let mut output = accumulator.finish();
                 if let Some(reason) = stream_finish_reason.as_deref() {
                     output.finish_reason = FinishReason::from_api_value(reason);
                 }
+                output.usage = stream_usage;
+                self.apply_cache_diagnostics(&mut output, pending_cache_check);
                 Ok(output)
             },
         }
@@ -473,7 +610,7 @@ impl LlmProvider for OpenAiProvider {
 ///
 /// - 工具调用参数可能不是合法 JSON，解析失败时回退为原始字符串
 /// - 推理内容为空字符串时不保留（避免无意义的空 reasoning 对象）
-/// - `usage` 参数在非流式路径下由调用方传入，流式路径下为 `None`
+/// - `usage` 参数由调用方传入；流式路径会在收到 usage trailer 后补入
 /// - `finish_reason` 从响应 choice 中提取，用于检测 max_tokens 截断 (P4.2)
 fn message_to_output(
     message: OpenAiResponseMessage,
@@ -519,6 +656,7 @@ fn message_to_output(
             }),
         usage,
         finish_reason,
+        prompt_cache_diagnostics: None,
     }
 }
 
@@ -573,9 +711,12 @@ fn parse_sse_line(line: &str) -> Result<ParsedSseLine> {
 /// - 空字符串的文本和推理内容会被过滤，避免发射无意义的空增量
 /// - 工具调用参数缺失时回退为空字符串，由累加器负责拼接
 /// - 返回最后一个非 None 的 finish_reason（P4.2）
-fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> (Vec<LlmEvent>, Option<String>) {
+fn apply_stream_chunk(
+    chunk: OpenAiStreamChunk,
+) -> (Vec<LlmEvent>, Option<String>, Option<LlmUsage>) {
     let mut events = Vec::new();
     let mut last_finish_reason: Option<String> = None;
+    let usage = chunk.usage.map(openai_usage_to_llm_usage);
 
     for choice in chunk.choices {
         // 提取 finish_reason，最后一个非 None 值有效
@@ -612,7 +753,7 @@ fn apply_stream_chunk(chunk: OpenAiStreamChunk) -> (Vec<LlmEvent>, Option<String
         }
     }
 
-    (events, last_finish_reason)
+    (events, last_finish_reason, usage)
 }
 
 /// 处理单行 SSE 文本，返回 `(is_done, finish_reason)`。
@@ -622,16 +763,16 @@ fn process_sse_line(
     line: &str,
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
-) -> Result<(bool, Option<String>)> {
+) -> Result<(bool, Option<String>, Option<LlmUsage>)> {
     match parse_sse_line(line)? {
-        ParsedSseLine::Ignore => Ok((false, None)),
-        ParsedSseLine::Done => Ok((true, None)),
+        ParsedSseLine::Ignore => Ok((false, None, None)),
+        ParsedSseLine::Done => Ok((true, None, None)),
         ParsedSseLine::Chunk(chunk) => {
-            let (events, finish_reason) = apply_stream_chunk(chunk);
+            let (events, finish_reason, usage) = apply_stream_chunk(chunk);
             for event in events {
                 emit_event(event, accumulator, sink);
             }
-            Ok((false, finish_reason))
+            Ok((false, finish_reason, usage))
         },
     }
 }
@@ -652,6 +793,7 @@ fn consume_sse_text_chunk(
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
     finish_reason_out: &mut Option<String>,
+    usage_out: &mut Option<LlmUsage>,
 ) -> Result<bool> {
     sse_buffer.push_str(chunk_text);
 
@@ -661,9 +803,12 @@ fn consume_sse_text_chunk(
             .trim_end_matches('\n')
             .trim_end_matches('\r');
 
-        let (done, reason) = process_sse_line(line, accumulator, sink)?;
+        let (done, reason, usage) = process_sse_line(line, accumulator, sink)?;
         if let Some(r) = reason {
             *finish_reason_out = Some(r);
+        }
+        if let Some(usage) = usage {
+            *usage_out = Some(usage);
         }
         if done {
             return Ok(true);
@@ -682,13 +827,17 @@ fn flush_sse_buffer(
     accumulator: &mut LlmAccumulator,
     sink: &EventSink,
     finish_reason_out: &mut Option<String>,
+    usage_out: &mut Option<LlmUsage>,
 ) -> Result<()> {
     let remaining = std::mem::take(sse_buffer);
     let remaining = remaining.trim();
     if !remaining.is_empty() {
-        let (done, reason) = process_sse_line(remaining, accumulator, sink)?;
+        let (done, reason, usage) = process_sse_line(remaining, accumulator, sink)?;
         if let Some(r) = reason {
             *finish_reason_out = Some(r);
+        }
+        if let Some(usage) = usage {
+            *usage_out = Some(usage);
         }
         // 如果 flush 时遇到 [DONE]，忽略（正常流结束）
         // 故意忽略：消费 done 标志以避免未使用变量警告
@@ -772,6 +921,15 @@ fn to_openai_message(message: &LlmMessage) -> OpenAiRequestMessage {
     }
 }
 
+fn openai_usage_to_llm_usage(usage: OpenAiUsage) -> LlmUsage {
+    LlmUsage {
+        input_tokens: usage.prompt_tokens.unwrap_or_default() as usize,
+        output_tokens: usage.completion_tokens.unwrap_or_default() as usize,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: usage.cached_tokens() as usize,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI API 请求/响应 DTO（仅用于 serde 序列化/反序列化）
 // ---------------------------------------------------------------------------
@@ -795,6 +953,8 @@ struct OpenAiChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'a str>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<OpenAiStreamOptions>,
 }
 
 struct OpenAiBuildRequestInput<'a> {
@@ -805,6 +965,11 @@ struct OpenAiBuildRequestInput<'a> {
     prompt_cache_hints: Option<&'a PromptCacheHints>,
     max_output_tokens_override: Option<usize>,
     stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiStreamOptions {
+    include_usage: bool,
 }
 
 /// OpenAI 请求消息（user / assistant / system / tool）。
@@ -906,7 +1071,7 @@ struct OpenAiResponseMessage {
 ///
 /// 两个字段均为 `Option` 且带 `#[serde(default)]`，
 /// 因为某些兼容 API 可能不返回用量信息。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct OpenAiUsage {
     #[serde(default)]
     prompt_tokens: Option<u64>,
@@ -916,7 +1081,7 @@ struct OpenAiUsage {
     prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct OpenAiPromptTokensDetails {
     #[serde(default)]
     cached_tokens: Option<u64>,
@@ -954,7 +1119,10 @@ struct OpenAiResponseToolFunction {
 /// 每个 chunk 包含 `choices` 数组，每个 choice 的 delta 包含增量内容。
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamChunk {
+    #[serde(default)]
     choices: Vec<OpenAiStreamChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
 }
 
 /// OpenAI 流式 chunk 中的单个 choice。
@@ -1239,6 +1407,223 @@ mod tests {
     }
 
     #[test]
+    fn build_request_includes_stream_usage_options_only_for_official_endpoint() {
+        let messages = [LlmMessage::User {
+            content: "hi".to_string(),
+            origin: UserMessageOrigin::User,
+        }];
+        let official = OpenAiProvider::new(
+            "https://api.openai.com/v1/chat/completions".to_string(),
+            "sk-test".to_string(),
+            "gpt-4.1".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+        let compatible = OpenAiProvider::new(
+            "https://gateway.example.com/v1/chat/completions".to_string(),
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+
+        let official_body = serde_json::to_value(official.build_request(OpenAiBuildRequestInput {
+            messages: &messages,
+            tools: &[],
+            system_prompt: None,
+            system_prompt_blocks: &[],
+            prompt_cache_hints: None,
+            max_output_tokens_override: None,
+            stream: true,
+        }))
+        .expect("request should serialize");
+        let compatible_body =
+            serde_json::to_value(compatible.build_request(OpenAiBuildRequestInput {
+                messages: &messages,
+                tools: &[],
+                system_prompt: None,
+                system_prompt_blocks: &[],
+                prompt_cache_hints: None,
+                max_output_tokens_override: None,
+                stream: true,
+            }))
+            .expect("request should serialize");
+
+        assert_eq!(
+            official_body["stream_options"]["include_usage"].as_bool(),
+            Some(true)
+        );
+        assert!(compatible_body.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn compatible_endpoint_can_enable_stream_usage_via_explicit_capabilities() {
+        let provider = OpenAiProvider::new_with_capabilities(
+            "https://gateway.example.com/v1/chat/completions".to_string(),
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+            LlmClientConfig::default(),
+            OpenAiProviderCapabilities {
+                supports_prompt_cache_key: false,
+                supports_stream_usage: true,
+            },
+        )
+        .expect("provider should build");
+        let messages = [LlmMessage::User {
+            content: "hi".to_string(),
+            origin: UserMessageOrigin::User,
+        }];
+
+        let body = serde_json::to_value(provider.build_request(OpenAiBuildRequestInput {
+            messages: &messages,
+            tools: &[],
+            system_prompt: None,
+            system_prompt_blocks: &[],
+            prompt_cache_hints: None,
+            max_output_tokens_override: None,
+            stream: true,
+        }))
+        .expect("request should serialize");
+
+        assert_eq!(
+            body["stream_options"]["include_usage"].as_bool(),
+            Some(true)
+        );
+        assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn build_request_normalizes_tool_order_for_payload_and_cache_key() {
+        let provider = OpenAiProvider::new(
+            "https://api.openai.com/v1/chat/completions".to_string(),
+            "sk-test".to_string(),
+            "gpt-4.1".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+            LlmClientConfig::default(),
+        )
+        .expect("provider should build");
+        let messages = [LlmMessage::User {
+            content: "hi".to_string(),
+            origin: UserMessageOrigin::User,
+        }];
+        let first_tools = vec![
+            ToolDefinition {
+                name: "mcp__search".to_string(),
+                description: "Search".to_string(),
+                parameters: json!({"type":"object"}),
+            },
+            ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read".to_string(),
+                parameters: json!({"type":"object"}),
+            },
+        ];
+        let second_tools = vec![
+            ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read".to_string(),
+                parameters: json!({"type":"object"}),
+            },
+            ToolDefinition {
+                name: "mcp__search".to_string(),
+                description: "Search".to_string(),
+                parameters: json!({"type":"object"}),
+            },
+        ];
+
+        let first = provider.build_request(OpenAiBuildRequestInput {
+            messages: &messages,
+            tools: &first_tools,
+            system_prompt: None,
+            system_prompt_blocks: &[],
+            prompt_cache_hints: None,
+            max_output_tokens_override: None,
+            stream: false,
+        });
+        let second = provider.build_request(OpenAiBuildRequestInput {
+            messages: &messages,
+            tools: &second_tools,
+            system_prompt: None,
+            system_prompt_blocks: &[],
+            prompt_cache_hints: None,
+            max_output_tokens_override: None,
+            stream: false,
+        });
+
+        let first_names: Vec<&str> = first
+            .tools
+            .as_ref()
+            .expect("tools should exist")
+            .iter()
+            .map(|tool| tool.function.name.as_str())
+            .collect();
+        let second_names: Vec<&str> = second
+            .tools
+            .as_ref()
+            .expect("tools should exist")
+            .iter()
+            .map(|tool| tool.function.name.as_str())
+            .collect();
+
+        assert_eq!(first_names, vec!["read_file", "mcp__search"]);
+        assert_eq!(second_names, vec!["read_file", "mcp__search"]);
+        assert_eq!(first.prompt_cache_key, second.prompt_cache_key);
+    }
+
+    #[test]
+    fn build_prompt_cache_key_changes_with_global_cache_strategy() {
+        let tools = vec![ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read".to_string(),
+            parameters: json!({"type":"object"}),
+        }];
+        let ordered_tools = order_tools_for_cache(&tools);
+        let base_hints = PromptCacheHints {
+            layer_fingerprints: astrcode_core::PromptLayerFingerprints {
+                stable: Some("stable-a".to_string()),
+                semi_stable: Some("semi-a".to_string()),
+                inherited: Some("inherited-a".to_string()),
+                dynamic: None,
+            },
+            global_cache_strategy: PromptCacheGlobalStrategy::SystemPrompt,
+            unchanged_layers: Vec::new(),
+            compacted: false,
+            tool_result_rebudgeted: false,
+        };
+        let tool_based_hints = PromptCacheHints {
+            global_cache_strategy: PromptCacheGlobalStrategy::ToolBased,
+            ..base_hints.clone()
+        };
+
+        let system_key =
+            build_prompt_cache_key("gpt-4.1", None, &[], Some(&base_hints), &ordered_tools);
+        let tool_key = build_prompt_cache_key(
+            "gpt-4.1",
+            None,
+            &[],
+            Some(&tool_based_hints),
+            &ordered_tools,
+        );
+
+        assert_ne!(system_key, tool_key);
+    }
+
+    #[test]
     fn build_request_honors_request_level_max_output_tokens_override() {
         let provider = OpenAiProvider::new(
             "https://api.openai.com/v1/chat/completions".to_string(),
@@ -1355,7 +1740,7 @@ mod tests {
     #[tokio::test]
     async fn generate_streaming_emits_events_and_accumulates_output() {
         let body = format!(
-            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
             json!({
                 "choices": [{
                     "delta": { "content": "hel" },
@@ -1377,6 +1762,16 @@ mod tests {
                     },
                     "finish_reason": "stop"
                 }]
+            }),
+            json!({
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 1500,
+                    "completion_tokens": 25,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 1200
+                    }
+                }
             })
         );
         let response = format!(
@@ -1435,6 +1830,15 @@ mod tests {
         assert_eq!(output.content, "hello");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].args, json!({ "q": "hello" }));
+        assert_eq!(
+            output.usage,
+            Some(LlmUsage {
+                input_tokens: 1500,
+                output_tokens: 25,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 1200,
+            })
+        );
     }
 
     #[test]
@@ -1445,6 +1849,7 @@ mod tests {
         let mut sse_buffer = String::new();
         let mut decoder = Utf8StreamDecoder::default();
         let mut finish_reason_out = None;
+        let mut usage_out = None;
         let line = r#"data: {"choices":[{"delta":{"content":"你好"},"finish_reason":null}]}"#;
         let bytes = line.as_bytes();
         let split_index = line.find("好").expect("line should contain multibyte char") + 1;
@@ -1471,6 +1876,7 @@ mod tests {
                     &mut accumulator,
                     &sink,
                     &mut finish_reason_out,
+                    &mut usage_out,
                 )
             })
             .transpose()
@@ -1485,6 +1891,7 @@ mod tests {
                     &mut accumulator,
                     &sink,
                     &mut finish_reason_out,
+                    &mut usage_out,
                 )
             })
             .transpose()
@@ -1499,6 +1906,7 @@ mod tests {
             &mut accumulator,
             &sink,
             &mut finish_reason_out,
+            &mut usage_out,
         )
         .expect("flush should parse");
 
@@ -1513,7 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_provider_reports_cache_metrics_as_unsupported() {
+    fn openai_compatible_provider_reports_cache_metrics_support() {
         let provider = OpenAiProvider::new(
             "http://127.0.0.1:12345".to_string(),
             "sk-test".to_string(),
@@ -1526,7 +1934,7 @@ mod tests {
         )
         .expect("provider should build");
 
-        assert!(!provider.supports_cache_metrics());
+        assert!(provider.supports_cache_metrics());
     }
 
     #[test]

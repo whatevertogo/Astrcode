@@ -88,6 +88,7 @@ mod tests {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::Stop,
+                prompt_cache_diagnostics: None,
             })
         }
 
