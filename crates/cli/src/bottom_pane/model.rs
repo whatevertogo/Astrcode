@@ -182,7 +182,7 @@ fn palette_title(palette: &PaletteState) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_client::AstrcodeCurrentModelInfoDto;
+    use astrcode_client::CurrentModelInfoDto;
 
     use super::{
         BottomPaneMode, BottomPaneState, composer_height, should_show_empty_session_minimal,
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn empty_session_uses_minimal_mode() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
-        state.shell.current_model = Some(AstrcodeCurrentModelInfoDto {
+        state.shell.current_model = Some(CurrentModelInfoDto {
             profile_name: "default".to_string(),
             model: "glm-5.1".to_string(),
             provider_kind: "glm".to_string(),

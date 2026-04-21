@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use astrcode_client::{
-    AstrcodeClientTransport, AstrcodeCompactSessionRequest, AstrcodeConversationBannerErrorCodeDto,
-    AstrcodeConversationErrorEnvelopeDto, AstrcodeCreateSessionRequest,
-    AstrcodeExecutionControlDto, AstrcodePromptRequest, AstrcodePromptSkillInvocation,
-    AstrcodeSaveActiveSelectionRequest, AstrcodeSwitchModeRequest, ConversationStreamItem,
+    ClientTransport, CompactSessionRequest, ConversationBannerErrorCodeDto,
+    ConversationErrorEnvelopeDto, ConversationStreamItem, CreateSessionRequest,
+    ExecutionControlDto, PromptRequest, PromptSkillInvocation, SaveActiveSelectionRequest,
+    SwitchModeRequest,
 };
 
 use super::{
@@ -20,7 +20,7 @@ use crate::{
 
 impl<T> AppController<T>
 where
-    T: AstrcodeClientTransport + 'static,
+    T: ClientTransport + 'static,
 {
     fn dispatch_async<F>(&self, operation: F)
     where
@@ -86,7 +86,7 @@ where
                 self.state.set_status("creating session");
                 self.dispatch_async(async move {
                     let result = client
-                        .create_session(AstrcodeCreateSessionRequest { working_dir })
+                        .create_session(CreateSessionRequest { working_dir })
                         .await;
                     Some(Action::SessionCreated(result))
                 });
@@ -156,7 +156,7 @@ where
                     let result = client
                         .switch_mode(
                             &session_id,
-                            AstrcodeSwitchModeRequest {
+                            SwitchModeRequest {
                                 mode_id: requested_mode_id.clone(),
                             },
                         )
@@ -190,8 +190,8 @@ where
                     let result = client
                         .request_compact(
                             &session_id,
-                            AstrcodeCompactSessionRequest {
-                                control: Some(AstrcodeExecutionControlDto {
+                            CompactSessionRequest {
+                                control: Some(ExecutionControlDto {
                                     max_steps: None,
                                     manual_compact: Some(true),
                                 }),
@@ -206,7 +206,7 @@ where
                 let text = prompt.clone().unwrap_or_default();
                 self.submit_prompt_request(
                     text,
-                    Some(AstrcodePromptSkillInvocation {
+                    Some(PromptSkillInvocation {
                         skill_id,
                         user_prompt: prompt,
                     }),
@@ -443,23 +443,21 @@ where
                 self.begin_session_hydration(session_id.to_string()).await;
             },
             ConversationStreamItem::Lagged { skipped } => {
-                self.state
-                    .set_banner_error(AstrcodeConversationErrorEnvelopeDto {
-                        code: AstrcodeConversationBannerErrorCodeDto::CursorExpired,
-                        message: format!("stream lagged by {skipped} events, rehydrating"),
-                        rehydrate_required: true,
-                        details: None,
-                    });
+                self.state.set_banner_error(ConversationErrorEnvelopeDto {
+                    code: ConversationBannerErrorCodeDto::CursorExpired,
+                    message: format!("stream lagged by {skipped} events, rehydrating"),
+                    rehydrate_required: true,
+                    details: None,
+                });
                 self.begin_session_hydration(session_id.to_string()).await;
             },
             ConversationStreamItem::Disconnected { message } => {
-                self.state
-                    .set_banner_error(AstrcodeConversationErrorEnvelopeDto {
-                        code: AstrcodeConversationBannerErrorCodeDto::StreamDisconnected,
-                        message,
-                        rehydrate_required: false,
-                        details: None,
-                    });
+                self.state.set_banner_error(ConversationErrorEnvelopeDto {
+                    code: ConversationBannerErrorCodeDto::StreamDisconnected,
+                    message,
+                    rehydrate_required: false,
+                    details: None,
+                });
             },
         }
     }
@@ -473,7 +471,7 @@ where
         let client = self.client.clone();
         self.dispatch_async(async move {
             let result = client
-                .save_active_selection(AstrcodeSaveActiveSelectionRequest {
+                .save_active_selection(SaveActiveSelectionRequest {
                     active_profile: profile_name.clone(),
                     active_model: model.clone(),
                 })
@@ -489,7 +487,7 @@ where
     async fn submit_prompt_request(
         &mut self,
         text: String,
-        skill_invocation: Option<AstrcodePromptSkillInvocation>,
+        skill_invocation: Option<PromptSkillInvocation>,
     ) {
         let Some(session_id) = self.state.conversation.active_session_id.clone() else {
             self.state.set_error_status("no active session");
@@ -501,7 +499,7 @@ where
             let result = client
                 .submit_prompt(
                     &session_id,
-                    AstrcodePromptRequest {
+                    PromptRequest {
                         text,
                         skill_invocation,
                         control: None,

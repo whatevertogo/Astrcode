@@ -159,8 +159,7 @@ fn thinking_state_for_cell(
 #[cfg(test)]
 mod tests {
     use astrcode_client::{
-        AstrcodeConversationAssistantBlockDto, AstrcodeConversationBlockDto,
-        AstrcodeConversationBlockStatusDto,
+        ConversationAssistantBlockDto, ConversationBlockDto, ConversationBlockStatusDto,
     };
 
     use super::ChatSurfaceState;
@@ -182,10 +181,10 @@ mod tests {
 
     fn assistant_block(
         id: &str,
-        status: AstrcodeConversationBlockStatusDto,
+        status: ConversationBlockStatusDto,
         markdown: &str,
-    ) -> AstrcodeConversationBlockDto {
-        AstrcodeConversationBlockDto::Assistant(AstrcodeConversationAssistantBlockDto {
+    ) -> ConversationBlockDto {
+        ConversationBlockDto::Assistant(ConversationAssistantBlockDto {
             id: id.to_string(),
             turn_id: Some("turn-1".to_string()),
             status,
@@ -202,7 +201,7 @@ mod tests {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.conversation.transcript = vec![assistant_block(
             "assistant-1",
-            AstrcodeConversationBlockStatusDto::Streaming,
+            ConversationBlockStatusDto::Streaming,
             "- 第1项：这是一个足够长的列表项，用来制造稳定折行。\n- \
              第2项：这是一个足够长的列表项，用来制造稳定折行。\n- \
              第3项：这是一个足够长的列表项，用来制造稳定折行。\n- \
@@ -231,7 +230,7 @@ mod tests {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.conversation.transcript = vec![assistant_block(
             "assistant-1",
-            AstrcodeConversationBlockStatusDto::Streaming,
+            ConversationBlockStatusDto::Streaming,
             "前言\n\n- 第一项\n- 第二项\n第5行\n第6行\n第7行\n第8行\n第9行\n第10行",
         )];
         let theme = CodexTheme::new(state.shell.capabilities);
@@ -241,7 +240,7 @@ mod tests {
 
         state.conversation.transcript = vec![assistant_block(
             "assistant-1",
-            AstrcodeConversationBlockStatusDto::Complete,
+            ConversationBlockStatusDto::Complete,
             "前言\n\n- 第一项\n- 第二项\n第5行\n第6行\n第7行\n第8行\n第9行\n第10行",
         )];
 

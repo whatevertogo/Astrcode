@@ -3,86 +3,31 @@ mod transport;
 
 use std::sync::Arc;
 
-use astrcode_protocol::http::{
-    AuthExchangeRequest, AuthExchangeResponse, CompactSessionRequest, CompactSessionResponse,
-    CreateSessionRequest, CurrentModelInfoDto, ExecutionControlDto, ModeSummaryDto, ModelOptionDto,
-    PromptAcceptedResponse, PromptRequest, SaveActiveSelectionRequest, SessionListItem,
-    SessionModeStateDto, SwitchModeRequest,
+pub use astrcode_protocol::http::{
+    AgentLifecycleDto, AuthExchangeRequest, AuthExchangeResponse, CompactSessionRequest,
+    CompactSessionResponse, CreateSessionRequest, CurrentModelInfoDto, ExecutionControlDto,
+    ModeSummaryDto, ModelOptionDto, PhaseDto, PromptAcceptedResponse, PromptRequest,
+    PromptSkillInvocation, SaveActiveSelectionRequest, SessionListItem, SessionModeStateDto,
+    SwitchModeRequest,
     conversation::v1::{
-        ConversationCursorDto, ConversationDeltaDto, ConversationErrorEnvelopeDto,
-        ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
-        ConversationStreamEnvelopeDto,
+        ConversationAssistantBlockDto, ConversationBannerDto, ConversationBannerErrorCodeDto,
+        ConversationBlockDto, ConversationBlockPatchDto, ConversationBlockStatusDto,
+        ConversationChildSummaryDto, ConversationControlStateDto, ConversationCursorDto,
+        ConversationDeltaDto, ConversationErrorEnvelopeDto, ConversationSlashActionKindDto,
+        ConversationSlashCandidateDto, ConversationSlashCandidatesResponseDto,
+        ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto,
     },
 };
-use error::{ClientError, ClientErrorKind};
-pub use error::{ClientError as AstrcodeClientError, ClientErrorKind as AstrcodeClientErrorKind};
+pub use error::{ClientError, ClientErrorKind};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::{RwLock, broadcast};
 pub use transport::{
-    ClientTransport as AstrcodeClientTransport, ReqwestTransport as AstrcodeReqwestTransport,
-    SseEvent as AstrcodeSseEvent, TransportError as AstrcodeTransportError,
-    TransportMethod as AstrcodeTransportMethod, TransportRequest as AstrcodeTransportRequest,
-    TransportResponse as AstrcodeTransportResponse,
-};
-use transport::{
-    ClientTransport, ReqwestTransport, TransportError, TransportMethod, TransportRequest,
+    ClientTransport, ReqwestTransport, SseEvent, TransportError, TransportMethod, TransportRequest,
+    TransportResponse,
 };
 
 const DEFAULT_STREAM_BUFFER: usize = 128;
-
-pub use astrcode_protocol::http::{
-    AgentLifecycleDto as AstrcodeConversationAgentLifecycleDto,
-    CompactSessionRequest as AstrcodeCompactSessionRequest,
-    CompactSessionResponse as AstrcodeCompactSessionResponse,
-    CreateSessionRequest as AstrcodeCreateSessionRequest,
-    CurrentModelInfoDto as AstrcodeCurrentModelInfoDto,
-    ExecutionControlDto as AstrcodeExecutionControlDto, ModeSummaryDto as AstrcodeModeSummaryDto,
-    ModelOptionDto as AstrcodeModelOptionDto, PhaseDto as AstrcodePhaseDto,
-    PromptAcceptedResponse as AstrcodePromptAcceptedResponse,
-    PromptRequest as AstrcodePromptRequest, PromptSkillInvocation as AstrcodePromptSkillInvocation,
-    SaveActiveSelectionRequest as AstrcodeSaveActiveSelectionRequest,
-    SessionListItem as AstrcodeSessionListItem, SessionModeStateDto as AstrcodeSessionModeStateDto,
-    SwitchModeRequest as AstrcodeSwitchModeRequest,
-    conversation::v1::{
-        ConversationAssistantBlockDto as AstrcodeConversationAssistantBlockDto,
-        ConversationBannerDto as AstrcodeConversationBannerDto,
-        ConversationBannerErrorCodeDto as AstrcodeConversationBannerErrorCodeDto,
-        ConversationBlockDto as AstrcodeConversationBlockDto,
-        ConversationBlockPatchDto as AstrcodeConversationBlockPatchDto,
-        ConversationBlockStatusDto as AstrcodeConversationBlockStatusDto,
-        ConversationChildSummaryDto as AstrcodeConversationChildSummaryDto,
-        ConversationControlStateDto as AstrcodeConversationControlStateDto,
-        ConversationCursorDto as AstrcodeConversationCursorDto,
-        ConversationDeltaDto as AstrcodeConversationDeltaDto,
-        ConversationErrorEnvelopeDto as AstrcodeConversationErrorEnvelopeDto,
-        ConversationSlashActionKindDto as AstrcodeConversationSlashActionKindDto,
-        ConversationSlashCandidateDto as AstrcodeConversationSlashCandidateDto,
-        ConversationSlashCandidatesResponseDto as AstrcodeConversationSlashCandidatesResponseDto,
-        ConversationSnapshotResponseDto as AstrcodeConversationSnapshotResponseDto,
-        ConversationStreamEnvelopeDto as AstrcodeConversationStreamEnvelopeDto,
-    },
-};
-
-// Compatibility aliases for older terminal-oriented call sites.
-// New code should prefer the `AstrcodeConversation*` names above.
-pub type AstrcodeTerminalAssistantBlockDto = AstrcodeConversationAssistantBlockDto;
-pub type AstrcodeTerminalBannerDto = AstrcodeConversationBannerDto;
-pub type AstrcodeTerminalBannerErrorCodeDto = AstrcodeConversationBannerErrorCodeDto;
-pub type AstrcodeTerminalBlockDto = AstrcodeConversationBlockDto;
-pub type AstrcodeTerminalBlockPatchDto = AstrcodeConversationBlockPatchDto;
-pub type AstrcodeTerminalBlockStatusDto = AstrcodeConversationBlockStatusDto;
-pub type AstrcodeTerminalChildSummaryDto = AstrcodeConversationChildSummaryDto;
-pub type AstrcodeTerminalControlStateDto = AstrcodeConversationControlStateDto;
-pub type AstrcodeTerminalCursorDto = AstrcodeConversationCursorDto;
-pub type AstrcodeTerminalDeltaDto = AstrcodeConversationDeltaDto;
-pub type AstrcodeTerminalErrorEnvelopeDto = AstrcodeConversationErrorEnvelopeDto;
-pub type AstrcodeTerminalSlashActionKindDto = AstrcodeConversationSlashActionKindDto;
-pub type AstrcodeTerminalSlashCandidateDto = AstrcodeConversationSlashCandidateDto;
-pub type AstrcodeTerminalSlashCandidatesResponseDto =
-    AstrcodeConversationSlashCandidatesResponseDto;
-pub type AstrcodeTerminalSnapshotResponseDto = AstrcodeConversationSnapshotResponseDto;
-pub type AstrcodeTerminalStreamEnvelopeDto = AstrcodeConversationStreamEnvelopeDto;
 
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
@@ -104,25 +49,23 @@ impl ClientConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminalStreamItem {
+pub enum ConversationStreamItem {
     Delta(Box<ConversationStreamEnvelopeDto>),
     RehydrateRequired(ConversationErrorEnvelopeDto),
     Lagged { skipped: u64 },
     Disconnected { message: String },
 }
 
-pub type ConversationStreamItem = TerminalStreamItem;
-
-pub struct TerminalStream {
-    receiver: broadcast::Receiver<TerminalStreamItem>,
+pub struct ConversationStream {
+    receiver: broadcast::Receiver<ConversationStreamItem>,
 }
 
-impl TerminalStream {
-    pub async fn recv(&mut self) -> Result<Option<TerminalStreamItem>, ClientError> {
+impl ConversationStream {
+    pub async fn recv(&mut self) -> Result<Option<ConversationStreamItem>, ClientError> {
         match self.receiver.recv().await {
             Ok(item) => Ok(Some(item)),
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                Ok(Some(TerminalStreamItem::Lagged { skipped }))
+                Ok(Some(ConversationStreamItem::Lagged { skipped }))
             },
             Err(broadcast::error::RecvError::Closed) => Ok(None),
         }
@@ -397,19 +340,12 @@ where
         .await
     }
 
-    pub async fn fetch_terminal_snapshot(
-        &self,
-        session_id: &str,
-    ) -> Result<ConversationSnapshotResponseDto, ClientError> {
-        self.fetch_conversation_snapshot(session_id, None).await
-    }
-
     pub async fn stream_conversation(
         &self,
         session_id: &str,
         cursor: Option<&ConversationCursorDto>,
         focus: Option<&str>,
-    ) -> Result<TerminalStream, ClientError> {
+    ) -> Result<ConversationStream, ClientError> {
         let mut query = cursor
             .map(|cursor| vec![("cursor".to_string(), cursor.0.clone())])
             .unwrap_or_default();
@@ -446,7 +382,7 @@ where
                             Ok(delta) => match delta.delta.clone() {
                                 ConversationDeltaDto::RehydrateRequired { error } => {
                                     if sender
-                                        .send(TerminalStreamItem::RehydrateRequired(error))
+                                        .send(ConversationStreamItem::RehydrateRequired(error))
                                         .is_err()
                                     {
                                         break;
@@ -454,7 +390,7 @@ where
                                 },
                                 _ => {
                                     if sender
-                                        .send(TerminalStreamItem::Delta(Box::new(delta)))
+                                        .send(ConversationStreamItem::Delta(Box::new(delta)))
                                         .is_err()
                                     {
                                         break;
@@ -462,7 +398,7 @@ where
                                 },
                             },
                             Err(error) => {
-                                let _ = sender.send(TerminalStreamItem::Disconnected {
+                                let _ = sender.send(ConversationStreamItem::Disconnected {
                                     message: format!(
                                         "failed to decode conversation sse payload: {error}"
                                     ),
@@ -472,11 +408,11 @@ where
                         }
                     },
                     Err(TransportError::StreamDisconnected { message }) => {
-                        let _ = sender.send(TerminalStreamItem::Disconnected { message });
+                        let _ = sender.send(ConversationStreamItem::Disconnected { message });
                         break;
                     },
                     Err(error) => {
-                        let _ = sender.send(TerminalStreamItem::Disconnected {
+                        let _ = sender.send(ConversationStreamItem::Disconnected {
                             message: ClientError::from_transport(error).message,
                         });
                         break;
@@ -485,15 +421,7 @@ where
             }
         });
 
-        Ok(TerminalStream { receiver: output })
-    }
-
-    pub async fn stream_terminal(
-        &self,
-        session_id: &str,
-        cursor: Option<&ConversationCursorDto>,
-    ) -> Result<TerminalStream, ClientError> {
-        self.stream_conversation(session_id, cursor, None).await
+        Ok(ConversationStream { receiver: output })
     }
 
     pub async fn list_conversation_slash_candidates(
@@ -513,15 +441,6 @@ where
             true,
         )
         .await
-    }
-
-    pub async fn list_slash_candidates(
-        &self,
-        session_id: &str,
-        query: Option<&str>,
-    ) -> Result<ConversationSlashCandidatesResponseDto, ClientError> {
-        self.list_conversation_slash_candidates(session_id, query)
-            .await
     }
 
     async fn send_json<Response, Body>(
@@ -625,7 +544,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        AstrcodeClient, ClientConfig, ClientErrorKind, TerminalStreamItem,
+        AstrcodeClient, ClientConfig, ClientErrorKind, ConversationStreamItem,
         transport::{
             ClientTransport, SseEvent, TransportError, TransportEventReceiver, TransportMethod,
             TransportRequest, TransportResponse,
@@ -865,18 +784,18 @@ mod tests {
             .expect("stream should open");
 
         let first = stream.recv().await.expect("stream read should succeed");
-        assert!(matches!(first, Some(TerminalStreamItem::Delta(_))));
+        assert!(matches!(first, Some(ConversationStreamItem::Delta(_))));
 
         let second = stream.recv().await.expect("stream read should succeed");
         assert!(matches!(
             second,
-            Some(TerminalStreamItem::RehydrateRequired(_))
+            Some(ConversationStreamItem::RehydrateRequired(_))
         ));
 
         let third = stream.recv().await.expect("stream read should succeed");
         assert_eq!(
             third,
-            Some(TerminalStreamItem::Disconnected {
+            Some(ConversationStreamItem::Disconnected {
                 message: "socket closed".to_string()
             })
         );
@@ -919,7 +838,7 @@ mod tests {
         };
         let client = AstrcodeClient::with_transport(config, transport);
         let candidates = client
-            .list_slash_candidates("session-1", Some("skill"))
+            .list_conversation_slash_candidates("session-1", Some("skill"))
             .await
             .expect("slash candidates should load");
 

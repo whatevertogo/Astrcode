@@ -1,8 +1,6 @@
 use std::collections::BTreeSet;
 
-use astrcode_client::{
-    AstrcodeConversationSlashCandidateDto, AstrcodeModelOptionDto, AstrcodeSessionListItem,
-};
+use astrcode_client::{ConversationSlashCandidateDto, ModelOptionDto, SessionListItem};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PaneFocus {
@@ -123,21 +121,21 @@ fn next_boundary(input: &str, cursor: usize) -> Option<usize> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashPaletteState {
     pub query: String,
-    pub items: Vec<AstrcodeConversationSlashCandidateDto>,
+    pub items: Vec<ConversationSlashCandidateDto>,
     pub selected: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumePaletteState {
     pub query: String,
-    pub items: Vec<AstrcodeSessionListItem>,
+    pub items: Vec<SessionListItem>,
     pub selected: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelPaletteState {
     pub query: String,
-    pub items: Vec<AstrcodeModelOptionDto>,
+    pub items: Vec<ModelOptionDto>,
     pub selected: usize,
 }
 
@@ -153,8 +151,8 @@ pub enum PaletteState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteSelection {
     ResumeSession(String),
-    SlashCandidate(AstrcodeConversationSlashCandidateDto),
-    ModelOption(AstrcodeModelOptionDto),
+    SlashCandidate(ConversationSlashCandidateDto),
+    ModelOption(ModelOptionDto),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,11 +381,7 @@ impl InteractionState {
         self.transcript.selected_cell = self.browser.selected_cell;
     }
 
-    pub fn set_resume_palette(
-        &mut self,
-        query: impl Into<String>,
-        items: Vec<AstrcodeSessionListItem>,
-    ) {
+    pub fn set_resume_palette(&mut self, query: impl Into<String>, items: Vec<SessionListItem>) {
         self.palette = PaletteState::Resume(ResumePaletteState {
             query: query.into(),
             items,
@@ -396,7 +390,7 @@ impl InteractionState {
         self.pane_focus = PaneFocus::Palette;
     }
 
-    pub fn sync_resume_items(&mut self, items: Vec<AstrcodeSessionListItem>) {
+    pub fn sync_resume_items(&mut self, items: Vec<SessionListItem>) {
         if let PaletteState::Resume(resume) = &mut self.palette {
             resume.items = items;
             if resume.selected >= resume.items.len() {
@@ -408,7 +402,7 @@ impl InteractionState {
     pub fn set_slash_palette(
         &mut self,
         query: impl Into<String>,
-        items: Vec<AstrcodeConversationSlashCandidateDto>,
+        items: Vec<ConversationSlashCandidateDto>,
     ) {
         self.palette = PaletteState::Slash(SlashPaletteState {
             query: query.into(),
@@ -418,11 +412,7 @@ impl InteractionState {
         self.pane_focus = PaneFocus::Palette;
     }
 
-    pub fn set_model_palette(
-        &mut self,
-        query: impl Into<String>,
-        items: Vec<AstrcodeModelOptionDto>,
-    ) {
+    pub fn set_model_palette(&mut self, query: impl Into<String>, items: Vec<ModelOptionDto>) {
         self.palette = PaletteState::Model(ModelPaletteState {
             query: query.into(),
             items,
@@ -431,7 +421,7 @@ impl InteractionState {
         self.pane_focus = PaneFocus::Palette;
     }
 
-    pub fn sync_model_items(&mut self, items: Vec<AstrcodeModelOptionDto>) {
+    pub fn sync_model_items(&mut self, items: Vec<ModelOptionDto>) {
         if let PaletteState::Model(palette) = &mut self.palette {
             palette.items = items;
             if palette.selected >= palette.items.len() {
@@ -440,7 +430,7 @@ impl InteractionState {
         }
     }
 
-    pub fn sync_slash_items(&mut self, items: Vec<AstrcodeConversationSlashCandidateDto>) {
+    pub fn sync_slash_items(&mut self, items: Vec<ConversationSlashCandidateDto>) {
         if let PaletteState::Slash(palette) = &mut self.palette {
             palette.items = items;
             if palette.selected >= palette.items.len() {

@@ -1,6 +1,4 @@
-use astrcode_client::{
-    AstrcodeConversationSlashActionKindDto, AstrcodeConversationSlashCandidateDto,
-};
+use astrcode_client::{ConversationSlashActionKindDto, ConversationSlashCandidateDto};
 
 use crate::state::PaletteSelection;
 
@@ -43,7 +41,7 @@ pub enum PaletteAction {
 
 pub fn classify_input(
     input: String,
-    slash_candidates: &[AstrcodeConversationSlashCandidateDto],
+    slash_candidates: &[ConversationSlashCandidateDto],
 ) -> InputAction {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -77,20 +75,17 @@ pub fn palette_action(selection: PaletteSelection) -> PaletteAction {
             model: option.model,
         },
         PaletteSelection::SlashCandidate(candidate) => match candidate.action_kind {
-            AstrcodeConversationSlashActionKindDto::InsertText => PaletteAction::ReplaceInput {
+            ConversationSlashActionKindDto::InsertText => PaletteAction::ReplaceInput {
                 text: candidate.action_value,
             },
-            AstrcodeConversationSlashActionKindDto::ExecuteCommand => {
+            ConversationSlashActionKindDto::ExecuteCommand => {
                 PaletteAction::RunCommand(parse_command(candidate.action_value.as_str(), &[]))
             },
         },
     }
 }
 
-pub fn parse_command(
-    command: &str,
-    slash_candidates: &[AstrcodeConversationSlashCandidateDto],
-) -> Command {
+pub fn parse_command(command: &str, slash_candidates: &[ConversationSlashCandidateDto]) -> Command {
     let trimmed = command.trim();
     let mut parts = trimmed.splitn(2, char::is_whitespace);
     let head = parts.next().unwrap_or_default();
@@ -109,7 +104,7 @@ pub fn parse_command(
         _ if head.starts_with('/') => {
             let skill_id = head.trim_start_matches('/');
             if slash_candidates.iter().any(|candidate| {
-                candidate.action_kind == AstrcodeConversationSlashActionKindDto::InsertText
+                candidate.action_kind == ConversationSlashActionKindDto::InsertText
                     && candidate.action_value == format!("/{skill_id}")
             }) {
                 Command::SkillInvoke {
@@ -129,9 +124,9 @@ pub fn parse_command(
 }
 
 pub fn filter_slash_candidates(
-    candidates: &[AstrcodeConversationSlashCandidateDto],
+    candidates: &[ConversationSlashCandidateDto],
     query: &str,
-) -> Vec<AstrcodeConversationSlashCandidateDto> {
+) -> Vec<ConversationSlashCandidateDto> {
     candidates
         .iter()
         .filter(|candidate| {
@@ -175,12 +170,12 @@ mod tests {
         assert_eq!(
             parse_command(
                 "/review 修复失败测试",
-                &[AstrcodeConversationSlashCandidateDto {
+                &[ConversationSlashCandidateDto {
                     id: "review".to_string(),
                     title: "Review".to_string(),
                     description: "Review current changes".to_string(),
                     keywords: vec!["review".to_string()],
-                    action_kind: AstrcodeConversationSlashActionKindDto::InsertText,
+                    action_kind: ConversationSlashActionKindDto::InsertText,
                     action_value: "/review".to_string(),
                 }]
             ),
