@@ -518,10 +518,7 @@ mod tests {
         AgentEventContext, CloseAgentParams, InvocationKind, SendAgentParams, SendToChildParams,
         SendToParentParams, SubRunStorageMode,
     };
-    use crate::{
-        ParentDeliveryPayload, ProgressParentDeliveryPayload,
-        error::AstrError,
-    };
+    use crate::{ParentDeliveryPayload, ProgressParentDeliveryPayload, error::AstrError};
 
     fn valid_sub_run_context() -> AgentEventContext {
         AgentEventContext {
@@ -611,9 +608,7 @@ mod tests {
     }
 
     fn assert_param_validation_error(result: crate::error::Result<()>, expected: &str) {
-        let AstrError::Validation(message) =
-            result.expect_err("params should be rejected")
-        else {
+        let AstrError::Validation(message) = result.expect_err("params should be rejected") else {
             panic!("expected validation error");
         };
         assert!(
