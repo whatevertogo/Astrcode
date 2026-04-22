@@ -172,9 +172,7 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
                 .body(Body::from(
                     serde_json::json!({
                         "text": "hello",
-                        "control": {
-                            "maxSteps": 7
-                        }
+                        "control": {}
                     })
                     .to_string(),
                 ))
@@ -188,7 +186,6 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
     let accepted_control = payload
         .accepted_control
         .expect("accepted control should be returned");
-    assert_eq!(accepted_control.max_steps, Some(7));
     assert_eq!(accepted_control.manual_compact, None);
 }
 

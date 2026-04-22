@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::lifecycle::{AgentLifecycleStatus, AgentTurnOutcome};
+use crate::ChildSessionNotificationKind;
 
 /// 子会话事件写入的存储模式。
 ///
@@ -127,6 +128,24 @@ impl ParentDeliveryPayload {
         }
     }
 
+    pub fn terminal_semantics(&self) -> ParentDeliveryTerminalSemantics {
+        match self {
+            Self::Progress(_) => ParentDeliveryTerminalSemantics::NonTerminal,
+            Self::Completed(_) | Self::Failed(_) | Self::CloseRequest(_) => {
+                ParentDeliveryTerminalSemantics::Terminal
+            },
+        }
+    }
+
+    pub fn notification_kind(&self) -> ChildSessionNotificationKind {
+        match self {
+            Self::Progress(_) => ChildSessionNotificationKind::ProgressSummary,
+            Self::Completed(_) => ChildSessionNotificationKind::Delivered,
+            Self::Failed(_) => ChildSessionNotificationKind::Failed,
+            Self::CloseRequest(_) => ChildSessionNotificationKind::Closed,
+        }
+    }
+
     pub fn message(&self) -> &str {
         match self {
             Self::Progress(payload) => payload.message.as_str(),
@@ -184,15 +203,11 @@ pub struct SubRunFailure {
 #[serde(rename_all = "snake_case")]
 pub enum CompletedSubRunOutcome {
     Completed,
-    TokenExceeded,
 }
 
 impl CompletedSubRunOutcome {
     pub fn as_turn_outcome(self) -> AgentTurnOutcome {
-        match self {
-            Self::Completed => AgentTurnOutcome::Completed,
-            Self::TokenExceeded => AgentTurnOutcome::TokenExceeded,
-        }
+        AgentTurnOutcome::Completed
     }
 }
 
@@ -221,7 +236,6 @@ impl FailedSubRunOutcome {
 pub enum SubRunStatus {
     Running,
     Completed,
-    TokenExceeded,
     Failed,
     Cancelled,
 }
@@ -230,9 +244,7 @@ impl SubRunStatus {
     pub fn lifecycle(self) -> AgentLifecycleStatus {
         match self {
             Self::Running => AgentLifecycleStatus::Running,
-            Self::Completed | Self::TokenExceeded | Self::Failed | Self::Cancelled => {
-                AgentLifecycleStatus::Idle
-            },
+            Self::Completed | Self::Failed | Self::Cancelled => AgentLifecycleStatus::Idle,
         }
     }
 
@@ -240,7 +252,6 @@ impl SubRunStatus {
         match self {
             Self::Running => None,
             Self::Completed => Some(AgentTurnOutcome::Completed),
-            Self::TokenExceeded => Some(AgentTurnOutcome::TokenExceeded),
             Self::Failed => Some(AgentTurnOutcome::Failed),
             Self::Cancelled => Some(AgentTurnOutcome::Cancelled),
         }
@@ -250,11 +261,28 @@ impl SubRunStatus {
         matches!(self, Self::Failed)
     }
 
+    pub fn terminal_semantics(self) -> ParentDeliveryTerminalSemantics {
+        match self {
+            Self::Running => ParentDeliveryTerminalSemantics::NonTerminal,
+            Self::Completed | Self::Failed | Self::Cancelled => {
+                ParentDeliveryTerminalSemantics::Terminal
+            },
+        }
+    }
+
+    pub fn notification_kind(self) -> ChildSessionNotificationKind {
+        match self {
+            Self::Running => ChildSessionNotificationKind::ProgressSummary,
+            Self::Completed => ChildSessionNotificationKind::Delivered,
+            Self::Failed => ChildSessionNotificationKind::Failed,
+            Self::Cancelled => ChildSessionNotificationKind::Closed,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Running => "running",
             Self::Completed => "completed",
-            Self::TokenExceeded => "token_exceeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
         }
@@ -281,10 +309,7 @@ impl SubRunResult {
     pub fn status(&self) -> SubRunStatus {
         match self {
             Self::Running { .. } => SubRunStatus::Running,
-            Self::Completed { outcome, .. } => match outcome {
-                CompletedSubRunOutcome::Completed => SubRunStatus::Completed,
-                CompletedSubRunOutcome::TokenExceeded => SubRunStatus::TokenExceeded,
-            },
+            Self::Completed { .. } => SubRunStatus::Completed,
             Self::Failed { outcome, .. } => match outcome {
                 FailedSubRunOutcome::Failed => SubRunStatus::Failed,
                 FailedSubRunOutcome::Cancelled => SubRunStatus::Cancelled,
@@ -298,6 +323,14 @@ impl SubRunResult {
 
     pub fn last_turn_outcome(&self) -> Option<AgentTurnOutcome> {
         self.status().last_turn_outcome()
+    }
+
+    pub fn terminal_semantics(&self) -> ParentDeliveryTerminalSemantics {
+        self.status().terminal_semantics()
+    }
+
+    pub fn notification_kind(&self) -> ChildSessionNotificationKind {
+        self.status().notification_kind()
     }
 
     pub fn handoff(&self) -> Option<&SubRunHandoff> {
@@ -322,10 +355,14 @@ impl SubRunResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletedSubRunOutcome, FailedSubRunOutcome, SubRunFailure, SubRunFailureCode,
-        SubRunHandoff, SubRunResult, SubRunStatus,
+        CompletedSubRunOutcome, FailedParentDeliveryPayload, FailedSubRunOutcome,
+        ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload,
+        SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult, SubRunStatus,
     };
-    use crate::agent::lifecycle::{AgentLifecycleStatus, AgentTurnOutcome};
+    use crate::{
+        ChildSessionNotificationKind,
+        agent::lifecycle::{AgentLifecycleStatus, AgentTurnOutcome},
+    };
 
     fn sample_handoff() -> SubRunHandoff {
         SubRunHandoff {
@@ -352,6 +389,8 @@ mod tests {
                 AgentLifecycleStatus::Running,
                 None,
                 false,
+                ParentDeliveryTerminalSemantics::NonTerminal,
+                ChildSessionNotificationKind::ProgressSummary,
                 "running",
             ),
             (
@@ -359,20 +398,17 @@ mod tests {
                 AgentLifecycleStatus::Idle,
                 Some(AgentTurnOutcome::Completed),
                 false,
+                ParentDeliveryTerminalSemantics::Terminal,
+                ChildSessionNotificationKind::Delivered,
                 "completed",
-            ),
-            (
-                SubRunStatus::TokenExceeded,
-                AgentLifecycleStatus::Idle,
-                Some(AgentTurnOutcome::TokenExceeded),
-                false,
-                "token_exceeded",
             ),
             (
                 SubRunStatus::Failed,
                 AgentLifecycleStatus::Idle,
                 Some(AgentTurnOutcome::Failed),
                 true,
+                ParentDeliveryTerminalSemantics::Terminal,
+                ChildSessionNotificationKind::Failed,
                 "failed",
             ),
             (
@@ -380,17 +416,59 @@ mod tests {
                 AgentLifecycleStatus::Idle,
                 Some(AgentTurnOutcome::Cancelled),
                 false,
+                ParentDeliveryTerminalSemantics::Terminal,
+                ChildSessionNotificationKind::Closed,
                 "cancelled",
             ),
         ];
 
-        for (status, expected_lifecycle, expected_outcome, expected_failed, expected_label) in cases
+        for (
+            status,
+            expected_lifecycle,
+            expected_outcome,
+            expected_failed,
+            expected_terminal_semantics,
+            expected_notification_kind,
+            expected_label,
+        ) in cases
         {
             assert_eq!(status.lifecycle(), expected_lifecycle);
             assert_eq!(status.last_turn_outcome(), expected_outcome);
             assert_eq!(status.is_failed(), expected_failed);
+            assert_eq!(status.terminal_semantics(), expected_terminal_semantics);
+            assert_eq!(status.notification_kind(), expected_notification_kind);
             assert_eq!(status.label(), expected_label);
         }
+    }
+
+    #[test]
+    fn parent_delivery_payload_methods_cover_all_variants() {
+        let progress = ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
+            message: "working".to_string(),
+        });
+        assert_eq!(
+            progress.terminal_semantics(),
+            ParentDeliveryTerminalSemantics::NonTerminal
+        );
+        assert_eq!(
+            progress.notification_kind(),
+            ChildSessionNotificationKind::ProgressSummary
+        );
+
+        let failed = ParentDeliveryPayload::Failed(FailedParentDeliveryPayload {
+            message: "boom".to_string(),
+            code: SubRunFailureCode::Internal,
+            technical_message: Some("stack".to_string()),
+            retryable: false,
+        });
+        assert_eq!(
+            failed.terminal_semantics(),
+            ParentDeliveryTerminalSemantics::Terminal
+        );
+        assert_eq!(
+            failed.notification_kind(),
+            ChildSessionNotificationKind::Failed
+        );
     }
 
     #[test]
@@ -420,16 +498,6 @@ mod tests {
         assert_eq!(completed.failure(), None);
         assert!(!completed.is_failed());
 
-        let token_exceeded = SubRunResult::Completed {
-            outcome: CompletedSubRunOutcome::TokenExceeded,
-            handoff,
-        };
-        assert_eq!(token_exceeded.status(), SubRunStatus::TokenExceeded);
-        assert_eq!(
-            token_exceeded.last_turn_outcome(),
-            Some(AgentTurnOutcome::TokenExceeded)
-        );
-
         let failure = sample_failure();
         let failed = SubRunResult::Failed {
             outcome: FailedSubRunOutcome::Failed,
@@ -438,6 +506,14 @@ mod tests {
         assert_eq!(failed.status(), SubRunStatus::Failed);
         assert_eq!(failed.lifecycle(), AgentLifecycleStatus::Idle);
         assert_eq!(failed.last_turn_outcome(), Some(AgentTurnOutcome::Failed));
+        assert_eq!(
+            failed.terminal_semantics(),
+            ParentDeliveryTerminalSemantics::Terminal
+        );
+        assert_eq!(
+            failed.notification_kind(),
+            ChildSessionNotificationKind::Failed
+        );
         assert_eq!(failed.handoff(), None);
         assert_eq!(failed.failure(), Some(&failure));
         assert!(failed.is_failed());
@@ -450,6 +526,10 @@ mod tests {
         assert_eq!(
             cancelled.last_turn_outcome(),
             Some(AgentTurnOutcome::Cancelled)
+        );
+        assert_eq!(
+            cancelled.notification_kind(),
+            ChildSessionNotificationKind::Closed
         );
         assert!(!cancelled.is_failed());
     }

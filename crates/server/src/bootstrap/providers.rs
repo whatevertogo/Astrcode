@@ -12,7 +12,6 @@ use std::{
 use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_llm::{
     LlmClientConfig, ModelLimits,
-    anthropic::AnthropicProvider,
     openai::{OpenAiProvider, OpenAiProviderCapabilities},
 };
 use astrcode_adapter_mcp::{core_port::McpResourceProvider, manager::McpConnectionManager};
@@ -23,12 +22,12 @@ use astrcode_adapter_storage::config_store::FileConfigStore;
 use astrcode_application::{
     ApplicationError, ProfileResolutionService,
     config::{
-        ConfigService, api_key, resolve_anthropic_messages_api_url, resolve_current_model,
-        resolve_openai_chat_completions_api_url,
+        ConfigService, PROVIDER_KIND_OPENAI, api_key, resolve_current_model,
+        resolve_openai_chat_completions_api_url, resolve_openai_responses_api_url,
     },
     execution::ProfileProvider,
 };
-use astrcode_core::config::OpenAiProfileCapabilities;
+use astrcode_core::config::{OpenAiApiMode, OpenAiProfileCapabilities};
 
 use super::deps::core::{
     AgentProfile, AstrError, LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelConfig,
@@ -142,27 +141,32 @@ impl ConfigBackedLlmProvider {
         let limits = resolve_model_limits(&profile.provider_kind, model);
         let runtime = resolve_runtime_config(&config.runtime);
         let client_config = client_config_from_runtime(&runtime);
-        let endpoint = match profile.provider_kind.as_str() {
-            "openai-compatible" => resolve_openai_chat_completions_api_url(&profile.base_url),
-            "anthropic" => resolve_anthropic_messages_api_url(&profile.base_url),
-            other => {
-                return Err(ApplicationError::InvalidArgument(format!(
-                    "unsupported provider_kind '{}'",
-                    other
-                )));
+        if profile.provider_kind != PROVIDER_KIND_OPENAI {
+            return Err(ApplicationError::InvalidArgument(format!(
+                "unsupported provider_kind '{}'",
+                profile.provider_kind
+            )));
+        }
+        let api_mode = resolve_openai_api_mode(profile);
+        let endpoint = match api_mode {
+            OpenAiApiMode::ChatCompletions => {
+                resolve_openai_chat_completions_api_url(&profile.base_url)
             },
+            OpenAiApiMode::Responses => resolve_openai_responses_api_url(&profile.base_url),
         };
-        let openai_capabilities = (profile.provider_kind == "openai-compatible").then(|| {
-            resolve_openai_provider_capabilities(
-                endpoint.as_str(),
-                profile.openai_capabilities.as_ref(),
-            )
-        });
+        let openai_capabilities = Some(resolve_openai_provider_capabilities(
+            endpoint.as_str(),
+            profile.openai_capabilities.as_ref(),
+        ));
 
         Ok(ResolvedLlmProviderSpec {
             cache_key: format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 profile.provider_kind,
+                match api_mode {
+                    OpenAiApiMode::ChatCompletions => "chat_completions",
+                    OpenAiApiMode::Responses => "responses",
+                },
                 endpoint,
                 profile.name,
                 model.id,
@@ -201,31 +205,22 @@ impl ConfigBackedLlmProvider {
             return Ok(existing);
         }
 
-        let provider: Arc<dyn LlmProvider> = match spec.provider_kind.as_str() {
-            "openai-compatible" => Arc::new(OpenAiProvider::new_with_capabilities(
-                spec.endpoint.clone(),
-                spec.api_key.clone(),
-                spec.model.clone(),
-                spec.limits,
-                spec.client_config,
-                spec.openai_capabilities.unwrap_or_else(|| {
-                    OpenAiProviderCapabilities::for_endpoint(spec.endpoint.as_str())
-                }),
-            )?),
-            "anthropic" => Arc::new(AnthropicProvider::new(
-                spec.endpoint.clone(),
-                spec.api_key.clone(),
-                spec.model.clone(),
-                spec.limits,
-                spec.client_config,
-            )?),
-            other => {
-                return Err(AstrError::Validation(format!(
-                    "unsupported provider_kind '{}'",
-                    other
-                )));
-            },
-        };
+        if spec.provider_kind != PROVIDER_KIND_OPENAI {
+            return Err(AstrError::Validation(format!(
+                "unsupported provider_kind '{}'",
+                spec.provider_kind
+            )));
+        }
+        let provider: Arc<dyn LlmProvider> = Arc::new(OpenAiProvider::new_with_capabilities(
+            spec.endpoint.clone(),
+            spec.api_key.clone(),
+            spec.model.clone(),
+            spec.limits,
+            spec.client_config,
+            spec.openai_capabilities.unwrap_or_else(|| {
+                OpenAiProviderCapabilities::for_endpoint(spec.endpoint.as_str())
+            }),
+        )?);
 
         self.providers
             .write()
@@ -285,7 +280,7 @@ struct ResolvedLlmProviderSpec {
 
 fn resolve_model_limits(provider_kind: &str, model: &ModelConfig) -> ModelLimits {
     let default_context_window = match provider_kind {
-        "anthropic" => 200_000,
+        PROVIDER_KIND_OPENAI => 128_000,
         _ => 128_000,
     };
     ModelLimits {
@@ -295,6 +290,20 @@ fn resolve_model_limits(provider_kind: &str, model: &ModelConfig) -> ModelLimits
             .map(|value| value as usize)
             .unwrap_or(8_192),
     }
+}
+
+fn resolve_openai_api_mode(profile: &astrcode_core::Profile) -> OpenAiApiMode {
+    profile.api_mode.unwrap_or_else(|| {
+        if profile
+            .base_url
+            .trim()
+            .starts_with("https://api.openai.com")
+        {
+            OpenAiApiMode::Responses
+        } else {
+            OpenAiApiMode::ChatCompletions
+        }
+    })
 }
 
 fn resolve_openai_provider_capabilities(

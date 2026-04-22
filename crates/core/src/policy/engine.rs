@@ -73,8 +73,8 @@ pub struct ModelRequest {
     pub system_prompt: Option<String>,
     /// 分段后的系统提示词块。
     ///
-    /// 默认 provider 可忽略它继续使用 `system_prompt`，但像 Anthropic 这类支持
-    /// block 级 cache breakpoint 的后端可以直接消费它。
+    /// 默认 provider 可忽略它继续使用 `system_prompt`，支持分层缓存或稳定前缀优化的
+    /// 后端则可以直接消费它。
     pub system_prompt_blocks: Vec<SystemPromptBlock>,
 }
 

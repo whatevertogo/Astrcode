@@ -1,13 +1,12 @@
 //! 治理策略上下文与审批管线构建。
 //!
-//! 提供三个核心功能：
+//! 提供两个核心功能：
 //! - 构建协作策略上下文（`collaboration_policy_context`），包含 depth/spawn 限制
 //! - 构建审批管线（`default_approval_pipeline`），当 mode 要求审批时安装占位骨架
-//! - 计算有效工具列表（`effective_allowed_tools_for_limits`），空列表回退到全量
 
 use astrcode_core::{
     AgentCollaborationPolicyContext, ApprovalPending, ApprovalRequest, CapabilityCall, ModeId,
-    PolicyContext, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedTurnEnvelope,
+    PolicyContext, ResolvedRuntimeConfig, ResolvedTurnEnvelope,
 };
 use serde_json::{Value, json};
 
@@ -97,17 +96,6 @@ pub fn collaboration_policy_context(
     }
 }
 
-pub fn effective_allowed_tools_for_limits(
-    gateway: &astrcode_kernel::KernelGateway,
-    resolved_limits: &ResolvedExecutionLimitsSnapshot,
-) -> Vec<String> {
-    if resolved_limits.allowed_tools.is_empty() {
-        gateway.capabilities().tool_names()
-    } else {
-        resolved_limits.allowed_tools.clone()
-    }
-}
-
 pub(super) fn build_policy_context(
     session_id: &str,
     turn_id: &str,
@@ -124,7 +112,6 @@ pub(super) fn build_policy_context(
         metadata: json!({
             "governanceRevision": GOVERNANCE_POLICY_REVISION,
             "modeId": envelope.mode_id,
-            "allowedCapabilityNames": envelope.allowed_tools,
             "modeDiagnostics": envelope.diagnostics,
         }),
     }
@@ -155,7 +142,6 @@ pub(super) fn default_approval_pipeline(
                 .expect("placeholder capability should build"),
                 payload: json!({
                     "modeId": envelope.mode_id,
-                    "allowedCapabilityNames": envelope.allowed_tools,
                 }),
                 prompt: "Governance approval skeleton is installed but disabled by default."
                     .to_string(),

@@ -181,7 +181,7 @@ mod tests {
     fn active_selection_falls_back_to_first_profile_with_warning() {
         let profiles = vec![
             profile("deepseek", &["deepseek-chat"]),
-            profile("anthropic", &["claude"]),
+            profile("openai", &["gpt-4.1"]),
         ];
 
         let resolved = resolve_active_selection("missing", "missing-model", &profiles)
@@ -233,7 +233,7 @@ mod tests {
     fn list_model_options_flattens_all_profiles() {
         let profiles = vec![
             profile("deepseek", &["deepseek-chat"]),
-            profile("anthropic", &["claude-a", "claude-b"]),
+            profile("openai", &["gpt-4.1", "gpt-4.1-mini"]),
         ];
         let config = Config {
             profiles,
@@ -243,7 +243,7 @@ mod tests {
         let options = list_model_options(&config);
         assert_eq!(options.len(), 3);
         assert_eq!(options[0].model, "deepseek-chat");
-        assert_eq!(options[1].model, "claude-a");
-        assert_eq!(options[2].model, "claude-b");
+        assert_eq!(options[1].model, "gpt-4.1");
+        assert_eq!(options[2].model, "gpt-4.1-mini");
     }
 }

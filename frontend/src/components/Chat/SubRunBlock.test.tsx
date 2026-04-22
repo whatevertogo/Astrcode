@@ -49,41 +49,18 @@ function makeFailedResult(
   failure: {
     code: 'transport' | 'provider_http' | 'stream_parse' | 'interrupted' | 'internal';
     displayMessage: '子 Agent 调用模型时网络连接中断，未完成任务。';
-    technicalMessage: 'HTTP request error: failed to read anthropic response stream';
+    technicalMessage: 'HTTP request error: failed to read openai response stream';
     retryable: true;
   } = {
     code: 'transport',
     displayMessage: '子 Agent 调用模型时网络连接中断，未完成任务。',
-    technicalMessage: 'HTTP request error: failed to read anthropic response stream',
+    technicalMessage: 'HTTP request error: failed to read openai response stream',
     retryable: true,
   }
 ): SubRunResult {
   return {
     status: 'failed',
     failure,
-  };
-}
-
-function makeTokenExceededResult(
-  handoff: {
-    findings: string[];
-    artifacts: {
-      kind: string;
-      id: string;
-      label: string;
-      sessionId?: string;
-      storageSeq?: number;
-      uri?: string;
-    }[];
-    delivery?: ParentDelivery;
-  } = {
-    findings: [],
-    artifacts: [],
-  }
-): SubRunResult {
-  return {
-    status: 'token_exceeded',
-    handoff,
   };
 }
 
@@ -154,7 +131,7 @@ describe('SubRunBlock result rendering', () => {
 
     expect(html).toContain('执行失败');
     expect(html).toContain('子 Agent 调用模型时网络连接中断，未完成任务。');
-    expect(html).toContain('HTTP request error: failed to read anthropic response stream');
+    expect(html).toContain('HTTP request error: failed to read openai response stream');
     expect(html).not.toContain('调用参数');
   });
 
@@ -207,9 +184,7 @@ describe('SubRunBlock result rendering', () => {
         includeRecoveryRefs: false,
         includeParentFindings: false,
       },
-      resolvedLimits: {
-        allowedTools: ['readFile'],
-      },
+      resolvedLimits: {},
       timestamp: Date.now(),
     };
 
@@ -252,9 +227,7 @@ describe('SubRunBlock result rendering', () => {
         includeRecoveryRefs: false,
         includeParentFindings: false,
       },
-      resolvedLimits: {
-        allowedTools: ['readFile'],
-      },
+      resolvedLimits: {},
       timestamp: Date.now(),
     };
 
@@ -487,21 +460,21 @@ describe('SubRunBlock result rendering', () => {
     expect(html).toContain('<li>finding-1</li>');
   });
 
-  it('renders token-exceeded delivery summary in the parent card', () => {
+  it('renders completed delivery summary in the parent card', () => {
     const finishMessage: SubRunFinishMessage = {
-      id: 'subrun-finish-token-exceeded',
+      id: 'subrun-finish-completed',
       kind: 'subRunFinish',
-      subRunId: 'subrun-token-exceeded',
-      result: makeTokenExceededResult({
+      subRunId: 'subrun-completed',
+      result: makeCompletedResult({
         findings: ['partial-finding'],
         artifacts: [],
         delivery: {
-          idempotencyKey: 'delivery-token-exceeded-summary',
+          idempotencyKey: 'delivery-completed-summary',
           origin: 'explicit',
           terminalSemantics: 'terminal',
           kind: 'completed',
           payload: {
-            message: '达到 token 上限，但已返回阶段性结论。',
+            message: '已返回阶段性结论。',
             findings: ['partial-finding'],
             artifacts: [],
           },
@@ -514,7 +487,7 @@ describe('SubRunBlock result rendering', () => {
 
     const html = renderToStaticMarkup(
       <SubRunBlock
-        subRunId="subrun-token-exceeded"
+        subRunId="subrun-completed"
         sessionId="session-parent"
         title="reviewer"
         finishMessage={finishMessage}
@@ -578,3 +551,4 @@ describe('SubRunBlock result rendering', () => {
     expect(html).not.toContain('最终回复');
   });
 });
+

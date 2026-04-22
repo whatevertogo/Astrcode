@@ -111,7 +111,6 @@ struct SubRunMetrics {
     failures: AtomicU64,
     completed: AtomicU64,
     cancelled: AtomicU64,
-    token_exceeded: AtomicU64,
     independent_session_total: AtomicU64,
     total_duration_ms: AtomicU64,
     last_duration_ms: AtomicU64,
@@ -144,9 +143,6 @@ impl SubRunMetrics {
             AgentTurnOutcome::Cancelled => {
                 self.cancelled.fetch_add(1, Ordering::Relaxed);
             },
-            AgentTurnOutcome::TokenExceeded => {
-                self.token_exceeded.fetch_add(1, Ordering::Relaxed);
-            },
         }
         if matches!(storage_mode, Some(SubRunStorageMode::IndependentSession)) {
             self.independent_session_total
@@ -171,7 +167,6 @@ impl SubRunMetrics {
             failures: self.failures.load(Ordering::Relaxed),
             completed: self.completed.load(Ordering::Relaxed),
             cancelled: self.cancelled.load(Ordering::Relaxed),
-            token_exceeded: self.token_exceeded.load(Ordering::Relaxed),
             independent_session_total: self.independent_session_total.load(Ordering::Relaxed),
             total_duration_ms: self.total_duration_ms.load(Ordering::Relaxed),
             last_duration_ms: self.last_duration_ms.load(Ordering::Relaxed),

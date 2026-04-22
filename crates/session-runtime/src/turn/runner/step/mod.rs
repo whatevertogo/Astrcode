@@ -52,7 +52,7 @@ async fn run_single_step_with(
     .await;
 
     let output = match llm_result {
-        Ok(StepLlmResult::Output(output)) => output,
+        Ok(StepLlmResult::Output(output)) => *output,
         Ok(StepLlmResult::RecoveredByReactiveCompact) => {
             streaming_planner.abort_all();
             return Ok(StepOutcome::Continue(

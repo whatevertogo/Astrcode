@@ -16,10 +16,8 @@
 pub mod agent_tools;
 pub mod builtin_tools;
 
-// 过渡期兼容：让外部 `use astrcode_adapter_tools::SubAgentExecutor` 等继续生效
 pub use agent_tools::{
     CloseAgentTool, CollaborationExecutor, ObserveAgentTool, SendAgentTool, SpawnAgentTool,
-    SubAgentExecutor,
 };
 
 #[cfg(test)]

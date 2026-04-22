@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_for_turn_terminal_snapshot_projects_legacy_reason_history() {
+    async fn wait_for_turn_terminal_snapshot_projects_typed_terminal_kind_history() {
         let runtime = test_runtime(Arc::new(StubEventStore::default()));
         let session = runtime
             .create_session(".")
@@ -368,24 +368,24 @@ mod tests {
         append_and_broadcast(
             state.as_ref(),
             &StorageEvent {
-                turn_id: Some("turn-legacy".to_string()),
+                turn_id: Some("turn-terminal".to_string()),
                 agent: AgentEventContext::default(),
                 payload: StorageEventPayload::TurnDone {
                     timestamp: chrono::Utc::now(),
-                    terminal_kind: None,
-                    reason: Some("token_exceeded".to_string()),
+                    terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+                    reason: None,
                 },
             },
             &mut translator,
         )
         .await
-        .expect("legacy turn done should append");
+        .expect("turn done should append");
 
-        let snapshot = wait_for_turn_terminal_snapshot(&runtime, &session_id, "turn-legacy")
+        let snapshot = wait_for_turn_terminal_snapshot(&runtime, &session_id, "turn-terminal")
             .await
             .expect("terminal snapshot should load");
         let outcome = runtime
-            .project_turn_outcome(&session_id, "turn-legacy")
+            .project_turn_outcome(&session_id, "turn-terminal")
             .await
             .expect("turn outcome should project");
 
@@ -394,12 +394,9 @@ mod tests {
                 .projection
                 .as_ref()
                 .and_then(|projection| projection.terminal_kind.clone()),
-            Some(astrcode_core::TurnTerminalKind::MaxOutputContinuationLimitReached)
+            Some(astrcode_core::TurnTerminalKind::Completed)
         );
-        assert_eq!(
-            outcome.outcome,
-            astrcode_core::AgentTurnOutcome::TokenExceeded
-        );
+        assert_eq!(outcome.outcome, astrcode_core::AgentTurnOutcome::Completed);
     }
 
     #[derive(Debug, Default)]

@@ -101,14 +101,8 @@ fn branch_advisory(metadata: &DelegationMetadata) -> serde_json::Value {
     json!({
         "responsibilityBranch": metadata.responsibility_summary,
         "reuseScopeSummary": metadata.reuse_scope_summary,
-        "restricted": metadata.restricted,
-        "capabilityLimitSummary": metadata.capability_limit_summary,
         "sameResponsibilityAction": "send",
         "differentResponsibilityAction": "close_or_respawn",
-        "broaderToolsAction": if metadata.restricted {
-            "respawn_or_handle_here"
-        } else {
-            "close_or_respawn"
-        },
+        "broaderToolsAction": "close_or_respawn",
     })
 }

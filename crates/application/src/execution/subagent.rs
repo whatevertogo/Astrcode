@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentLifecycleStatus, AgentMode, AgentProfile, ExecutionAccepted, ModeId,
-    ResolvedRuntimeConfig, RuntimeMetricsRecorder, SpawnCapabilityGrant,
+    ResolvedRuntimeConfig, RuntimeMetricsRecorder,
 };
 use astrcode_kernel::AgentControlError;
 
@@ -35,8 +35,6 @@ pub struct SubagentExecutionRequest {
     pub description: String,
     pub task: String,
     pub context: Option<String>,
-    pub parent_allowed_tools: Vec<String>,
-    pub capability_grant: Option<SpawnCapabilityGrant>,
     pub source_tool_call_id: Option<String>,
 }
 
@@ -79,8 +77,6 @@ pub async fn launch_subagent(
                 working_dir: request.working_dir.clone(),
                 mode_id: request.mode_id.clone(),
                 runtime: runtime_config,
-                parent_allowed_tools: request.parent_allowed_tools.clone(),
-                capability_grant: request.capability_grant.clone(),
                 description: request.description.clone(),
                 task: request.task.clone(),
                 busy_policy: GovernanceBusyPolicy::BranchOnBusy,
@@ -91,7 +87,7 @@ pub async fn launch_subagent(
         request.description.as_str(),
         request.task.as_str(),
         &surface.resolved_limits,
-        request.capability_grant.is_some(),
+        false,
     );
 
     let child_session = session_runtime
@@ -214,8 +210,6 @@ mod tests {
             description: "探索代码".to_string(),
             mode: AgentMode::SubAgent,
             system_prompt: None,
-            allowed_tools: vec![],
-            disallowed_tools: vec![],
             model_preference: None,
         }
     }
@@ -231,8 +225,6 @@ mod tests {
             description: "探索代码".to_string(),
             task: "explore the code".to_string(),
             context: None,
-            parent_allowed_tools: vec!["read_file".to_string(), "grep".to_string()],
-            capability_grant: None,
             source_tool_call_id: None,
         }
     }

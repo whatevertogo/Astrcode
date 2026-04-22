@@ -26,19 +26,14 @@ pub enum TurnFinishReason {
     Cancelled,
     /// 不可恢复错误
     Error,
-    /// 超过 step 上限
-    StepLimitExceeded,
 }
 
 impl From<&TurnTerminalKind> for TurnFinishReason {
     fn from(value: &TurnTerminalKind) -> Self {
         match value {
-            TurnTerminalKind::Completed | TurnTerminalKind::MaxOutputContinuationLimitReached => {
-                Self::NaturalEnd
-            },
+            TurnTerminalKind::Completed => Self::NaturalEnd,
             TurnTerminalKind::Cancelled => Self::Cancelled,
             TurnTerminalKind::Error { .. } => Self::Error,
-            TurnTerminalKind::StepLimitExceeded => Self::StepLimitExceeded,
         }
     }
 }

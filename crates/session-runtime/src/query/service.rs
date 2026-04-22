@@ -8,11 +8,12 @@ use astrcode_core::{
 use crate::{
     AgentObserveSnapshot, ConversationSnapshotFacts, ConversationStreamReplayFacts,
     LastCompactMetaSnapshot, SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay,
-    SessionRuntime, SessionState,
+    SessionRuntime, SessionState, SubRunStatusSnapshot,
     query::{
         agent::build_agent_observe_snapshot,
         conversation::{build_conversation_replay_frames, project_conversation_snapshot},
         input_queue::recoverable_parent_deliveries,
+        subrun::project_durable_subrun_status_snapshot,
     },
 };
 
@@ -102,6 +103,31 @@ impl<'a> SessionQueries<'a> {
     pub async fn stored_events(&self, session_id: &SessionId) -> Result<Vec<StoredEvent>> {
         self.runtime.ensure_session_exists(session_id).await?;
         self.runtime.event_store.replay(session_id).await
+    }
+
+    pub async fn durable_subrun_status_snapshot(
+        &self,
+        parent_session_id: &str,
+        requested_subrun_id: &str,
+    ) -> Result<Option<SubRunStatusSnapshot>> {
+        for meta in self.runtime.list_session_metas().await? {
+            if meta.parent_session_id.as_deref() != Some(parent_session_id) {
+                continue;
+            }
+
+            let child_session_id = SessionId::from(meta.session_id.clone());
+            let stored_events = self.stored_events(&child_session_id).await?;
+            if let Some(snapshot) = project_durable_subrun_status_snapshot(
+                parent_session_id,
+                meta.session_id.as_str(),
+                requested_subrun_id,
+                &stored_events,
+            ) {
+                return Ok(Some(snapshot));
+            }
+        }
+
+        Ok(None)
     }
 
     pub async fn observe_agent_session(

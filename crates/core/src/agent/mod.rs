@@ -41,8 +41,7 @@ pub use lineage::{
 use serde::{Deserialize, Serialize};
 pub use spawn::{
     AgentProfile, AgentProfileCatalog, DelegationMetadata, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, SpawnAgentParams, SpawnCapabilityGrant,
-    SubagentContextOverrides,
+    ResolvedSubagentContextOverrides, SpawnAgentParams, SubagentContextOverrides,
 };
 
 use crate::error::{AstrError, Result};
@@ -129,7 +128,7 @@ mod tests {
     use super::{
         AgentLifecycleStatus, ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNode,
         ChildSessionNotification, ChildSessionStatusSource, ParentExecutionRef, SpawnAgentParams,
-        SpawnCapabilityGrant, SubRunHandoff, SubRunStorageMode,
+        SubRunHandoff, SubRunStorageMode,
     };
     use crate::{AgentId, DeliveryId, SessionId, SubRunId, TurnId};
 
@@ -140,7 +139,6 @@ mod tests {
             description: "review".to_string(),
             prompt: "   ".to_string(),
             context: None,
-            capability_grant: None,
         }
         .validate()
         .expect_err("blank prompt should be rejected");
@@ -155,7 +153,6 @@ mod tests {
             description: " \t ".to_string(),
             prompt: "review".to_string(),
             context: None,
-            capability_grant: None,
         }
         .validate()
         .expect_err("whitespace-only description should be rejected");
@@ -194,30 +191,6 @@ mod tests {
             child_ref.parent_agent_id().map(AgentId::as_str),
             Some("agent-parent")
         );
-    }
-
-    #[test]
-    fn spawn_capability_grant_rejects_blank_and_duplicate_tools() {
-        let error = SpawnCapabilityGrant {
-            allowed_tools: vec!["readFile".to_string(), "  ".to_string()],
-        }
-        .validate()
-        .expect_err("blank tool names should be rejected");
-        assert!(error.to_string().contains("allowedTools"));
-
-        let error = SpawnCapabilityGrant {
-            allowed_tools: vec!["readFile".to_string(), "readFile".to_string()],
-        }
-        .validate()
-        .expect_err("duplicate tool names should be rejected");
-        assert!(error.to_string().contains("重复"));
-
-        let error = SpawnCapabilityGrant {
-            allowed_tools: Vec::new(),
-        }
-        .validate()
-        .expect_err("empty grants should be rejected");
-        assert!(error.to_string().contains("不能为空"));
     }
 
     #[test]

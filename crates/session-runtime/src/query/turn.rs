@@ -41,9 +41,6 @@ pub(crate) fn project_turn_outcome(
         AgentTurnOutcome::Completed => last_assistant
             .clone()
             .unwrap_or_else(|| "子 Agent 已完成，但没有返回可读总结。".to_string()),
-        AgentTurnOutcome::TokenExceeded => last_assistant
-            .clone()
-            .unwrap_or_else(|| "子 Agent 因 token 限额结束，但没有返回可读总结。".to_string()),
         AgentTurnOutcome::Failed => last_error
             .clone()
             .or(last_assistant.clone())
@@ -53,7 +50,7 @@ pub(crate) fn project_turn_outcome(
             .unwrap_or_else(|| "子 Agent 已关闭。".to_string()),
     };
     let technical_message = match terminal_kind {
-        Some(TurnTerminalKind::Error { message }) => last_error.unwrap_or(message),
+        Some(TurnTerminalKind::Error { message }) => last_error.unwrap_or_else(|| message.clone()),
         _ => last_error.unwrap_or(summary.clone()),
     };
 
@@ -75,17 +72,7 @@ fn resolve_terminal_kind(
     }
 
     if matches!(phase, Phase::Interrupted) {
-        return match projection
-            .and_then(|projection| projection.last_error.as_deref())
-            .or(last_error)
-            .map(str::trim)
-            .filter(|message| !message.is_empty())
-        {
-            Some("interrupted") | None => Some(TurnTerminalKind::Cancelled),
-            Some(message) => Some(TurnTerminalKind::Error {
-                message: message.to_string(),
-            }),
-        };
+        return Some(TurnTerminalKind::Cancelled);
     }
 
     projection
@@ -101,13 +88,8 @@ fn resolve_terminal_kind(
 fn project_agent_turn_outcome(terminal_kind: Option<&TurnTerminalKind>) -> AgentTurnOutcome {
     match terminal_kind {
         Some(TurnTerminalKind::Completed) | None => AgentTurnOutcome::Completed,
-        Some(TurnTerminalKind::MaxOutputContinuationLimitReached) => {
-            AgentTurnOutcome::TokenExceeded
-        },
         Some(TurnTerminalKind::Cancelled) => AgentTurnOutcome::Cancelled,
-        Some(TurnTerminalKind::Error { .. } | TurnTerminalKind::StepLimitExceeded) => {
-            AgentTurnOutcome::Failed
-        },
+        Some(TurnTerminalKind::Error { .. }) => AgentTurnOutcome::Failed,
     }
 }
 
@@ -130,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn project_turn_projection_projects_legacy_turn_done_reason() {
+    fn project_turn_projection_reads_typed_turn_done_terminal_kind() {
         let projection = project_turn_projection(&[StoredEvent {
             storage_seq: 1,
             event: StorageEvent {
@@ -138,8 +120,8 @@ mod tests {
                 agent: AgentEventContext::default(),
                 payload: StorageEventPayload::TurnDone {
                     timestamp: chrono::Utc::now(),
-                    terminal_kind: None,
-                    reason: Some("completed".to_string()),
+                    terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+                    reason: None,
                 },
             },
         }])
@@ -177,37 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn project_turn_outcome_marks_token_exceeded_when_turn_done_reason_matches() {
-        let outcome = project_turn_outcome(
-            Phase::Idle,
-            Some(&TurnProjectionSnapshot {
-                terminal_kind: Some(
-                    astrcode_core::TurnTerminalKind::MaxOutputContinuationLimitReached,
-                ),
-                last_error: None,
-            }),
-            &[StoredEvent {
-                storage_seq: 1,
-                event: StorageEvent {
-                    turn_id: Some("turn-1".to_string()),
-                    agent: AgentEventContext::default(),
-                    payload: StorageEventPayload::AssistantFinal {
-                        content: "仍然视为完成".to_string(),
-                        reasoning_content: None,
-                        reasoning_signature: None,
-                        step_index: None,
-                        timestamp: Some(chrono::Utc::now()),
-                    },
-                },
-            }],
-        );
-
-        assert_eq!(outcome.outcome, AgentTurnOutcome::TokenExceeded);
-        assert_eq!(outcome.summary, "仍然视为完成");
-    }
-
-    #[test]
-    fn project_turn_outcome_prefers_typed_terminal_kind_over_legacy_reason() {
+    fn project_turn_outcome_prefers_typed_terminal_kind_over_reason() {
         let outcome = project_turn_outcome(
             Phase::Idle,
             Some(&TurnProjectionSnapshot {
@@ -249,12 +201,12 @@ mod tests {
     }
 
     #[test]
-    fn project_turn_outcome_uses_legacy_projection_error_for_interrupted_turns() {
+    fn project_turn_outcome_treats_interrupted_phase_without_typed_terminal_as_cancelled() {
         let outcome = project_turn_outcome(
             Phase::Interrupted,
             Some(&TurnProjectionSnapshot {
                 terminal_kind: None,
-                last_error: Some("interrupted".to_string()),
+                last_error: None,
             }),
             &[],
         );
@@ -274,13 +226,13 @@ mod tests {
                     agent: AgentEventContext::default(),
                     payload: StorageEventPayload::TurnDone {
                         timestamp: chrono::Utc::now(),
-                        terminal_kind: None,
-                        reason: Some("token_exceeded".to_string()),
+                        terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+                        reason: None,
                     },
                 },
             }],
         );
 
-        assert_eq!(outcome.outcome, AgentTurnOutcome::TokenExceeded);
+        assert_eq!(outcome.outcome, AgentTurnOutcome::Completed);
     }
 }

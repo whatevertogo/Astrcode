@@ -273,7 +273,7 @@ pub struct AssistantContentParts {
 ///
 /// ## 为什么需要这个函数
 ///
-/// 某些 LLM（如 Anthropic Claude）使用 `<think>...</think>` 标签包裹推理过程。
+/// 某些 LLM 会使用 `<think>...</think>` 标签包裹推理过程。
 /// 但 LLM 可能在不同位置以不同方式输出这些标签：
 /// - 作为独立的 reasoning_content 字段（由 LLM API 返回）
 /// - 内联在文本内容中（某些模型/提供商的输出风格）

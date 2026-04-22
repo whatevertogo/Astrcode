@@ -11,18 +11,11 @@ use crate::error::AstrError;
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionControl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_compact: Option<bool>,
 }
 
 impl ExecutionControl {
     pub fn validate(&self) -> std::result::Result<(), AstrError> {
-        if matches!(self.max_steps, Some(0)) {
-            return Err(AstrError::Validation(
-                "field 'maxSteps' must be greater than 0".to_string(),
-            ));
-        }
         Ok(())
     }
 }

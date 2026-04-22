@@ -386,6 +386,17 @@ impl SessionRuntime {
             .await
     }
 
+    /// 读取 durable child session 事件并投影指定 sub-run 的稳定状态快照。
+    pub async fn durable_subrun_status_snapshot(
+        &self,
+        parent_session_id: &str,
+        requested_subrun_id: &str,
+    ) -> Result<Option<SubRunStatusSnapshot>> {
+        self.query()
+            .durable_subrun_status_snapshot(parent_session_id, requested_subrun_id)
+            .await
+    }
+
     pub async fn append_agent_input_queued(
         &self,
         session_id: &str,

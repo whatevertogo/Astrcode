@@ -48,7 +48,6 @@ use crate::{
     },
     governance_surface::{
         GOVERNANCE_POLICY_REVISION, GovernanceSurfaceAssembler, build_delegation_metadata,
-        effective_allowed_tools_for_limits,
     },
     lifecycle::TaskRegistry,
 };
@@ -470,11 +469,6 @@ impl astrcode_core::SubAgentExecutor for AgentOrchestrationService {
             description: spawn_description.clone(),
             task: params.prompt,
             context: params.context,
-            parent_allowed_tools: effective_allowed_tools_for_limits(
-                &self.kernel.gateway(),
-                &parent_handle.resolved_limits,
-            ),
-            capability_grant: params.capability_grant,
             source_tool_call_id: ctx.tool_call_id().map(ToString::to_string),
         };
         if let Err(error) = self
@@ -738,14 +732,11 @@ mod tests {
     }
 
     #[test]
-    fn fresh_child_contract_exposes_responsibility_and_capability_limit() {
+    fn fresh_child_contract_exposes_responsibility_boundary() {
         let metadata = build_delegation_metadata(
             "审查缓存层",
             "检查缓存一致性",
-            &ResolvedExecutionLimitsSnapshot {
-                allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
-                max_steps: Some(8),
-            },
+            &ResolvedExecutionLimitsSnapshot,
             true,
         );
 
@@ -753,7 +744,7 @@ mod tests {
 
         assert_eq!(contract.origin.as_deref(), Some("child-contract:fresh"));
         assert!(contract.content.contains("审查缓存层"));
-        assert!(contract.content.contains("本分支当前只允许使用这些工具"));
+        assert!(contract.content.contains("Fresh-child rule"));
     }
 
     #[test]
@@ -761,10 +752,7 @@ mod tests {
         let metadata = build_delegation_metadata(
             "审查缓存层",
             "检查缓存一致性",
-            &ResolvedExecutionLimitsSnapshot {
-                allowed_tools: vec!["readFile".to_string(), "grep".to_string()],
-                max_steps: Some(8),
-            },
+            &ResolvedExecutionLimitsSnapshot,
             false,
         );
 
@@ -804,7 +792,6 @@ mod tests {
                     description: "仓库审查".to_string(),
                     prompt: "请阅读代码".to_string(),
                     context: None,
-                    capability_grant: None,
                 },
                 &ctx,
             )
@@ -869,7 +856,6 @@ mod tests {
                     description: "仓库审查".to_string(),
                     prompt: "请阅读代码".to_string(),
                     context: Some("关注最近修改".to_string()),
-                    capability_grant: None,
                 },
                 &ctx,
             )
@@ -921,8 +907,8 @@ mod tests {
             child_handle
                 .delegation
                 .as_ref()
-                .is_some_and(|metadata| !metadata.restricted),
-            "fresh launch without grant should not mark the branch as restricted"
+                .is_some_and(|metadata| metadata.reuse_scope_summary.contains("同一责任分支")),
+            "fresh launch should persist a reusable branch boundary summary"
         );
 
         let child_events = harness
@@ -998,7 +984,6 @@ mod tests {
                     description: "仓库审查".to_string(),
                     prompt: "请阅读代码".to_string(),
                     context: None,
-                    capability_grant: None,
                 },
                 &ctx,
             )
@@ -1111,7 +1096,6 @@ mod tests {
                     description: "第一次".to_string(),
                     prompt: "请阅读代码".to_string(),
                     context: None,
-                    capability_grant: None,
                 },
                 &ctx,
             )
@@ -1126,7 +1110,6 @@ mod tests {
                     description: "第二次".to_string(),
                     prompt: "请继续阅读代码".to_string(),
                     context: None,
-                    capability_grant: None,
                 },
                 &ctx,
             )

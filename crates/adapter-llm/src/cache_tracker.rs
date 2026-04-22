@@ -1,4 +1,4 @@
-//! Anthropic prompt cache 断点诊断。
+//! Prompt cache 断点诊断。
 //!
 //! 采用两阶段检测：
 //! - 请求发送前记录一次 prompt/tool/cache 策略快照
@@ -98,19 +98,16 @@ impl CacheTracker {
         usage: Option<LlmUsage>,
     ) -> Option<PromptCacheDiagnostics> {
         let current_cache_read_input_tokens = usage.map(|usage| usage.cache_read_input_tokens);
-        let cache_break_detected = match (
-            pending.previous_cache_read_input_tokens,
-            current_cache_read_input_tokens,
-        ) {
+        let cache_break_detected = matches!(
+            (
+                pending.previous_cache_read_input_tokens,
+                current_cache_read_input_tokens,
+            ),
             (Some(previous), Some(current))
                 if previous > current
                     && previous.saturating_sub(current) >= MIN_CACHE_DROP_TOKENS
-                    && !pending.expected_drop =>
-            {
-                true
-            },
-            _ => false,
-        };
+                    && !pending.expected_drop
+        );
 
         self.previous = Some(CompletedCacheSnapshot {
             snapshot: pending.snapshot,
@@ -171,7 +168,7 @@ mod tests {
         CacheCheckContext {
             system_blocks_hash: "system-a".to_string(),
             tool_schema_hash: "tools-a".to_string(),
-            model: "claude-sonnet-4-5".to_string(),
+            model: "gpt-4.1".to_string(),
             global_cache_strategy: PromptCacheGlobalStrategy::SystemPrompt,
             compacted: false,
             tool_result_rebudgeted: false,
@@ -193,7 +190,7 @@ mod tests {
         );
 
         let mut changed_context = context();
-        changed_context.model = "claude-opus-4-1".to_string();
+        changed_context.model = "gpt-4.1-mini".to_string();
         let second = tracker.prepare(&changed_context);
         let diagnostics = tracker
             .finalize(

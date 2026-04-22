@@ -64,14 +64,12 @@ pub enum AgentTurnOutcome {
     Cancelled,
     /// 因错误结束。
     Failed,
-    /// 因 token 超限结束。
-    TokenExceeded,
 }
 
 impl AgentTurnOutcome {
     /// 判断该 outcome 是否属于"异常结束"（可用于 UI 高亮或日志告警）。
     pub fn is_error(self) -> bool {
-        matches!(self, Self::Failed | Self::TokenExceeded)
+        matches!(self, Self::Failed)
     }
 }
 
@@ -97,6 +95,5 @@ mod tests {
         assert!(!AgentTurnOutcome::Completed.is_error());
         assert!(!AgentTurnOutcome::Cancelled.is_error());
         assert!(AgentTurnOutcome::Failed.is_error());
-        assert!(AgentTurnOutcome::TokenExceeded.is_error());
     }
 }

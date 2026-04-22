@@ -62,7 +62,7 @@ pub use governance_surface::{
     GovernanceBusyPolicy, GovernanceSurfaceAssembler, ResolvedGovernanceSurface,
     ResumedChildGovernanceInput, RootGovernanceInput, SessionGovernanceInput,
     ToolCollaborationGovernanceContext, build_delegation_metadata, build_fresh_child_contract,
-    build_resumed_child_contract, collaboration_policy_context, effective_allowed_tools_for_limits,
+    build_resumed_child_contract, collaboration_policy_context,
 };
 pub use lifecycle::governance::{
     AppGovernance, ObservabilitySnapshotProvider, RuntimeGovernancePort, RuntimeGovernanceSnapshot,

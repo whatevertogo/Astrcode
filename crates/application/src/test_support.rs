@@ -15,6 +15,7 @@ use astrcode_core::{
 use astrcode_session_runtime::{
     ConversationSnapshotFacts, ConversationStreamReplayFacts, SessionCatalogEvent,
     SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot,
+    SubRunStatusSnapshot,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -258,6 +259,14 @@ impl AppSessionPort for StubSessionPort {
         _session_id: &str,
     ) -> astrcode_core::Result<Vec<StoredEvent>> {
         Ok(self.stored_events.clone())
+    }
+
+    async fn durable_subrun_status_snapshot(
+        &self,
+        _parent_session_id: &str,
+        _requested_subrun_id: &str,
+    ) -> astrcode_core::Result<Option<SubRunStatusSnapshot>> {
+        unimplemented_for_test("application test stub")
     }
 
     async fn session_replay(

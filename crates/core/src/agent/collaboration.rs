@@ -514,7 +514,14 @@ impl From<&SubRunHandle> for AgentEventContext {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentEventContext, InvocationKind, SubRunStorageMode};
+    use super::{
+        AgentEventContext, CloseAgentParams, InvocationKind, SendAgentParams, SendToChildParams,
+        SendToParentParams, SubRunStorageMode,
+    };
+    use crate::{
+        ParentDeliveryPayload, ProgressParentDeliveryPayload,
+        error::AstrError,
+    };
 
     fn valid_sub_run_context() -> AgentEventContext {
         AgentEventContext {
@@ -601,5 +608,81 @@ mod tests {
         valid_sub_run_context()
             .validate_for_storage_event()
             .expect("valid sub-run context should pass");
+    }
+
+    fn assert_param_validation_error(result: crate::error::Result<()>, expected: &str) {
+        let AstrError::Validation(message) =
+            result.expect_err("params should be rejected")
+        else {
+            panic!("expected validation error");
+        };
+        assert!(
+            message.contains(expected),
+            "unexpected validation error: {message}"
+        );
+    }
+
+    #[test]
+    fn send_to_child_params_validate_rejects_blank_fields() {
+        assert_param_validation_error(
+            SendToChildParams {
+                agent_id: " ".into(),
+                message: "hello".to_string(),
+                context: None,
+            }
+            .validate(),
+            "agentId",
+        );
+        assert_param_validation_error(
+            SendToChildParams {
+                agent_id: "agent-1".into(),
+                message: " ".to_string(),
+                context: None,
+            }
+            .validate(),
+            "message",
+        );
+    }
+
+    #[test]
+    fn send_to_parent_and_send_agent_params_validate_delegate_to_payload_message() {
+        assert_param_validation_error(
+            SendToParentParams {
+                payload: ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
+                    message: " ".to_string(),
+                }),
+            }
+            .validate(),
+            "message",
+        );
+
+        assert_param_validation_error(
+            SendAgentParams::ToChild(SendToChildParams {
+                agent_id: "agent-1".into(),
+                message: " ".to_string(),
+                context: None,
+            })
+            .validate(),
+            "message",
+        );
+
+        SendAgentParams::ToParent(SendToParentParams {
+            payload: ParentDeliveryPayload::Progress(ProgressParentDeliveryPayload {
+                message: "progress".to_string(),
+            }),
+        })
+        .validate()
+        .expect("valid parent payload should pass");
+    }
+
+    #[test]
+    fn close_agent_params_validate_rejects_blank_agent_id() {
+        assert_param_validation_error(
+            CloseAgentParams {
+                agent_id: " ".into(),
+            }
+            .validate(),
+            "agentId",
+        );
     }
 }

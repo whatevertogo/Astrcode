@@ -1,20 +1,12 @@
-use astrcode_core::{
-    LlmMessage, StorageEventPayload, StoredEvent, TurnProjectionSnapshot, TurnTerminalKind,
-};
+use astrcode_core::{LlmMessage, StorageEventPayload, StoredEvent, TurnProjectionSnapshot};
 
 pub(crate) fn apply_turn_projection_event(
     projection: &mut TurnProjectionSnapshot,
     stored: &StoredEvent,
 ) {
     match &stored.event.payload {
-        StorageEventPayload::TurnDone {
-            terminal_kind,
-            reason,
-            ..
-        } => {
-            projection.terminal_kind = terminal_kind
-                .clone()
-                .or_else(|| TurnTerminalKind::from_legacy_reason(reason.as_deref()));
+        StorageEventPayload::TurnDone { terminal_kind, .. } => {
+            projection.terminal_kind = terminal_kind.clone()
         },
         StorageEventPayload::Error { message, .. } => {
             let message = message.trim();
@@ -112,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_turn_projection_event_projects_legacy_reason() {
+    fn apply_turn_projection_event_reads_typed_terminal_kind() {
         let mut projection = astrcode_core::TurnProjectionSnapshot {
             terminal_kind: None,
             last_error: None,
@@ -127,8 +119,8 @@ mod tests {
                     agent: AgentEventContext::default(),
                     payload: StorageEventPayload::TurnDone {
                         timestamp: chrono::Utc::now(),
-                        terminal_kind: None,
-                        reason: Some("completed".to_string()),
+                        terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+                        reason: None,
                     },
                 },
             },

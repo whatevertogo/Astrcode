@@ -173,7 +173,7 @@ fn build_executing_workflow_state(
 ) -> Result<WorkflowInstanceState, ApplicationError> {
     let bridge = load_plan_to_execute_bridge_state(session_id, working_dir, plan_state)?;
     let plan_artifact = bridge.plan_artifact.clone();
-    let bridge_state = bridge.into_bridge_state(PLANNING_PHASE_ID, EXECUTING_PHASE_ID)?;
+    let bridge_state = bridge.to_bridge_state(PLANNING_PHASE_ID, EXECUTING_PHASE_ID)?;
     Ok(WorkflowInstanceState {
         workflow_id: PLAN_EXECUTE_WORKFLOW_ID.to_string(),
         current_phase_id: EXECUTING_PHASE_ID.to_string(),

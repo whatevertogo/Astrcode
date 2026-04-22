@@ -53,7 +53,6 @@ async fn spawn_test_child_agent(
                 description: "explore agent".to_string(),
                 prompt: "请阅读代码".to_string(),
                 context: None,
-                capability_grant: None,
             },
             &ctx,
         )

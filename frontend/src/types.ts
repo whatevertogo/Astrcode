@@ -24,7 +24,7 @@ export type ForkMode = 'fullHistory' | { lastNTurns: number };
 export type SubRunStatusSource = 'live' | 'durable';
 export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
 export type AgentLifecycle = 'pending' | 'running' | 'idle' | 'terminated';
-export type AgentTurnOutcome = 'completed' | 'failed' | 'cancelled' | 'token_exceeded';
+export type AgentTurnOutcome = 'completed' | 'failed' | 'cancelled';
 // Why: `waiting` 仍保留给 durable child 通知读侧，避免旧事件样本在前端反序列化失败。
 export type ChildSessionNotificationKind =
   | 'started'
@@ -34,7 +34,7 @@ export type ChildSessionNotificationKind =
   | 'resumed'
   | 'closed'
   | 'failed';
-export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'cancelled' | 'token_exceeded';
+export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'cancelled';
 export type SubRunFailureCode =
   | 'transport'
   | 'provider_http'
@@ -150,13 +150,9 @@ export interface ResolvedSubagentContextOverrides {
   forkMode?: ForkMode;
 }
 
-export interface ResolvedExecutionLimits {
-  allowedTools: string[];
-  maxSteps?: number;
-}
+export interface ResolvedExecutionLimits {}
 
 export interface ExecutionControl {
-  maxSteps?: number;
   manualCompact?: boolean;
 }
 
@@ -204,7 +200,7 @@ export interface ConversationControlState {
 
 export type SubRunResult =
   | {
-      status: 'running' | 'completed' | 'token_exceeded';
+      status: 'running' | 'completed';
       handoff: {
         findings: string[];
         artifacts: ArtifactRef[];

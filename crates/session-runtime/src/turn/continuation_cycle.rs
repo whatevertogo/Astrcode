@@ -5,7 +5,7 @@
 
 use astrcode_core::{LlmFinishReason, LlmOutput, ResolvedRuntimeConfig};
 
-use super::{TurnLoopTransition, TurnStopCause};
+use super::TurnLoopTransition;
 
 /// 输出截断 continuation 的稳定提示文本。
 pub const OUTPUT_CONTINUATION_PROMPT: &str = "Continue from the exact point where the previous \
@@ -15,14 +15,13 @@ pub const OUTPUT_CONTINUATION_PROMPT: &str = "Continue from the exact point wher
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputContinuationDecision {
     Continue,
-    Stop(TurnStopCause),
     NotNeeded,
 }
 
 pub fn decide_output_continuation(
     output: &LlmOutput,
     continuation_attempts: usize,
-    runtime: &ResolvedRuntimeConfig,
+    _runtime: &ResolvedRuntimeConfig,
 ) -> OutputContinuationDecision {
     if !matches!(output.finish_reason, LlmFinishReason::MaxTokens) {
         return OutputContinuationDecision::NotNeeded;
@@ -30,9 +29,7 @@ pub fn decide_output_continuation(
     if !output.tool_calls.is_empty() {
         return OutputContinuationDecision::NotNeeded;
     }
-    if continuation_attempts >= runtime.max_output_continuation_attempts as usize {
-        return OutputContinuationDecision::Stop(TurnStopCause::MaxOutputContinuationLimitReached);
-    }
+    let _ = continuation_attempts;
     OutputContinuationDecision::Continue
 }
 
@@ -74,19 +71,6 @@ mod tests {
                 &ResolvedRuntimeConfig::default()
             ),
             OutputContinuationDecision::Continue
-        );
-    }
-
-    #[test]
-    fn output_continuation_stops_when_limit_is_reached() {
-        let runtime = ResolvedRuntimeConfig {
-            max_output_continuation_attempts: 1,
-            ..ResolvedRuntimeConfig::default()
-        };
-
-        assert_eq!(
-            decide_output_continuation(&output(LlmFinishReason::MaxTokens), 1, &runtime),
-            OutputContinuationDecision::Stop(TurnStopCause::MaxOutputContinuationLimitReached)
         );
     }
 }

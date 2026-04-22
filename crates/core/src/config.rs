@@ -7,11 +7,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::env::{ANTHROPIC_API_KEY_ENV, ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, DEEPSEEK_API_KEY_ENV};
+use crate::env::{ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, DEEPSEEK_API_KEY_ENV, OPENAI_API_KEY_ENV};
 
 const CURRENT_CONFIG_VERSION: &str = "1";
-const PROVIDER_KIND_OPENAI: &str = "openai-compatible";
-const PROVIDER_KIND_ANTHROPIC: &str = "anthropic";
+const PROVIDER_KIND_OPENAI: &str = "openai";
 const DEFAULT_OPENAI_CONTEXT_LIMIT: usize = 128_000;
 const ENV_REFERENCE_PREFIX: &str = "env:";
 
@@ -26,14 +25,12 @@ pub const DEFAULT_AUTO_COMPACT_ENABLED: bool = true;
 pub const DEFAULT_COMPACT_THRESHOLD_PERCENT: u8 = 90;
 pub const DEFAULT_TOOL_RESULT_MAX_BYTES: usize = 100_000;
 pub const DEFAULT_COMPACT_KEEP_RECENT_TURNS: u8 = 4;
-pub const DEFAULT_MAX_STEPS: usize = 50;
 pub const DEFAULT_LLM_CONNECT_TIMEOUT_SECS: u64 = 10;
 pub const DEFAULT_LLM_READ_TIMEOUT_SECS: u64 = 90;
 pub const DEFAULT_LLM_MAX_RETRIES: u32 = 2;
 pub const DEFAULT_LLM_RETRY_BASE_DELAY_MS: u64 = 250;
 pub const DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS: u8 = 3;
 pub const DEFAULT_RESERVED_CONTEXT_SIZE: usize = 20_000;
-pub const DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS: u8 = 3;
 pub const DEFAULT_SUMMARY_RESERVE_TOKENS: usize = 20_000;
 pub const DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES: u8 = 8;
 pub const DEFAULT_COMPACT_MAX_OUTPUT_TOKENS: usize = 20_000;
@@ -118,9 +115,6 @@ pub struct RuntimeConfig {
     pub recovery_truncate_bytes: Option<usize>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<usize>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_connect_timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_read_timeout_secs: Option<u64>,
@@ -133,8 +127,6 @@ pub struct RuntimeConfig {
     pub compact_max_retry_attempts: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reserved_context_size: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_output_continuation_attempts: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary_reserve_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -215,14 +207,12 @@ pub struct ResolvedRuntimeConfig {
     pub agent: ResolvedAgentConfig,
     pub max_consecutive_failures: usize,
     pub recovery_truncate_bytes: usize,
-    pub max_steps: usize,
     pub llm_connect_timeout_secs: u64,
     pub llm_read_timeout_secs: u64,
     pub llm_max_retries: u32,
     pub llm_retry_base_delay_ms: u64,
     pub compact_max_retry_attempts: u8,
     pub reserved_context_size: usize,
-    pub max_output_continuation_attempts: u8,
     pub summary_reserve_tokens: usize,
     pub compact_max_output_tokens: usize,
     pub max_tracked_files: usize,
@@ -279,14 +269,12 @@ impl Default for ResolvedRuntimeConfig {
             agent: ResolvedAgentConfig::default(),
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
             recovery_truncate_bytes: DEFAULT_RECOVERY_TRUNCATE_BYTES,
-            max_steps: DEFAULT_MAX_STEPS,
             llm_connect_timeout_secs: DEFAULT_LLM_CONNECT_TIMEOUT_SECS,
             llm_read_timeout_secs: DEFAULT_LLM_READ_TIMEOUT_SECS,
             llm_max_retries: DEFAULT_LLM_MAX_RETRIES,
             llm_retry_base_delay_ms: DEFAULT_LLM_RETRY_BASE_DELAY_MS,
             compact_max_retry_attempts: DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
             reserved_context_size: DEFAULT_RESERVED_CONTEXT_SIZE,
-            max_output_continuation_attempts: DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
             summary_reserve_tokens: DEFAULT_SUMMARY_RESERVE_TOKENS,
             compact_max_output_tokens: DEFAULT_COMPACT_MAX_OUTPUT_TOKENS,
             max_tracked_files: DEFAULT_MAX_TRACKED_FILES,
@@ -342,7 +330,7 @@ impl ModelConfig {
     }
 }
 
-/// OpenAI-compatible provider 的显式能力覆写。
+/// OpenAI provider 的显式能力覆写。
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
@@ -352,6 +340,15 @@ pub struct OpenAiProfileCapabilities {
     pub supports_prompt_cache_key: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_stream_usage: Option<bool>,
+}
+
+/// OpenAI 家族 Provider 的接口模式。
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiApiMode {
+    #[default]
+    ChatCompletions,
+    Responses,
 }
 
 /// LLM Provider 配置档。
@@ -371,6 +368,8 @@ pub struct Profile {
     #[serde(default = "default_profile_models")]
     pub models: Vec<ModelConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_mode: Option<OpenAiApiMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_capabilities: Option<OpenAiProfileCapabilities>,
 }
 
@@ -382,6 +381,7 @@ impl Default for Profile {
             base_url: "https://api.deepseek.com".to_string(),
             api_key: Some(env_reference(DEEPSEEK_API_KEY_ENV)),
             models: default_profile_models(),
+            api_mode: Some(OpenAiApiMode::ChatCompletions),
             openai_capabilities: None,
         }
     }
@@ -460,7 +460,6 @@ impl fmt::Debug for RuntimeConfig {
             .field("agent", &self.agent)
             .field("max_consecutive_failures", &self.max_consecutive_failures)
             .field("recovery_truncate_bytes", &self.recovery_truncate_bytes)
-            .field("max_steps", &self.max_steps)
             .field("llm_connect_timeout_secs", &self.llm_connect_timeout_secs)
             .field("llm_read_timeout_secs", &self.llm_read_timeout_secs)
             .field("llm_max_retries", &self.llm_max_retries)
@@ -469,10 +468,6 @@ impl fmt::Debug for RuntimeConfig {
                 &self.compact_max_retry_attempts,
             )
             .field("reserved_context_size", &self.reserved_context_size)
-            .field(
-                "max_output_continuation_attempts",
-                &self.max_output_continuation_attempts,
-            )
             .field("summary_reserve_tokens", &self.summary_reserve_tokens)
             .field("compact_max_output_tokens", &self.compact_max_output_tokens)
             .field("max_tracked_files", &self.max_tracked_files)
@@ -519,6 +514,7 @@ impl fmt::Debug for Profile {
             .field("base_url", &self.base_url)
             .field("api_key", &redacted_api_key(self.api_key.as_deref()))
             .field("models", &self.models)
+            .field("api_mode", &self.api_mode)
             .field("openai_capabilities", &self.openai_capabilities)
             .finish()
     }
@@ -563,17 +559,27 @@ fn default_config_profiles() -> Vec<Profile> {
                     context_limit: Some(DEFAULT_OPENAI_CONTEXT_LIMIT),
                 },
             ],
+            api_mode: Some(OpenAiApiMode::ChatCompletions),
             openai_capabilities: None,
         },
         Profile {
-            name: "anthropic".to_string(),
-            provider_kind: PROVIDER_KIND_ANTHROPIC.to_string(),
-            base_url: String::new(),
-            api_key: Some(env_reference(ANTHROPIC_API_KEY_ENV)),
+            name: "openai".to_string(),
+            provider_kind: PROVIDER_KIND_OPENAI.to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: Some(env_reference(OPENAI_API_KEY_ENV)),
             models: vec![
-                ModelConfig::new("claude-sonnet-4-5-20251001"),
-                ModelConfig::new("claude-opus-4-5"),
+                ModelConfig {
+                    id: "gpt-4.1".to_string(),
+                    max_tokens: Some(32_768),
+                    context_limit: Some(DEFAULT_OPENAI_CONTEXT_LIMIT),
+                },
+                ModelConfig {
+                    id: "gpt-4.1-mini".to_string(),
+                    max_tokens: Some(32_768),
+                    context_limit: Some(DEFAULT_OPENAI_CONTEXT_LIMIT),
+                },
             ],
+            api_mode: Some(OpenAiApiMode::Responses),
             openai_capabilities: None,
         },
     ]
@@ -695,7 +701,6 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
             .recovery_truncate_bytes
             .unwrap_or(defaults.recovery_truncate_bytes)
             .max(1024),
-        max_steps: runtime.max_steps.unwrap_or(defaults.max_steps).max(1),
         llm_connect_timeout_secs: runtime
             .llm_connect_timeout_secs
             .unwrap_or(defaults.llm_connect_timeout_secs)
@@ -716,10 +721,6 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
         reserved_context_size: runtime
             .reserved_context_size
             .unwrap_or(defaults.reserved_context_size)
-            .max(1),
-        max_output_continuation_attempts: runtime
-            .max_output_continuation_attempts
-            .unwrap_or(defaults.max_output_continuation_attempts)
             .max(1),
         summary_reserve_tokens: runtime
             .summary_reserve_tokens
@@ -793,7 +794,6 @@ mod tests {
         let resolved = resolve_runtime_config(&RuntimeConfig::default());
 
         assert_eq!(resolved.max_tool_concurrency, max_tool_concurrency());
-        assert_eq!(resolved.max_steps, DEFAULT_MAX_STEPS);
         assert_eq!(resolved.agent.max_subrun_depth, DEFAULT_MAX_SUBRUN_DEPTH);
         assert_eq!(
             resolved.agent.max_spawn_per_turn,
@@ -817,7 +817,6 @@ mod tests {
     fn resolved_runtime_config_honors_runtime_overrides() {
         let resolved = resolve_runtime_config(&RuntimeConfig {
             max_tool_concurrency: Some(16),
-            max_steps: Some(12),
             llm_read_timeout_secs: Some(120),
             agent: Some(AgentConfig {
                 max_subrun_depth: Some(5),
@@ -828,7 +827,6 @@ mod tests {
         });
 
         assert_eq!(resolved.max_tool_concurrency, 16);
-        assert_eq!(resolved.max_steps, 12);
         assert_eq!(resolved.llm_read_timeout_secs, 120);
         assert_eq!(resolved.agent.max_subrun_depth, 5);
         assert_eq!(resolved.agent.max_spawn_per_turn, 2);

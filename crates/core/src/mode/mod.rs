@@ -456,8 +456,6 @@ pub struct ResolvedChildPolicy {
     pub allow_recursive_delegation: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_profile_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub restricted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -470,8 +468,6 @@ pub struct ResolvedChildPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedTurnEnvelope {
     pub mode_id: ModeId,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_declarations: Vec<PromptDeclaration>,
     #[serde(default)]
@@ -622,7 +618,6 @@ mod tests {
     fn resolved_turn_envelope_reports_required_approval_mode_when_rule_asks() {
         let envelope = ResolvedTurnEnvelope {
             mode_id: ModeId::review(),
-            allowed_tools: vec!["readFile".to_string()],
             prompt_declarations: vec![PromptDeclaration {
                 block_id: "mode.review".to_string(),
                 title: "Review".to_string(),
@@ -654,7 +649,6 @@ mod tests {
     fn resolved_turn_envelope_projects_bound_tool_contract_snapshot() {
         let envelope = ResolvedTurnEnvelope {
             mode_id: ModeId::plan(),
-            allowed_tools: vec!["readFile".to_string()],
             prompt_declarations: Vec::new(),
             mode_contracts: CompiledModeContracts {
                 artifact: Some(ModeArtifactDef {

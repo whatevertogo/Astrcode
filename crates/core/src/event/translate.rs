@@ -426,25 +426,20 @@ impl EventTranslator {
                 } else {
                     warn_missing_turn_id(stored.storage_seq, "turnDone");
                 }
-                self.phase_tracker
-                    .force_to(Phase::Idle, None, AgentEventContext::default());
+                self.phase_tracker.force_to(
+                    super::phase::target_phase(&stored.event),
+                    None,
+                    AgentEventContext::default(),
+                );
                 self.current_turn_id = None;
             },
             StorageEventPayload::Error { message, .. } => {
                 push(AgentEvent::Error {
                     turn_id: turn_id.clone(),
                     agent: agent.clone(),
-                    code: if message == "interrupted" {
-                        "interrupted".to_string()
-                    } else {
-                        "agent_error".to_string()
-                    },
+                    code: "agent_error".to_string(),
                     message: message.clone(),
                 });
-                if message == "interrupted" {
-                    self.phase_tracker
-                        .force_to(Phase::Interrupted, turn_id, agent);
-                }
             },
             StorageEventPayload::AgentInputQueued { payload, .. } => {
                 push(AgentEvent::AgentInputQueued {

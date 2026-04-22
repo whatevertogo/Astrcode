@@ -151,8 +151,6 @@ pub(crate) fn sample_profile(id: &str) -> AgentProfile {
         description: format!("test profile {id}"),
         mode: AgentMode::SubAgent,
         system_prompt: Some(format!("你是 {id}")),
-        allowed_tools: Vec::new(),
-        disallowed_tools: Vec::new(),
         model_preference: None,
     }
 }

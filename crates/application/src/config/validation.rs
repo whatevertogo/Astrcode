@@ -6,9 +6,9 @@
 
 use std::collections::HashSet;
 
-use astrcode_core::{AstrError, Config, ModelConfig, Result};
+use astrcode_core::{AstrError, Config, ModelConfig, OpenAiApiMode, Result};
 
-use super::constants::{PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
+use super::constants::PROVIDER_KIND_OPENAI;
 
 macro_rules! validate_positive_fields {
     ($($value:expr => $field:expr),* $(,)?) => {{
@@ -67,7 +67,6 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
     validate_positive_fields!(
         runtime.max_tool_concurrency => "runtime.maxToolConcurrency",
         runtime.tool_result_max_bytes => "runtime.toolResultMaxBytes",
-        runtime.max_steps => "runtime.maxSteps",
         runtime.max_tracked_files => "runtime.maxTrackedFiles",
         runtime.max_recovered_files => "runtime.maxRecoveredFiles",
         runtime.recovery_token_budget => "runtime.recoveryTokenBudget",
@@ -88,7 +87,6 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
     validate_positive_fields!(
         runtime.compact_keep_recent_turns => "runtime.compactKeepRecentTurns",
         runtime.compact_max_retry_attempts => "runtime.compactMaxRetryAttempts",
-        runtime.max_output_continuation_attempts => "runtime.maxOutputContinuationAttempts",
     )?;
 
     validate_positive_fields!(
@@ -177,18 +175,18 @@ fn validate_profiles(profiles: &[astrcode_core::Profile]) -> Result<()> {
                 for model in &profile.models {
                     if model.max_tokens.is_none() || model.context_limit.is_none() {
                         return Err(AstrError::Validation(format!(
-                            "openai-compatible profile '{}' model '{}' must set both maxTokens \
-                             and contextLimit",
+                            "openai profile '{}' model '{}' must set both maxTokens and \
+                             contextLimit",
                             profile.name, model.id
                         )));
                     }
                 }
-            },
-            PROVIDER_KIND_ANTHROPIC => {
-                if profile.openai_capabilities.is_some() {
+                if matches!(profile.api_mode, Some(OpenAiApiMode::Responses))
+                    && profile.base_url.trim().is_empty()
+                {
                     return Err(AstrError::Validation(format!(
-                        "anthropic profile '{}' cannot set openaiCapabilities",
-                        profile.name
+                        "openai profile '{}' responses mode requires a non-empty baseUrl",
+                        profile.name,
                     )));
                 }
             },
@@ -263,8 +261,6 @@ fn validate_model(
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::config::OpenAiProfileCapabilities;
-
     use super::*;
 
     #[test]
@@ -288,17 +284,15 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_profile_rejects_openai_capabilities() {
+    fn responses_mode_with_empty_base_url_fails() {
         let mut config = Config::default();
-        let anthropic = config
+        let openai = config
             .profiles
             .iter_mut()
-            .find(|profile| profile.provider_kind == PROVIDER_KIND_ANTHROPIC)
-            .expect("anthropic profile should exist");
-        anthropic.openai_capabilities = Some(OpenAiProfileCapabilities {
-            supports_prompt_cache_key: Some(true),
-            supports_stream_usage: Some(true),
-        });
+            .find(|profile| profile.name == "openai")
+            .expect("openai profile should exist");
+        openai.base_url.clear();
+        openai.api_mode = Some(OpenAiApiMode::Responses);
 
         assert!(validate_config(&config).is_err());
     }
@@ -311,11 +305,11 @@ mod tests {
     }
 
     #[test]
-    fn zero_max_steps_fails() {
+    fn zero_max_tool_concurrency_fails() {
         let mut config = Config::default();
-        config.runtime.max_steps = Some(0);
-        let error = validate_config(&config).expect_err("maxSteps=0 should fail");
-        assert!(error.to_string().contains("runtime.maxSteps"));
+        config.runtime.max_tool_concurrency = Some(0);
+        let error = validate_config(&config).expect_err("maxToolConcurrency=0 should fail");
+        assert!(error.to_string().contains("runtime.maxToolConcurrency"));
     }
 
     #[test]

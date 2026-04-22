@@ -34,7 +34,7 @@ pub struct PlanImplementationStep {
 }
 
 impl PlanToExecuteBridgeState {
-    pub(crate) fn into_bridge_state(
+    pub(crate) fn to_bridge_state(
         &self,
         source_phase_id: &str,
         target_phase_id: &str,
@@ -105,7 +105,7 @@ mod tests {
         };
 
         let encoded = bridge
-            .into_bridge_state("planning", "executing")
+            .to_bridge_state("planning", "executing")
             .expect("bridge should encode");
         let decoded =
             PlanToExecuteBridgeState::from_bridge_state(&encoded).expect("bridge should decode");

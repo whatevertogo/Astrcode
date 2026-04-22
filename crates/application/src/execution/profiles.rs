@@ -277,8 +277,6 @@ mod tests {
             description: format!("test {id}"),
             mode: astrcode_core::AgentMode::SubAgent,
             system_prompt: None,
-            allowed_tools: vec![],
-            disallowed_tools: vec![],
             model_preference: None,
         }
     }

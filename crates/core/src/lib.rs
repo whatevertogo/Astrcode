@@ -105,8 +105,8 @@ pub use agent::{
     ParentDeliveryKind, ParentDeliveryOrigin, ParentDeliveryPayload,
     ParentDeliveryTerminalSemantics, ParentExecutionRef, ProgressParentDeliveryPayload,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SendAgentParams,
-    SendToChildParams, SendToParentParams, SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure,
-    SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStatus, SubRunStorageMode,
+    SendToChildParams, SendToParentParams, SpawnAgentParams, SubRunFailure, SubRunFailureCode,
+    SubRunHandle, SubRunHandoff, SubRunResult, SubRunStatus, SubRunStorageMode,
     SubagentContextOverrides,
     executor::{CollaborationExecutor, SubAgentExecutor},
     input_queue::{
@@ -129,9 +129,9 @@ pub use compact_summary::{
 pub use composer::{ComposerOption, ComposerOptionActionKind, ComposerOptionKind};
 pub use config::{
     ActiveSelection, AgentConfig, Config, ConfigOverlay, CurrentModelSelection, ModelConfig,
-    ModelOption, ModelSelection, Profile, ResolvedAgentConfig, ResolvedRuntimeConfig,
-    RuntimeConfig, TestConnectionResult, max_tool_concurrency, resolve_agent_config,
-    resolve_runtime_config,
+    ModelOption, ModelSelection, OpenAiApiMode, Profile, ResolvedAgentConfig,
+    ResolvedRuntimeConfig, RuntimeConfig, TestConnectionResult, max_tool_concurrency,
+    resolve_agent_config, resolve_runtime_config,
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{

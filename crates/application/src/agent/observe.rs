@@ -310,7 +310,6 @@ mod tests {
                     description: "检查 crates".to_string(),
                     prompt: "请检查 crates 目录".to_string(),
                     context: None,
-                    capability_grant: None,
                 },
                 &parent_ctx,
             )
@@ -415,7 +414,6 @@ mod tests {
                     description: "检查 crates".to_string(),
                     prompt: "请检查 crates 目录".to_string(),
                     context: None,
-                    capability_grant: None,
                 },
                 &parent_ctx,
             )

@@ -9,6 +9,7 @@ mod conversation;
 mod input_queue;
 mod replay;
 mod service;
+mod subrun;
 mod terminal;
 mod text;
 mod transcript;

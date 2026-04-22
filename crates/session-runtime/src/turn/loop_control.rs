@@ -20,29 +20,15 @@ pub enum TurnStopCause {
     Completed,
     Cancelled,
     Error,
-    StepLimitExceeded,
-    MaxOutputContinuationLimitReached,
 }
 
 impl TurnStopCause {
-    pub fn legacy_turn_done_reason(self) -> Option<&'static str> {
-        match self {
-            Self::Completed => Some("completed"),
-            Self::MaxOutputContinuationLimitReached => Some("token_exceeded"),
-            Self::Cancelled | Self::Error | Self::StepLimitExceeded => None,
-        }
-    }
-
     pub fn terminal_kind(self, error_message: Option<&str>) -> TurnTerminalKind {
         match self {
             Self::Completed => TurnTerminalKind::Completed,
             Self::Cancelled => TurnTerminalKind::Cancelled,
             Self::Error => TurnTerminalKind::Error {
                 message: error_message.unwrap_or("turn failed").to_string(),
-            },
-            Self::StepLimitExceeded => TurnTerminalKind::StepLimitExceeded,
-            Self::MaxOutputContinuationLimitReached => {
-                TurnTerminalKind::MaxOutputContinuationLimitReached
             },
         }
     }
@@ -67,14 +53,6 @@ mod tests {
             TurnTerminalKind::Error {
                 message: "turn failed".to_string()
             }
-        );
-    }
-
-    #[test]
-    fn max_output_stop_cause_maps_to_token_exceeded_reason() {
-        assert_eq!(
-            TurnStopCause::MaxOutputContinuationLimitReached.legacy_turn_done_reason(),
-            Some("token_exceeded")
         );
     }
 }

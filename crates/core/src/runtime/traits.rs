@@ -23,7 +23,7 @@ pub trait RuntimeHandle: Send + Sync {
     /// 运行时实例的名称（用于日志和错误信息）。
     fn runtime_name(&self) -> &'static str;
 
-    /// 运行时的类型标识（如 "openai"、"anthropic"）。
+    /// 运行时的类型标识（如 "openai"）。
     fn runtime_kind(&self) -> &'static str;
 
     /// 优雅关闭运行时，释放所有连接和资源。
@@ -89,7 +89,6 @@ pub trait ExecutionOrchestrationBoundary: Send + Sync {
     async fn interrupt_session(&self, session_id: &SessionId)
     -> std::result::Result<(), AstrError>;
 
-    // TODO: 未来可能需要重新添加 max_steps 参数来限制根智能体执行
     async fn execute_root_agent(
         &self,
         agent_id: AgentId,

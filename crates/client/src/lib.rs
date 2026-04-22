@@ -306,7 +306,6 @@ where
             .is_none()
         {
             let control = request.control.get_or_insert(ExecutionControlDto {
-                max_steps: None,
                 manual_compact: None,
             });
             control.manual_compact = Some(true);
@@ -1058,7 +1057,6 @@ mod tests {
                 "session-1",
                 CompactSessionRequest {
                     control: Some(ExecutionControlDto {
-                        max_steps: None,
                         manual_compact: None,
                     }),
                     instructions: Some("保留错误和文件路径".to_string()),
@@ -1079,8 +1077,8 @@ mod tests {
                 auth_token: Some("session-token".to_string()),
                 query: Vec::new(),
                 json_body: Some(json!({
-                    "activeProfile": "anthropic",
-                    "activeModel": "claude-sonnet"
+                    "activeProfile": "openai",
+                    "activeModel": "gpt-4.1"
                 })),
             },
             result: Ok(TransportResponse {
@@ -1101,8 +1099,8 @@ mod tests {
 
         client
             .save_active_selection(SaveActiveSelectionRequest {
-                active_profile: "anthropic".to_string(),
-                active_model: "claude-sonnet".to_string(),
+                active_profile: "openai".to_string(),
+                active_model: "gpt-4.1".to_string(),
             })
             .await
             .expect("save active selection should succeed");
@@ -1122,9 +1120,9 @@ mod tests {
             result: Ok(TransportResponse {
                 status: 200,
                 body: json!({
-                    "profileName": "anthropic",
-                    "model": "claude-sonnet",
-                    "providerKind": "anthropic"
+                    "profileName": "openai",
+                    "model": "gpt-4.1",
+                    "providerKind": "openai"
                 })
                 .to_string(),
             }),
@@ -1146,9 +1144,9 @@ mod tests {
                 .await
                 .expect("current model should decode"),
             CurrentModelInfoDto {
-                profile_name: "anthropic".to_string(),
-                model: "claude-sonnet".to_string(),
-                provider_kind: "anthropic".to_string(),
+                profile_name: "openai".to_string(),
+                model: "gpt-4.1".to_string(),
+                provider_kind: "openai".to_string(),
             }
         );
     }

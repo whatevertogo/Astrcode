@@ -136,10 +136,6 @@ impl AgentOrchestrationService {
             working_dir,
             mode_id: collaboration.mode_id().clone(),
             runtime: runtime.clone(),
-            allowed_tools: effective_allowed_tools_for_limits(
-                &self.kernel.gateway(),
-                &reused_handle.resolved_limits,
-            ),
             resolved_limits: reused_handle.resolved_limits.clone(),
             delegation: Some(resume_delegation.clone()),
             message: params.message.clone(),

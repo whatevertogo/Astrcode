@@ -6,11 +6,10 @@
 mod collaboration_flow;
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentInboxEnvelope,
-    AgentLifecycleStatus, ChildAgentRef, ChildSessionNotification, ChildSessionNotificationKind,
-    CloseAgentParams, CollaborationResult, InboxEnvelopeKind, InputDiscardedPayload,
-    InputQueuedPayload, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
-    ParentDeliveryTerminalSemantics, SendAgentParams, SendToChildParams, SendToParentParams,
-    SubRunHandle,
+    AgentLifecycleStatus, ChildAgentRef, ChildSessionNotification, CloseAgentParams,
+    CollaborationResult, InboxEnvelopeKind, InputDiscardedPayload, InputQueuedPayload,
+    ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, SendAgentParams,
+    SendToChildParams, SendToParentParams, SubRunHandle,
 };
 use collaboration_flow::parent_delivery_label;
 
@@ -20,7 +19,6 @@ use super::{
 };
 use crate::governance_surface::{
     GovernanceBusyPolicy, ResumedChildGovernanceInput, collaboration_policy_context,
-    effective_allowed_tools_for_limits,
 };
 
 impl AgentOrchestrationService {

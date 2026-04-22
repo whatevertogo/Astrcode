@@ -12,7 +12,8 @@
 //! - `Interrupted`: 被用户中断
 
 use crate::{
-    AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload, UserMessageOrigin,
+    AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload, TurnTerminalKind,
+    UserMessageOrigin,
 };
 
 /// Determines the target phase for a storage event.
@@ -44,9 +45,12 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
         StorageEventPayload::ToolCall { .. }
         | StorageEventPayload::ToolCallDelta { .. }
         | StorageEventPayload::ToolResult { .. } => Phase::CallingTool,
-        StorageEventPayload::TurnDone { .. } => Phase::Idle,
-        StorageEventPayload::Error { message, .. } if message == "interrupted" => {
-            Phase::Interrupted
+        StorageEventPayload::TurnDone { terminal_kind, .. } => {
+            if matches!(terminal_kind, Some(TurnTerminalKind::Cancelled)) {
+                Phase::Interrupted
+            } else {
+                Phase::Idle
+            }
         },
         StorageEventPayload::Error { .. } => Phase::Idle,
     }

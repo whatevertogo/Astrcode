@@ -127,29 +127,31 @@ pub(crate) fn build_conversation_replay_frames(
     seed_records: &[SessionEventRecord],
     history: &[SessionEventRecord],
 ) -> Vec<ConversationDeltaFrameFacts> {
-    let mut full_projector = ConversationDeltaProjector::new();
-    full_projector.seed(seed_records);
-    for record in history {
-        let _ = full_projector.project_record(record);
-    }
-    let hidden_block_ids = draft_approval_leakage_hidden_block_ids(full_projector.blocks());
-
     let mut projector = ConversationDeltaProjector::new();
     projector.seed(seed_records);
     let mut step_progress = durable_step_progress_from_blocks(projector.blocks());
-    let mut frames = Vec::new();
+    let mut raw_frames = Vec::new();
     for record in history {
-        for delta in projector.project_record(record) {
-            if delta_block_id(&delta).is_some_and(|block_id| hidden_block_ids.contains(block_id)) {
-                continue;
-            }
-            observe_durable_delta_step(&mut step_progress, &delta);
-            frames.push(ConversationDeltaFrameFacts {
-                cursor: record.event_id.clone(),
-                step_progress: step_progress.clone(),
-                delta,
-            });
+        raw_frames.extend(
+            projector
+                .project_record(record)
+                .into_iter()
+                .map(|delta| (record.event_id.clone(), delta)),
+        );
+    }
+    let hidden_block_ids = draft_approval_leakage_hidden_block_ids(projector.blocks());
+
+    let mut frames = Vec::new();
+    for (cursor, delta) in raw_frames {
+        if delta_block_id(&delta).is_some_and(|block_id| hidden_block_ids.contains(block_id)) {
+            continue;
         }
+        observe_durable_delta_step(&mut step_progress, &delta);
+        frames.push(ConversationDeltaFrameFacts {
+            cursor,
+            step_progress: step_progress.clone(),
+            delta,
+        });
     }
     frames
 }

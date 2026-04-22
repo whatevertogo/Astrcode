@@ -82,10 +82,10 @@ pub(crate) fn assistant_final_event(
     }
 }
 
-#[cfg(test)]
 pub(crate) fn turn_done_event(
     turn_id: &str,
     agent: &AgentEventContext,
+    terminal_kind: Option<astrcode_core::TurnTerminalKind>,
     reason: Option<String>,
     timestamp: DateTime<Utc>,
 ) -> StorageEvent {
@@ -94,7 +94,7 @@ pub(crate) fn turn_done_event(
         agent: agent.clone(),
         payload: StorageEventPayload::TurnDone {
             timestamp,
-            terminal_kind: astrcode_core::TurnTerminalKind::from_legacy_reason(reason.as_deref()),
+            terminal_kind,
             reason,
         },
     }
@@ -112,9 +112,7 @@ pub(crate) fn turn_terminal_event(
         payload: StorageEventPayload::TurnDone {
             timestamp,
             terminal_kind: Some(stop_cause.terminal_kind(None)),
-            reason: stop_cause
-                .legacy_turn_done_reason()
-                .map(ToString::to_string),
+            reason: None,
         },
     }
 }
@@ -426,6 +424,7 @@ mod tests {
         let event = turn_done_event(
             "turn-done-1",
             &agent,
+            Some(astrcode_core::TurnTerminalKind::Completed),
             Some("completed".to_string()),
             timestamp,
         );
@@ -445,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_terminal_event_preserves_explicit_terminal_kind_without_legacy_reason() {
+    fn turn_terminal_event_preserves_explicit_terminal_kind_without_reason() {
         let timestamp = Utc
             .with_ymd_and_hms(2026, 4, 14, 10, 12, 0)
             .single()

@@ -1,17 +1,16 @@
 //! 治理模式编译器。
 //!
 //! 将声明式的 `GovernanceModeSpec` 编译为运行时可消费的 `CompiledModeEnvelope`：
-//! - 通过 `CapabilitySelector` 从全量 capability 中筛选出允许的工具名列表
-//! - 递归处理组合选择器（Union / Intersection / Difference）
-//! - 为子代理额外计算继承后的工具白名单（parent ∩ mode ∩ grant）
+//! - 保留 mode prompt / contracts / child policy 等稳定语义
+//! - 不再根据 capability selector 收缩工具 surface
 //! - 生成 mode prompt declarations 和子代理策略
 
 use std::collections::BTreeSet;
 
 use astrcode_core::{
-    AstrError, CapabilitySelector, CapabilitySpec, CompiledModeContracts, GovernanceModeSpec,
+    CapabilitySelector, CapabilitySpec, CompiledModeContracts, GovernanceModeSpec,
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, ResolvedTurnEnvelope, Result, SpawnCapabilityGrant, SystemPromptLayer,
+    PromptDeclarationSource, ResolvedTurnEnvelope, Result, SystemPromptLayer,
 };
 use astrcode_kernel::CapabilityRouter;
 
@@ -31,18 +30,13 @@ pub fn compile_capability_selector(
 }
 
 pub fn compile_mode_envelope(
-    base_router: &CapabilityRouter,
+    _base_router: &CapabilityRouter,
     spec: &GovernanceModeSpec,
     extra_prompt_declarations: Vec<PromptDeclaration>,
 ) -> Result<CompiledModeEnvelope> {
-    let allowed_tools =
-        compile_capability_selector(&base_router.capability_specs(), &spec.capability_selector)?;
-    let child_allowed_tools =
-        child_allowed_tools(&base_router.capability_specs(), spec, &allowed_tools, None)?;
     let prompt_declarations = mode_prompt_declarations(spec, extra_prompt_declarations);
     let envelope = ResolvedTurnEnvelope {
         mode_id: spec.id.clone(),
-        allowed_tools: allowed_tools.clone(),
         prompt_declarations: prompt_declarations.clone(),
         mode_contracts: compiled_mode_contracts(spec),
         action_policies: spec.action_policies.clone(),
@@ -55,7 +49,6 @@ pub fn compile_mode_envelope(
             allow_delegation: spec.child_policy.allow_delegation,
             allow_recursive_delegation: spec.child_policy.allow_recursive_delegation,
             allowed_profile_ids: spec.child_policy.allowed_profile_ids.clone(),
-            allowed_tools: child_allowed_tools,
             restricted: spec.child_policy.restricted,
             fork_mode: spec
                 .child_policy
@@ -69,55 +62,22 @@ pub fn compile_mode_envelope(
             .submit_busy_policy
             .unwrap_or(astrcode_core::SubmitBusyPolicy::BranchOnBusy),
         fork_mode: spec.execution_policy.fork_mode.clone(),
-        diagnostics: if allowed_tools.is_empty() {
-            vec![format!(
-                "mode '{}' compiled to an empty tool surface",
-                spec.id
-            )]
-        } else {
-            Vec::new()
-        },
+        diagnostics: Vec::new(),
     };
-    let capability_router = subset_router(base_router, &allowed_tools)?;
     Ok(CompiledModeEnvelope {
         spec: spec.clone(),
         envelope,
-        capability_router,
+        capability_router: None,
     })
 }
 
 pub fn compile_mode_envelope_for_child(
-    base_router: &CapabilityRouter,
+    _base_router: &CapabilityRouter,
     spec: &GovernanceModeSpec,
-    parent_allowed_tools: &[String],
-    capability_grant: Option<&SpawnCapabilityGrant>,
 ) -> Result<CompiledModeEnvelope> {
-    let mode_allowed_tools =
-        compile_capability_selector(&base_router.capability_specs(), &spec.capability_selector)?;
-    // 子代理工具 = parent ∩ mode；parent 为空时直接取 mode 全量
-    let effective_parent_allowed_tools = if parent_allowed_tools.is_empty() {
-        mode_allowed_tools
-    } else {
-        parent_allowed_tools
-            .iter()
-            .filter(|tool| {
-                mode_allowed_tools
-                    .iter()
-                    .any(|candidate| candidate == *tool)
-            })
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    let child_tools = child_allowed_tools(
-        &base_router.capability_specs(),
-        spec,
-        &effective_parent_allowed_tools,
-        capability_grant,
-    )?;
     let prompt_declarations = mode_prompt_declarations(spec, Vec::new());
     let envelope = ResolvedTurnEnvelope {
         mode_id: spec.id.clone(),
-        allowed_tools: child_tools.clone(),
         prompt_declarations: prompt_declarations.clone(),
         mode_contracts: compiled_mode_contracts(spec),
         action_policies: spec.action_policies.clone(),
@@ -130,8 +90,7 @@ pub fn compile_mode_envelope_for_child(
             allow_delegation: spec.child_policy.allow_delegation,
             allow_recursive_delegation: spec.child_policy.allow_recursive_delegation,
             allowed_profile_ids: spec.child_policy.allowed_profile_ids.clone(),
-            allowed_tools: child_tools.clone(),
-            restricted: spec.child_policy.restricted || capability_grant.is_some(),
+            restricted: spec.child_policy.restricted,
             fork_mode: spec
                 .child_policy
                 .fork_mode
@@ -148,20 +107,12 @@ pub fn compile_mode_envelope_for_child(
             .fork_mode
             .clone()
             .or(spec.child_policy.fork_mode.clone()),
-        diagnostics: if child_tools.is_empty() {
-            vec![format!(
-                "child mode '{}' compiled to an empty inheritable tool surface",
-                spec.id
-            )]
-        } else {
-            Vec::new()
-        },
+        diagnostics: Vec::new(),
     };
-    let capability_router = subset_router(base_router, &child_tools)?;
     Ok(CompiledModeEnvelope {
         spec: spec.clone(),
         envelope,
-        capability_router,
+        capability_router: None,
     })
 }
 
@@ -233,33 +184,6 @@ fn evaluate_selector(
     })
 }
 
-fn child_allowed_tools(
-    capability_specs: &[CapabilitySpec],
-    spec: &GovernanceModeSpec,
-    parent_allowed_tools: &[String],
-    capability_grant: Option<&SpawnCapabilityGrant>,
-) -> Result<Vec<String>> {
-    if !spec.child_policy.allow_delegation {
-        return Ok(Vec::new());
-    }
-    let mut allowed = if let Some(selector) = &spec.child_policy.capability_selector {
-        let selected = evaluate_selector(capability_specs, selector)?;
-        parent_allowed_tools
-            .iter()
-            .filter(|tool| selected.contains(tool.as_str()))
-            .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        parent_allowed_tools.to_vec()
-    };
-    if let Some(grant) = capability_grant {
-        grant.validate()?;
-        let requested = grant.normalized_allowed_tools()?;
-        allowed.retain(|tool| requested.iter().any(|candidate| candidate == tool));
-    }
-    Ok(allowed)
-}
-
 fn mode_prompt_declarations(
     spec: &GovernanceModeSpec,
     extra_prompt_declarations: Vec<PromptDeclaration>,
@@ -283,32 +207,6 @@ fn mode_prompt_declarations(
         .collect::<Vec<_>>();
     declarations.extend(extra_prompt_declarations);
     declarations
-}
-
-fn subset_router(
-    base_router: &CapabilityRouter,
-    allowed_tools: &[String],
-) -> Result<Option<CapabilityRouter>> {
-    let all_tools = base_router.tool_names();
-    let allowed_set = allowed_tools
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let all_set = all_tools
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    if allowed_set == all_set {
-        return Ok(None);
-    }
-    if allowed_tools.is_empty() {
-        return Ok(Some(CapabilityRouter::empty()));
-    }
-    Ok(Some(
-        base_router
-            .subset_for_tools_checked(allowed_tools)
-            .map_err(|error| AstrError::Validation(error.to_string()))?,
-    ))
 }
 
 #[cfg(test)]

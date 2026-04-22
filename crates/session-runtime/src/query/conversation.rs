@@ -829,12 +829,9 @@ impl ConversationDeltaProjector {
     fn append_error(
         &mut self,
         turn_id: Option<&str>,
-        code: &str,
+        _code: &str,
         message: &str,
     ) -> Vec<ConversationDeltaFacts> {
-        if code == "interrupted" {
-            return Vec::new();
-        }
         let block_id = format!("turn:{}:error", turn_id.unwrap_or("session"));
         if self.block_index.contains_key(&block_id) {
             return Vec::new();

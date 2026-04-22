@@ -49,7 +49,7 @@ pub fn resolve_api_key(profile: &Profile) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::config::ModelConfig;
+    use astrcode_core::config::{ModelConfig, OpenAiApiMode};
 
     use super::*;
 
@@ -61,6 +61,7 @@ mod tests {
             api_key: api_key.map(|s| s.to_string()),
             models: vec![ModelConfig::new("test-model")],
             openai_capabilities: None,
+            api_mode: Some(OpenAiApiMode::ChatCompletions),
         }
     }
 

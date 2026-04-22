@@ -15,7 +15,6 @@ import {
   pillDanger,
   pillNeutral,
   pillSuccess,
-  pillWarning,
   subtleActionButton,
 } from '../../lib/styles';
 
@@ -42,7 +41,7 @@ interface SubRunBlockProps {
   displayMode?: 'thread' | 'directory';
 }
 
-type SubRunStatus = 'running' | 'completed' | 'cancelled' | 'token_exceeded' | 'failed';
+type SubRunStatus = 'running' | 'completed' | 'cancelled' | 'failed';
 
 function toSubRunStatus(finishMessage?: SubRunFinishMessage): SubRunStatus {
   return finishMessage?.result.status ?? 'running';
@@ -54,8 +53,6 @@ function getStatusLabel(status: SubRunStatus): string {
       return '已完成';
     case 'cancelled':
       return '已取消';
-    case 'token_exceeded':
-      return '超出 token';
     case 'failed':
       return '失败';
     case 'running':
@@ -75,8 +72,6 @@ function getStatusVariant(status: SubRunStatus): string {
       return pillSuccess;
     case 'cancelled':
       return pillNeutral;
-    case 'token_exceeded':
-      return pillWarning;
     case 'failed':
       return pillDanger;
     case 'running':
@@ -113,7 +108,7 @@ function getResultFailure(result?: SubRunResult) {
 }
 
 function isSuccessfulTerminalStatus(status: SubRunStatus): boolean {
-  return status === 'completed' || status === 'token_exceeded';
+  return status === 'completed';
 }
 
 function SubRunBlock({

@@ -165,8 +165,8 @@ fn emit_llm_delta_live(
                 });
             }
         },
-        // ThinkingSignature 是 Anthropic API 的 thinking 完整性令牌。
-        // live UI 不消费它，但 durable AssistantFinal 需要保留这份事实。
+        // ThinkingSignature 预留给带推理完整性令牌的 provider。
+        // live UI 不消费它，但 durable AssistantFinal 仍保留这份事实。
         LlmEvent::ThinkingSignature(signature) => {
             *thinking_signature = Some(signature);
         },

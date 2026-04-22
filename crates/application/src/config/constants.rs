@@ -19,18 +19,11 @@ pub use astrcode_core::config::DEFAULT_MAX_SUBRUN_DEPTH;
 // Provider 标识符
 // ============================================================
 
-/// OpenAI 兼容协议 Provider 标识符。
+/// OpenAI 家族 Provider 标识符。
 ///
-/// 用于 `Profile.provider_kind` 字段，表示该 Provider 使用 OpenAI Chat Completions API 格式。
-/// Deepseek 等兼容 OpenAI 接口的服务都使用此标识符。
-pub const PROVIDER_KIND_OPENAI: &str = "openai-compatible";
-
-/// Anthropic Provider 标识符。
-///
-/// 用于 `Profile.provider_kind` 字段，表示该 Provider 使用 Anthropic Messages API 格式。
-/// 与 OpenAI 兼容协议不同，Anthropic 使用专用请求头；同时允许通过 `baseUrl`
-/// 覆盖默认官方地址，接入自定义 Anthropic 兼容网关。
-pub const PROVIDER_KIND_ANTHROPIC: &str = "anthropic";
+/// 用于 `Profile.provider_kind` 字段，表示该 Provider 使用 OpenAI 兼容协议，
+/// 并可按 `apiMode` 切换 `responses` 或 `chat_completions`。
+pub const PROVIDER_KIND_OPENAI: &str = "openai";
 
 // ============================================================
 // 值前缀
@@ -51,9 +44,10 @@ pub const LITERAL_VALUE_PREFIX: &str = "literal:";
 // ============================================================
 
 pub use astrcode_core::env::{
-    ANTHROPIC_API_KEY_ENV, ASTRCODE_HOME_DIR_ENV, ASTRCODE_MAX_TOOL_CONCURRENCY_ENV,
-    ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV, ASTRCODE_TOOL_INLINE_LIMIT_PREFIX,
-    ASTRCODE_TOOL_RESULT_INLINE_LIMIT_ENV, DEEPSEEK_API_KEY_ENV, TAURI_ENV_TARGET_TRIPLE_ENV,
+    ASTRCODE_HOME_DIR_ENV, ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, ASTRCODE_PLUGIN_DIRS_ENV,
+    ASTRCODE_TEST_HOME_ENV, ASTRCODE_TOOL_INLINE_LIMIT_PREFIX,
+    ASTRCODE_TOOL_RESULT_INLINE_LIMIT_ENV, DEEPSEEK_API_KEY_ENV, OPENAI_API_KEY_ENV,
+    TAURI_ENV_TARGET_TRIPLE_ENV,
 };
 
 /// 影响 Astrcode 本地存储路径的环境变量。
@@ -63,7 +57,7 @@ pub const HOME_ENV_VARS: &[&str] = &[ASTRCODE_HOME_DIR_ENV, ASTRCODE_TEST_HOME_E
 pub const PLUGIN_ENV_VARS: &[&str] = &[ASTRCODE_PLUGIN_DIRS_ENV];
 
 /// 内置 Provider 默认配置使用的 API key 环境变量。
-pub const PROVIDER_API_KEY_ENV_VARS: &[&str] = &[DEEPSEEK_API_KEY_ENV, ANTHROPIC_API_KEY_ENV];
+pub const PROVIDER_API_KEY_ENV_VARS: &[&str] = &[DEEPSEEK_API_KEY_ENV, OPENAI_API_KEY_ENV];
 
 /// Tauri sidecar 构建管道所需的环境变量。
 pub const BUILD_ENV_VARS: &[&str] = &[TAURI_ENV_TARGET_TRIPLE_ENV];
@@ -82,7 +76,7 @@ pub const ALL_ASTRCODE_ENV_VARS: &[&str] = &[
     ASTRCODE_TEST_HOME_ENV,
     ASTRCODE_PLUGIN_DIRS_ENV,
     DEEPSEEK_API_KEY_ENV,
-    ANTHROPIC_API_KEY_ENV,
+    OPENAI_API_KEY_ENV,
     TAURI_ENV_TARGET_TRIPLE_ENV,
     ASTRCODE_MAX_TOOL_CONCURRENCY_ENV,
     ASTRCODE_TOOL_RESULT_INLINE_LIMIT_ENV,
@@ -92,20 +86,15 @@ pub const ALL_ASTRCODE_ENV_VARS: &[&str] = &[
 // API URL 常量
 // ============================================================
 
-/// Anthropic Messages API endpoint URL。
-pub const ANTHROPIC_MESSAGES_API_URL: &str = "https://api.anthropic.com/v1/messages";
+/// OpenAI 官方 Chat Completions API endpoint URL。
+pub const OPENAI_CHAT_COMPLETIONS_API_URL: &str = "https://api.openai.com/v1/chat/completions";
 
-/// Anthropic Models API endpoint URL。
+/// OpenAI 官方 Responses API endpoint URL。
+pub const OPENAI_RESPONSES_API_URL: &str = "https://api.openai.com/v1/responses";
+
+/// OpenAI 家族模型的保守默认上下文窗口。
 ///
-/// 用于按模型 ID 拉取权威的上下文窗口和最大输出 token 元数据。
-pub const ANTHROPIC_MODELS_API_URL: &str = "https://api.anthropic.com/v1/models";
-
-/// Anthropic API version。
-pub const ANTHROPIC_VERSION: &str = "2023-06-01";
-
-/// OpenAI-compatible 模型的保守默认上下文窗口。
-///
-/// 用于默认生成的 OpenAI-compatible profile，避免首次创建配置文件时出现空 limits。
+/// 用于默认生成的 OpenAI profile，避免首次创建配置文件时出现空 limits。
 pub const DEFAULT_OPENAI_CONTEXT_LIMIT: usize = 128_000;
 
 // ============================================================
@@ -124,8 +113,7 @@ pub use astrcode_core::config::{
     DEFAULT_INBOX_CAPACITY, DEFAULT_LLM_CONNECT_TIMEOUT_SECS, DEFAULT_LLM_MAX_RETRIES,
     DEFAULT_LLM_READ_TIMEOUT_SECS, DEFAULT_LLM_RETRY_BASE_DELAY_MS, DEFAULT_MAX_CONCURRENT_AGENTS,
     DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH, DEFAULT_MAX_CONSECUTIVE_FAILURES, DEFAULT_MAX_GREP_LINES,
-    DEFAULT_MAX_IMAGE_SIZE, DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
-    DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS, DEFAULT_MAX_RECOVERED_FILES, DEFAULT_MAX_STEPS,
+    DEFAULT_MAX_IMAGE_SIZE, DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS, DEFAULT_MAX_RECOVERED_FILES,
     DEFAULT_MAX_TOOL_CONCURRENCY, DEFAULT_MAX_TRACKED_FILES,
     DEFAULT_MICRO_COMPACT_GAP_THRESHOLD_SECS, DEFAULT_MICRO_COMPACT_KEEP_RECENT_RESULTS,
     DEFAULT_PARENT_DELIVERY_CAPACITY, DEFAULT_RECOVERY_TOKEN_BUDGET,
@@ -174,67 +162,20 @@ fn join_url_query(path: String, query: Option<&str>) -> String {
     }
 }
 
-fn resolve_anthropic_api_collection_url(
-    base_url: &str,
-    collection: &'static str,
-    default_url: &'static str,
-) -> String {
-    let (path, query) = split_url_query(base_url.trim());
-    let trimmed = path.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return default_url.to_string();
-    }
+fn replace_openai_collection_tail(trimmed: &str, collection_suffix: &str) -> Option<String> {
+    const KNOWN_SUFFIXES: &[&str] = &[
+        "/chat/completions",
+        "/chat/completion",
+        "/chat",
+        "/responses",
+        "/response",
+    ];
 
-    let this_collection_suffix = format!("/{collection}");
-    if trimmed.ends_with(&this_collection_suffix) {
-        return join_url_query(trimmed.to_string(), query);
-    }
-
-    // 兄弟集合互换：messages ↔ models
-    let sibling_collection = if collection == "messages" {
-        "models"
-    } else {
-        "messages"
-    };
-    let sibling_suffix = format!("/{sibling_collection}");
-    if trimmed.ends_with(&sibling_suffix) {
-        return join_url_query(
-            format!(
-                "{}/{}",
-                trimmed.trim_end_matches(&sibling_suffix),
-                collection
-            ),
-            query,
-        );
-    }
-
-    if trimmed.ends_with("/v1") {
-        return join_url_query(format!("{trimmed}/{collection}"), query);
-    }
-
-    if let Some((prefix, _tail)) = trimmed.rsplit_once("/v1/") {
-        // 只要已经落在 `/v1/<something>` 形态，就把尾集合标准化成目标集合
-        return join_url_query(format!("{prefix}/v1/{collection}"), query);
-    }
-
-    join_url_query(format!("{trimmed}/v1/{collection}"), query)
-}
-
-/// 解析 Anthropic Messages API 地址。
-///
-/// 兼容三种写法：
-/// - 空字符串：回退到官方默认地址
-/// - API 根地址：如 `https://gateway.example.com/anthropic`
-/// - 完整集合地址：如 `https://gateway.example.com/anthropic/v1/messages`
-pub fn resolve_anthropic_messages_api_url(base_url: &str) -> String {
-    resolve_anthropic_api_collection_url(base_url, "messages", ANTHROPIC_MESSAGES_API_URL)
-}
-
-/// 解析 Anthropic Models API 地址。
-///
-/// 与 [`resolve_anthropic_messages_api_url`] 使用同一规则，确保消息和模型探测落在同一条链路。
-pub fn resolve_anthropic_models_api_url(base_url: &str) -> String {
-    resolve_anthropic_api_collection_url(base_url, "models", ANTHROPIC_MODELS_API_URL)
+    KNOWN_SUFFIXES.iter().find_map(|suffix| {
+        trimmed
+            .strip_suffix(suffix)
+            .map(|prefix| format!("{prefix}/{collection_suffix}"))
+    })
 }
 
 /// 解析 OpenAI Chat Completions API 地址。
@@ -248,13 +189,13 @@ pub fn resolve_openai_chat_completions_api_url(base_url: &str) -> String {
     let (path, query) = split_url_query(base_url.trim());
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
-        return String::new();
+        return OPENAI_CHAT_COMPLETIONS_API_URL.to_string();
     }
 
     let normalized = if trimmed.ends_with("/chat/completions") {
         trimmed.to_string()
-    } else if trimmed.ends_with("/chat") {
-        format!("{trimmed}/completions")
+    } else if let Some(replaced) = replace_openai_collection_tail(trimmed, "chat/completions") {
+        replaced
     } else if let Some(versioned_url) =
         normalize_openai_versioned_base_url(trimmed, "chat/completions")
     {
@@ -266,87 +207,36 @@ pub fn resolve_openai_chat_completions_api_url(base_url: &str) -> String {
     join_url_query(normalized, query)
 }
 
+/// 解析 OpenAI Responses API 地址。
+///
+/// 兼容四种写法：
+/// - API 根地址：如 `https://api.openai.com`
+/// - 版本根地址：如 `https://api.openai.com/v1`
+/// - 完整集合地址：如 `https://api.openai.com/v1/responses`
+/// - 第三方版本根地址：如 `https://gateway.example.com/openai/v1`
+pub fn resolve_openai_responses_api_url(base_url: &str) -> String {
+    let (path, query) = split_url_query(base_url.trim());
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return OPENAI_RESPONSES_API_URL.to_string();
+    }
+
+    let normalized = if trimmed.ends_with("/responses") {
+        trimmed.to_string()
+    } else if let Some(replaced) = replace_openai_collection_tail(trimmed, "responses") {
+        replaced
+    } else if let Some(versioned_url) = normalize_openai_versioned_base_url(trimmed, "responses") {
+        versioned_url
+    } else {
+        format!("{trimmed}/v1/responses")
+    };
+
+    join_url_query(normalized, query)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn anthropic_url_helpers_fall_back_to_official_defaults() {
-        assert_eq!(
-            resolve_anthropic_messages_api_url(""),
-            ANTHROPIC_MESSAGES_API_URL
-        );
-        assert_eq!(
-            resolve_anthropic_models_api_url(""),
-            ANTHROPIC_MODELS_API_URL
-        );
-    }
-
-    #[test]
-    fn anthropic_url_helpers_expand_root_style_base_url() {
-        let base_url = "https://gateway.example.com/anthropic";
-        assert_eq!(
-            resolve_anthropic_messages_api_url(base_url),
-            "https://gateway.example.com/anthropic/v1/messages"
-        );
-        assert_eq!(
-            resolve_anthropic_models_api_url(base_url),
-            "https://gateway.example.com/anthropic/v1/models"
-        );
-    }
-
-    #[test]
-    fn anthropic_url_helpers_accept_full_collection_urls() {
-        let messages_url = "https://gateway.example.com/anthropic/v1/messages";
-        let models_url = "https://gateway.example.com/anthropic/v1/models";
-
-        assert_eq!(
-            resolve_anthropic_messages_api_url(messages_url),
-            messages_url
-        );
-        assert_eq!(resolve_anthropic_models_api_url(messages_url), models_url);
-        assert_eq!(resolve_anthropic_models_api_url(models_url), models_url);
-        assert_eq!(resolve_anthropic_messages_api_url(models_url), messages_url);
-    }
-
-    #[test]
-    fn anthropic_url_helpers_trim_whitespace_and_trailing_slashes() {
-        let base_url = "  https://gateway.example.com/anthropic/v1/  ";
-        assert_eq!(
-            resolve_anthropic_messages_api_url(base_url),
-            "https://gateway.example.com/anthropic/v1/messages"
-        );
-        assert_eq!(
-            resolve_anthropic_models_api_url(base_url),
-            "https://gateway.example.com/anthropic/v1/models"
-        );
-    }
-
-    #[test]
-    fn anthropic_url_helpers_expand_v1_base_without_collection() {
-        let base_url = "https://gateway.example.com/anthropic/v1";
-        assert_eq!(
-            resolve_anthropic_messages_api_url(base_url),
-            "https://gateway.example.com/anthropic/v1/messages"
-        );
-        assert_eq!(
-            resolve_anthropic_models_api_url(base_url),
-            "https://gateway.example.com/anthropic/v1/models"
-        );
-    }
-
-    #[test]
-    fn anthropic_url_helpers_replace_nonstandard_v1_tail() {
-        let base_url = "https://gateway.example.com/anthropic/v1/messeges?foo=bar";
-        assert_eq!(
-            resolve_anthropic_messages_api_url(base_url),
-            "https://gateway.example.com/anthropic/v1/messages?foo=bar"
-        );
-        assert_eq!(
-            resolve_anthropic_models_api_url(base_url),
-            "https://gateway.example.com/anthropic/v1/models?foo=bar"
-        );
-    }
 
     #[test]
     fn openai_url_helper_expands_root_style_base_url() {
@@ -395,6 +285,32 @@ mod tests {
                 "https://gateway.example.com/openai/v1/chat/completion"
             ),
             "https://gateway.example.com/openai/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn responses_url_helper_falls_back_to_official_default() {
+        assert_eq!(
+            resolve_openai_responses_api_url(""),
+            OPENAI_RESPONSES_API_URL
+        );
+    }
+
+    #[test]
+    fn responses_url_helper_expands_root_style_base_url() {
+        assert_eq!(
+            resolve_openai_responses_api_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/responses"
+        );
+    }
+
+    #[test]
+    fn responses_url_helper_replaces_chat_collection_tail() {
+        assert_eq!(
+            resolve_openai_responses_api_url(
+                "https://gateway.example.com/openai/v1/chat/completions"
+            ),
+            "https://gateway.example.com/openai/v1/responses"
         );
     }
 }

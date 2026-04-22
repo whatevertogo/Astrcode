@@ -12,9 +12,7 @@
 
 use astrcode_core::{
     ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
-    ResolvedTurnEnvelope,
 };
-use astrcode_kernel::CapabilityRouter;
 
 use super::{
     BuildSurfaceInput, FreshChildGovernanceInput, GovernanceBusyPolicy, ResolvedGovernanceSurface,
@@ -37,15 +35,12 @@ impl GovernanceSurfaceAssembler {
 
     pub fn runtime_with_control(
         &self,
-        mut runtime: ResolvedRuntimeConfig,
+        runtime: ResolvedRuntimeConfig,
         control: Option<&ExecutionControl>,
         allow_manual_compact: bool,
     ) -> Result<ResolvedRuntimeConfig, ApplicationError> {
         if let Some(control) = control {
             control.validate()?;
-            if let Some(max_steps) = control.max_steps {
-                runtime.max_steps = max_steps as usize;
-            }
             if !allow_manual_compact && control.manual_compact.is_some() {
                 return Err(ApplicationError::InvalidArgument(
                     "manualCompact is not valid for prompt submission".to_string(),
@@ -112,19 +107,12 @@ impl GovernanceSurfaceAssembler {
         &self,
         kernel: &dyn AppKernelPort,
         mode_id: &astrcode_core::ModeId,
-        parent_allowed_tools: &[String],
-        capability_grant: Option<&astrcode_core::SpawnCapabilityGrant>,
     ) -> Result<CompiledModeEnvelope, ApplicationError> {
         let spec = self.mode_catalog.get(mode_id).ok_or_else(|| {
             ApplicationError::InvalidArgument(format!("unknown mode '{}'", mode_id))
         })?;
-        compile_mode_envelope_for_child(
-            kernel.gateway().capabilities(),
-            &spec,
-            parent_allowed_tools,
-            capability_grant,
-        )
-        .map_err(ApplicationError::from)
+        compile_mode_envelope_for_child(kernel.gateway().capabilities(), &spec)
+            .map_err(ApplicationError::from)
     }
 
     fn build_surface(
@@ -148,7 +136,6 @@ impl GovernanceSurfaceAssembler {
             prompt_declarations.insert(0, leading);
         }
         prompt_declarations.extend(super::prompt::collaboration_prompt_declarations(
-            &compiled.envelope.allowed_tools,
             runtime.agent.max_subrun_depth,
             runtime.agent.max_spawn_per_turn,
         ));
@@ -162,10 +149,7 @@ impl GovernanceSurfaceAssembler {
             capability_router: compiled.capability_router,
             prompt_declarations,
             bound_mode_tool_contract: compiled.envelope.bound_tool_contract_snapshot(),
-            resolved_limits: ResolvedExecutionLimitsSnapshot {
-                allowed_tools: compiled.envelope.allowed_tools.clone(),
-                max_steps: Some(runtime.max_steps as u32),
-            },
+            resolved_limits: ResolvedExecutionLimitsSnapshot,
             resolved_overrides,
             injected_messages,
             policy_context: super::policy::build_policy_context(
@@ -238,12 +222,7 @@ impl GovernanceSurfaceAssembler {
         session_runtime: &dyn AgentSessionPort,
         input: FreshChildGovernanceInput,
     ) -> Result<ResolvedGovernanceSurface, ApplicationError> {
-        let compiled = self.compile_child_mode_surface(
-            kernel,
-            &input.mode_id,
-            &input.parent_allowed_tools,
-            input.capability_grant.as_ref(),
-        )?;
+        let compiled = self.compile_child_mode_surface(kernel, &input.mode_id)?;
         let resolved_overrides = ResolvedSubagentContextOverrides {
             fork_mode: compiled.envelope.fork_mode.clone(),
             ..ResolvedSubagentContextOverrides::default()
@@ -257,10 +236,7 @@ impl GovernanceSurfaceAssembler {
         let delegation = super::build_delegation_metadata(
             input.description.as_str(),
             input.task.as_str(),
-            &ResolvedExecutionLimitsSnapshot {
-                allowed_tools: compiled.envelope.allowed_tools.clone(),
-                max_steps: Some(input.runtime.max_steps as u32),
-            },
+            &ResolvedExecutionLimitsSnapshot,
             compiled.envelope.child_policy.restricted,
         );
         self.build_surface(BuildSurfaceInput {
@@ -282,22 +258,8 @@ impl GovernanceSurfaceAssembler {
         kernel: &dyn AppKernelPort,
         input: ResumedChildGovernanceInput,
     ) -> Result<ResolvedGovernanceSurface, ApplicationError> {
-        // resumed child 复用首次 spawn 时解析的 limits，因此用 resolved_limits 覆盖 runtime 默认值
-        let mut runtime = input.runtime;
-        if let Some(max_steps) = input.resolved_limits.max_steps {
-            runtime.max_steps = max_steps as usize;
-        }
+        let runtime = input.runtime;
         let compiled = self.compile_mode_surface(kernel, &input.mode_id, Vec::new())?;
-        // 工具白名单优先级：input.allowed_tools > resolved_limits > mode 编译结果
-        let allowed_tools = if input.allowed_tools.is_empty() {
-            if input.resolved_limits.allowed_tools.is_empty() {
-                compiled.envelope.allowed_tools.clone()
-            } else {
-                input.resolved_limits.allowed_tools.clone()
-            }
-        } else {
-            input.allowed_tools
-        };
         let delegation = input.delegation.unwrap_or_else(|| {
             super::build_delegation_metadata(
                 "",
@@ -306,27 +268,6 @@ impl GovernanceSurfaceAssembler {
                 false,
             )
         });
-        // 当 allowed_tools 与 mode 编译结果一致时复用 router，否则重建子集 router
-        let compiled = CompiledModeEnvelope {
-            capability_router: if allowed_tools == compiled.envelope.allowed_tools {
-                compiled.capability_router
-            } else if allowed_tools.is_empty() {
-                Some(CapabilityRouter::empty())
-            } else {
-                Some(
-                    kernel
-                        .gateway()
-                        .capabilities()
-                        .subset_for_tools_checked(&allowed_tools)
-                        .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?,
-                )
-            },
-            envelope: ResolvedTurnEnvelope {
-                allowed_tools: allowed_tools.clone(),
-                ..compiled.envelope
-            },
-            spec: compiled.spec,
-        };
         self.build_surface(BuildSurfaceInput {
             session_id: input.session_id,
             turn_id: input.turn_id,

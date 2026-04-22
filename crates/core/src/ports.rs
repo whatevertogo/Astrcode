@@ -216,12 +216,12 @@ impl LlmFinishReason {
         matches!(self, Self::MaxTokens)
     }
 
-    /// 从 OpenAI / Anthropic 返回的 finish reason 字符串解析统一枚举。
+    /// 从 OpenAI 家族接口返回的 finish reason 字符串解析统一枚举。
     pub fn from_api_value(value: &str) -> Self {
         match value {
-            "stop" | "end_turn" | "stop_sequence" => Self::Stop,
+            "stop" => Self::Stop,
             "max_tokens" | "length" => Self::MaxTokens,
-            "tool_calls" | "tool_use" => Self::ToolCalls,
+            "tool_calls" => Self::ToolCalls,
             other => Self::Other(other.to_string()),
         }
     }

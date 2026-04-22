@@ -57,7 +57,6 @@ impl PostLlmDecisionPolicy {
                 origin: UserMessageOrigin::ContinuationPrompt,
                 transition: continuation_transition(),
             },
-            OutputContinuationDecision::Stop(stop_cause) => PostLlmDecision::Stop(stop_cause),
             OutputContinuationDecision::NotNeeded => {
                 PostLlmDecision::Stop(TurnStopCause::Completed)
             },

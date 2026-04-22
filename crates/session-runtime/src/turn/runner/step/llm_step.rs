@@ -4,7 +4,7 @@ use super::{TurnExecutionContext, TurnExecutionResources, driver::StepDriver};
 use crate::turn::llm_cycle::ToolCallDeltaSink;
 
 pub(super) enum StepLlmResult {
-    Output(LlmOutput),
+    Output(Box<LlmOutput>),
     RecoveredByReactiveCompact,
 }
 
@@ -19,7 +19,7 @@ pub(super) async fn call_llm_for_step(
         .call_llm(resources, llm_request, tool_delta_sink)
         .await
     {
-        Ok(output) => Ok(StepLlmResult::Output(output)),
+        Ok(output) => Ok(StepLlmResult::Output(Box::new(output))),
         Err(error) => {
             if error.is_cancelled() {
                 return Err(error);

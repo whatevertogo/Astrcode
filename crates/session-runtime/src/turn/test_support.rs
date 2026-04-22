@@ -336,6 +336,7 @@ pub(crate) fn root_turn_done_event(turn_id: &str, reason: Option<String>) -> Sto
     turn_done_event(
         turn_id,
         &astrcode_core::AgentEventContext::default(),
+        None,
         reason,
         chrono::Utc::now(),
     )

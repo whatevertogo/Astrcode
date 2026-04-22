@@ -13,7 +13,7 @@ use astrcode_core::{
 use astrcode_session_runtime::{
     ConversationSnapshotFacts, ConversationStreamReplayFacts, SessionCatalogEvent,
     SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay, SessionRuntime,
-    SessionTranscriptSnapshot,
+    SessionTranscriptSnapshot, SubRunStatusSnapshot,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -90,6 +90,11 @@ pub trait AppSessionPort: Send + Sync {
         &self,
         session_id: &str,
     ) -> astrcode_core::Result<Vec<StoredEvent>>;
+    async fn durable_subrun_status_snapshot(
+        &self,
+        parent_session_id: &str,
+        requested_subrun_id: &str,
+    ) -> astrcode_core::Result<Option<SubRunStatusSnapshot>>;
     async fn session_replay(
         &self,
         session_id: &str,
@@ -248,6 +253,15 @@ impl AppSessionPort for SessionRuntime {
             normalize_external_session_id(session_id),
         ))
         .await
+    }
+
+    async fn durable_subrun_status_snapshot(
+        &self,
+        parent_session_id: &str,
+        requested_subrun_id: &str,
+    ) -> astrcode_core::Result<Option<SubRunStatusSnapshot>> {
+        self.durable_subrun_status_snapshot(parent_session_id, requested_subrun_id)
+            .await
     }
 
     async fn session_replay(

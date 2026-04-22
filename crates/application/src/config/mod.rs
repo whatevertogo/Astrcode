@@ -33,9 +33,8 @@ pub use astrcode_core::{
         DEFAULT_LLM_CONNECT_TIMEOUT_SECS, DEFAULT_LLM_MAX_RETRIES, DEFAULT_LLM_READ_TIMEOUT_SECS,
         DEFAULT_LLM_RETRY_BASE_DELAY_MS, DEFAULT_MAX_CONCURRENT_AGENTS,
         DEFAULT_MAX_CONCURRENT_BRANCH_DEPTH, DEFAULT_MAX_CONSECUTIVE_FAILURES,
-        DEFAULT_MAX_GREP_LINES, DEFAULT_MAX_IMAGE_SIZE, DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
-        DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS, DEFAULT_MAX_RECOVERED_FILES,
-        DEFAULT_MAX_SPAWN_PER_TURN, DEFAULT_MAX_STEPS, DEFAULT_MAX_SUBRUN_DEPTH,
+        DEFAULT_MAX_GREP_LINES, DEFAULT_MAX_IMAGE_SIZE, DEFAULT_MAX_REACTIVE_COMPACT_ATTEMPTS,
+        DEFAULT_MAX_RECOVERED_FILES, DEFAULT_MAX_SPAWN_PER_TURN, DEFAULT_MAX_SUBRUN_DEPTH,
         DEFAULT_MAX_TOOL_CONCURRENCY, DEFAULT_MAX_TRACKED_FILES, DEFAULT_PARENT_DELIVERY_CAPACITY,
         DEFAULT_RECOVERY_TOKEN_BUDGET, DEFAULT_RECOVERY_TRUNCATE_BYTES,
         DEFAULT_RESERVED_CONTEXT_SIZE, DEFAULT_SESSION_BROADCAST_CAPACITY,
@@ -47,15 +46,14 @@ pub use astrcode_core::{
     ports::{ConfigStore, McpConfigFileScope},
 };
 pub use constants::{
-    ALL_ASTRCODE_ENV_VARS, ANTHROPIC_API_KEY_ENV, ANTHROPIC_MESSAGES_API_URL,
-    ANTHROPIC_MODELS_API_URL, ANTHROPIC_VERSION, ASTRCODE_HOME_DIR_ENV,
-    ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV,
-    ASTRCODE_TOOL_INLINE_LIMIT_PREFIX, ASTRCODE_TOOL_RESULT_INLINE_LIMIT_ENV, BUILD_ENV_VARS,
-    CURRENT_CONFIG_VERSION, DEEPSEEK_API_KEY_ENV, DEFAULT_OPENAI_CONTEXT_LIMIT,
-    ENV_REFERENCE_PREFIX, HOME_ENV_VARS, LITERAL_VALUE_PREFIX, PLUGIN_ENV_VARS,
-    PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI, RUNTIME_ENV_VARS,
-    TAURI_ENV_TARGET_TRIPLE_ENV, resolve_anthropic_messages_api_url,
-    resolve_anthropic_models_api_url, resolve_openai_chat_completions_api_url,
+    ALL_ASTRCODE_ENV_VARS, ASTRCODE_HOME_DIR_ENV, ASTRCODE_MAX_TOOL_CONCURRENCY_ENV,
+    ASTRCODE_PLUGIN_DIRS_ENV, ASTRCODE_TEST_HOME_ENV, ASTRCODE_TOOL_INLINE_LIMIT_PREFIX,
+    ASTRCODE_TOOL_RESULT_INLINE_LIMIT_ENV, BUILD_ENV_VARS, CURRENT_CONFIG_VERSION,
+    DEEPSEEK_API_KEY_ENV, DEFAULT_OPENAI_CONTEXT_LIMIT, ENV_REFERENCE_PREFIX, HOME_ENV_VARS,
+    LITERAL_VALUE_PREFIX, OPENAI_API_KEY_ENV, OPENAI_CHAT_COMPLETIONS_API_URL,
+    OPENAI_RESPONSES_API_URL, PLUGIN_ENV_VARS, PROVIDER_API_KEY_ENV_VARS, PROVIDER_KIND_OPENAI,
+    RUNTIME_ENV_VARS, TAURI_ENV_TARGET_TRIPLE_ENV, resolve_openai_chat_completions_api_url,
+    resolve_openai_responses_api_url,
 };
 pub use selection::{list_model_options, resolve_active_selection, resolve_current_model};
 use tokio::sync::RwLock;
@@ -331,7 +329,6 @@ mod tests {
             .load_resolved_runtime_config(None)
             .expect("resolved runtime should load");
 
-        assert_eq!(runtime.max_steps, DEFAULT_MAX_STEPS);
         assert_eq!(runtime.agent.max_subrun_depth, DEFAULT_MAX_SUBRUN_DEPTH);
         assert_eq!(runtime.agent.max_spawn_per_turn, DEFAULT_MAX_SPAWN_PER_TURN);
         assert_eq!(
@@ -345,7 +342,6 @@ mod tests {
         let store = Arc::new(TestConfigStore::default());
         {
             let mut config = store.config.lock().expect("config mutex");
-            config.runtime.max_steps = Some(12);
             config.runtime.llm_read_timeout_secs = Some(120);
             config.runtime.agent = Some(astrcode_core::AgentConfig {
                 max_subrun_depth: Some(5),
@@ -359,7 +355,6 @@ mod tests {
             .load_resolved_runtime_config(None)
             .expect("resolved runtime should load");
 
-        assert_eq!(runtime.max_steps, 12);
         assert_eq!(runtime.llm_read_timeout_secs, 120);
         assert_eq!(runtime.agent.max_subrun_depth, 5);
         assert_eq!(runtime.agent.max_spawn_per_turn, 2);

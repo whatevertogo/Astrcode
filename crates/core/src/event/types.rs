@@ -107,20 +107,6 @@ pub enum TurnTerminalKind {
     Completed,
     Cancelled,
     Error { message: String },
-    StepLimitExceeded,
-    MaxOutputContinuationLimitReached,
-}
-
-impl TurnTerminalKind {
-    pub fn from_legacy_reason(reason: Option<&str>) -> Option<Self> {
-        match reason.map(str::trim).filter(|reason| !reason.is_empty()) {
-            Some("completed") => Some(Self::Completed),
-            Some("token_exceeded") => Some(Self::MaxOutputContinuationLimitReached),
-            Some("cancelled") | Some("interrupted") => Some(Self::Cancelled),
-            Some("step_limit_exceeded") => Some(Self::StepLimitExceeded),
-            Some(_) | None => None,
-        }
-    }
 }
 
 /// 存储事件载荷。
@@ -370,18 +356,7 @@ impl<'de> Deserialize<'de> for StorageEvent {
     where
         D: serde::Deserializer<'de>,
     {
-        let mut raw = StorageEventSerde::deserialize(deserializer)?;
-        if let StorageEventPayload::TurnDone {
-            terminal_kind,
-            reason,
-            ..
-        } = &mut raw.payload
-        {
-            if terminal_kind.is_none() {
-                *terminal_kind = TurnTerminalKind::from_legacy_reason(reason.as_deref());
-            }
-        }
-
+        let raw = StorageEventSerde::deserialize(deserializer)?;
         Ok(Self {
             turn_id: raw.turn_id,
             agent: raw.agent,
@@ -460,7 +435,7 @@ mod tests {
 
     use super::{
         CompactAppliedMeta, CompactMode, CompactTrigger, PromptMetricsPayload, StorageEvent,
-        StorageEventPayload, TurnTerminalKind,
+        StorageEventPayload,
     };
     use crate::{
         AgentEventContext, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
@@ -514,34 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_done_deserialization_maps_legacy_reason_to_typed_terminal_kind() {
-        let event: StorageEvent = serde_json::from_str(
-            r#"{"type":"turnDone","turn_id":"turn-1","timestamp":"2026-01-01T00:00:00Z","reason":"token_exceeded"}"#,
-        )
-        .expect("legacy turn done should deserialize");
-
-        match event {
-            StorageEvent {
-                payload:
-                    StorageEventPayload::TurnDone {
-                        terminal_kind,
-                        reason,
-                        ..
-                    },
-                ..
-            } => {
-                assert_eq!(
-                    terminal_kind,
-                    Some(TurnTerminalKind::MaxOutputContinuationLimitReached)
-                );
-                assert_eq!(reason.as_deref(), Some("token_exceeded"));
-            },
-            other => panic!("expected turn done, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn turn_done_deserialization_keeps_unknown_legacy_reason_untyped() {
+    fn turn_done_deserialization_preserves_unknown_reason_without_typing() {
         let event: StorageEvent = serde_json::from_str(
             r#"{"type":"turnDone","turn_id":"turn-1","timestamp":"2026-01-01T00:00:00Z","reason":"custom-free-text"}"#,
         )
@@ -771,7 +719,7 @@ mod tests {
             payload: StorageEventPayload::SubRunStarted {
                 tool_call_id: Some("call-1".to_string()),
                 resolved_overrides: ResolvedSubagentContextOverrides::default(),
-                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot,
                 timestamp: None,
             },
         };
@@ -861,7 +809,7 @@ mod tests {
             payload: StorageEventPayload::SubRunStarted {
                 tool_call_id: None,
                 resolved_overrides: ResolvedSubagentContextOverrides::default(),
-                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot,
                 timestamp: None,
             },
         }

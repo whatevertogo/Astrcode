@@ -5,7 +5,7 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, CancelToken, SpawnAgentParams, SpawnCapabilityGrant, ToolContext,
+    AgentEventContext, CancelToken, SpawnAgentParams, ToolContext,
     agent::executor::SubAgentExecutor,
 };
 use axum::{
@@ -296,9 +296,6 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
                 description: "仓库审查".to_string(),
                 prompt: "请阅读代码".to_string(),
                 context: Some("关注最近修改".to_string()),
-                capability_grant: Some(SpawnCapabilityGrant {
-                    allowed_tools: vec!["observe".to_string()],
-                }),
             },
             &ctx,
         )
@@ -338,13 +335,8 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
         "independent child session id should be preserved on the handle"
     );
     assert_eq!(
-        subrun.resolved_limits.allowed_tools,
-        vec!["observe".to_string()],
-        "live status should expose the launch-time capability grant intersection"
-    );
-    assert!(
-        subrun.resolved_limits.max_steps.is_some(),
-        "live status should expose the launch-time max step limit"
+        subrun.resolved_limits,
+        astrcode_core::ResolvedExecutionLimitsSnapshot
     );
 
     let child_meta = state
@@ -408,7 +400,6 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
                 description: "缺失 profile".to_string(),
                 prompt: "请阅读代码".to_string(),
                 context: None,
-                capability_grant: None,
             },
             &ctx,
         )
@@ -481,9 +472,6 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
                 description: "仓库审查".to_string(),
                 prompt: "请阅读代码".to_string(),
                 context: Some("关注最近修改".to_string()),
-                capability_grant: Some(SpawnCapabilityGrant {
-                    allowed_tools: vec!["observe".to_string()],
-                }),
             },
             &ctx,
         )
@@ -556,9 +544,8 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
     assert_eq!(
         payload
             .resolved_limits
-            .expect("durable fallback should expose resolved limits")
-            .allowed_tools,
-        vec!["observe".to_string()]
+            .expect("durable fallback should expose resolved limits"),
+        astrcode_protocol::http::ResolvedExecutionLimitsDto
     );
 }
 

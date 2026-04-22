@@ -20,7 +20,6 @@
 //! - LLM 返回纯文本（无工具调用）
 //! - 取消信号触发
 //! - 不可恢复错误
-//! - Step 上限
 
 mod step;
 
@@ -107,7 +106,6 @@ struct TurnExecutionResources<'a> {
     tools: Arc<[ToolDefinition]>,
     settings: ContextWindowSettings,
     clearable_tools: HashSet<String>,
-    max_steps: usize,
 }
 
 struct TurnExecutionRequestView<'a> {
@@ -227,7 +225,6 @@ impl<'a> TurnExecutionResources<'a> {
                 .iter()
                 .map(|tool| (*tool).to_string())
                 .collect(),
-            max_steps: request.runtime.max_steps.max(1),
         }
     }
 }
@@ -482,31 +479,6 @@ pub async fn run_turn(kernel: Arc<Kernel>, request: TurnRunRequest) -> Result<Tu
                 &resources,
                 TurnOutcome::Cancelled,
                 TurnStopCause::Cancelled,
-            ));
-        }
-
-        if execution.lifecycle.step_index >= resources.max_steps {
-            execution.journal.clear();
-            execution.journal.push(turn_terminal_event(
-                resources.turn_id,
-                resources.agent,
-                TurnStopCause::StepLimitExceeded,
-                Utc::now(),
-            ));
-            flush_pending_events(
-                &event_store,
-                resources.session_state,
-                resources.session_id,
-                &mut translator,
-                &mut execution.journal,
-            )
-            .await?;
-            return Ok(execution.finish(
-                &resources,
-                TurnOutcome::Error {
-                    message: format!("turn exceeded maximum steps ({})", resources.max_steps),
-                },
-                TurnStopCause::StepLimitExceeded,
             ));
         }
 

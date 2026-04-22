@@ -195,10 +195,7 @@ async fn surface_policy_pipeline_defaults_to_allow_all() {
             artifact: None,
             exit_gate: None,
         },
-        resolved_limits: ResolvedExecutionLimitsSnapshot {
-            allowed_tools: vec!["readFile".to_string()],
-            max_steps: Some(4),
-        },
+        resolved_limits: ResolvedExecutionLimitsSnapshot,
         resolved_overrides: None,
         injected_messages: Vec::new(),
         policy_context: astrcode_core::PolicyContext {
@@ -312,7 +309,6 @@ fn root_surface_applies_execution_control_without_special_case_logic() {
                 mode_id: ModeId::code(),
                 runtime: ResolvedRuntimeConfig::default(),
                 control: Some(ExecutionControl {
-                    max_steps: Some(7),
                     manual_compact: None,
                 }),
             },
@@ -320,7 +316,6 @@ fn root_surface_applies_execution_control_without_special_case_logic() {
         .expect("surface should build");
 
     assert!(surface.capability_router.is_none());
-    assert_eq!(surface.resolved_limits.max_steps, Some(7));
     assert_eq!(surface.busy_policy, GovernanceBusyPolicy::BranchOnBusy);
 }
 
@@ -345,10 +340,6 @@ async fn fresh_child_surface_restricts_tools_and_inherits_governance_defaults() 
                 working_dir: ".".to_string(),
                 mode_id: ModeId::code(),
                 runtime: ResolvedRuntimeConfig::default(),
-                parent_allowed_tools: vec!["spawn".to_string(), "readFile".to_string()],
-                capability_grant: Some(astrcode_core::SpawnCapabilityGrant {
-                    allowed_tools: vec!["readFile".to_string()],
-                }),
                 description: "只做读取".to_string(),
                 task: "inspect file".to_string(),
                 busy_policy: GovernanceBusyPolicy::BranchOnBusy,
@@ -357,11 +348,8 @@ async fn fresh_child_surface_restricts_tools_and_inherits_governance_defaults() 
         .await
         .expect("surface should build");
 
-    assert_eq!(
-        surface.resolved_limits.allowed_tools,
-        vec!["readFile".to_string()]
-    );
-    assert!(surface.capability_router.is_some());
+    assert_eq!(surface.resolved_limits, ResolvedExecutionLimitsSnapshot);
+    assert!(surface.capability_router.is_none());
     assert!(
         surface
             .prompt_declarations
@@ -380,10 +368,7 @@ fn resumed_child_surface_reuses_existing_limits_and_contract_source() {
         .build()
         .expect("kernel should build");
     let assembler = GovernanceSurfaceAssembler::default();
-    let limits = ResolvedExecutionLimitsSnapshot {
-        allowed_tools: vec!["readFile".to_string()],
-        max_steps: Some(5),
-    };
+    let limits = ResolvedExecutionLimitsSnapshot;
     let surface = assembler
         .resumed_child_surface(
             &kernel,
@@ -393,7 +378,6 @@ fn resumed_child_surface_reuses_existing_limits_and_contract_source() {
                 working_dir: ".".to_string(),
                 mode_id: ModeId::code(),
                 runtime: ResolvedRuntimeConfig::default(),
-                allowed_tools: Vec::new(),
                 resolved_limits: limits.clone(),
                 delegation: None,
                 message: "continue with the same branch".to_string(),
@@ -402,9 +386,7 @@ fn resumed_child_surface_reuses_existing_limits_and_contract_source() {
             },
         )
         .expect("surface should build");
-
-    assert_eq!(surface.resolved_limits.allowed_tools, limits.allowed_tools);
-    assert_eq!(surface.resolved_limits.max_steps, limits.max_steps);
+    assert_eq!(surface.resolved_limits, limits);
     assert_eq!(surface.busy_policy, GovernanceBusyPolicy::RejectOnBusy);
     assert!(
         surface

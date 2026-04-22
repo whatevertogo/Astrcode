@@ -1,7 +1,7 @@
 //! # LLM 提供者运行时
 //!
-//! 本 crate 实现了对多种 LLM API 后端的统一抽象，包括 Anthropic Claude 和所有兼容
-//! OpenAI Chat Completions API 的服务（如 OpenAI 自身、DeepSeek、本地 Ollama/vLLM 等）。
+//! 本 crate 实现了对 OpenAI 家族 LLM API 后端的统一抽象，包括 OpenAI Responses、
+//! OpenAI Chat Completions 以及兼容 OpenAI 协议的服务（如 DeepSeek、本地 Ollama/vLLM 等）。
 //!
 //! ## 架构设计
 //!
@@ -9,16 +9,15 @@
 //! - `generate()` 执行一次模型调用，支持流式和非流式两种模式
 //! - `model_limits()` 返回模型的上下文窗口和最大输出 token 估算
 //!
-//! 各提供者实现（`anthropic::AnthropicProvider`、`openai::OpenAiProvider`）封装了
-//! 各自的协议细节，对外暴露统一的接口。
+//! 各提供者实现封装了各自的协议细节，对外暴露统一的接口。
 //!
 //! ## 流式处理模型
 //!
 //! 流式响应通过 SSE（Server-Sent Events）协议传输，本 crate 使用 [`LlmAccumulator`]
 //! 将增量事件重新组装为完整的 [`LlmOutput`]：
 //! 1. HTTP 响应流逐块读取字节
-//! 2. 按 SSE 协议解析出事件块（Anthropic 使用多行 `event:/data:` 格式， OpenAI 使用单行 `data:
-//!    {...}` 格式）
+//! 2. 按 SSE 协议解析出事件块（Chat Completions 使用单行 `data: {...}`，Responses 使用
+//!    `event:/data:` 事件块）
 //! 3. 每个事件通过 [`emit_event`] 同时发送到外部 `EventSink` 和内部累加器
 //! 4. 流结束后，累加器输出包含完整文本、工具调用和推理内容的 [`LlmOutput`]
 //!
@@ -32,14 +31,11 @@
 //!
 //! ## Prompt Caching
 //!
-//! Anthropic 支持显式 prompt caching：对选定消息标记 `ephemeral` 类型缓存控制，
-//! 使后端可以复用 KV cache，减少重复上下文的延迟和成本。
-//! OpenAI 兼容 API 目前依赖自动前缀缓存（prefix caching），不发送显式缓存控制头。
+//! OpenAI 家族接口依赖自动前缀缓存（prefix caching），不发送额外显式缓存控制头。
 //!
 //! ## 模块结构
 //!
-//! - [`anthropic`] — Anthropic Messages API 实现
-//! - [`openai`] — OpenAI Chat Completions API 兼容实现
+//! - [`openai`] — OpenAI Responses / Chat Completions 实现
 
 use std::{collections::HashMap, time::Duration};
 
@@ -48,7 +44,6 @@ use log::warn;
 use serde_json::Value;
 use tokio::{select, time::sleep};
 
-pub mod anthropic;
 pub mod cache_tracker;
 pub mod openai;
 
@@ -655,23 +650,6 @@ mod tests {
         assert_eq!(
             FinishReason::from_api_value("content_filter"),
             FinishReason::Other("content_filter".to_string())
-        );
-    }
-
-    #[test]
-    fn finish_reason_parses_anthropic_values() {
-        assert_eq!(FinishReason::from_api_value("end_turn"), FinishReason::Stop);
-        assert_eq!(
-            FinishReason::from_api_value("max_tokens"),
-            FinishReason::MaxTokens
-        );
-        assert_eq!(
-            FinishReason::from_api_value("tool_use"),
-            FinishReason::ToolCalls
-        );
-        assert_eq!(
-            FinishReason::from_api_value("stop_sequence"),
-            FinishReason::Stop
         );
     }
 

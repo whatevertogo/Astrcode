@@ -120,13 +120,12 @@ impl WorkflowOrchestrator {
     fn validate_state(&self, state: &WorkflowInstanceState) -> Result<(), ApplicationError> {
         let phase = self.phase(state)?;
         match (state.workflow_id.as_str(), phase.phase_id.as_str()) {
-            (PLAN_EXECUTE_WORKFLOW_ID, PLANNING_PHASE_ID) => {
-                if state.bridge_state.is_some() {
-                    return Err(ApplicationError::Internal(
-                        "planning workflow state must not carry execute bridge state".to_string(),
-                    ));
-                }
+            (PLAN_EXECUTE_WORKFLOW_ID, PLANNING_PHASE_ID) if state.bridge_state.is_some() => {
+                return Err(ApplicationError::Internal(
+                    "planning workflow state must not carry execute bridge state".to_string(),
+                ));
             },
+            (PLAN_EXECUTE_WORKFLOW_ID, PLANNING_PHASE_ID) => {},
             (PLAN_EXECUTE_WORKFLOW_ID, EXECUTING_PHASE_ID) => {
                 let bridge_state = state.bridge_state.as_ref().ok_or_else(|| {
                     ApplicationError::Internal(
@@ -194,7 +193,7 @@ mod tests {
             artifact_refs: BTreeMap::from([("canonical-plan".to_string(), plan_artifact)]),
             bridge_state: Some(
                 bridge
-                    .into_bridge_state(PLANNING_PHASE_ID, EXECUTING_PHASE_ID)
+                    .to_bridge_state(PLANNING_PHASE_ID, EXECUTING_PHASE_ID)
                     .expect("bridge should encode"),
             ),
             updated_at: Utc

@@ -1,16 +1,13 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    Result, SpawnAgentParams, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+    Result, SpawnAgentParams, SubAgentExecutor, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::agent_tools::{
-    executor::SubAgentExecutor,
-    result_mapping::{invalid_params_result, map_subrun_result},
-};
+use crate::agent_tools::result_mapping::{invalid_params_result, map_subrun_result};
 
 const TOOL_NAME: &str = "spawn";
 
@@ -34,7 +31,6 @@ Use `spawn` for one new isolated responsibility.
 
 - Put the real task in `prompt`
 - Keep `description` short for UI/logs
-- Use `capabilityGrant.allowedTools` only when the child needs a narrower task-scoped tool subset
 - Start with one child; add more only for truly separate workstreams
 - Reuse an idle child with `send` before creating another child
 - Copy the returned `agentId` exactly into later `send` / `observe` / `close` calls
@@ -63,22 +59,6 @@ Do not use `spawn` for simple reads, one-off searches, or vague "explore everyth
                 "context": {
                     "type": "string",
                     "description": "Optional supplement. E.g. 'focus on security issues', 'frontend directory only'."
-                },
-                "capabilityGrant": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "description": "Optional task-scoped capability grant. Use it to narrow the child to the minimum tool subset needed for this task. This does not replace the agent profile.",
-                    "properties": {
-                        "allowedTools": {
-                            "type": "array",
-                            "minItems": 1,
-                            "description": "Exact tool names the child may use for this task. Runtime will intersect this request with the parent's current inheritable tool surface.",
-                            "items": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "required": ["allowedTools"]
                 }
             },
             "required": ["description", "prompt"]
@@ -111,9 +91,8 @@ impl Tool for SpawnAgentTool {
                      context isolation, or responsibility separation is clear.",
                     "Use `spawn` only for a new isolated responsibility. Give the child one \
                      narrow task, not a vague exploration brief. Start with one child, reuse an \
-                     idle child before spawning another, copy the returned `agentId` exactly in \
-                     later collaboration calls, and use `capabilityGrant` only when the child \
-                     needs a narrower task-scoped tool subset.",
+                     idle child before spawning another, and copy the returned `agentId` exactly \
+                     in later collaboration calls.",
                 )
                 .caveat(
                     "If your next step depends on the result, doing it yourself is usually faster; \
@@ -136,11 +115,6 @@ impl Tool for SpawnAgentTool {
                     "Focused delegation: { description: \"check cache layer\", prompt: \"review \
                      concurrency and invalidation risks in crates/runtime-cache\", type: \
                      \"reviewer\" }",
-                )
-                .example(
-                    "Narrow tool grant: { description: \"scan call sites\", prompt: \"find all \
-                     callers of SessionRuntime::submit_prompt_for_agent\", capabilityGrant: \
-                     { allowedTools: [\"grep\", \"readFile\"] } }",
                 )
                 .prompt_tag("collaboration"),
             )

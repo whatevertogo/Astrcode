@@ -506,11 +506,6 @@ impl App {
     ) -> Result<CompactSessionAccepted, ApplicationError> {
         if let Some(control) = &control {
             control.validate()?;
-            if control.max_steps.is_some() {
-                return Err(ApplicationError::InvalidArgument(
-                    "maxSteps is not valid for manual compact".to_string(),
-                ));
-            }
             if matches!(control.manual_compact, Some(false)) {
                 return Err(ApplicationError::InvalidArgument(
                     "manualCompact must be true for manual compact requests".to_string(),
@@ -799,7 +794,6 @@ fn normalize_submission_text(
 /// 因为 compact 的语义要求这个标志。
 fn normalize_compact_control(control: Option<ExecutionControl>) -> Option<ExecutionControl> {
     let mut control = control.unwrap_or(ExecutionControl {
-        max_steps: None,
         manual_compact: None,
     });
     if control.manual_compact.is_none() {

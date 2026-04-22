@@ -622,10 +622,7 @@ async fn run_single_step_returns_continue_after_reactive_compact_recovery() {
 async fn run_single_step_continues_after_max_tokens_without_tool_calls() {
     let gateway = test_gateway(8192);
     let session_state = test_session_state();
-    let runtime = ResolvedRuntimeConfig {
-        max_output_continuation_attempts: 2,
-        ..ResolvedRuntimeConfig::default()
-    };
+    let runtime = ResolvedRuntimeConfig::default();
     let cancel = CancelToken::new();
     let agent = AgentEventContext::default();
     let prompt_facts_provider = NoopPromptFactsProvider;
@@ -675,66 +672,6 @@ async fn run_single_step_continues_after_max_tokens_without_tool_calls() {
             content,
         }) if content == crate::turn::continuation_cycle::OUTPUT_CONTINUATION_PROMPT
     ));
-}
-
-#[tokio::test]
-async fn run_single_step_stops_when_max_tokens_continuation_limit_is_reached() {
-    let gateway = test_gateway(8192);
-    let session_state = test_session_state();
-    let runtime = ResolvedRuntimeConfig {
-        max_output_continuation_attempts: 1,
-        ..ResolvedRuntimeConfig::default()
-    };
-    let cancel = CancelToken::new();
-    let agent = AgentEventContext::default();
-    let prompt_facts_provider = NoopPromptFactsProvider;
-    let resources = test_resources(
-        &gateway,
-        &session_state,
-        &runtime,
-        &cancel,
-        &agent,
-        &prompt_facts_provider,
-    );
-    let mut execution =
-        TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
-    execution.lifecycle.max_output_continuation_count = 1;
-    let driver = ScriptedStepDriver {
-        counts: DriverCallCounts::default(),
-        assemble_result: Mutex::new(Some(Ok(assembled_prompt(vec![user_message("hello")])))),
-        llm_result: Mutex::new(Some(Ok(LlmOutput {
-            content: "partial answer".to_string(),
-            tool_calls: Vec::new(),
-            reasoning: None,
-            usage: Some(LlmUsage {
-                input_tokens: 40,
-                output_tokens: 32,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
-            }),
-            finish_reason: LlmFinishReason::MaxTokens,
-            prompt_cache_diagnostics: None,
-        }))),
-        reactive_compact_result: Mutex::new(None),
-        tool_cycle_result: Mutex::new(None),
-    };
-
-    let outcome = run_single_step_with(&mut execution, &resources, &driver)
-        .await
-        .expect("step should stop when truncated output continuation limit is reached");
-
-    assert!(matches!(
-        outcome,
-        StepOutcome::Completed(TurnStopCause::MaxOutputContinuationLimitReached)
-    ));
-    assert!(
-        execution.journal.iter().any(|event| matches!(
-            &event.payload,
-            StorageEventPayload::AssistantFinal { content, .. } if content == "partial answer"
-        )),
-        "terminal step should only stage assistant output; turn terminal event is appended by the \
-         runner"
-    );
 }
 
 #[tokio::test]

@@ -393,8 +393,6 @@ fn build_agent_profile(
     let AgentFrontmatter {
         name,
         description,
-        tools,
-        disallowed_tools,
         prompt,
         system_prompt,
     } = metadata;
@@ -429,13 +427,6 @@ fn build_agent_profile(
         });
     }
 
-    let mut allowed_tools = tools.unwrap_or_default().into_vec();
-    let disallowed_tools = disallowed_tools.unwrap_or_default().into_vec();
-    if !allowed_tools.is_empty() && !disallowed_tools.is_empty() {
-        let disallowed = disallowed_tools.iter().cloned().collect::<HashSet<_>>();
-        allowed_tools.retain(|tool| !disallowed.contains(tool));
-    }
-
     let system_prompt = markdown_body
         .map(|body| body.trim().to_string())
         .filter(|body| !body.is_empty())
@@ -452,9 +443,6 @@ fn build_agent_profile(
         description,
         mode: AgentMode::SubAgent,
         system_prompt,
-        allowed_tools,
-        disallowed_tools,
-        // TODO: 未来可能需要添加更多执行限制字段（如 max_steps）
         // Loader 只消费 Claude 风格 agent 定义里的稳定字段；
         // 模型选择继续交给上层 runtime 配置，避免把私有 frontmatter 扩散成事实标准。
         model_preference: None,
@@ -542,43 +530,8 @@ fn normalize_agent_id(value: &str) -> String {
 struct AgentFrontmatter {
     name: Option<String>,
     description: Option<String>,
-    tools: Option<ToolList>,
-    disallowed_tools: Option<ToolList>,
     prompt: Option<String>,
     system_prompt: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum ToolList {
-    List(Vec<String>),
-    Csv(String),
-}
-
-impl Default for ToolList {
-    fn default() -> Self {
-        Self::List(Vec::new())
-    }
-}
-
-impl ToolList {
-    fn into_vec(self) -> Vec<String> {
-        let raw = match self {
-            Self::List(values) => values,
-            Self::Csv(values) => values.split(',').map(str::to_string).collect(),
-        };
-
-        let mut dedup = HashSet::new();
-        let mut normalized = Vec::new();
-        for value in raw {
-            let value = value.trim().to_string();
-            if value.is_empty() || !dedup.insert(value.clone()) {
-                continue;
-            }
-            normalized.push(value);
-        }
-        normalized
-    }
 }
 
 #[cfg(test)]
@@ -603,8 +556,6 @@ mod tests {
             description: "root only".to_string(),
             mode: AgentMode::Primary,
             system_prompt: None,
-            allowed_tools: Vec::new(),
-            disallowed_tools: Vec::new(),
             model_preference: None,
         });
         registry.insert(AgentProfile {
@@ -613,8 +564,6 @@ mod tests {
             description: "subagent".to_string(),
             mode: AgentMode::SubAgent,
             system_prompt: None,
-            allowed_tools: Vec::new(),
-            disallowed_tools: Vec::new(),
             model_preference: None,
         });
         registry.insert(AgentProfile {
@@ -623,8 +572,6 @@ mod tests {
             description: "all modes".to_string(),
             mode: AgentMode::All,
             system_prompt: None,
-            allowed_tools: Vec::new(),
-            disallowed_tools: Vec::new(),
             model_preference: None,
         });
 
@@ -680,11 +627,6 @@ Prefer repository-local conventions first.
         let reviewer = registry.get("reviewer").expect("reviewer should exist");
         assert_eq!(reviewer.description, "Project-level reviewer");
         assert_eq!(reviewer.model_preference, None);
-        assert_eq!(
-            reviewer.allowed_tools,
-            vec!["Read".to_string(), "Grep".to_string()]
-        );
-        assert_eq!(reviewer.disallowed_tools, vec!["Bash".to_string()]);
         assert!(
             reviewer
                 .system_prompt
@@ -735,10 +677,6 @@ Prefer the nested project defaults.
         let planner = registry.get("planner").expect("planner should exist");
 
         assert_eq!(planner.description, "Nested planner");
-        assert_eq!(
-            planner.allowed_tools,
-            vec!["readFile".to_string(), "grep".to_string()]
-        );
     }
 
     #[test]
@@ -847,15 +785,6 @@ tools: Read, Grep, Glob, Bash
             .expect("safe-researcher profile should exist");
 
         assert_eq!(agent.name, "safe-researcher");
-        assert_eq!(
-            agent.allowed_tools,
-            vec![
-                "Read".to_string(),
-                "Grep".to_string(),
-                "Glob".to_string(),
-                "Bash".to_string()
-            ]
-        );
     }
 
     #[test]
@@ -883,16 +812,7 @@ tools: ["readFile", "writeFile", "editFile", "shell"]
         let agent = registry
             .get("executor")
             .expect("executor profile should exist");
-
-        assert_eq!(
-            agent.allowed_tools,
-            vec![
-                "readFile".to_string(),
-                "writeFile".to_string(),
-                "editFile".to_string(),
-                "shell".to_string()
-            ]
-        );
+        assert_eq!(agent.name, "executor");
     }
 
     #[test]
@@ -921,11 +841,6 @@ systemPrompt: |
         let agent = registry
             .get("planner")
             .expect("planner profile should exist");
-
-        assert_eq!(
-            agent.allowed_tools,
-            vec!["readFile".to_string(), "grep".to_string()]
-        );
         assert!(
             agent
                 .system_prompt

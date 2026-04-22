@@ -12,7 +12,7 @@
 
 ## 功能特性
 
-- **多模型支持**：支持 Anthropic Claude、OpenAI 兼容 API（DeepSeek、OpenAI 等），运行时切换 Profile 和 Model
+- **多模型支持**：统一走 OpenAI 家族接口，支持 OpenAI Responses、OpenAI Chat Completions 与兼容网关（DeepSeek 等），运行时切换 Profile 和 Model
 - **流式响应**：实时显示 AI 生成的代码和文本，支持 thinking 内容展示
 - **内置工具集**：文件读写、编辑、搜索、Shell 执行、Skill 加载等
 - **Agent 协作**：支持主/子 Agent 模式，内置 spawn / send / observe / close 工具链
@@ -162,9 +162,10 @@ cd frontend && npm run build
   "profiles": [
     {
       "name": "deepseek",
-      "providerKind": "openai-compatible",
+      "providerKind": "openai",
       "baseUrl": "https://api.deepseek.com",
       "apiKey": "env:DEEPSEEK_API_KEY",
+      "apiMode": "chat_completions",
       "models": [
         {
           "id": "deepseek-chat",
@@ -191,8 +192,9 @@ cd frontend && npm run build
 
 `models` 为对象列表，每个模型需要配置 `maxTokens` 和 `contextLimit`：
 
-- **OpenAI-compatible profile**：手动设置 `maxTokens` 和 `contextLimit`
-- **Anthropic profile**：`contextLimit` 默认 200,000，`maxTokens` 默认 8,192；若配置中显式设置了这些值则使用配置值
+- **OpenAI profile**：统一使用 `providerKind: "openai"`
+- **`apiMode: "chat_completions"`**：适合 DeepSeek 等 OpenAI 兼容网关
+- **`apiMode: "responses"`**：适合 OpenAI 官方原生 Responses API
 
 ### 多 Profile 配置
 
@@ -203,26 +205,21 @@ cd frontend && npm run build
   "profiles": [
     {
       "name": "deepseek",
-      "providerKind": "openai-compatible",
+      "providerKind": "openai",
       "baseUrl": "https://api.deepseek.com",
       "apiKey": "env:DEEPSEEK_API_KEY",
+      "apiMode": "chat_completions",
       "models": [{ "id": "deepseek-chat", "maxTokens": 8096, "contextLimit": 128000 }]
     },
     {
-      "name": "anthropic",
-      "providerKind": "anthropic",
-      "baseUrl": "https://api.anthropic.com",
-      "apiKey": "env:ANTHROPIC_API_KEY",
-      "models": [{ "id": "claude-sonnet-4-5-20250514" }]
-    },
-    {
       "name": "openai",
-      "providerKind": "openai-compatible",
-      "baseUrl": "https://api.openai.com",
+      "providerKind": "openai",
+      "baseUrl": "https://api.openai.com/v1",
       "apiKey": "env:OPENAI_API_KEY",
+      "apiMode": "responses",
       "models": [
-        { "id": "gpt-4o", "maxTokens": 16384, "contextLimit": 200000 },
-        { "id": "gpt-4o-mini", "maxTokens": 16384, "contextLimit": 128000 }
+        { "id": "gpt-4.1", "maxTokens": 32768, "contextLimit": 128000 },
+        { "id": "gpt-4.1-mini", "maxTokens": 32768, "contextLimit": 128000 }
       ]
     }
   ]
@@ -261,7 +258,7 @@ cd frontend && npm run build
 | Home / 测试隔离 | `ASTRCODE_TEST_HOME` | 为测试隔离临时 home 目录 |
 | Plugin | `ASTRCODE_PLUGIN_DIRS` | 追加插件发现目录，按系统路径分隔符解析 |
 | Provider 默认值 | `DEEPSEEK_API_KEY` | DeepSeek 默认 profile 的 API Key |
-| Provider 默认值 | `ANTHROPIC_API_KEY` | Anthropic 默认 profile 的 API Key |
+| Provider 默认值 | `OPENAI_API_KEY` | OpenAI 默认 profile 的 API Key |
 | Runtime | `ASTRCODE_MAX_TOOL_CONCURRENCY` | 并发工具上限兜底 |
 | Build / Tauri | `TAURI_ENV_TARGET_TRIPLE` | 构建 sidecar 时指定目标 triple |
 
@@ -277,7 +274,7 @@ AstrCode/
 │   ├── application/          # 用例编排、执行控制、治理与观测
 │   ├── server/               # Axum HTTP/SSE 边界与唯一组合根
 │   ├── adapter-storage/      # JSONL 事件日志持久化与文件系统存储
-│   ├── adapter-llm/          # LLM provider（Anthropic / OpenAI-compatible）
+│   ├── adapter-llm/          # LLM provider（OpenAI Responses / Chat Completions）
 │   ├── adapter-prompt/       # Prompt 组装（贡献者模式 + 分层缓存构建）
 │   ├── adapter-tools/        # 内置工具定义与 Agent 协作工具
 │   ├── adapter-skills/       # Skill 发现、解析、物化与目录管理

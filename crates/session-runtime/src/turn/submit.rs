@@ -300,6 +300,7 @@ async fn finalize_turn_execution(
                 &finalize.persisted.turn_id,
                 finalize.persisted.agent.clone(),
                 &mut translator,
+                finalize.persisted.source_tool_call_id.clone(),
                 error.to_string(),
             )
             .await;
@@ -318,13 +319,15 @@ async fn finalize_turn_execution(
         },
     };
     persist_pending_manual_compact_if_any(
-        finalize.kernel.gateway(),
-        finalize.prompt_facts_provider.as_ref(),
-        &finalize.event_store,
-        finalize.actor.working_dir(),
-        finalize.actor.turn_runtime(),
-        finalize.actor.state(),
-        &finalize.session_id,
+        crate::turn::finalize::DeferredManualCompactContext {
+            gateway: finalize.kernel.gateway(),
+            prompt_facts_provider: finalize.prompt_facts_provider.as_ref(),
+            event_store: &finalize.event_store,
+            working_dir: finalize.actor.working_dir(),
+            turn_runtime: finalize.actor.turn_runtime(),
+            session_state: finalize.actor.state(),
+            session_id: &finalize.session_id,
+        },
         pending_manual_compact,
     )
     .await;
@@ -883,7 +886,8 @@ mod tests {
             events: vec![turn_done_event(
                 "turn-1",
                 &AgentEventContext::default(),
-                Some("completed".to_string()),
+                Some(astrcode_core::TurnTerminalKind::Completed),
+                None,
                 chrono::Utc::now(),
             )],
             summary: TurnSummary {

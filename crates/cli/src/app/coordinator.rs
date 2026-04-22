@@ -192,7 +192,6 @@ where
                             &session_id,
                             CompactSessionRequest {
                                 control: Some(ExecutionControlDto {
-                                    max_steps: None,
                                     manual_compact: Some(true),
                                 }),
                                 instructions: None,

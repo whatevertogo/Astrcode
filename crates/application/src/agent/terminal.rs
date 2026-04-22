@@ -115,7 +115,7 @@ impl AgentOrchestrationService {
 
     /// Child turn 终态收口主流程。
     ///
-    /// 1. 将 turn outcome 映射为 `SubRunResult`（TokenExceeded 视为完成而非失败）
+    /// 1. 将 turn outcome 映射为 `SubRunResult`
     /// 2. 原子更新 live tree 的 lifecycle 和 turn outcome
     /// 3. 记录子代理执行指标
     /// 4. 检查是否已有显式 terminal delivery（如 send_to_parent 产生的）， 如果有则跳过 fallback
@@ -258,11 +258,7 @@ impl AgentOrchestrationService {
     }
 }
 
-/// 将 Anthropic turn 终态映射为 `SubRunResult`。
-///
-/// 关键设计决策：`TokenExceeded` 被视为"完成"（带 handoff），而非"失败"。
-/// 原因是 token 超限时 LLM 通常已输出了有价值的部分结果，
-/// 父级应该能通过 typed handoff delivery 获取这些内容。
+/// 将子会话 turn 终态映射为 `SubRunResult`。
 fn build_child_subrun_result(
     child: &astrcode_core::SubRunHandle,
     parent_session_id: &str,
@@ -270,12 +266,8 @@ fn build_child_subrun_result(
     outcome: &SessionTurnOutcomeSummary,
 ) -> SubRunResult {
     match outcome.outcome {
-        AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded => SubRunResult::Completed {
-            outcome: match outcome.outcome {
-                AgentTurnOutcome::Completed => CompletedSubRunOutcome::Completed,
-                AgentTurnOutcome::TokenExceeded => CompletedSubRunOutcome::TokenExceeded,
-                AgentTurnOutcome::Failed | AgentTurnOutcome::Cancelled => unreachable!(),
-            },
+        AgentTurnOutcome::Completed => SubRunResult::Completed {
+            outcome: CompletedSubRunOutcome::Completed,
             handoff: SubRunHandoff {
                 findings: Vec::new(),
                 artifacts: child_handoff_artifacts(child, parent_session_id),
@@ -285,7 +277,6 @@ fn build_child_subrun_result(
                         source_turn_id,
                         match outcome.outcome {
                             AgentTurnOutcome::Completed => SubRunStatus::Completed,
-                            AgentTurnOutcome::TokenExceeded => SubRunStatus::TokenExceeded,
                             AgentTurnOutcome::Failed => SubRunStatus::Failed,
                             AgentTurnOutcome::Cancelled => SubRunStatus::Cancelled,
                         },
@@ -305,14 +296,13 @@ fn build_child_subrun_result(
             outcome: match outcome.outcome {
                 AgentTurnOutcome::Failed => FailedSubRunOutcome::Failed,
                 AgentTurnOutcome::Cancelled => FailedSubRunOutcome::Cancelled,
-                AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded => unreachable!(),
+                AgentTurnOutcome::Completed => unreachable!(),
             },
             failure: SubRunFailure {
                 code: match outcome.outcome {
                     AgentTurnOutcome::Cancelled => SubRunFailureCode::Interrupted,
                     AgentTurnOutcome::Failed => SubRunFailureCode::Internal,
                     AgentTurnOutcome::Completed => SubRunFailureCode::Internal,
-                    AgentTurnOutcome::TokenExceeded => SubRunFailureCode::Internal,
                 },
                 display_message: outcome.summary.clone(),
                 technical_message: outcome.technical_message.clone(),
@@ -344,24 +334,8 @@ fn project_child_terminal_delivery(
 ) -> ChildTerminalDeliveryProjection {
     let status_projection = result.status();
     let last_turn_outcome = status_projection.last_turn_outcome();
-    let (kind, status) = match status_projection {
-        SubRunStatus::Completed | SubRunStatus::TokenExceeded => (
-            ChildSessionNotificationKind::Delivered,
-            AgentLifecycleStatus::Idle,
-        ),
-        SubRunStatus::Failed => (
-            ChildSessionNotificationKind::Failed,
-            AgentLifecycleStatus::Idle,
-        ),
-        SubRunStatus::Cancelled => (
-            ChildSessionNotificationKind::Closed,
-            AgentLifecycleStatus::Idle,
-        ),
-        SubRunStatus::Running => (
-            ChildSessionNotificationKind::ProgressSummary,
-            status_projection.lifecycle(),
-        ),
-    };
+    let kind = status_projection.notification_kind();
+    let status = status_projection.lifecycle();
 
     let delivery = result
         .handoff()
@@ -370,33 +344,17 @@ fn project_child_terminal_delivery(
         .unwrap_or_else(|| ParentDelivery {
             idempotency_key: fallback_notification_id.to_string(),
             origin: ParentDeliveryOrigin::Fallback,
-            terminal_semantics: match last_turn_outcome {
-                Some(AgentTurnOutcome::Completed)
-                | Some(AgentTurnOutcome::TokenExceeded)
-                | Some(AgentTurnOutcome::Failed)
-                | Some(AgentTurnOutcome::Cancelled) => ParentDeliveryTerminalSemantics::Terminal,
-                None => ParentDeliveryTerminalSemantics::NonTerminal,
-            },
+            terminal_semantics: result.terminal_semantics(),
             source_turn_id: None,
             payload: match last_turn_outcome {
-                Some(AgentTurnOutcome::Completed | AgentTurnOutcome::TokenExceeded) => {
+                Some(AgentTurnOutcome::Completed) => {
                     let message = result
                         .handoff()
                         .and_then(|handoff| handoff.delivery.as_ref())
                         .map(|delivery| delivery.payload.message().trim())
                         .filter(|message| !message.is_empty())
                         .map(ToString::to_string)
-                        .unwrap_or_else(|| match last_turn_outcome {
-                            Some(AgentTurnOutcome::Completed) => {
-                                "子 Agent 已完成，但没有返回可读总结。".to_string()
-                            },
-                            Some(AgentTurnOutcome::TokenExceeded) => {
-                                "子 Agent 因 token 限额结束，但没有返回可读总结。".to_string()
-                            },
-                            _ => {
-                                unreachable!("completed branch should only serve terminal handoff")
-                            },
-                        });
+                        .unwrap_or_else(|| "子 Agent 已完成，但没有返回可读总结。".to_string());
                     ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
                         message,
                         findings: result

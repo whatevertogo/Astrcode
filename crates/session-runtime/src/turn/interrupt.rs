@@ -4,7 +4,11 @@ use chrono::Utc;
 use crate::{
     SessionRuntime,
     state::append_and_broadcast,
-    turn::{events::error_event, finalize::persist_pending_manual_compact_if_any},
+    turn::{
+        TurnStopCause,
+        events::turn_terminal_event,
+        finalize::{DeferredManualCompactContext, persist_pending_manual_compact_if_any},
+    },
 };
 
 impl SessionRuntime {
@@ -32,21 +36,25 @@ impl SessionRuntime {
         }
 
         let mut translator = EventTranslator::new(actor.state().current_phase()?);
-        let event = error_event(
-            active_turn_id.as_deref(),
-            &AgentEventContext::default(),
-            "interrupted".to_string(),
-            Some(Utc::now()),
-        );
-        append_and_broadcast(actor.state(), &event, &mut translator).await?;
+        if let Some(active_turn_id) = active_turn_id.as_deref() {
+            let event = turn_terminal_event(
+                active_turn_id,
+                &AgentEventContext::default(),
+                TurnStopCause::Cancelled,
+                Utc::now(),
+            );
+            append_and_broadcast(actor.state(), &event, &mut translator).await?;
+        }
         persist_pending_manual_compact_if_any(
-            self.kernel.gateway(),
-            self.prompt_facts_provider.as_ref(),
-            &self.event_store,
-            actor.working_dir(),
-            actor.turn_runtime(),
-            actor.state(),
-            session_id.as_str(),
+            DeferredManualCompactContext {
+                gateway: self.kernel.gateway(),
+                prompt_facts_provider: self.prompt_facts_provider.as_ref(),
+                event_store: &self.event_store,
+                working_dir: actor.working_dir(),
+                turn_runtime: actor.turn_runtime(),
+                session_state: actor.state(),
+                session_id: session_id.as_str(),
+            },
             interrupted.pending_request,
         )
         .await;

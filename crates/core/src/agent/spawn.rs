@@ -1,42 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use super::{
-    AgentMode, ForkMode, normalize_non_empty_unique_string_list, require_non_empty_trimmed,
-    require_not_whitespace_only,
-};
-use crate::error::{AstrError, Result};
+use super::{AgentMode, ForkMode, require_non_empty_trimmed, require_not_whitespace_only};
+use crate::error::Result;
 
 /// `spawn` 的稳定调用参数。
 ///
 /// 该 DTO 下沉到 core，是为了让工具层和执行装配层共享同一份参数语义，
 /// 避免 `runtime-execution` 只为了复用字段定义而反向依赖 `runtime-agent-tool`。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SpawnCapabilityGrant {
-    /// 本次 child 允许使用的 tool capability names。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
-}
-
-impl SpawnCapabilityGrant {
-    pub fn validate(&self) -> Result<()> {
-        let normalized = normalize_non_empty_unique_string_list(
-            &self.allowed_tools,
-            "capabilityGrant.allowedTools",
-        )?;
-        if normalized.is_empty() {
-            return Err(AstrError::Validation(
-                "capabilityGrant.allowedTools 不能为空".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn normalized_allowed_tools(&self) -> Result<Vec<String>> {
-        normalize_non_empty_unique_string_list(&self.allowed_tools, "capabilityGrant.allowedTools")
-    }
-}
-
 /// `spawn` 的稳定调用参数。
 ///
 /// 该 DTO 下沉到 core，是为了让工具层和执行装配层共享同一份参数语义，
@@ -57,10 +27,6 @@ pub struct SpawnAgentParams {
     /// 可选补充材料。不保证完整历史，只是附加信息。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
-
-    /// 本次任务级 capability grant。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability_grant: Option<SpawnCapabilityGrant>,
 }
 
 impl SpawnAgentParams {
@@ -72,9 +38,6 @@ impl SpawnAgentParams {
         // description 只承担可观测性职责；
         // 允许空串兼容模型输出，但纯空白会污染标题与日志。
         require_not_whitespace_only("description", &self.description)?;
-        if let Some(grant) = &self.capability_grant {
-            grant.validate()?;
-        }
         Ok(())
     }
 }
@@ -169,12 +132,7 @@ impl Default for ResolvedSubagentContextOverrides {
 /// 解析后的执行限制快照。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ResolvedExecutionLimitsSnapshot {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
-}
+pub struct ResolvedExecutionLimitsSnapshot;
 
 /// child delegation 的轻量元数据。
 ///
@@ -187,10 +145,6 @@ pub struct ResolvedExecutionLimitsSnapshot {
 pub struct DelegationMetadata {
     pub responsibility_summary: String,
     pub reuse_scope_summary: String,
-    #[serde(default)]
-    pub restricted: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability_limit_summary: Option<String>,
 }
 
 /// Agent 画像定义。
@@ -208,15 +162,6 @@ pub struct AgentProfile {
     /// 子 Agent 专用系统提示，可为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// 允许使用的工具集合；为空表示由上层策略决定。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
-    /// 显式禁止的工具集合。
-    ///
-    /// 该字段用于保留 Claude 风格 agent 定义里的 denylist 语义，
-    /// 即使当前策略层还未完整消费，也不能在加载阶段静默丢失。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
     /// 模型偏好。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_preference: Option<String>,
