@@ -48,7 +48,7 @@ export function normalizeFetchError(error: unknown): Error {
   if (error instanceof TypeError) {
     if (window.__ASTRCODE_BOOTSTRAP__?.isDesktopHost) {
       return new Error(
-        '无法连接本地服务，请确认 AstrCode 桌面端仍在运行；如仍失败，请完全退出后重新启动应用。开发环境下再检查 `cargo tauri dev` 日志。'
+        '无法连接本地服务，请确认 AstrCode 桌面端仍在运行；如仍失败，请完全退出后重新启动应用。开发环境下再检查 `npm run dev:tauri` 日志。'
       );
     }
     return new Error('无法连接后端服务，请确认本地 server 或网络连接正常。');

@@ -112,7 +112,7 @@ npm run dev
 
     Write-Host "[start] 启动 Tauri 开发环境..." -ForegroundColor Cyan
     Set-Location $repoRoot
-    cargo tauri dev
+    node scripts/tauri-cli.js dev
 } finally {
     Stop-Frontend
 }

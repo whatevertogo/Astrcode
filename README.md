@@ -79,7 +79,7 @@ npm install
 cd frontend && npm install
 
 # 运行桌面端
-cargo tauri dev
+npm run dev:tauri
 
 # 或单独运行服务端 / CLI
 cargo run -p astrcode-server
@@ -120,7 +120,7 @@ cd frontend && npm install
 
 ```bash
 # 桌面端开发（推荐）
-cargo tauri dev
+npm run dev:tauri
 
 # 只启动前端
 cd frontend && npm run dev
@@ -135,7 +135,7 @@ cargo run -p astrcode-server
 
 ```bash
 # 桌面端构建
-cargo tauri build
+npm run build
 
 # 浏览器端构建
 cd frontend && npm run build
