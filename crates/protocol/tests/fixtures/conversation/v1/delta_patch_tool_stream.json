@@ -1,6 +1,7 @@
 {
   "sessionId": "session-root",
   "cursor": "cursor:opaque:v1:session-root/44==",
+  "stepProgress": {},
   "kind": "patch_block",
   "blockId": "block-tool-call-1",
   "patch": {
