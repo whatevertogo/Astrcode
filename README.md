@@ -361,7 +361,7 @@ AstrCode/
 
 ### 插件系统
 
-- 基于 stdio JSON-RPC 双向通信
+- 基于 stdio 双向通信
 - 插件生命周期管理（discovered -> loaded -> failed -> disabled）
 - 能力路由与权限检查
 - 流式执行支持
@@ -404,7 +404,7 @@ Tauri 仅作为"薄壳"，负责：
 | `/api/auth/exchange` | POST | Token 认证交换 |
 | `/api/sessions` | GET/POST | 会话列表/创建 |
 | `/api/sessions/{id}/messages` | GET | 获取会话消息 |
-| `/api/sessions/{id}/prompts` | POST | 提交 prompt（支持 `tokenBudget` / `maxSteps` / `manualCompact` 执行控制） |
+| `/api/sessions/{id}/prompts` | POST | 提交 prompt（支持 `manualCompact` 执行控制） |
 | `/api/sessions/{id}/interrupt` | POST | 中断会话 |
 | `/api/sessions/{id}/events` | GET (SSE) | 实时事件流 |
 | `/api/sessions/{id}` | DELETE | 删除会话 |
