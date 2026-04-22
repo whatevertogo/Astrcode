@@ -6,6 +6,14 @@ export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interru
 export type ToolOutputStream = 'stdout' | 'stderr';
 export type CompactTrigger = 'auto' | 'manual' | 'deferred';
 export type CompactMode = 'full' | 'incremental' | 'retry_salvage';
+export type SystemPromptLayer = 'stable' | 'semi_stable' | 'inherited' | 'dynamic';
+export type PromptCacheBreakReason =
+  | 'system_prompt_changed'
+  | 'tool_schemas_changed'
+  | 'model_changed'
+  | 'global_cache_strategy_changed'
+  | 'compacted_prompt'
+  | 'tool_result_rebudgeted';
 export type InvocationKind = 'subRun' | 'rootExecution';
 // Why: 当前写路径只允许 `independentSession`，前端读侧保持同样约束，
 // 避免把已经移除的历史模式继续编码成正式类型。
@@ -99,6 +107,14 @@ export interface PromptMetricsSnapshot {
   providerCacheMetricsSupported?: boolean;
   promptCacheReuseHits?: number;
   promptCacheReuseMisses?: number;
+}
+
+export interface PromptCacheDiagnostics {
+  reasons: PromptCacheBreakReason[];
+  previousCacheReadInputTokens?: number;
+  currentCacheReadInputTokens?: number;
+  expectedDrop?: boolean;
+  cacheBreakDetected?: boolean;
 }
 
 export interface ConversationStepCursor {
@@ -409,6 +425,8 @@ export interface PromptMetricsMessage {
   providerCacheMetricsSupported?: boolean;
   promptCacheReuseHits?: number;
   promptCacheReuseMisses?: number;
+  promptCacheUnchangedLayers?: SystemPromptLayer[];
+  promptCacheDiagnostics?: PromptCacheDiagnostics;
   timestamp: number;
 }
 

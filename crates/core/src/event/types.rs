@@ -585,6 +585,7 @@ mod tests {
                     prompt_cache_reuse_hits: 2,
                     prompt_cache_reuse_misses: 1,
                     prompt_cache_unchanged_layers: Vec::new(),
+                    prompt_cache_diagnostics: None,
                 },
             },
         };

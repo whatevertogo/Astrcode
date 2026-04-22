@@ -20,7 +20,7 @@ const baseStepProgress = {
 } as const;
 
 describe('projectConversationState', () => {
-  it('ignores prompt metrics blocks while preserving assistant step index', () => {
+  it('projects prompt metrics blocks into visible cache diagnostics messages', () => {
     const state: ConversationSnapshotState = {
       cursor: 'cursor-metrics',
       phase: 'streaming',
@@ -42,6 +42,14 @@ describe('projectConversationState', () => {
           providerCacheMetricsSupported: true,
           promptCacheReuseHits: 3,
           promptCacheReuseMisses: 1,
+          promptCacheUnchangedLayers: ['stable', 'inherited'],
+          promptCacheDiagnostics: {
+            reasons: ['model_changed'],
+            previousCacheReadInputTokens: 12000,
+            currentCacheReadInputTokens: 4000,
+            expectedDrop: false,
+            cacheBreakDetected: true,
+          },
         },
         {
           id: 'assistant-1',
@@ -59,8 +67,23 @@ describe('projectConversationState', () => {
 
     const projection = projectConversationState(state);
 
-    expect(projection.messages).toHaveLength(1);
+    expect(projection.messages).toHaveLength(2);
     expect(projection.messages[0]).toMatchObject({
+      kind: 'promptMetrics',
+      turnId: 'turn-1',
+      stepIndex: 2,
+      promptCacheReuseHits: 3,
+      promptCacheReuseMisses: 1,
+      promptCacheUnchangedLayers: ['stable', 'inherited'],
+      promptCacheDiagnostics: {
+        reasons: ['model_changed'],
+        previousCacheReadInputTokens: 12000,
+        currentCacheReadInputTokens: 4000,
+        expectedDrop: false,
+        cacheBreakDetected: true,
+      },
+    });
+    expect(projection.messages[1]).toMatchObject({
       kind: 'assistant',
       turnId: 'turn-1',
       stepIndex: 2,
@@ -142,6 +165,81 @@ describe('projectConversationState', () => {
       reasoningText: '先分析问题，再给结论。',
       streaming: true,
     });
+  });
+
+  it('hides draft-approval assistant summaries even after the snapshot mode has switched away from plan', () => {
+    const state: ConversationSnapshotState = {
+      cursor: 'cursor-draft-approval-guard',
+      phase: 'idle',
+      blocks: [
+        {
+          id: 'user-1',
+          kind: 'user',
+          turnId: 'turn-2',
+          markdown: '按这个做，开始吧',
+        },
+        {
+          id: 'thinking-1',
+          kind: 'thinking',
+          turnId: 'turn-2',
+          markdown: '先把草稿补全成可呈递状态。',
+          status: 'complete',
+        },
+        {
+          id: 'assistant-1',
+          kind: 'assistant',
+          turnId: 'turn-2',
+          markdown: '计划已呈递。这是一个纯只读总结任务……',
+          status: 'complete',
+        },
+        {
+          id: 'plan-1',
+          kind: 'plan',
+          turnId: 'turn-2',
+          toolCallId: 'call-plan-save',
+          eventKind: 'saved',
+          title: 'PROJECT_ARCHITECTURE.md 核心约束只读总结',
+          planPath: 'C:/demo/plan.md',
+          status: 'awaiting_approval',
+          blockers: {
+            missingHeadings: [],
+            invalidSections: [],
+          },
+        },
+      ],
+      control: {
+        ...baseControl,
+        currentModeId: 'code',
+        activePlan: {
+          slug: 'project-architecturemd',
+          path: 'C:/demo/plan.md',
+          status: 'awaiting_approval',
+          title: 'PROJECT_ARCHITECTURE.md 核心约束只读总结',
+        },
+      },
+      stepProgress: baseStepProgress,
+      childSummaries: [],
+    };
+
+    const projection = projectConversationState(state);
+
+    expect(projection.messages).toHaveLength(2);
+    expect(projection.messages[0]).toMatchObject({
+      kind: 'user',
+      turnId: 'turn-2',
+      text: '按这个做，开始吧',
+    });
+    expect(projection.messages[1]).toMatchObject({
+      kind: 'plan',
+      turnId: 'turn-2',
+      status: 'awaiting_approval',
+      title: 'PROJECT_ARCHITECTURE.md 核心约束只读总结',
+    });
+    expect(
+      projection.messages.some(
+        (message) => message.kind === 'assistant' && message.turnId === 'turn-2'
+      )
+    ).toBe(false);
   });
 
   it('keeps orphan thinking blocks visible when no assistant block follows', () => {

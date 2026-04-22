@@ -165,6 +165,7 @@ mod tests {
 
     use astrcode_core::{
         AgentEventContext, InvocationKind, StorageEvent, StorageEventPayload, SubRunStorageMode,
+        UserMessageOrigin,
     };
 
     use super::EventLogIterator;
@@ -209,5 +210,29 @@ mod tests {
 
         assert!(error.to_string().contains("invalid event"));
         assert!(error.to_string().contains("child_session_id"));
+    }
+
+    #[test]
+    fn iterator_accepts_legacy_auto_continue_nudge_user_origin() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let path = temp_dir.path().join("session.jsonl");
+        let legacy_line = r#"{"storageSeq":113,"turn_id":"turn-legacy","type":"userMessage","content":"继续推进当前任务。","timestamp":"2026-04-21T22:33:27.918318400+08:00","origin":"auto_continue_nudge"}"#;
+        write_jsonl(&path, &[legacy_line.to_string()]);
+
+        let mut iterator = EventLogIterator::from_path(&path).expect("iterator should open");
+        let event = iterator
+            .next()
+            .expect("first line should exist")
+            .expect("legacy event should parse");
+
+        match event.event.payload {
+            StorageEventPayload::UserMessage {
+                origin, content, ..
+            } => {
+                assert_eq!(origin, UserMessageOrigin::ContinuationPrompt);
+                assert_eq!(content, "继续推进当前任务。");
+            },
+            other => panic!("expected user message payload, got {other:?}"),
+        }
     }
 }

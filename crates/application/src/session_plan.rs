@@ -9,8 +9,9 @@ use std::{
 };
 
 use astrcode_core::{
-    GovernanceModeSpec, ModeId, PromptDeclaration, SessionPlanState, SessionPlanStatus,
-    WorkflowSignal, session_plan_content_digest,
+    GovernanceModeSpec, LlmMessage, ModeId, PromptDeclaration,
+    SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER, SessionPlanState, SessionPlanStatus,
+    UserMessageOrigin, WorkflowSignal, session_plan_content_digest,
 };
 use astrcode_support::hostpaths::project_dir;
 use chrono::{DateTime, Utc};
@@ -315,6 +316,77 @@ pub(crate) fn build_plan_exit_declaration(
     )
     .into_iter()
     .next()
+}
+
+pub(crate) fn build_plan_draft_approval_guard_declaration(
+    spec: &GovernanceModeSpec,
+    context: &PlanPromptContext,
+    matched_phrase: Option<&str>,
+) -> PromptDeclaration {
+    let active_plan = context
+        .active_plan
+        .as_ref()
+        .map(|plan| {
+            format!(
+                "title={}, status={}, path={}",
+                plan.title, plan.status, plan.path
+            )
+        })
+        .unwrap_or_else(|| "(none)".to_string());
+    let matched_phrase = matched_phrase.unwrap_or("(unknown)");
+    build_hook_declaration(
+        spec,
+        context,
+        "draft-approval-guard",
+        "Draft Approval Guard",
+        format!(
+            "用户这条消息命中了批准/开工语义（matchedPhrase: {matched_phrase}），但当前 canonical \
+             session plan 仍然是 draft，尚未进入 \
+             awaiting_approval，也还没有被正式呈递给用户。\n\n当前 active plan: \
+             {active_plan}\ntargetPlanPath: \
+             {}\n\n把这条消息解释成：继续把现有计划打磨到可呈递，而不是立即执行计划。\n硬约束：\\
+             n- 保持在 plan mode，不要切换到执行语义。\n- \
+             不要声称“开始执行/已经开始做/总结如下/最终摘要如下”等执行态结果。\n- \
+             不要输出计划外的最终产物正文，也不要提前给出任何最终总结内容。\n- \
+             只允许继续审查上下文、修订 canonical plan，并在计划真正可执行后调用 `exitPlanMode` \
+             呈递审批。\n- 在完成修订并真正呈递前，assistant \
+             对用户的自然语言回复最多只能是一句简短确认，例如：“收到，我先把草稿补全为可呈递版本，\
+             再交给你确认。” 不要展开正文，不要重复计划内容。",
+            context.target_plan_path
+        ),
+        Some(606),
+    )
+}
+
+pub(crate) fn build_plan_draft_approval_guard_injected_messages(
+    context: &PlanPromptContext,
+    matched_phrase: Option<&str>,
+) -> Vec<LlmMessage> {
+    let matched_phrase = matched_phrase.unwrap_or("(unknown)");
+    vec![LlmMessage::User {
+        content: format!(
+            "{SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER}\\
+             n内部执行约束（不要在对用户可见输出中复述）：当前 canonical session plan 仍是 \
+             draft，尚未进入 \
+             awaiting_approval，也还没有正式呈递给用户。下一条真实用户消息虽然命中了批准/\
+             开工语义（matchedPhrase: \
+             {matched_phrase}），但只能被解释为“继续把草稿修订为可呈递版本”，不能解释为批准执行。\\
+             \
+             n\n当前 targetPlanPath: {}\n当前 activePlanStatus: {}\n\n硬约束：\n- \
+             不要开始执行计划，不要切换到执行态语义。\n- \
+             不要输出任何最终总结、计划摘要正文或任务结果正文。\n- \
+             如果必须回复自然语言，最多只允许一句简短确认：“收到，我先把草稿补全为可呈递版本，\
+             再交给你确认。”\n- 优先通过修订 canonical plan \
+             让其进入可呈递状态；只有真正可呈递时才调用 `exitPlanMode`。",
+            context.target_plan_path,
+            context
+                .active_plan
+                .as_ref()
+                .map(|plan| plan.status.as_str())
+                .unwrap_or("draft")
+        ),
+        origin: UserMessageOrigin::ReactivationPrompt,
+    }]
 }
 
 pub(crate) fn build_execute_bridge_declaration(

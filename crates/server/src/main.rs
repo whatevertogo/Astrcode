@@ -59,7 +59,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     auth::{AuthSessionManager, BootstrapAuth},
@@ -254,21 +254,7 @@ async fn shutdown_signal() {
             log::error!("failed to install Ctrl+C shutdown handler: {}", error);
         }
     };
-    let stdin_closed = async {
-        let mut stdin = tokio::io::stdin();
-        let mut buffer = [0_u8; 64];
-        loop {
-            match stdin.read(&mut buffer).await {
-                Ok(0) => break,
-                Ok(_) => {},
-                Err(error) => {
-                    // stdin 读取失败时宁可尽快结束，也不要把桌面端退出卡成僵尸 sidecar。
-                    log::warn!("failed to read stdin shutdown pipe: {}", error);
-                    break;
-                },
-            }
-        }
-    };
+    let stdin_closed = wait_for_shutdown_pipe(tokio::io::stdin());
 
     #[cfg(unix)]
     let terminate = async {
@@ -284,5 +270,99 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
         _ = terminate => {}
         _ = stdin_closed => {}
+    }
+}
+
+/// 等待宿主关闭 stdin 管道。
+///
+/// 为什么单独拆出来：
+/// 让“读到 EOF 才触发优雅关闭”这条语义能被单测锁住，避免以后改
+/// `shutdown_signal()` 时把 stdin 生命周期行为意外改掉。
+async fn wait_for_shutdown_pipe<R>(mut reader: R)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut buffer = [0_u8; 64];
+    loop {
+        match reader.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(_) => {},
+            Err(error) => {
+                // stdin 读取失败时宁可尽快结束，也不要把桌面端退出卡成僵尸 sidecar。
+                log::warn!("failed to read stdin shutdown pipe: {}", error);
+                break;
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use tokio::{
+        io::{AsyncRead, DuplexStream, ReadBuf, duplex},
+        time::{Duration, timeout},
+    };
+
+    use super::wait_for_shutdown_pipe;
+
+    #[tokio::test]
+    async fn shutdown_pipe_waits_for_eof_even_after_receiving_data() {
+        let (reader, mut writer): (DuplexStream, DuplexStream) = duplex(64);
+        let mut waiter = tokio::spawn(wait_for_shutdown_pipe(reader));
+
+        tokio::io::AsyncWriteExt::write_all(&mut writer, b"still-alive")
+            .await
+            .expect("writer should accept probe bytes");
+
+        let still_waiting = timeout(Duration::from_millis(80), &mut waiter).await;
+        assert!(
+            still_waiting.is_err(),
+            "shutdown pipe should not resolve before stdin reaches EOF"
+        );
+
+        drop(writer);
+        timeout(Duration::from_millis(300), waiter)
+            .await
+            .expect("waiter should resolve once stdin reaches EOF")
+            .expect("waiter task should complete cleanly");
+    }
+
+    #[tokio::test]
+    async fn shutdown_pipe_accepts_immediate_eof() {
+        timeout(
+            Duration::from_millis(100),
+            wait_for_shutdown_pipe(tokio::io::empty()),
+        )
+        .await
+        .expect("an already-closed stdin pipe should resolve immediately");
+    }
+
+    #[derive(Default)]
+    struct ErrorReader;
+
+    impl AsyncRead for ErrorReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::other("synthetic stdin failure")))
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_pipe_treats_read_errors_as_shutdown() {
+        timeout(
+            Duration::from_millis(100),
+            wait_for_shutdown_pipe(ErrorReader),
+        )
+        .await
+        .expect("stdin read errors should end the shutdown wait promptly");
     }
 }

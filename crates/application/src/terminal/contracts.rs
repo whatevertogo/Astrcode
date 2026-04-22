@@ -1,6 +1,6 @@
 use astrcode_core::{
-    ChildAgentRef, CompactAppliedMeta, CompactTrigger, Phase, SessionEventRecord,
-    SystemPromptLayer, ToolOutputStream,
+    ChildAgentRef, CompactAppliedMeta, CompactTrigger, Phase, PromptCacheDiagnostics,
+    SessionEventRecord, SystemPromptLayer, ToolOutputStream,
 };
 use serde_json::Value;
 
@@ -94,6 +94,7 @@ pub struct ConversationPromptMetricsBlockFacts {
     pub prompt_cache_reuse_hits: u32,
     pub prompt_cache_reuse_misses: u32,
     pub prompt_cache_unchanged_layers: Vec<SystemPromptLayer>,
+    pub prompt_cache_diagnostics: Option<PromptCacheDiagnostics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

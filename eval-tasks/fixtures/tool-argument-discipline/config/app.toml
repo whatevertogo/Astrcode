@@ -1,0 +1,2 @@
+[server]
+read_timeout_secs = 45

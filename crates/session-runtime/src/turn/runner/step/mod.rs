@@ -8,7 +8,7 @@ mod tests;
 
 use std::time::Instant;
 
-use astrcode_core::{LlmMessage, LlmOutput, Result, UserMessageOrigin};
+use astrcode_core::{LlmMessage, LlmOutput, Result, StorageEventPayload, UserMessageOrigin};
 use chrono::Utc;
 use driver::{RuntimeStepDriver, StepDriver};
 use llm_step::{StepLlmResult, call_llm_for_step, record_llm_usage, warn_if_output_truncated};
@@ -151,16 +151,21 @@ fn append_assistant_output(
         || reasoning_content
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty());
+    let suppress_assistant_follow_up = execution.draft_plan_approval_guard_active
+        || should_suppress_exit_plan_follow_up(execution);
     execution.messages.push(LlmMessage::Assistant {
         content: content.clone(),
         tool_calls: output.tool_calls.clone(),
         reasoning: output.reasoning.clone(),
     });
+    if suppress_assistant_follow_up {
+        execution.messages.pop();
+    }
     execution
         .budget
         .micro_compact_state
         .record_assistant_activity(Instant::now());
-    if has_persistable_assistant_output {
+    if has_persistable_assistant_output && !suppress_assistant_follow_up {
         execution.journal.push(assistant_final_event(
             resources.turn_id,
             resources.agent,
@@ -171,6 +176,25 @@ fn append_assistant_output(
             Some(Utc::now()),
         ));
     }
+}
+
+fn should_suppress_exit_plan_follow_up(execution: &TurnExecutionContext) -> bool {
+    execution
+        .journal
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            StorageEventPayload::ToolResult {
+                tool_name,
+                metadata,
+                ..
+            } if tool_name == "exitPlanMode" => metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("schema"))
+                .and_then(|value| value.as_str()),
+            _ => None,
+        })
+        .is_some_and(|schema| matches!(schema, "sessionPlanExitReviewPending" | "sessionPlanExit"))
 }
 
 fn append_internal_user_message(

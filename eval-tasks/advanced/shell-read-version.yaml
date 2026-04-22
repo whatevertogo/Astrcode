@@ -1,0 +1,14 @@
+task_id: shell-read-version
+description: 通过 Shell 获取版本信息，覆盖命令执行响应。
+prompt: |
+  请用 Shell 获取 cargo 版本，并告诉我结果。
+workspace:
+  setup: ../fixtures/shell-read-version
+expected_outcome:
+  tool_pattern:
+    - Shell
+  max_tool_calls: 1
+  max_turns: 1
+  output_contains:
+    - cargo 1.91.0-nightly
+

@@ -1,0 +1,15 @@
+task_id: missing-file-findfiles-fallback
+description: 文件路径失效时，能退回到 FindFiles 查找真实文件。
+prompt: |
+  目标文件原路径失效了，请自己找到 target.md 并读取它。
+workspace:
+  setup: ../fixtures/missing-file-findfiles-fallback
+expected_outcome:
+  tool_pattern:
+    - FindFiles
+    - Read
+  max_tool_calls: 2
+  max_turns: 1
+  output_contains:
+    - docs/archive/target.md
+

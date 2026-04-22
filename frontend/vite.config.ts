@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import type { Plugin } from 'vite';
@@ -42,6 +43,46 @@ function isLivePid(pid: number | undefined): boolean {
   }
 }
 
+function readProcessIdentity(pid: number): string | null {
+  const command =
+    process.platform === 'win32'
+      ? {
+          file: 'powershell.exe',
+          args: [
+            '-NoProfile',
+            '-Command',
+            `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName)`,
+          ],
+        }
+      : {
+          file: 'ps',
+          args: ['-p', String(pid), '-o', 'command='],
+        };
+
+  const result = spawnSync(command.file, command.args, {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    return null;
+  }
+
+  const identity = result.stdout?.trim().toLowerCase();
+  return identity || null;
+}
+
+function isAstrcodeServerPid(pid: number | undefined): boolean {
+  if (typeof pid !== 'number' || !isLivePid(pid)) {
+      return false;
+  }
+
+  const identity = readProcessIdentity(pid);
+  // 为什么要额外校验进程身份：
+  // 仅靠“pid 还活着”会把任意长期存活进程都当成可用 bootstrap，
+  // 比如 node/vite 自己。这里至少收紧到 astrcode-server 家族进程。
+  return identity?.includes('astrcode-server') ?? false;
+}
+
 function readRunInfo(): RunInfo | null {
   const runInfoPath = path.join(resolveAstrcodeHomeDir(), '.astrcode', 'run.json');
   if (!fs.existsSync(runInfoPath)) {
@@ -51,7 +92,9 @@ function readRunInfo(): RunInfo | null {
   try {
     const raw = fs.readFileSync(runInfoPath, 'utf8');
     const runInfo = JSON.parse(raw) as RunInfo;
-    if (runInfo.pid !== undefined && !isLivePid(runInfo.pid)) {
+    // `run.json` 协议里 pid 是必填字段；缺失、失活或不属于 astrcode-server 家族进程时
+    // 一律视为不可用 bootstrap。
+    if (!isAstrcodeServerPid(runInfo.pid)) {
       return null;
     }
     if (typeof runInfo.expiresAtMs === 'number' && Date.now() > runInfo.expiresAtMs) {

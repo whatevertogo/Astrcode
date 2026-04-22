@@ -319,6 +319,7 @@ fn project_block(
                             .and_then(|value| value.as_str().map(ToString::to_string))
                     })
                     .collect(),
+                prompt_cache_diagnostics: block.prompt_cache_diagnostics.clone(),
             })
         },
         ConversationBlockFacts::Plan(block) => {

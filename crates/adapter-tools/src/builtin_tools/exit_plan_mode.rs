@@ -170,10 +170,15 @@ impl Tool for ExitPlanModeTool {
             tool_name: "exitPlanMode".to_string(),
             ok: true,
             output: format!(
-                "presented the session plan '{}' for user review from {}.\n\n{}",
+                "Presented the canonical session plan '{}' for user review from {}.\nThe \
+                 canonical plan surface already carries the full user-visible plan content.\nDo \
+                 not emit any assistant summary or approval prompt after this tool result.\nStop \
+                 the turn unless the canonical plan surface failed to render.\nOnly if that \
+                 surface is unavailable may you send one short approval prompt.\nInternal mode \
+                 transition is complete; wait for user approval or revision feedback through the \
+                 canonical plan surface.",
                 state.title,
                 plan_path.display(),
-                plan_content.trim()
             ),
             error: None,
             metadata: Some(json!({
@@ -221,6 +226,9 @@ fn review_pending_result(
             "The plan is not executable yet. Revise the canonical session plan before exiting \
              plan mode."
                 .to_string(),
+            "Keep this checkpoint out of user-visible assistant text; continue revising the plan \
+             instead of emitting a summary paragraph."
+                .to_string(),
         ],
         ReviewPendingKind::FinalReview => vec![
             "Run one internal final review before exiting plan mode. Keep that review out of the \
@@ -228,6 +236,9 @@ fn review_pending_result(
                 .to_string(),
             "If the review changes the plan, persist the updated plan with upsertSessionPlan and \
              retry exitPlanMode later."
+                .to_string(),
+            "Do not emit the internal review as user-visible assistant text. Either revise the \
+             canonical plan or call exitPlanMode again once the review is done."
                 .to_string(),
         ],
     };
@@ -411,6 +422,11 @@ mod tests {
             json!("sessionPlanExitReviewPending")
         );
         assert_eq!(first_metadata["review"]["kind"], json!("final_review"));
+        assert!(
+            first_attempt
+                .output
+                .contains("Do not emit the internal review as user-visible assistant text")
+        );
 
         let result = ExitPlanModeTool
             .execute("tc-plan-exit-2".to_string(), json!({}), &ctx)
@@ -421,6 +437,9 @@ mod tests {
         let metadata = result.metadata.expect("metadata should exist");
         assert_eq!(metadata["schema"], json!("sessionPlanExit"));
         assert_eq!(metadata["plan"]["status"], json!("awaiting_approval"));
+        assert!(result.output.contains(
+            "Do not emit any assistant summary or approval prompt after this tool result"
+        ));
 
         let state_path = session_plan_paths(&ctx)
             .expect("plan paths should resolve")
@@ -484,6 +503,11 @@ mod tests {
             json!("## Scope")
         );
         assert!(result.output.contains("not executable yet"));
+        assert!(
+            result
+                .output
+                .contains("Keep this checkpoint out of user-visible assistant text")
+        );
     }
 
     #[test]

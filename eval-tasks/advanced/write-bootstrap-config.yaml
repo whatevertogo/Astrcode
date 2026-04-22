@@ -1,0 +1,17 @@
+task_id: write-bootstrap-config
+description: 使用 Write 创建新配置文件，覆盖单工具写入能力。
+prompt: |
+  请创建 config/generated.json，写入 env=test 和 port=4173。
+workspace:
+  setup: ../fixtures/write-bootstrap-config
+expected_outcome:
+  tool_pattern:
+    - Write
+  max_tool_calls: 1
+  max_turns: 1
+  file_changes:
+    - path: config/generated.json
+      contains: '"env": "test"'
+    - path: config/generated.json
+      contains: '"port": 4173'
+

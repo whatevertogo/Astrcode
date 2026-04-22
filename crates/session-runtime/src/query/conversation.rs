@@ -276,12 +276,30 @@ impl ConversationDeltaProjector {
                 stream,
                 delta,
                 ..
-            } => self.append_tool_stream(turn_id, tool_call_id, tool_name, *stream, delta, source),
+            } => {
+                if should_suppress_tool_call_block(tool_name, None) {
+                    Vec::new()
+                } else {
+                    self.append_tool_stream(
+                        turn_id,
+                        tool_call_id,
+                        tool_name,
+                        *stream,
+                        delta,
+                        source,
+                    )
+                }
+            },
             AgentEvent::ToolCallResult {
                 turn_id, result, ..
             } => {
                 if let Some(block) = plan_block_from_tool_result(turn_id, result) {
                     self.push_block(ConversationBlockFacts::Plan(Box::new(block)))
+                } else if should_suppress_tool_call_block(&result.tool_name, None) {
+                    // Why: plan-mode canonical tools own a dedicated plan surface.
+                    // Letting failed retries fall back to generic tool cards leaks
+                    // internal validation churn and produces conflicting UI.
+                    Vec::new()
                 } else {
                     self.complete_tool_call(turn_id, result, source)
                 }
@@ -539,6 +557,7 @@ impl ConversationDeltaProjector {
             prompt_cache_reuse_hits: metrics.prompt_cache_reuse_hits,
             prompt_cache_reuse_misses: metrics.prompt_cache_reuse_misses,
             prompt_cache_unchanged_layers: metrics.prompt_cache_unchanged_layers.clone(),
+            prompt_cache_diagnostics: metrics.prompt_cache_diagnostics.clone(),
         });
 
         self.upsert_block(block)

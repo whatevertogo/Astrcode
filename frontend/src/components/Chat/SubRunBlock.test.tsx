@@ -87,6 +87,25 @@ function makeTokenExceededResult(
   };
 }
 
+function makeCancelledResult(
+  failure: {
+    code: 'transport' | 'provider_http' | 'stream_parse' | 'interrupted' | 'internal';
+    displayMessage: string;
+    technicalMessage: string;
+    retryable: boolean;
+  } = {
+    code: 'interrupted',
+    displayMessage: '父级已取消该子任务。',
+    technicalMessage: 'parent requested shutdown',
+    retryable: false,
+  }
+): SubRunResult {
+  return {
+    status: 'cancelled',
+    failure,
+  };
+}
+
 describe('SubRunBlock result rendering', () => {
   it('renders background running guidance and cancel entry for live sub-runs', () => {
     const html = renderToStaticMarkup(
@@ -137,6 +156,37 @@ describe('SubRunBlock result rendering', () => {
     expect(html).toContain('子 Agent 调用模型时网络连接中断，未完成任务。');
     expect(html).toContain('HTTP request error: failed to read anthropic response stream');
     expect(html).not.toContain('调用参数');
+  });
+
+  it('renders cancelled sub-runs with precise interrupted details instead of aborted placeholders', () => {
+    const finishMessage: SubRunFinishMessage = {
+      id: 'subrun-finish-cancelled',
+      kind: 'subRunFinish',
+      subRunId: 'subrun-cancelled',
+      result: makeCancelledResult(),
+      stepCount: 1,
+      estimatedTokens: 12,
+      timestamp: Date.now(),
+    };
+
+    const html = renderToStaticMarkup(
+      <SubRunBlock
+        subRunId="subrun-cancelled"
+        sessionId="session-1"
+        title="reviewer"
+        finishMessage={finishMessage}
+        threadItems={[]}
+        streamFingerprint=""
+        hasDescriptorLineage={true}
+        renderThreadItems={renderThreadItems}
+        onCancelSubRun={async () => {}}
+      />
+    );
+
+    expect(html).toContain('已取消');
+    expect(html).toContain('父级已取消该子任务。');
+    expect(html).toContain('parent requested shutdown');
+    expect(html).not.toContain('aborted');
   });
 
   it('renders focused-view entry for sub-runs without shared-session label', () => {

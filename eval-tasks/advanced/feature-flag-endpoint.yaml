@@ -1,0 +1,19 @@
+task_id: feature-flag-endpoint
+description: 根据规格新增功能文件并挂载到路由。
+prompt: |
+  请读取 specs/feature.md，新增 feature flag 路由文件，并更新 router。
+workspace:
+  setup: ../fixtures/feature-flag-endpoint
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Write
+    - Edit
+  max_tool_calls: 3
+  max_turns: 1
+  file_changes:
+    - path: src/feature_flags.rs
+      contains: register_feature_routes
+    - path: src/router.rs
+      contains: register_feature_routes
+

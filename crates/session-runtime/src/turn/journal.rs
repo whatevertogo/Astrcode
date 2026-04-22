@@ -33,8 +33,7 @@ impl TurnJournal {
         std::mem::take(&mut self.events)
     }
 
-    #[cfg(test)]
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &StorageEvent> {
+    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &StorageEvent> {
         self.events.iter()
     }
 }

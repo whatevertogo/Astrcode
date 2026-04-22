@@ -1,0 +1,17 @@
+task_id: code-review-leak-fix
+description: 结合 review 意见和代码搜索修复 unwrap 风险。
+prompt: |
+  先读取 review.md，再定位 src/service.rs 里的 unwrap，并修复它。
+workspace:
+  setup: ../fixtures/code-review-leak-fix
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Grep
+    - Edit
+  max_tool_calls: 3
+  max_turns: 1
+  file_changes:
+    - path: src/service.rs
+      contains: ok_or("missing token")
+

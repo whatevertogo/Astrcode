@@ -1,0 +1,17 @@
+task_id: subagent-parent-uses-result
+description: 父智能体发送子任务并在最终回复中引用子智能体结果。
+prompt: |
+  请创建子智能体读取 module-a.md，给它发指令，拿到结果后在最终回答里引用。
+workspace:
+  setup: ../fixtures/subagent-parent-uses-result
+expected_outcome:
+  tool_pattern:
+    - SpawnAgent
+    - SendToAgent
+    - ObserveAgent
+    - CloseAgent
+  max_tool_calls: 4
+  max_turns: 1
+  output_contains:
+    - token 刷新
+

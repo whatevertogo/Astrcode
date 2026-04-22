@@ -1,0 +1,10 @@
+task_id: prompt-direct-answer
+description: 不依赖工具，直接返回约定答案，校验提示词响应质量与零工具约束。
+prompt: |
+  不要使用任何工具，直接回答：Astrcode 的内置计划模式 ID 是什么？只返回 plan。
+workspace:
+  setup: ../fixtures/prompt-direct-answer
+expected_outcome:
+  max_tool_calls: 0
+  max_turns: 1
+  output_equals: "plan"

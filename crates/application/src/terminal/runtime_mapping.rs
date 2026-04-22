@@ -189,6 +189,7 @@ fn map_block(block: runtime::ConversationBlockFacts) -> ConversationBlockFacts {
                 prompt_cache_reuse_hits: block.prompt_cache_reuse_hits,
                 prompt_cache_reuse_misses: block.prompt_cache_reuse_misses,
                 prompt_cache_unchanged_layers: block.prompt_cache_unchanged_layers,
+                prompt_cache_diagnostics: block.prompt_cache_diagnostics,
             })
         },
         runtime::ConversationBlockFacts::Plan(block) => {
@@ -409,6 +410,7 @@ fn into_runtime_block(block: ConversationBlockFacts) -> runtime::ConversationBlo
                     prompt_cache_reuse_hits: block.prompt_cache_reuse_hits,
                     prompt_cache_reuse_misses: block.prompt_cache_reuse_misses,
                     prompt_cache_unchanged_layers: block.prompt_cache_unchanged_layers,
+                    prompt_cache_diagnostics: block.prompt_cache_diagnostics,
                 },
             )
         },

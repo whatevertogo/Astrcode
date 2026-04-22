@@ -1,0 +1,16 @@
+task_id: bugfix-null-guard
+description: 根据错误日志修复空值保护缺陷。
+prompt: |
+  请读取崩溃日志，修复 src/lib.rs 中的空值保护问题。
+workspace:
+  setup: ../fixtures/bugfix-null-guard
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Edit
+  max_tool_calls: 3
+  max_turns: 1
+  file_changes:
+    - path: src/lib.rs
+      contains: unwrap_or("unknown")
+

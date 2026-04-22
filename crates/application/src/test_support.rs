@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, AstrError,
     DeleteProjectResult, ExecutionAccepted, InputBatchAckedPayload, InputBatchStartedPayload,
-    InputDiscardedPayload, InputQueuedPayload, ModeId, PromptDeclaration, ResolvedRuntimeConfig,
-    SessionId, SessionMeta, StorageEvent, StorageEventPayload, StoredEvent, TaskSnapshot, TurnId,
+    InputDiscardedPayload, InputQueuedPayload, LlmMessage, ModeId, PromptDeclaration,
+    ResolvedRuntimeConfig, SessionId, SessionMeta, StorageEvent, StorageEventPayload, StoredEvent,
+    TaskSnapshot, TurnId,
 };
 use astrcode_session_runtime::{
     ConversationSnapshotFacts, ConversationStreamReplayFacts, SessionCatalogEvent,
@@ -34,6 +35,7 @@ pub(crate) struct RecordedPromptSubmission {
     pub(crate) session_id: String,
     pub(crate) text: String,
     pub(crate) prompt_declarations: Vec<PromptDeclaration>,
+    pub(crate) injected_messages: Vec<LlmMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +124,7 @@ impl AppSessionPort for StubSessionPort {
                 session_id: session_id.to_string(),
                 text,
                 prompt_declarations: submission.prompt_declarations,
+                injected_messages: submission.injected_messages,
             });
         Ok(ExecutionAccepted {
             session_id: SessionId::from(session_id.to_string()),

@@ -1,0 +1,15 @@
+task_id: apply-patch-banner
+description: 使用 ApplyPatch 修改单行配置，覆盖补丁格式工具。
+prompt: |
+  请把 src/banner.txt 里的发布通道从 beta 改成 stable。
+workspace:
+  setup: ../fixtures/apply-patch-banner
+expected_outcome:
+  tool_pattern:
+    - ApplyPatch
+  max_tool_calls: 1
+  max_turns: 1
+  file_changes:
+    - path: src/banner.txt
+      exact: "release-channel=stable\n"
+

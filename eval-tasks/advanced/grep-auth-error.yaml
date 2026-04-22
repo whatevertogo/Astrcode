@@ -1,0 +1,14 @@
+task_id: grep-auth-error
+description: 通过 Grep 从日志中提取认证错误码。
+prompt: |
+  请用 Grep 查 logs/app.log，告诉我认证错误码是什么。
+workspace:
+  setup: ../fixtures/grep-auth-error
+expected_outcome:
+  tool_pattern:
+    - Grep
+  max_tool_calls: 1
+  max_turns: 1
+  output_contains:
+    - AUTH-409
+

@@ -8,6 +8,7 @@
 eval-tasks/
 ├── task-set.yaml          # 任务集索引
 ├── core/                  # 评测任务 YAML
+├── advanced/              # 复杂场景评测 YAML
 └── fixtures/              # 每个任务对应的初始工作区快照
 ```
 
@@ -16,6 +17,19 @@ eval-tasks/
 - `core/file-read-accuracy.yaml`
 - `core/file-edit-precision.yaml`
 - `core/tool-chain-efficiency.yaml`
+- `core/prompt-direct-answer.yaml`
+- `core/multi-read-context-summary.yaml`
+- `core/write-plan-checklist.yaml`
+- `core/compact-context-retention.yaml`
+- `core/compact-followup-edit.yaml`
+- `core/plan-review-readiness.yaml`
+- `core/tool-argument-discipline.yaml`
+- `advanced/*.yaml` 下的 33 条复杂场景任务
+
+当前总任务数为 43 条：
+
+- `core/` 基础任务 10 条
+- `advanced/` 复杂场景任务 33 条
 
 ## 任务文件约定
 

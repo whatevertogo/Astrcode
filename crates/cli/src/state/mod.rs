@@ -469,6 +469,7 @@ mod tests {
                 active_plan: None,
                 active_tasks: None,
             },
+            step_progress: Default::default(),
             blocks: vec![ConversationBlockDto::Assistant(
                 ConversationAssistantBlockDto {
                     id: "assistant-1".to_string(),
@@ -508,6 +509,7 @@ mod tests {
         state.apply_stream_envelope(ConversationStreamEnvelopeDto {
             session_id: "session-1".to_string(),
             cursor: ConversationCursorDto("1.3".to_string()),
+            step_progress: Default::default(),
             delta: ConversationDeltaDto::PatchBlock {
                 block_id: "assistant-1".to_string(),
                 patch: ConversationBlockPatchDto::AppendMarkdown {
@@ -537,6 +539,7 @@ mod tests {
         state.apply_stream_envelope(ConversationStreamEnvelopeDto {
             session_id: "session-1".to_string(),
             cursor: ConversationCursorDto("1.4".to_string()),
+            step_progress: Default::default(),
             delta: ConversationDeltaDto::PatchBlock {
                 block_id: "assistant-1".to_string(),
                 patch: ConversationBlockPatchDto::ReplaceMarkdown {

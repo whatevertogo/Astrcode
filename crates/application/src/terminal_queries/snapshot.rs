@@ -75,11 +75,16 @@ impl App {
             super::cursor::validate_cursor_format(requested_cursor)?;
             let transcript = self
                 .session_runtime
-                .conversation_snapshot(&focus_session_id)
-                .await
-                .map(runtime_mapping::map_snapshot)?;
-            let latest_cursor = crate::terminal::latest_transcript_cursor(&transcript);
-            if super::cursor::cursor_is_after_head(requested_cursor, latest_cursor.as_deref())? {
+                .session_transcript_snapshot(&focus_session_id)
+                .await?;
+            let latest_cursor = transcript.cursor.clone();
+            let cursor_missing_from_transcript = !transcript
+                .records
+                .iter()
+                .any(|record| record.event_id == requested_cursor);
+            if super::cursor::cursor_is_after_head(requested_cursor, latest_cursor.as_deref())?
+                || cursor_missing_from_transcript
+            {
                 return Ok(TerminalStreamFacts::RehydrateRequired(
                     TerminalRehydrateFacts {
                         session_id: session_id.to_string(),

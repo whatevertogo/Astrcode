@@ -29,7 +29,8 @@ use std::{collections::HashSet, path::Path, sync::Arc, time::Instant};
 use astrcode_core::{
     AgentEventContext, BoundModeToolContractSnapshot, CancelToken, EventStore, EventTranslator,
     LlmMessage, ModeId, Phase, PromptDeclaration, PromptFactsProvider, PromptGovernanceContext,
-    ResolvedRuntimeConfig, Result, StorageEvent, StorageEventPayload, ToolDefinition,
+    ResolvedRuntimeConfig, Result, SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER, StorageEvent,
+    StorageEventPayload, ToolDefinition, UserMessageOrigin,
 };
 use astrcode_kernel::{CapabilityRouter, Kernel, KernelGateway};
 use chrono::{DateTime, Utc};
@@ -126,6 +127,7 @@ struct TurnExecutionRequestView<'a> {
 
 struct TurnExecutionContext {
     messages: Vec<LlmMessage>,
+    draft_plan_approval_guard_active: bool,
     journal: TurnJournal,
     lifecycle: TurnLifecycle,
     budget: TurnBudgetState,
@@ -354,6 +356,14 @@ impl TurnExecutionContext {
         let now = Instant::now();
         let budget = TurnBudgetState::new(resources, &messages, now, last_assistant_at);
         Self {
+            draft_plan_approval_guard_active: messages.iter().any(|message| {
+                matches!(
+                    message,
+                    LlmMessage::User { content, origin }
+                        if *origin == UserMessageOrigin::ReactivationPrompt
+                            && content.contains(SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER)
+                )
+            }),
             messages,
             journal: TurnJournal::default(),
             lifecycle: TurnLifecycle::new(now),

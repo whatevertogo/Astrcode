@@ -55,8 +55,9 @@ impl Tool for UpsertSessionPlanTool {
                     },
                     "status": {
                         "type": "string",
-                        "enum": ["draft", "awaiting_approval", "approved", "completed", "superseded"],
-                        "description": "Plan state to persist alongside the markdown artifact."
+                        "enum": ["draft", "awaiting_approval"],
+                        "description": "Plan state to persist alongside the markdown artifact. \
+                                        Terminal status transitions are not written through this tool."
                     }
                 },
                 "required": ["title", "content"],
@@ -136,11 +137,20 @@ impl Tool for UpsertSessionPlanTool {
             .unwrap_or_else(|| format!("plan-{}", Utc::now().format(PLAN_PATH_TIMESTAMP_FORMAT)));
         let plan_path = session_plan_markdown_path(&paths.plan_dir, &slug);
         let status = args.status.unwrap_or(SessionPlanStatus::Draft);
+        if !matches!(
+            status,
+            SessionPlanStatus::Draft | SessionPlanStatus::AwaitingApproval
+        ) {
+            // 用户批准/完成/替换都属于受控状态迁移，不能让模型通过写 plan 伪造。
+            return Err(AstrError::Validation(format!(
+                "upsertSessionPlan must not persist terminal status '{}'; only 'draft' or \
+                 'awaiting_approval' are allowed",
+                status.as_str()
+            )));
+        }
         if matches!(
             status,
-            SessionPlanStatus::AwaitingApproval
-                | SessionPlanStatus::Approved
-                | SessionPlanStatus::Completed
+            SessionPlanStatus::AwaitingApproval | SessionPlanStatus::Completed
         ) {
             let blockers = validate_plan_artifact_contract(content, artifact_contract);
             if !blockers.is_empty() {
@@ -180,13 +190,7 @@ impl Tool for UpsertSessionPlanTool {
                 .unwrap_or(now),
             updated_at: now,
             reviewed_plan_digest: None,
-            approved_at: match status {
-                SessionPlanStatus::Approved => existing
-                    .as_ref()
-                    .and_then(|state| state.approved_at)
-                    .or(Some(now)),
-                _ => None,
-            },
+            approved_at: None,
             archived_plan_digest: existing
                 .as_ref()
                 .and_then(|state| state.archived_plan_digest.clone()),
@@ -385,7 +389,7 @@ mod tests {
             json!({
                 "title": "Cleanup crates",
                 "content": "# Plan: Cleanup crates\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries\n\n## Implementation Steps\n- audit crate boundaries\n\n## Verification\n- run targeted tests",
-                "status": "approved"
+                "status": "awaiting_approval"
             }),
             &ctx,
         )
@@ -398,6 +402,8 @@ mod tests {
         let mut state = load_session_plan_state(&state_path)
             .expect("state should load")
             .expect("state should exist");
+        state.status = SessionPlanStatus::Approved;
+        state.approved_at = Some(Utc::now());
         state.archived_plan_digest = Some("digest-a".to_string());
         state.archived_at = Some(Utc::now());
         persist_session_plan_state(&state_path, &state).expect("state should persist");
@@ -419,6 +425,36 @@ mod tests {
             .expect("state should exist");
         assert_eq!(state.archived_plan_digest.as_deref(), Some("digest-a"));
         assert!(state.reviewed_plan_digest.is_none());
+        assert!(state.approved_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn upsert_session_plan_rejects_terminal_statuses_before_user_approval() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let tool = UpsertSessionPlanTool;
+        let ctx =
+            test_tool_context_for(temp.path()).with_bound_mode_tool_contract(plan_mode_contract());
+
+        for status in ["approved", "completed", "superseded"] {
+            let error = tool
+                .execute(
+                    format!("tc-plan-{status}"),
+                    json!({
+                        "title": "Cleanup crates",
+                        "content": "# Plan: Cleanup crates\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries\n\n## Implementation Steps\n- audit crate boundaries\n\n## Verification\n- run targeted tests",
+                        "status": status
+                    }),
+                    &ctx,
+                )
+                .await
+                .unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("must not persist terminal status")
+            );
+        }
     }
 
     #[tokio::test]

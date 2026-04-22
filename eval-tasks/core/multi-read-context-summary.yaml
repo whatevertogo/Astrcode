@@ -1,0 +1,15 @@
+task_id: multi-read-context-summary
+description: 读取两份上下文文件后返回精确摘要，覆盖多次工具调用与输出准确性。
+prompt: |
+  请读取 docs/context.md 和 docs/constraints.md，告诉我 compact 需要保留几轮，以及执行前先跑哪个命令。
+workspace:
+  setup: ../fixtures/multi-read-context-summary
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Read
+  max_tool_calls: 3
+  max_turns: 1
+  output_contains:
+    - 最近 2 轮
+    - cargo test -p astrcode-eval

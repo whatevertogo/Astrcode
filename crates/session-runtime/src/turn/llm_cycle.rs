@@ -273,6 +273,18 @@ mod tests {
     }
 
     #[test]
+    fn map_kernel_error_restores_llm_interrupted_variant_for_cancelled_messages() {
+        let mapped = map_kernel_error(KernelError::Invoke(
+            "operation cancelled: parent requested shutdown".to_string(),
+        ));
+
+        match mapped {
+            AstrError::LlmInterrupted => {},
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
     fn emit_llm_delta_live_forwards_tool_call_delta_to_runner_sink() {
         let received = Arc::new(Mutex::new(Vec::new()));
         let sink_received = Arc::clone(&received);

@@ -1718,6 +1718,7 @@ mod tests {
                     astrcode_client::ConversationStreamEnvelopeDto {
                         session_id: "session-1".to_string(),
                         cursor: astrcode_client::ConversationCursorDto("cursor:old".to_string()),
+                        step_progress: Default::default(),
                         delta: astrcode_client::ConversationDeltaDto::AppendBlock {
                             block: astrcode_client::ConversationBlockDto::Assistant(
                                 astrcode_client::ConversationAssistantBlockDto {

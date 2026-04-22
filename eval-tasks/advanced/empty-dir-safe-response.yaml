@@ -1,0 +1,14 @@
+task_id: empty-dir-safe-response
+description: 对空目录给出安全、清晰的响应。
+prompt: |
+  请列出 empty 目录内容，并告诉我当前是否有文件。
+workspace:
+  setup: ../fixtures/empty-dir-safe-response
+expected_outcome:
+  tool_pattern:
+    - ListDir
+  max_tool_calls: 1
+  max_turns: 1
+  output_contains:
+    - 没有文件
+

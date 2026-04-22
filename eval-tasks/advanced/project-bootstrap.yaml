@@ -1,0 +1,15 @@
+task_id: project-bootstrap
+description: 从空工作区初始化最小项目入口。
+prompt: |
+  请初始化一个最小 TypeScript 项目入口，创建 src/main.ts。
+workspace:
+  setup: ../fixtures/project-bootstrap
+expected_outcome:
+  tool_pattern:
+    - Write
+  max_tool_calls: 1
+  max_turns: 1
+  file_changes:
+    - path: src/main.ts
+      contains: astrcode-eval
+

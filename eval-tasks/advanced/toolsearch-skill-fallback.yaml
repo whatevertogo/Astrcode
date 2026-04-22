@@ -1,0 +1,15 @@
+task_id: toolsearch-skill-fallback
+description: 通过 ToolSearch 找到合适工具后切换到对应 skill。
+prompt: |
+  先搜索适合做浏览器自动化的工具，再调用对应 skill。
+workspace:
+  setup: ../fixtures/toolsearch-skill-fallback
+expected_outcome:
+  tool_pattern:
+    - ToolSearch
+    - Skill
+  max_tool_calls: 2
+  max_turns: 1
+  output_contains:
+    - playwright
+

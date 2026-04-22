@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 mod plan_projection;
@@ -112,11 +114,12 @@ pub(crate) fn project_conversation_snapshot(
 ) -> ConversationSnapshotFacts {
     let mut projector = ConversationDeltaProjector::new();
     projector.seed(records);
+    let blocks = suppress_draft_approval_plan_leakage(projector.into_blocks());
     ConversationSnapshotFacts {
         cursor: records.last().map(|record| record.event_id.clone()),
         phase,
-        step_progress: durable_step_progress_from_blocks(projector.blocks()),
-        blocks: projector.into_blocks(),
+        step_progress: durable_step_progress_from_blocks(&blocks),
+        blocks,
     }
 }
 
@@ -124,12 +127,22 @@ pub(crate) fn build_conversation_replay_frames(
     seed_records: &[SessionEventRecord],
     history: &[SessionEventRecord],
 ) -> Vec<ConversationDeltaFrameFacts> {
+    let mut full_projector = ConversationDeltaProjector::new();
+    full_projector.seed(seed_records);
+    for record in history {
+        let _ = full_projector.project_record(record);
+    }
+    let hidden_block_ids = draft_approval_leakage_hidden_block_ids(full_projector.blocks());
+
     let mut projector = ConversationDeltaProjector::new();
     projector.seed(seed_records);
     let mut step_progress = durable_step_progress_from_blocks(projector.blocks());
     let mut frames = Vec::new();
     for record in history {
         for delta in projector.project_record(record) {
+            if delta_block_id(&delta).is_some_and(|block_id| hidden_block_ids.contains(block_id)) {
+                continue;
+            }
             observe_durable_delta_step(&mut step_progress, &delta);
             frames.push(ConversationDeltaFrameFacts {
                 cursor: record.event_id.clone(),
@@ -139,6 +152,142 @@ pub(crate) fn build_conversation_replay_frames(
         }
     }
     frames
+}
+
+fn suppress_draft_approval_plan_leakage(
+    blocks: Vec<ConversationBlockFacts>,
+) -> Vec<ConversationBlockFacts> {
+    let hidden_block_ids = draft_approval_leakage_hidden_block_ids(&blocks);
+    blocks
+        .into_iter()
+        .filter(|block| !hidden_block_ids.contains(block_id(block)))
+        .collect()
+}
+
+fn draft_approval_leakage_hidden_block_ids(blocks: &[ConversationBlockFacts]) -> HashSet<String> {
+    let mut turn_facts = HashMap::<String, (bool, bool)>::new();
+    for block in blocks {
+        match block {
+            ConversationBlockFacts::User(block) => {
+                let Some(turn_id) = block.turn_id.as_deref() else {
+                    continue;
+                };
+                let facts = turn_facts
+                    .entry(turn_id.to_string())
+                    .or_insert((false, false));
+                if is_approval_like_turn_text(&block.markdown) {
+                    facts.0 = true;
+                }
+            },
+            ConversationBlockFacts::Plan(block) => {
+                let Some(turn_id) = block.turn_id.as_deref() else {
+                    continue;
+                };
+                let facts = turn_facts
+                    .entry(turn_id.to_string())
+                    .or_insert((false, false));
+                if block.status.as_deref() == Some("awaiting_approval")
+                    || matches!(
+                        block.event_kind,
+                        ConversationPlanEventKind::Presented
+                            | ConversationPlanEventKind::ReviewPending
+                    )
+                {
+                    facts.1 = true;
+                }
+            },
+            _ => {},
+        }
+    }
+
+    blocks
+        .iter()
+        .filter_map(|block| {
+            let turn_id = turn_id(block)?;
+            let (approval_like_user, has_review_plan) = turn_facts.get(turn_id).copied()?;
+            if !approval_like_user || !has_review_plan {
+                return None;
+            }
+            matches!(
+                block,
+                ConversationBlockFacts::Assistant(_) | ConversationBlockFacts::Thinking(_)
+            )
+            .then(|| block_id(block).to_string())
+        })
+        .collect()
+}
+
+fn delta_block_id(delta: &ConversationDeltaFacts) -> Option<&str> {
+    match delta {
+        ConversationDeltaFacts::AppendBlock { block } => Some(block_id(block.as_ref())),
+        ConversationDeltaFacts::PatchBlock { block_id, .. }
+        | ConversationDeltaFacts::CompleteBlock { block_id, .. } => Some(block_id.as_str()),
+    }
+}
+
+fn turn_id(block: &ConversationBlockFacts) -> Option<&str> {
+    match block {
+        ConversationBlockFacts::User(block) => block.turn_id.as_deref(),
+        ConversationBlockFacts::Assistant(block) => block.turn_id.as_deref(),
+        ConversationBlockFacts::Thinking(block) => block.turn_id.as_deref(),
+        ConversationBlockFacts::PromptMetrics(block) => block.turn_id.as_deref(),
+        ConversationBlockFacts::Plan(block) => block.turn_id.as_deref(),
+        ConversationBlockFacts::ToolCall(block) => block.turn_id.as_deref(),
+        ConversationBlockFacts::Error(block) => block.turn_id.as_deref(),
+        ConversationBlockFacts::SystemNote(_) => None,
+        ConversationBlockFacts::ChildHandoff(_) => None,
+    }
+}
+
+fn is_approval_like_turn_text(text: &str) -> bool {
+    let normalized_english = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    for phrase in ["approved", "go ahead", "implement it"] {
+        if normalized_english == phrase
+            || (phrase != "implement it" && normalized_english.starts_with(&format!("{phrase} ")))
+        {
+            return true;
+        }
+    }
+
+    let normalized_chinese = text
+        .chars()
+        .filter(|ch| {
+            !ch.is_whitespace()
+                && !matches!(
+                    ch,
+                    ',' | '.'
+                        | '!'
+                        | '?'
+                        | ';'
+                        | ':'
+                        | '，'
+                        | '。'
+                        | '！'
+                        | '？'
+                        | '；'
+                        | '：'
+                        | '【'
+                        | '】'
+                        | '、'
+                )
+        })
+        .collect::<String>();
+    for phrase in ["同意", "可以", "按这个做", "开始实现"] {
+        let matched = if matches!(phrase, "同意" | "可以") {
+            normalized_chinese == phrase
+        } else {
+            normalized_chinese == phrase || normalized_chinese.starts_with(phrase)
+        };
+        if matched {
+            return true;
+        }
+    }
+
+    false
 }
 
 pub(crate) fn fallback_live_cursor(facts: &ConversationStreamReplayFacts) -> Option<String> {

@@ -6,6 +6,7 @@
 pub use astrcode_core::{
     CompactAppliedMeta as ConversationCompactMetaDto,
     CompactTrigger as ConversationCompactTriggerDto,
+    PromptCacheDiagnostics as ConversationPromptCacheDiagnosticsDto,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -230,6 +231,8 @@ pub struct ConversationPromptMetricsBlockDto {
     pub prompt_cache_reuse_misses: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_cache_unchanged_layers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_diagnostics: Option<ConversationPromptCacheDiagnosticsDto>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

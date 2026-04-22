@@ -395,6 +395,14 @@ mod tests {
                 .and_then(|value| value.reentry_prompt.as_ref())
                 .is_some()
         );
+        let prompt = &plan.prompt_program[0].content;
+        assert!(prompt.contains("Do not repeat the full plan"));
+        assert!(prompt.contains("prefer no assistant text at all"));
+        assert!(prompt.contains(
+            "keep that checkpoint and your internal review reasoning out of user-visible \
+             assistant text"
+        ));
+        assert!(!prompt.contains("summarize the plan plainly"));
         Ok(())
     }
 

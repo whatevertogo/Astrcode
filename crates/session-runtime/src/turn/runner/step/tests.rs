@@ -6,8 +6,8 @@ use std::sync::{
 use astrcode_core::{
     AgentEventContext, AstrError, CancelToken, CapabilityKind, LlmFinishReason, LlmMessage,
     LlmOutput, LlmRequest, LlmUsage, PromptFactsProvider, ResolvedRuntimeConfig,
-    StorageEventPayload, Tool, ToolCallRequest, ToolContext, ToolDefinition, ToolExecutionResult,
-    UserMessageOrigin,
+    SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER, StorageEventPayload, Tool, ToolCallRequest,
+    ToolContext, ToolDefinition, ToolExecutionResult, UserMessageOrigin,
 };
 use astrcode_kernel::KernelGateway;
 use async_trait::async_trait;
@@ -734,6 +734,240 @@ async fn run_single_step_stops_when_max_tokens_continuation_limit_is_reached() {
         )),
         "terminal step should only stage assistant output; turn terminal event is appended by the \
          runner"
+    );
+}
+
+#[tokio::test]
+async fn run_single_step_suppresses_assistant_output_after_exit_plan_review_pending() {
+    let gateway = test_gateway(8192);
+    let session_state = test_session_state();
+    let runtime = ResolvedRuntimeConfig::default();
+    let cancel = CancelToken::new();
+    let agent = AgentEventContext::default();
+    let prompt_facts_provider = NoopPromptFactsProvider;
+    let resources = test_resources(
+        &gateway,
+        &session_state,
+        &runtime,
+        &cancel,
+        &agent,
+        &prompt_facts_provider,
+    );
+    let mut execution =
+        TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
+    execution.journal.push(tool_result_event(
+        "turn-1",
+        &agent,
+        &ToolExecutionResult {
+            tool_call_id: "call-exit-review".to_string(),
+            tool_name: "exitPlanMode".to_string(),
+            ok: true,
+            output: "review pending".to_string(),
+            error: None,
+            metadata: Some(json!({ "schema": "sessionPlanExitReviewPending" })),
+            continuation: None,
+            duration_ms: 0,
+            truncated: false,
+        },
+    ));
+    let driver = ScriptedStepDriver {
+        counts: DriverCallCounts::default(),
+        assemble_result: Mutex::new(Some(Ok(assembled_prompt(vec![user_message("hello")])))),
+        llm_result: Mutex::new(Some(Ok(LlmOutput {
+            content: String::new(),
+            tool_calls: vec![ToolCallRequest {
+                id: "call-exit-retry".to_string(),
+                name: "exitPlanMode".to_string(),
+                args: json!({}),
+            }],
+            reasoning: Some(astrcode_core::ReasoningContent {
+                content: "internal review".to_string(),
+                signature: None,
+            }),
+            usage: None,
+            finish_reason: LlmFinishReason::ToolCalls,
+            prompt_cache_diagnostics: None,
+        }))),
+        reactive_compact_result: Mutex::new(Some(Ok(None))),
+        tool_cycle_result: Mutex::new(Some(Ok(ToolCycleResult {
+            outcome: ToolCycleOutcome::Completed,
+            tool_messages: Vec::new(),
+            raw_results: Vec::new(),
+            events: Vec::new(),
+        }))),
+    };
+
+    let outcome = run_single_step_with(&mut execution, &resources, &driver)
+        .await
+        .expect("step should continue");
+
+    assert!(matches!(
+        outcome,
+        StepOutcome::Continue(TurnLoopTransition::ToolCycleCompleted)
+    ));
+    assert!(
+        execution
+            .journal
+            .iter()
+            .all(|event| !matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
+        "review-pending follow-up assistant output should stay internal"
+    );
+    assert!(
+        execution
+            .messages
+            .iter()
+            .all(|message| !matches!(message, LlmMessage::Assistant { .. })),
+        "review-pending follow-up should not be appended to durable message history"
+    );
+}
+
+#[tokio::test]
+async fn run_single_step_suppresses_assistant_output_for_draft_approval_guarded_turn() {
+    let gateway = test_gateway(8192);
+    let session_state = test_session_state();
+    let runtime = ResolvedRuntimeConfig::default();
+    let cancel = CancelToken::new();
+    let agent = AgentEventContext::default();
+    let prompt_facts_provider = NoopPromptFactsProvider;
+    let resources = test_resources(
+        &gateway,
+        &session_state,
+        &runtime,
+        &cancel,
+        &agent,
+        &prompt_facts_provider,
+    );
+    let mut execution = TurnExecutionContext::new(
+        &resources,
+        vec![
+            user_message("按这个做，开始吧"),
+            LlmMessage::User {
+                content: format!(
+                    "{SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER}\\
+                     n内部执行约束（不要在对用户可见输出中复述）"
+                ),
+                origin: UserMessageOrigin::ReactivationPrompt,
+            },
+        ],
+        None,
+    );
+    let driver = ScriptedStepDriver {
+        counts: DriverCallCounts::default(),
+        assemble_result: Mutex::new(Some(Ok(assembled_prompt(vec![user_message("hello")])))),
+        llm_result: Mutex::new(Some(Ok(LlmOutput {
+            content: "收到，我先把草稿补全为可呈递版本，再交给你确认。".to_string(),
+            tool_calls: vec![ToolCallRequest {
+                id: "call-read-plan".to_string(),
+                name: "readFile".to_string(),
+                args: json!({ "path": "docs/issues.md" }),
+            }],
+            reasoning: None,
+            usage: None,
+            finish_reason: LlmFinishReason::ToolCalls,
+            prompt_cache_diagnostics: None,
+        }))),
+        reactive_compact_result: Mutex::new(Some(Ok(None))),
+        tool_cycle_result: Mutex::new(Some(Ok(ToolCycleResult {
+            outcome: ToolCycleOutcome::Completed,
+            tool_messages: Vec::new(),
+            raw_results: Vec::new(),
+            events: Vec::new(),
+        }))),
+    };
+
+    let outcome = run_single_step_with(&mut execution, &resources, &driver)
+        .await
+        .expect("step should continue");
+
+    assert!(matches!(
+        outcome,
+        StepOutcome::Continue(TurnLoopTransition::ToolCycleCompleted)
+    ));
+    assert!(
+        execution
+            .journal
+            .iter()
+            .all(|event| !matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
+        "draft-approval guarded turn should keep assistant follow-up internal"
+    );
+    assert!(
+        execution
+            .messages
+            .iter()
+            .all(|message| { !matches!(message, LlmMessage::Assistant { .. }) }),
+        "draft-approval guarded turn should not append assistant follow-up to durable history"
+    );
+}
+
+#[tokio::test]
+async fn run_single_step_suppresses_assistant_output_after_exit_plan_presented() {
+    let gateway = test_gateway(8192);
+    let session_state = test_session_state();
+    let runtime = ResolvedRuntimeConfig::default();
+    let cancel = CancelToken::new();
+    let agent = AgentEventContext::default();
+    let prompt_facts_provider = NoopPromptFactsProvider;
+    let resources = test_resources(
+        &gateway,
+        &session_state,
+        &runtime,
+        &cancel,
+        &agent,
+        &prompt_facts_provider,
+    );
+    let mut execution =
+        TurnExecutionContext::new(&resources, vec![user_message("hello from user")], None);
+    execution.journal.push(tool_result_event(
+        "turn-1",
+        &agent,
+        &ToolExecutionResult {
+            tool_call_id: "call-exit-presented".to_string(),
+            tool_name: "exitPlanMode".to_string(),
+            ok: true,
+            output: "presented".to_string(),
+            error: None,
+            metadata: Some(json!({ "schema": "sessionPlanExit" })),
+            continuation: None,
+            duration_ms: 0,
+            truncated: false,
+        },
+    ));
+    let driver = ScriptedStepDriver {
+        counts: DriverCallCounts::default(),
+        assemble_result: Mutex::new(Some(Ok(assembled_prompt(vec![user_message("hello")])))),
+        llm_result: Mutex::new(Some(Ok(LlmOutput {
+            content: "计划已呈递，请审阅。".to_string(),
+            tool_calls: Vec::new(),
+            reasoning: None,
+            usage: None,
+            finish_reason: LlmFinishReason::Stop,
+            prompt_cache_diagnostics: None,
+        }))),
+        reactive_compact_result: Mutex::new(Some(Ok(None))),
+        tool_cycle_result: Mutex::new(None),
+    };
+
+    let outcome = run_single_step_with(&mut execution, &resources, &driver)
+        .await
+        .expect("step should complete");
+
+    assert!(matches!(
+        outcome,
+        StepOutcome::Completed(TurnStopCause::Completed)
+    ));
+    assert!(
+        execution
+            .journal
+            .iter()
+            .all(|event| !matches!(&event.payload, StorageEventPayload::AssistantFinal { .. })),
+        "presented-plan follow-up assistant output should not be persisted"
+    );
+    assert!(
+        execution
+            .messages
+            .iter()
+            .all(|message| !matches!(message, LlmMessage::Assistant { .. })),
+        "presented-plan follow-up should not be appended to durable message history"
     );
 }
 

@@ -6,8 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use astrcode_core::{
-    AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ModeId,
-    PromptDeclaration, SessionMeta, StoredEvent,
+    AgentEventContext, ChildSessionNode, DeleteProjectResult, ExecutionAccepted, LlmMessage,
+    ModeId, PromptDeclaration, SessionMeta, SessionPlanStatus, StoredEvent,
 };
 
 use crate::{
@@ -22,8 +22,9 @@ use crate::{
     governance_surface::{GovernanceBusyPolicy, SessionGovernanceInput},
     session_identity::normalize_external_session_id,
     session_plan::{
-        active_plan_requires_approval, build_plan_exit_declaration, build_plan_prompt_context,
-        build_plan_prompt_declarations, copy_session_plan_artifacts,
+        active_plan_requires_approval, build_plan_draft_approval_guard_declaration,
+        build_plan_draft_approval_guard_injected_messages, build_plan_exit_declaration,
+        build_plan_prompt_context, build_plan_prompt_declarations, copy_session_plan_artifacts,
         current_mode_requires_plan_context, list_project_plan_archives, load_session_plan_state,
         mark_active_session_plan_approved, parse_plan_approval, parse_plan_workflow_signal,
         read_project_plan_archive,
@@ -40,6 +41,7 @@ use crate::{
 struct PreparedSessionSubmission {
     current_mode_id: ModeId,
     prompt_declarations: Vec<PromptDeclaration>,
+    injected_messages: Vec<LlmMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +199,7 @@ impl App {
             .await?;
         current_mode_id = submission.current_mode_id;
         let mut prompt_declarations = submission.prompt_declarations;
+        let mut injected_messages = submission.injected_messages;
 
         if let Some(skill_invocation) = skill_invocation {
             prompt_declarations.push(
@@ -206,7 +209,7 @@ impl App {
                 )?,
             );
         }
-        let surface = self.governance_surface.session_surface(
+        let mut surface = self.governance_surface.session_surface(
             self.kernel.as_ref(),
             SessionGovernanceInput {
                 session_id: session_id.to_string(),
@@ -223,6 +226,7 @@ impl App {
                 busy_policy: GovernanceBusyPolicy::BranchOnBusy,
             },
         )?;
+        surface.injected_messages.append(&mut injected_messages);
         self.session_runtime
             .submit_prompt_for_agent(
                 session_id,
@@ -281,6 +285,7 @@ impl App {
         mut current_mode_id: ModeId,
     ) -> Result<PreparedSessionSubmission, ApplicationError> {
         let mut prompt_declarations = Vec::new();
+        let mut injected_messages = Vec::new();
         let plan_state = load_session_plan_state(session_id, working_dir)?;
         let plan_approval = parse_plan_approval(text);
         let plan_mode_spec = self.plan_mode_spec()?;
@@ -300,15 +305,34 @@ impl App {
             }
         } else if current_mode_id == ModeId::plan()
             && current_mode_requires_plan_context(&current_mode_id)
-            && !plan_approval.approved
+            && (!plan_approval.approved
+                || plan_state
+                    .as_ref()
+                    .is_some_and(|state| state.status == SessionPlanStatus::Draft))
         {
             let context = build_plan_prompt_context(session_id, working_dir, text)?;
+            if plan_approval.approved
+                && plan_state
+                    .as_ref()
+                    .is_some_and(|state| state.status == SessionPlanStatus::Draft)
+            {
+                injected_messages.extend(build_plan_draft_approval_guard_injected_messages(
+                    &context,
+                    plan_approval.matched_phrase,
+                ));
+                prompt_declarations.push(build_plan_draft_approval_guard_declaration(
+                    &plan_mode_spec,
+                    &context,
+                    plan_approval.matched_phrase,
+                ));
+            }
             prompt_declarations.extend(build_plan_prompt_declarations(&plan_mode_spec, &context));
         }
 
         Ok(PreparedSessionSubmission {
             current_mode_id,
             prompt_declarations,
+            injected_messages,
         })
     }
 
@@ -321,8 +345,10 @@ impl App {
         mut workflow_state: WorkflowInstanceState,
     ) -> Result<PreparedSessionSubmission, ApplicationError> {
         let plan_state = load_session_plan_state(session_id, working_dir)?;
+        let plan_approval = parse_plan_approval(text);
         let signal = parse_plan_workflow_signal(text, plan_state.as_ref());
         let mut prompt_declarations = Vec::new();
+        let mut injected_messages = Vec::new();
         let plan_mode_spec = self.plan_mode_spec()?;
 
         if let Some(signal) = signal {
@@ -383,6 +409,21 @@ impl App {
         match workflow_state.current_phase_id.as_str() {
             PLANNING_PHASE_ID => {
                 let context = build_plan_prompt_context(session_id, working_dir, text)?;
+                if plan_approval.approved
+                    && plan_state
+                        .as_ref()
+                        .is_some_and(|state| state.status == SessionPlanStatus::Draft)
+                {
+                    injected_messages.extend(build_plan_draft_approval_guard_injected_messages(
+                        &context,
+                        plan_approval.matched_phrase,
+                    ));
+                    prompt_declarations.push(build_plan_draft_approval_guard_declaration(
+                        &plan_mode_spec,
+                        &context,
+                        plan_approval.matched_phrase,
+                    ));
+                }
                 prompt_declarations
                     .extend(build_plan_prompt_declarations(&plan_mode_spec, &context));
             },
@@ -405,6 +446,7 @@ impl App {
         Ok(PreparedSessionSubmission {
             current_mode_id,
             prompt_declarations,
+            injected_messages,
         })
     }
 
@@ -781,8 +823,8 @@ mod tests {
     };
 
     use astrcode_core::{
-        ExecutionTaskItem, ExecutionTaskStatus, ModeId, SessionPlanState, SessionPlanStatus,
-        TaskSnapshot,
+        ExecutionTaskItem, ExecutionTaskStatus, LlmMessage, ModeId, SessionPlanState,
+        SessionPlanStatus, TaskSnapshot, UserMessageOrigin,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -1242,5 +1284,76 @@ mod tests {
                 .clone(),
             Some(existing_snapshot)
         );
+    }
+
+    #[tokio::test]
+    async fn draft_plan_approval_phrase_stays_in_planning_and_injects_guard_prompt() {
+        let harness = SessionUseCasesHarness::new(ModeId::plan());
+        harness
+            .write_plan_state(
+                SessionPlanStatus::Draft,
+                "# Plan\n\n## Scope\n- 只读总结\n\n## Non-Goals\n- 不修改文件\n\n## Existing Code \
+                 To Reuse\n- PROJECT_ARCHITECTURE.md\n\n## Implementation Steps\n1. 提炼约束\n",
+            )
+            .expect("plan state should be seeded");
+
+        harness
+            .app
+            .submit_prompt(&harness.session_id, "按这个做，开始吧".to_string())
+            .await
+            .expect("draft approval phrase should stay in planning");
+
+        let submissions = harness
+            .session_port
+            .recorded_submissions
+            .lock()
+            .expect("submission record lock should work")
+            .clone();
+        assert_eq!(submissions.len(), 1);
+        assert_eq!(submissions[0].text, "按这个做，开始吧");
+        assert!(
+            submissions[0]
+                .prompt_declarations
+                .iter()
+                .any(|declaration| declaration.origin.as_deref()
+                    == Some("mode-hook:plan:draft-approval-guard"))
+        );
+        assert!(
+            submissions[0]
+                .prompt_declarations
+                .iter()
+                .any(|declaration| declaration.origin.as_deref() == Some("mode-hook:plan:facts"))
+        );
+        assert!(
+            !submissions[0]
+                .prompt_declarations
+                .iter()
+                .any(|declaration| declaration.origin.as_deref()
+                    == Some("session-plan:execute-bridge"))
+        );
+        assert_eq!(submissions[0].injected_messages.len(), 1);
+        assert!(matches!(
+            submissions[0].injected_messages[0],
+            LlmMessage::User {
+                ref content,
+                origin: UserMessageOrigin::ReactivationPrompt,
+            } if content.contains(astrcode_core::SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER)
+                && content.contains("当前 canonical session plan 仍是 draft")
+                && content.contains("不要输出任何最终总结")
+                && content.contains("收到，我先把草稿补全为可呈递版本，再交给你确认。")
+        ));
+
+        let persisted = WorkflowStateService::load(&harness.session_id, &harness.working_dir)
+            .expect("workflow state should load")
+            .expect("workflow state should exist");
+        assert_eq!(persisted.current_phase_id, PLANNING_PHASE_ID);
+
+        let mode_switches = harness
+            .session_port
+            .recorded_mode_switches
+            .lock()
+            .expect("mode switch record lock should work")
+            .clone();
+        assert!(mode_switches.is_empty());
     }
 }

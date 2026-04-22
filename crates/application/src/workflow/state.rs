@@ -118,6 +118,7 @@ mod tests {
 
     #[test]
     fn workflow_state_service_round_trips_state_file() {
+        let _guard = astrcode_core::test_support::TestEnvGuard::new();
         let temp = tempdir().expect("tempdir should exist");
         let state = WorkflowInstanceState {
             workflow_id: "plan_execute".to_string(),
@@ -160,6 +161,7 @@ mod tests {
 
     #[test]
     fn load_recovering_downgrades_invalid_json_to_none() {
+        let _guard = astrcode_core::test_support::TestEnvGuard::new();
         let temp = tempdir().expect("tempdir should exist");
         let path = WorkflowStateService::state_path("session-a", temp.path())
             .expect("path should resolve");

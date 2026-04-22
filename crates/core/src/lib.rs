@@ -191,7 +191,10 @@ pub use runtime::{
 };
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
 pub use session_catalog::SessionCatalogEvent;
-pub use session_plan::{SessionPlanState, SessionPlanStatus, session_plan_content_digest};
+pub use session_plan::{
+    SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER, SessionPlanState, SessionPlanStatus,
+    session_plan_content_digest,
+};
 pub use shell::{ResolvedShell, ShellFamily};
 pub use skill::{SkillSource, SkillSpec, is_valid_skill_name, normalize_skill_name};
 pub use store::{

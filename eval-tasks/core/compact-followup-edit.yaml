@@ -1,0 +1,17 @@
+task_id: compact-followup-edit
+description: 依据 compact 摘要继续执行编辑任务，覆盖 compact 后执行质量。
+prompt: |
+  请读取 summary.md，并把 notes.txt 更新为包含保留约束和已完成事项的两行摘要。
+workspace:
+  setup: ../fixtures/compact-followup-edit
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Edit
+  max_tool_calls: 3
+  max_turns: 1
+  file_changes:
+    - path: notes.txt
+      contains: "日志级别必须保持 info"
+    - path: notes.txt
+      contains: "迁移脚本已经生成"

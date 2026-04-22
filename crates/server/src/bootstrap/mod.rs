@@ -742,4 +742,50 @@ mod tests {
         assert_eq!(payload["serverOrigin"], "http://127.0.0.1:62000");
         std::env::remove_var(ASTRCODE_TEST_HOME_ENV);
     }
+
+    #[tokio::test]
+    async fn serve_run_info_returns_service_unavailable_for_expired_bootstrap_token() {
+        let _env_guard = run_info_env_lock().lock().await;
+        let (state, guard) = test_state(None).await;
+        write_run_info_in_home(
+            guard.home_dir(),
+            &LocalServerInfo {
+                port: 62000,
+                token: "expired-bootstrap-token".to_string(),
+                pid: std::process::id(),
+                started_at: format_local_rfc3339(chrono::Utc::now()),
+                expires_at_ms: 1,
+            },
+        )
+        .expect("run info should be written");
+        std::env::set_var(ASTRCODE_TEST_HOME_ENV, guard.home_dir());
+
+        let app = Router::new()
+            .route("/__astrcode__/run-info", get(serve_run_info))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__astrcode__/run-info")
+                    .header(header::ORIGIN, "http://127.0.0.1:5173")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload: serde_json::Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body should be readable"),
+        )
+        .expect("payload should deserialize");
+        assert_eq!(
+            payload["error"],
+            "bootstrap token has expired; server may need restart"
+        );
+        std::env::remove_var(ASTRCODE_TEST_HOME_ENV);
+    }
 }

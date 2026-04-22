@@ -12,6 +12,7 @@ import { resolveForkTurnIdFromMessage } from '../../lib/sessionFork';
 import AssistantMessage from './AssistantMessage';
 import CompactMessage from './CompactMessage';
 import PlanMessage from './PlanMessage';
+import PromptMetricsMessage from './PromptMetricsMessage';
 import SubRunBlock from './SubRunBlock';
 import ToolCallBlock from './ToolCallBlock';
 import UserMessage from './UserMessage';
@@ -292,6 +293,9 @@ export default function MessageList({
       if (msg.kind === 'compact') {
         return <CompactMessage message={msg} />;
       }
+      if (msg.kind === 'promptMetrics') {
+        return <PromptMetricsMessage message={msg} />;
+      }
       if (msg.kind === 'subRunStart' || msg.kind === 'subRunFinish') {
         return null;
       }
@@ -345,10 +349,6 @@ export default function MessageList({
       for (let index = 0; index < items.length; index += 1) {
         const item = items[index];
         if (item.kind === 'message') {
-          if (item.message.kind === 'promptMetrics') {
-            continue;
-          }
-
           const previousItem = items[index - 1];
           const previousMessage = previousItem?.kind === 'message' ? previousItem.message : null;
 

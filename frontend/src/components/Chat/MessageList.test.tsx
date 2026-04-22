@@ -176,6 +176,56 @@ describe('MessageList', () => {
     expect(html).toContain('已 durable 到 Step 2');
   });
 
+  it('renders prompt metrics rows with cache diagnostics', () => {
+    const html = renderToStaticMarkup(
+      <ChatScreenProvider value={chatContextValue}>
+        <MessageList
+          threadItems={[
+            {
+              kind: 'message',
+              message: {
+                id: 'prompt-metrics-1',
+                kind: 'promptMetrics',
+                turnId: 'turn-1',
+                stepIndex: 2,
+                estimatedTokens: 1024,
+                contextWindow: 200000,
+                effectiveWindow: 180000,
+                thresholdTokens: 162000,
+                truncatedToolResults: 1,
+                providerInputTokens: 700,
+                providerOutputTokens: 64,
+                cacheCreationInputTokens: 100,
+                cacheReadInputTokens: 500,
+                providerCacheMetricsSupported: true,
+                promptCacheReuseHits: 3,
+                promptCacheReuseMisses: 1,
+                promptCacheUnchangedLayers: ['stable', 'inherited'],
+                promptCacheDiagnostics: {
+                  reasons: ['model_changed'],
+                  previousCacheReadInputTokens: 12000,
+                  currentCacheReadInputTokens: 4000,
+                  expectedDrop: false,
+                  cacheBreakDetected: true,
+                },
+                timestamp: Date.now(),
+              },
+            },
+          ]}
+          childSubRuns={[]}
+          subRunViews={new Map()}
+          stepProgress={{ durable: null, live: null }}
+          contentFingerprint="message-list-prompt-metrics"
+        />
+      </ChatScreenProvider>
+    );
+
+    expect(html).toContain('Prompt 指标');
+    expect(html).toContain('检测到 Cache Break');
+    expect(html).toContain('未变化层 stable / inherited');
+    expect(html).toContain('原因 模型变化');
+  });
+
   it('hides the step cursor hint when there is no live-only tail', () => {
     const html = renderToStaticMarkup(
       <ChatScreenProvider value={chatContextValue}>

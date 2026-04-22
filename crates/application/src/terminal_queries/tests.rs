@@ -378,6 +378,54 @@ async fn terminal_stream_facts_falls_back_to_rehydrate_for_future_cursor() {
 }
 
 #[tokio::test]
+async fn terminal_stream_facts_rehydrates_when_cursor_is_missing_from_transcript() {
+    let harness = build_terminal_app_harness(&[]);
+    let project = tempfile::tempdir().expect("tempdir should be created");
+    let session = harness
+        .app
+        .create_session(project.path().display().to_string())
+        .await
+        .expect("session should be created");
+    harness
+        .app
+        .submit_prompt(&session.session_id, "hello".to_string())
+        .await
+        .expect("prompt should submit");
+
+    let transcript = harness
+        .session_runtime
+        .session_transcript_snapshot(&session.session_id)
+        .await
+        .expect("transcript snapshot should build");
+    let candidate = transcript
+        .records
+        .iter()
+        .find_map(|record| {
+            let (storage_seq, subindex) = record.event_id.split_once('.')?;
+            let subindex = subindex.parse::<u32>().ok()?;
+            Some(format!("{storage_seq}.{}", subindex.saturating_add(1)))
+        })
+        .expect("session should produce at least one durable cursor");
+
+    let facts = harness
+        .app
+        .terminal_stream_facts(&session.session_id, Some(candidate.as_str()))
+        .await
+        .expect("stream facts should build");
+
+    match facts {
+        TerminalStreamFacts::Replay(_) => {
+            panic!("missing transcript cursor should require rehydrate");
+        },
+        TerminalStreamFacts::RehydrateRequired(rehydrate) => {
+            assert_eq!(rehydrate.reason, TerminalRehydrateReason::CursorExpired);
+            assert_eq!(rehydrate.requested_cursor, candidate);
+            assert_eq!(rehydrate.latest_cursor, transcript.cursor);
+        },
+    }
+}
+
+#[tokio::test]
 async fn terminal_resume_candidates_use_server_fact_and_recent_sorting() {
     let harness = build_terminal_app_harness(&[]);
     let project = tempfile::tempdir().expect("tempdir should be created");

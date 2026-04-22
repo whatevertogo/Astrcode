@@ -759,6 +759,68 @@ mod tests {
         assert_eq!(projection.delivery, explicit_delivery);
     }
 
+    #[test]
+    fn cancelled_child_turn_preserves_interrupted_failure_details() {
+        let child = astrcode_core::SubRunHandle {
+            sub_run_id: "subrun-1".to_string().into(),
+            agent_id: "agent-child".to_string().into(),
+            session_id: "session-parent".to_string().into(),
+            child_session_id: Some("session-child".to_string().into()),
+            depth: 1,
+            parent_turn_id: "turn-parent".to_string().into(),
+            parent_agent_id: Some("agent-parent".to_string().into()),
+            parent_sub_run_id: None,
+            lineage_kind: ChildSessionLineageKind::Spawn,
+            agent_profile: "reviewer".to_string(),
+            storage_mode: SubRunStorageMode::IndependentSession,
+            lifecycle: AgentLifecycleStatus::Idle,
+            last_turn_outcome: Some(astrcode_core::AgentTurnOutcome::Cancelled),
+            resolved_limits: Default::default(),
+            delegation: None,
+        };
+        let outcome = SessionTurnOutcomeSummary {
+            outcome: astrcode_core::AgentTurnOutcome::Cancelled,
+            summary: "父级已取消该子任务。".to_string(),
+            technical_message: "parent requested shutdown".to_string(),
+        };
+
+        let result = build_child_subrun_result(&child, "session-parent", "turn-child", &outcome);
+        let projection = project_child_terminal_delivery(
+            &result,
+            "child-terminal:subrun-1:turn-child:cancelled",
+        );
+
+        match result {
+            SubRunResult::Failed { outcome, failure } => {
+                assert_eq!(outcome, FailedSubRunOutcome::Cancelled);
+                assert_eq!(failure.code, SubRunFailureCode::Interrupted);
+                assert_eq!(failure.display_message, "父级已取消该子任务。");
+                assert_eq!(failure.technical_message, "parent requested shutdown");
+                assert!(
+                    !failure.retryable,
+                    "cancelled child turn should not masquerade as a retryable abort"
+                );
+            },
+            other => panic!("unexpected result: {other:?}"),
+        }
+
+        assert_eq!(projection.kind, ChildSessionNotificationKind::Closed);
+        assert_eq!(projection.status, AgentLifecycleStatus::Idle);
+        assert_eq!(projection.delivery.origin, ParentDeliveryOrigin::Fallback);
+        assert_eq!(
+            projection.delivery.terminal_semantics,
+            ParentDeliveryTerminalSemantics::Terminal
+        );
+        assert_eq!(projection.delivery.source_turn_id, None);
+        match projection.delivery.payload {
+            ParentDeliveryPayload::CloseRequest(payload) => {
+                assert_eq!(payload.message, "子 Agent 已关闭。");
+                assert_eq!(payload.reason.as_deref(), Some("child_turn_cancelled"));
+            },
+            other => panic!("unexpected payload: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn append_child_session_notification_uses_explicit_parent_session_route() {
         let harness = build_agent_test_harness(TestLlmBehavior::Succeed {

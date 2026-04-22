@@ -311,6 +311,65 @@ fn prepare_compact_input_skips_synthetic_user_messages() {
 }
 
 #[test]
+fn build_compact_result_marks_incremental_mode_when_previous_summary_exists() {
+    let prepared_input = prepare_compact_input(&[
+        LlmMessage::User {
+            content: CompactSummaryEnvelope::new("older summary").render(),
+            origin: UserMessageOrigin::CompactSummary,
+        },
+        LlmMessage::User {
+            content: "current task".to_string(),
+            origin: UserMessageOrigin::User,
+        },
+        LlmMessage::Assistant {
+            content: "latest step".to_string(),
+            tool_calls: Vec::new(),
+            reasoning: None,
+        },
+    ]);
+
+    let result = build_compact_result(
+        CompactResultInput {
+            compacted_messages: compacted_messages(
+                "refreshed summary",
+                Some("- keep current objective"),
+                &[],
+                2,
+                vec![LlmMessage::Assistant {
+                    content: "latest step".to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: None,
+                }],
+            ),
+            summary: "refreshed summary".to_string(),
+            recent_user_context_digest: Some("- keep current objective".to_string()),
+            recent_user_context_messages: Vec::new(),
+            preserved_recent_turns: 1,
+            pre_tokens: 256,
+            messages_removed: 2,
+        },
+        None,
+        &test_compact_config(),
+        CompactExecutionResult {
+            parsed_output: ParsedCompactOutput {
+                summary: "refreshed summary".to_string(),
+                recent_user_context_digest: Some("- keep current objective".to_string()),
+                has_analysis: true,
+                has_recent_user_context_digest_block: true,
+                used_fallback: false,
+            },
+            prepared_input,
+            retry_state: CompactRetryState::default(),
+        },
+    );
+
+    assert_eq!(result.meta.mode, CompactMode::Incremental);
+    assert_eq!(result.meta.retry_count, 0);
+    assert!(!result.meta.fallback_used);
+    assert_eq!(result.meta.input_units, 2);
+}
+
+#[test]
 fn normalize_compaction_tool_content_removes_exact_child_identifiers() {
     let normalized = normalize_compaction_tool_content(
         "spawn 已在后台启动。\n\nChild agent reference:\n- agentId: agent-1\n- subRunId: \

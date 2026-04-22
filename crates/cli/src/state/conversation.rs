@@ -462,6 +462,7 @@ mod tests {
             ConversationStreamEnvelopeDto {
                 session_id: "session-1".to_string(),
                 cursor: ConversationCursorDto("1.1".to_string()),
+                step_progress: Default::default(),
                 delta: ConversationDeltaDto::PatchBlock {
                     block_id: "assistant-1".to_string(),
                     patch: ConversationBlockPatchDto::AppendMarkdown {
