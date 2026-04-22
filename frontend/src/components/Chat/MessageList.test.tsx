@@ -176,7 +176,7 @@ describe('MessageList', () => {
     expect(html).toContain('已 durable 到 Step 2');
   });
 
-  it('renders prompt metrics rows with cache diagnostics', () => {
+  it('does not render prompt metrics rows', () => {
     const html = renderToStaticMarkup(
       <ChatScreenProvider value={chatContextValue}>
         <MessageList
@@ -220,10 +220,10 @@ describe('MessageList', () => {
       </ChatScreenProvider>
     );
 
-    expect(html).toContain('Prompt 指标');
-    expect(html).toContain('检测到 Cache Break');
-    expect(html).toContain('未变化层 stable / inherited');
-    expect(html).toContain('原因 模型变化');
+    expect(html).not.toContain('Prompt 指标');
+    expect(html).not.toContain('检测到 Cache Break');
+    expect(html).not.toContain('未变化层 stable / inherited');
+    expect(html).not.toContain('原因 模型变化');
   });
 
   it('hides the step cursor hint when there is no live-only tail', () => {

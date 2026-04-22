@@ -62,7 +62,6 @@ export const pillNeutral = `${pillBase} bg-surface-muted text-text-secondary`;
 export const pillSuccess = `${pillBase} bg-success-soft text-success`;
 export const pillWarning = `${pillBase} bg-warning-soft text-warning`;
 export const pillDanger = `${pillBase} bg-danger-soft text-danger`;
-export const pillInfo = `${pillBase} bg-info-soft text-info`;
 
 /* ====== 消息 / 卡片 ====== */
 
@@ -151,14 +150,6 @@ export const composerInterruptButton =
 export const compactCard =
   'ml-[var(--chat-assistant-content-offset)] border border-[rgba(122,185,153,0.28)] bg-[linear-gradient(180deg,rgba(245,252,248,0.98)_0%,rgba(237,247,241,0.96)_100%)] rounded-[18px] px-4 pt-3.5 pb-4 shadow-[0_14px_32px_rgba(63,119,88,0.08)]';
 
-/** Prompt 指标卡片（蓝色调） */
-export const metricsCard =
-  'ml-[var(--chat-assistant-content-offset)] border border-info-border bg-[linear-gradient(180deg,rgba(247,249,255,0.98)_0%,rgba(240,244,255,0.96)_100%)] rounded-[18px] px-4 py-3.5 shadow-code-panel';
-
 /** 压缩摘要徽章（绿色） */
 export const compactBadge =
   'inline-flex min-h-[26px] items-center rounded-full bg-[rgba(57,201,143,0.14)] px-2.5 text-xs font-bold tracking-[0.02em] text-[#22694c]';
-
-/** Prompt 指标徽章（蓝色） */
-export const metricsBadge =
-  'inline-flex min-h-[26px] items-center rounded-full bg-[rgba(89,132,255,0.14)] px-2.5 text-xs font-bold text-[#3558c4]';

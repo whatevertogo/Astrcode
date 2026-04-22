@@ -12,7 +12,6 @@ import { resolveForkTurnIdFromMessage } from '../../lib/sessionFork';
 import AssistantMessage from './AssistantMessage';
 import CompactMessage from './CompactMessage';
 import PlanMessage from './PlanMessage';
-import PromptMetricsMessage from './PromptMetricsMessage';
 import SubRunBlock from './SubRunBlock';
 import ToolCallBlock from './ToolCallBlock';
 import UserMessage from './UserMessage';
@@ -89,21 +88,6 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
                 2
               )}
             </pre>
-          ) : message.kind === 'promptMetrics' ? (
-            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
-              {JSON.stringify(
-                {
-                  stepIndex: message.stepIndex,
-                  estimatedTokens: message.estimatedTokens,
-                  providerInputTokens: message.providerInputTokens,
-                  providerOutputTokens: message.providerOutputTokens,
-                  cacheReadInputTokens: message.cacheReadInputTokens,
-                  cacheCreationInputTokens: message.cacheCreationInputTokens,
-                },
-                null,
-                2
-              )}
-            </pre>
           ) : message.kind === 'subRunStart' ? (
             <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
               {JSON.stringify(
@@ -141,6 +125,10 @@ class MessageBoundary extends Component<MessageBoundaryProps, MessageBoundarySta
                 null,
                 2
               )}
+            </pre>
+          ) : message.kind === 'promptMetrics' ? (
+            <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
+              [promptMetrics hidden]
             </pre>
           ) : (
             <pre className="m-0 whitespace-pre-wrap overflow-wrap-anywhere text-xs leading-relaxed">
@@ -293,9 +281,6 @@ export default function MessageList({
       if (msg.kind === 'compact') {
         return <CompactMessage message={msg} />;
       }
-      if (msg.kind === 'promptMetrics') {
-        return <PromptMetricsMessage message={msg} />;
-      }
       if (msg.kind === 'subRunStart' || msg.kind === 'subRunFinish') {
         return null;
       }
@@ -349,6 +334,9 @@ export default function MessageList({
       for (let index = 0; index < items.length; index += 1) {
         const item = items[index];
         if (item.kind === 'message') {
+          if (item.message.kind === 'promptMetrics') {
+            continue;
+          }
           const previousItem = items[index - 1];
           const previousMessage = previousItem?.kind === 'message' ? previousItem.message : null;
 
