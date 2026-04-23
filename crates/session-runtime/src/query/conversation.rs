@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use astrcode_core::{
     AgentEvent, ChildAgentRef, ChildSessionNotification, ChildSessionNotificationKind,
-    CompactAppliedMeta, CompactTrigger, Phase, SessionEventRecord, ToolExecutionResult,
-    ToolOutputStream,
+    CompactAppliedMeta, CompactTrigger, Phase, PromptMetricsPayload, SessionEventRecord,
+    ToolExecutionResult, ToolOutputStream,
 };
 use serde_json::Value;
 
@@ -35,6 +35,7 @@ pub struct ConversationStreamProjector {
     projector: ConversationDeltaProjector,
     last_sent_cursor: Option<String>,
     fallback_live_cursor: Option<String>,
+    step_progress: ConversationStepProgressFacts,
 }
 
 #[derive(Default, Clone)]
@@ -244,10 +245,17 @@ impl ConversationDeltaProjector {
                 turn_id,
                 content,
                 reasoning_content,
+                step_index,
                 ..
-            } if source.is_durable() => {
-                self.finalize_assistant_block(turn_id, content, reasoning_content.as_deref())
-            },
+            } if source.is_durable() => self.finalize_assistant_block(
+                turn_id,
+                content,
+                reasoning_content.as_deref(),
+                *step_index,
+            ),
+            AgentEvent::PromptMetrics {
+                turn_id, metrics, ..
+            } => self.upsert_prompt_metrics_block(turn_id.as_deref(), metrics),
             AgentEvent::ToolCallStart {
                 turn_id,
                 tool_call_id,
@@ -268,12 +276,30 @@ impl ConversationDeltaProjector {
                 stream,
                 delta,
                 ..
-            } => self.append_tool_stream(turn_id, tool_call_id, tool_name, *stream, delta, source),
+            } => {
+                if should_suppress_tool_call_block(tool_name, None) {
+                    Vec::new()
+                } else {
+                    self.append_tool_stream(
+                        turn_id,
+                        tool_call_id,
+                        tool_name,
+                        *stream,
+                        delta,
+                        source,
+                    )
+                }
+            },
             AgentEvent::ToolCallResult {
                 turn_id, result, ..
             } => {
                 if let Some(block) = plan_block_from_tool_result(turn_id, result) {
                     self.push_block(ConversationBlockFacts::Plan(Box::new(block)))
+                } else if should_suppress_tool_call_block(&result.tool_name, None) {
+                    // Why: plan-mode canonical tools own a dedicated plan surface.
+                    // Letting failed retries fall back to generic tool cards leaks
+                    // internal validation churn and produces conflicting UI.
+                    Vec::new()
                 } else {
                     self.complete_tool_call(turn_id, result, source)
                 }
@@ -316,7 +342,6 @@ impl ConversationDeltaProjector {
             },
             AgentEvent::PhaseChanged { .. }
             | AgentEvent::SessionStarted { .. }
-            | AgentEvent::PromptMetrics { .. }
             | AgentEvent::SubRunStarted { .. }
             | AgentEvent::SubRunFinished { .. }
             | AgentEvent::AgentInputQueued { .. }
@@ -383,6 +408,7 @@ impl ConversationDeltaProjector {
                     turn_id: Some(turn_id.to_string()),
                     status: ConversationBlockStatus::Streaming,
                     markdown: delta.to_string(),
+                    step_index: None,
                 })
             },
         };
@@ -394,6 +420,7 @@ impl ConversationDeltaProjector {
         turn_id: &str,
         content: &str,
         reasoning_content: Option<&str>,
+        step_index: Option<u32>,
     ) -> Vec<ConversationDeltaFacts> {
         let (assistant_id, thinking_id) = {
             let turn_refs = self.turn_blocks.entry(turn_id.to_string()).or_default();
@@ -429,6 +456,9 @@ impl ConversationDeltaProjector {
             content,
             BlockKind::Assistant,
         ));
+        if let Some(delta) = self.refresh_assistant_step_index(&assistant_id, step_index) {
+            deltas.push(delta);
+        }
         if let Some(delta) = self.complete_block(&assistant_id, ConversationBlockStatus::Complete) {
             deltas.push(delta);
         }
@@ -480,10 +510,57 @@ impl ConversationDeltaProjector {
                     turn_id: Some(turn_id.to_string()),
                     status: ConversationBlockStatus::Streaming,
                     markdown: content.to_string(),
+                    step_index: None,
                 })
             },
         };
         self.push_block(block)
+    }
+
+    fn refresh_assistant_step_index(
+        &mut self,
+        block_id: &str,
+        step_index: Option<u32>,
+    ) -> Option<ConversationDeltaFacts> {
+        let index = self.block_index.get(block_id).copied()?;
+        let ConversationBlockFacts::Assistant(block) = &mut self.blocks[index] else {
+            return None;
+        };
+        if block.step_index == step_index {
+            return None;
+        }
+        block.step_index = step_index;
+        Some(ConversationDeltaFacts::AppendBlock {
+            block: Box::new(self.blocks[index].clone()),
+        })
+    }
+
+    fn upsert_prompt_metrics_block(
+        &mut self,
+        turn_id: Option<&str>,
+        metrics: &PromptMetricsPayload,
+    ) -> Vec<ConversationDeltaFacts> {
+        let block = ConversationBlockFacts::PromptMetrics(ConversationPromptMetricsBlockFacts {
+            id: prompt_metrics_block_id(turn_id, metrics.step_index),
+            turn_id: turn_id.map(ToString::to_string),
+            step_index: metrics.step_index,
+            estimated_tokens: metrics.estimated_tokens,
+            context_window: metrics.context_window,
+            effective_window: metrics.effective_window,
+            threshold_tokens: metrics.threshold_tokens,
+            truncated_tool_results: metrics.truncated_tool_results,
+            provider_input_tokens: metrics.provider_input_tokens,
+            provider_output_tokens: metrics.provider_output_tokens,
+            cache_creation_input_tokens: metrics.cache_creation_input_tokens,
+            cache_read_input_tokens: metrics.cache_read_input_tokens,
+            provider_cache_metrics_supported: metrics.provider_cache_metrics_supported,
+            prompt_cache_reuse_hits: metrics.prompt_cache_reuse_hits,
+            prompt_cache_reuse_misses: metrics.prompt_cache_reuse_misses,
+            prompt_cache_unchanged_layers: metrics.prompt_cache_unchanged_layers.clone(),
+            prompt_cache_diagnostics: metrics.prompt_cache_diagnostics.clone(),
+        });
+
+        self.upsert_block(block)
     }
 
     fn start_tool_call(
@@ -752,12 +829,9 @@ impl ConversationDeltaProjector {
     fn append_error(
         &mut self,
         turn_id: Option<&str>,
-        code: &str,
+        _code: &str,
         message: &str,
     ) -> Vec<ConversationDeltaFacts> {
-        if code == "interrupted" {
-            return Vec::new();
-        }
         let block_id = format!("turn:{}:error", turn_id.unwrap_or("session"));
         if self.block_index.contains_key(&block_id) {
             return Vec::new();
@@ -807,6 +881,20 @@ impl ConversationDeltaProjector {
         vec![ConversationDeltaFacts::AppendBlock {
             block: Box::new(block),
         }]
+    }
+
+    fn upsert_block(&mut self, block: ConversationBlockFacts) -> Vec<ConversationDeltaFacts> {
+        let id = block_id(&block).to_string();
+        if let Some(index) = self.block_index.get(&id).copied() {
+            if self.blocks[index] == block {
+                return Vec::new();
+            }
+            self.blocks[index] = block.clone();
+            return vec![ConversationDeltaFacts::AppendBlock {
+                block: Box::new(block),
+            }];
+        }
+        self.push_block(block)
     }
 
     fn complete_block(
@@ -958,6 +1046,13 @@ impl ConversationDeltaProjector {
             ConversationBlockFacts::ToolCall(block) => Some(block.status),
             _ => None,
         }
+    }
+}
+
+fn prompt_metrics_block_id(turn_id: Option<&str>, step_index: u32) -> String {
+    match turn_id {
+        Some(turn_id) => format!("turn:{turn_id}:prompt_metrics:{}", step_index + 1),
+        None => format!("session:prompt_metrics:{}", step_index + 1),
     }
 }
 

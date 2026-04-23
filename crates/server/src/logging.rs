@@ -28,7 +28,7 @@ use std::{
 };
 
 use anyhow::Result;
-use astrcode_core::project::astrcode_dir;
+use astrcode_support::hostpaths::astrcode_dir;
 use chrono::Local;
 
 /// 归档文件名前缀，用于匹配和清理历史归档

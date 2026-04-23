@@ -6,9 +6,9 @@ use astrcode_protocol::http::{
     ConversationDeltaDto, ConversationErrorEnvelopeDto, ConversationLastCompactMetaDto,
     ConversationPlanBlockDto, ConversationPlanBlockersDto, ConversationPlanEventKindDto,
     ConversationPlanReviewDto, ConversationPlanReviewKindDto, ConversationSnapshotResponseDto,
-    ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto, ConversationSystemNoteKindDto,
-    ConversationTaskItemDto, ConversationTaskStatusDto, ConversationToolCallBlockDto,
-    ConversationToolStreamsDto, PhaseDto,
+    ConversationStepProgressDto, ConversationStreamEnvelopeDto, ConversationSystemNoteBlockDto,
+    ConversationSystemNoteKindDto, ConversationTaskItemDto, ConversationTaskStatusDto,
+    ConversationToolCallBlockDto, ConversationToolStreamsDto, PhaseDto,
 };
 use serde_json::json;
 
@@ -55,6 +55,10 @@ fn conversation_snapshot_fixture_freezes_authoritative_tool_block_shape() {
                     active_form: None,
                 },
             ]),
+        },
+        step_progress: ConversationStepProgressDto {
+            durable: None,
+            live: None,
         },
         blocks: vec![ConversationBlockDto::ToolCall(
             ConversationToolCallBlockDto {
@@ -115,6 +119,10 @@ fn conversation_delta_fixtures_freeze_tool_patch_and_rehydrate_shapes() {
         ConversationStreamEnvelopeDto {
             session_id: "session-root".to_string(),
             cursor: ConversationCursorDto("cursor:opaque:v1:session-root/44==".to_string()),
+            step_progress: ConversationStepProgressDto {
+                durable: None,
+                live: None,
+            },
             delta: ConversationDeltaDto::PatchBlock {
                 block_id: "block-tool-call-1".to_string(),
                 patch: ConversationBlockPatchDto::AppendToolStream {
@@ -137,6 +145,10 @@ fn conversation_delta_fixtures_freeze_tool_patch_and_rehydrate_shapes() {
         ConversationStreamEnvelopeDto {
             session_id: "session-root".to_string(),
             cursor: ConversationCursorDto("cursor:opaque:v1:session-root/45==".to_string()),
+            step_progress: ConversationStepProgressDto {
+                durable: None,
+                live: None,
+            },
             delta: ConversationDeltaDto::RehydrateRequired {
                 error: ConversationErrorEnvelopeDto {
                     code: ConversationBannerErrorCodeDto::CursorExpired,

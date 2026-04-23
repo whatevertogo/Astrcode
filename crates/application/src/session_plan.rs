@@ -9,13 +9,15 @@ use std::{
 };
 
 use astrcode_core::{
-    ModeId, PromptDeclaration, SessionPlanState, SessionPlanStatus, project::project_dir,
-    session_plan_content_digest,
+    GovernanceModeSpec, LlmMessage, ModeId, PromptDeclaration,
+    SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER, SessionPlanState, SessionPlanStatus,
+    UserMessageOrigin, WorkflowSignal, session_plan_content_digest,
 };
+use astrcode_support::hostpaths::project_dir;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{ApplicationError, mode::builtin_prompts};
+use crate::{ApplicationError, workflow::PlanToExecuteBridgeState};
 
 const PLAN_DIR_NAME: &str = "plan";
 const PLAN_ARCHIVE_DIR_NAME: &str = "plan-archives";
@@ -40,10 +42,16 @@ pub struct SessionPlanControlSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanPromptContext {
+    pub session_id: String,
     pub target_plan_path: String,
     pub target_plan_exists: bool,
     pub target_plan_slug: String,
     pub active_plan: Option<SessionPlanSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ModeWorkflowPromptFacts {
+    pub approved_plan: Option<SessionPlanSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +125,7 @@ fn session_plan_state_path(
     Ok(session_plan_dir(session_id, working_dir)?.join(PLAN_STATE_FILE_NAME))
 }
 
-fn session_plan_markdown_path(
+pub(crate) fn session_plan_markdown_path(
     session_id: &str,
     working_dir: &Path,
     slug: &str,
@@ -183,6 +191,7 @@ pub(crate) fn build_plan_prompt_context(
 ) -> Result<PlanPromptContext, ApplicationError> {
     if let Some(active_plan) = active_plan_summary(session_id, working_dir)? {
         return Ok(PlanPromptContext {
+            session_id: session_id.to_string(),
             target_plan_path: active_plan.path.clone(),
             target_plan_exists: Path::new(&active_plan.path).exists(),
             target_plan_slug: active_plan.slug.clone(),
@@ -194,6 +203,7 @@ pub(crate) fn build_plan_prompt_context(
         .unwrap_or_else(|| format!("plan-{}", Utc::now().format(PLAN_PATH_TIMESTAMP_FORMAT)));
     let path = session_plan_markdown_path(session_id, working_dir, &suggested_slug)?;
     Ok(PlanPromptContext {
+        session_id: session_id.to_string(),
         target_plan_path: path.display().to_string(),
         target_plan_exists: false,
         target_plan_slug: suggested_slug,
@@ -201,92 +211,211 @@ pub(crate) fn build_plan_prompt_context(
     })
 }
 
-pub(crate) fn build_plan_prompt_declarations(
-    session_id: &str,
-    context: &PlanPromptContext,
+pub(crate) fn build_mode_prompt_declarations(
+    spec: &GovernanceModeSpec,
+    artifact_state: &PlanPromptContext,
+    workflow_facts: &ModeWorkflowPromptFacts,
 ) -> Vec<PromptDeclaration> {
-    let active_plan_line = context
-        .active_plan
-        .as_ref()
-        .map(|plan| {
-            format!(
-                "- activePlan: slug={}, title={}, status={}, path={}",
-                plan.slug, plan.title, plan.status, plan.path
+    let Some(hooks) = spec.prompt_hooks.as_ref() else {
+        return Vec::new();
+    };
+
+    if let Some(summary) = workflow_facts.approved_plan.as_ref() {
+        return hooks
+            .exit_prompt
+            .as_ref()
+            .map(|template| {
+                vec![build_hook_declaration(
+                    spec,
+                    artifact_state,
+                    "exit",
+                    "Mode Exit",
+                    format!(
+                        "{}\n\nApproved plan artifact:\n- path: {}\n- slug: {}\n- title: {}\n- \
+                         status: {}",
+                        render_mode_prompt_hook_template(template, artifact_state),
+                        summary.path,
+                        summary.slug,
+                        summary.title,
+                        summary.status
+                    ),
+                    Some(605),
+                )]
+            })
+            .unwrap_or_default();
+    }
+
+    let mut declarations = Vec::new();
+    if let Some(template) = hooks.facts_template.as_ref() {
+        declarations.push(build_hook_declaration(
+            spec,
+            artifact_state,
+            "facts",
+            "Mode Artifact Facts",
+            render_mode_prompt_hook_template(template, artifact_state),
+            Some(605),
+        ));
+    }
+
+    let active_template = if artifact_state.active_plan.is_some() {
+        hooks.reentry_prompt.as_ref().map(|template| {
+            (
+                "reentry",
+                "Mode Re-entry",
+                render_mode_prompt_hook_template(template, artifact_state),
             )
         })
-        .unwrap_or_else(|| "- activePlan: (none)".to_string());
-    let mut declarations = vec![PromptDeclaration {
-        block_id: format!("session.plan.facts.{session_id}"),
-        title: "Session Plan Artifact".to_string(),
-        content: format!(
-            "Session plan facts:\n- targetPlanPath: {}\n- targetPlanExists: {}\n- targetPlanSlug: \
-             {}\n{}\n\nUse `upsertSessionPlan` as the only canonical write path for session \
-             plans. This session has exactly one canonical plan artifact. When continuing the \
-             same task, revise the current plan. When the user clearly changes tasks, overwrite \
-             the current plan instead of creating another canonical plan. Only call \
-             `exitPlanMode` after the current plan is executable and ready for user review.",
-            context.target_plan_path,
-            context.target_plan_exists,
-            context.target_plan_slug,
-            active_plan_line,
-        ),
-        render_target: astrcode_core::PromptDeclarationRenderTarget::System,
-        layer: astrcode_core::SystemPromptLayer::Dynamic,
-        kind: astrcode_core::PromptDeclarationKind::ExtensionInstruction,
-        priority_hint: Some(605),
-        always_include: true,
-        source: astrcode_core::PromptDeclarationSource::Builtin,
-        capability_name: None,
-        origin: Some("session-plan:facts".to_string()),
-    }];
-
-    if context.active_plan.is_some() {
-        declarations.push(PromptDeclaration {
-            block_id: format!("session.plan.reentry.{session_id}"),
-            title: "Plan Re-entry".to_string(),
-            content: builtin_prompts::plan_mode_reentry_prompt().to_string(),
-            render_target: astrcode_core::PromptDeclarationRenderTarget::System,
-            layer: astrcode_core::SystemPromptLayer::Dynamic,
-            kind: astrcode_core::PromptDeclarationKind::ExtensionInstruction,
-            priority_hint: Some(604),
-            always_include: true,
-            source: astrcode_core::PromptDeclarationSource::Builtin,
-            capability_name: None,
-            origin: Some("session-plan:reentry".to_string()),
-        });
     } else {
-        declarations.push(PromptDeclaration {
-            block_id: format!("session.plan.template.{session_id}"),
-            title: "Plan Template".to_string(),
-            content: builtin_prompts::plan_template_prompt().to_string(),
-            render_target: astrcode_core::PromptDeclarationRenderTarget::System,
-            layer: astrcode_core::SystemPromptLayer::Dynamic,
-            kind: astrcode_core::PromptDeclarationKind::ExtensionInstruction,
-            priority_hint: Some(604),
-            always_include: true,
-            source: astrcode_core::PromptDeclarationSource::Builtin,
-            capability_name: None,
-            origin: Some("session-plan:template".to_string()),
-        });
+        hooks.initial_template.as_ref().map(|template| {
+            (
+                "template",
+                "Mode Template",
+                render_mode_prompt_hook_template(template, artifact_state),
+            )
+        })
+    };
+    if let Some((suffix, title, content)) = active_template {
+        declarations.push(build_hook_declaration(
+            spec,
+            artifact_state,
+            suffix,
+            title,
+            content,
+            Some(604),
+        ));
     }
 
     declarations
 }
 
+pub(crate) fn build_plan_prompt_declarations(
+    spec: &GovernanceModeSpec,
+    context: &PlanPromptContext,
+) -> Vec<PromptDeclaration> {
+    build_mode_prompt_declarations(spec, context, &ModeWorkflowPromptFacts::default())
+}
+
 pub(crate) fn build_plan_exit_declaration(
+    spec: &GovernanceModeSpec,
     session_id: &str,
     summary: &SessionPlanSummary,
+) -> Option<PromptDeclaration> {
+    let context = PlanPromptContext {
+        session_id: session_id.to_string(),
+        target_plan_path: summary.path.clone(),
+        target_plan_exists: Path::new(&summary.path).exists(),
+        target_plan_slug: summary.slug.clone(),
+        active_plan: Some(summary.clone()),
+    };
+    build_mode_prompt_declarations(
+        spec,
+        &context,
+        &ModeWorkflowPromptFacts {
+            approved_plan: Some(summary.clone()),
+        },
+    )
+    .into_iter()
+    .next()
+}
+
+pub(crate) fn build_plan_draft_approval_guard_declaration(
+    spec: &GovernanceModeSpec,
+    context: &PlanPromptContext,
+    matched_phrase: Option<&str>,
 ) -> PromptDeclaration {
-    PromptDeclaration {
-        block_id: format!("session.plan.exit.{session_id}"),
-        title: "Plan Mode Exit".to_string(),
+    let active_plan = context
+        .active_plan
+        .as_ref()
+        .map(|plan| {
+            format!(
+                "title={}, status={}, path={}",
+                plan.title, plan.status, plan.path
+            )
+        })
+        .unwrap_or_else(|| "(none)".to_string());
+    let matched_phrase = matched_phrase.unwrap_or("(unknown)");
+    build_hook_declaration(
+        spec,
+        context,
+        "draft-approval-guard",
+        "Draft Approval Guard",
+        format!(
+            "用户这条消息命中了批准/开工语义（matchedPhrase: {matched_phrase}），但当前 canonical \
+             session plan 仍然是 draft，尚未进入 \
+             awaiting_approval，也还没有被正式呈递给用户。\n\n当前 active plan: \
+             {active_plan}\ntargetPlanPath: \
+             {}\n\n把这条消息解释成：继续把现有计划打磨到可呈递，而不是立即执行计划。\n硬约束：\\
+             n- 保持在 plan mode，不要切换到执行语义。\n- \
+             不要声称“开始执行/已经开始做/总结如下/最终摘要如下”等执行态结果。\n- \
+             不要输出计划外的最终产物正文，也不要提前给出任何最终总结内容。\n- \
+             只允许继续审查上下文、修订 canonical plan，并在计划真正可执行后调用 `exitPlanMode` \
+             呈递审批。\n- 在完成修订并真正呈递前，assistant \
+             对用户的自然语言回复最多只能是一句简短确认，例如：“收到，我先把草稿补全为可呈递版本，\
+             再交给你确认。” 不要展开正文，不要重复计划内容。",
+            context.target_plan_path
+        ),
+        Some(606),
+    )
+}
+
+pub(crate) fn build_plan_draft_approval_guard_injected_messages(
+    context: &PlanPromptContext,
+    matched_phrase: Option<&str>,
+) -> Vec<LlmMessage> {
+    let matched_phrase = matched_phrase.unwrap_or("(unknown)");
+    vec![LlmMessage::User {
         content: format!(
-            "{}\n\nApproved plan artifact:\n- path: {}\n- slug: {}\n- title: {}\n- status: {}",
-            builtin_prompts::plan_mode_exit_prompt(),
-            summary.path,
-            summary.slug,
-            summary.title,
-            summary.status
+            "{SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER}\\
+             n内部执行约束（不要在对用户可见输出中复述）：当前 canonical session plan 仍是 \
+             draft，尚未进入 \
+             awaiting_approval，也还没有正式呈递给用户。下一条真实用户消息虽然命中了批准/\
+             开工语义（matchedPhrase: \
+             {matched_phrase}），但只能被解释为“继续把草稿修订为可呈递版本”，不能解释为批准执行。\\
+             \
+             n\n当前 targetPlanPath: {}\n当前 activePlanStatus: {}\n\n硬约束：\n- \
+             不要开始执行计划，不要切换到执行态语义。\n- \
+             不要输出任何最终总结、计划摘要正文或任务结果正文。\n- \
+             如果必须回复自然语言，最多只允许一句简短确认：“收到，我先把草稿补全为可呈递版本，\
+             再交给你确认。”\n- 优先通过修订 canonical plan \
+             让其进入可呈递状态；只有真正可呈递时才调用 `exitPlanMode`。",
+            context.target_plan_path,
+            context
+                .active_plan
+                .as_ref()
+                .map(|plan| plan.status.as_str())
+                .unwrap_or("draft")
+        ),
+        origin: UserMessageOrigin::ReactivationPrompt,
+    }]
+}
+
+pub(crate) fn build_execute_bridge_declaration(
+    session_id: &str,
+    bridge: &PlanToExecuteBridgeState,
+) -> PromptDeclaration {
+    let step_lines = if bridge.implementation_steps.is_empty() {
+        "- implementationSteps: (none)".to_string()
+    } else {
+        bridge
+            .implementation_steps
+            .iter()
+            .map(|step| format!("{}. {}", step.index, step.summary))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    PromptDeclaration {
+        block_id: format!("session.plan.execute-bridge.{session_id}"),
+        title: "Plan Execute Bridge".to_string(),
+        content: format!(
+            "Execute phase bridge:\n- planPath: {}\n- planTitle: {}\n- approvedAt: {}\n- \
+             implementationSteps:\n{}",
+            bridge.plan_artifact.path,
+            bridge.plan_title,
+            bridge
+                .approved_at
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "(unknown)".to_string()),
+            step_lines
         ),
         render_target: astrcode_core::PromptDeclarationRenderTarget::System,
         layer: astrcode_core::SystemPromptLayer::Dynamic,
@@ -295,7 +424,7 @@ pub(crate) fn build_plan_exit_declaration(
         always_include: true,
         source: astrcode_core::PromptDeclarationSource::Builtin,
         capability_name: None,
-        origin: Some("session-plan:exit".to_string()),
+        origin: Some("session-plan:execute-bridge".to_string()),
     }
 }
 
@@ -339,8 +468,53 @@ pub(crate) fn parse_plan_approval(text: &str) -> PlanApprovalParseResult {
     }
 }
 
+pub(crate) fn parse_plan_workflow_signal(
+    text: &str,
+    plan_state: Option<&SessionPlanState>,
+) -> Option<WorkflowSignal> {
+    if active_plan_requires_approval(plan_state) && parse_plan_approval(text).approved {
+        return Some(WorkflowSignal::Approve);
+    }
+
+    let normalized_english = text
+        .trim()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for phrase in ["replan", "back to plan", "revise plan", "request changes"] {
+        if normalized_english == phrase || normalized_english.starts_with(&format!("{phrase} ")) {
+            return Some(match phrase {
+                "request changes" => WorkflowSignal::RequestChanges,
+                _ => WorkflowSignal::Replan,
+            });
+        }
+    }
+
+    let normalized_chinese = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && !is_common_punctuation(*ch))
+        .collect::<String>();
+    for phrase in ["重新规划", "重新计划", "回到计划", "改计划", "需要修改"] {
+        if normalized_chinese == phrase || normalized_chinese.starts_with(phrase) {
+            return Some(match phrase {
+                "需要修改" => WorkflowSignal::RequestChanges,
+                _ => WorkflowSignal::Replan,
+            });
+        }
+    }
+    None
+}
+
 pub(crate) fn active_plan_requires_approval(state: Option<&SessionPlanState>) -> bool {
     state.is_some_and(|state| state.status == SessionPlanStatus::AwaitingApproval)
+}
+
+pub(crate) fn planning_phase_allows_review_mode(
+    mode_id: &ModeId,
+    plan_state: Option<&SessionPlanState>,
+) -> bool {
+    *mode_id == ModeId::code() && active_plan_requires_approval(plan_state)
 }
 
 pub(crate) fn mark_active_session_plan_approved(
@@ -653,9 +827,65 @@ fn slugify_plan_topic(input: &str) -> Option<String> {
     if slug.is_empty() { None } else { Some(slug) }
 }
 
+fn build_hook_declaration(
+    spec: &GovernanceModeSpec,
+    artifact_state: &PlanPromptContext,
+    suffix: &str,
+    title: &str,
+    content: String,
+    priority_hint: Option<i32>,
+) -> PromptDeclaration {
+    PromptDeclaration {
+        block_id: format!(
+            "mode.{}.{}.{}",
+            spec.id.as_str(),
+            suffix,
+            artifact_state.session_id
+        ),
+        title: format!("{} {}", spec.name, title),
+        content,
+        render_target: astrcode_core::PromptDeclarationRenderTarget::System,
+        layer: astrcode_core::SystemPromptLayer::Dynamic,
+        kind: astrcode_core::PromptDeclarationKind::ExtensionInstruction,
+        priority_hint,
+        always_include: true,
+        source: astrcode_core::PromptDeclarationSource::Builtin,
+        capability_name: None,
+        origin: Some(format!("mode-hook:{}:{}", spec.id, suffix)),
+    }
+}
+
+fn render_mode_prompt_hook_template(template: &str, artifact_state: &PlanPromptContext) -> String {
+    template
+        .replace("{{targetPlanPath}}", &artifact_state.target_plan_path)
+        .replace(
+            "{{targetPlanExists}}",
+            if artifact_state.target_plan_exists {
+                "true"
+            } else {
+                "false"
+            },
+        )
+        .replace("{{targetPlanSlug}}", &artifact_state.target_plan_slug)
+        .replace(
+            "{{activePlanSummary}}",
+            &artifact_state
+                .active_plan
+                .as_ref()
+                .map(|plan| {
+                    format!(
+                        "slug={}, title={}, status={}, path={}",
+                        plan.slug, plan.title, plan.status, plan.path
+                    )
+                })
+                .unwrap_or_else(|| "(none)".to_string()),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtin_mode_catalog;
 
     #[test]
     fn parse_plan_approval_is_conservative() {
@@ -696,9 +926,14 @@ mod tests {
 
     #[test]
     fn build_plan_prompt_declarations_include_single_plan_facts() {
+        let spec = builtin_mode_catalog()
+            .expect("builtin catalog should build")
+            .get(&ModeId::plan())
+            .expect("plan mode should exist");
         let declarations = build_plan_prompt_declarations(
-            "session-a",
+            &spec,
             &PlanPromptContext {
+                session_id: "session-a".to_string(),
                 target_plan_path: "/tmp/cleanup-crates.md".to_string(),
                 target_plan_exists: false,
                 target_plan_slug: "cleanup-crates".to_string(),
@@ -712,12 +947,44 @@ mod tests {
                 .content
                 .contains("targetPlanPath: /tmp/cleanup-crates.md")
         );
-        assert!(
-            declarations[0]
-                .content
-                .contains("overwrite the current plan instead of creating another canonical plan")
-        );
         assert!(declarations[1].content.contains("## Implementation Steps"));
+    }
+
+    #[test]
+    fn build_mode_prompt_declarations_emit_exit_prompt_from_mode_hooks() {
+        let spec = builtin_mode_catalog()
+            .expect("builtin catalog should build")
+            .get(&ModeId::plan())
+            .expect("plan mode should exist");
+        let declarations = build_mode_prompt_declarations(
+            &spec,
+            &PlanPromptContext {
+                session_id: "session-a".to_string(),
+                target_plan_path: "/tmp/cleanup-crates.md".to_string(),
+                target_plan_exists: true,
+                target_plan_slug: "cleanup-crates".to_string(),
+                active_plan: Some(SessionPlanSummary {
+                    slug: "cleanup-crates".to_string(),
+                    path: "/tmp/cleanup-crates.md".to_string(),
+                    status: "approved".to_string(),
+                    title: "Cleanup crates".to_string(),
+                    updated_at: Utc::now(),
+                }),
+            },
+            &ModeWorkflowPromptFacts {
+                approved_plan: Some(SessionPlanSummary {
+                    slug: "cleanup-crates".to_string(),
+                    path: "/tmp/cleanup-crates.md".to_string(),
+                    status: "approved".to_string(),
+                    title: "Cleanup crates".to_string(),
+                    updated_at: Utc::now(),
+                }),
+            },
+        );
+
+        assert_eq!(declarations.len(), 1);
+        assert!(declarations[0].content.contains("Approved plan artifact"));
+        assert!(declarations[0].content.contains("Cleanup crates"));
     }
 
     #[test]

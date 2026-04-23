@@ -1,0 +1,18 @@
+task_id: compact-multi-hop-followup
+description: 根据 compact 摘要继续执行编辑，验证多跳信息保留。
+prompt: |
+  读取 compact-summary.md，把约束和已完成事项写进 handoff.md。
+workspace:
+  setup: ../fixtures/compact-multi-hop-followup
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Edit
+  max_tool_calls: 2
+  max_turns: 1
+  file_changes:
+    - path: handoff.md
+      contains: worker 数量上限仍是 2
+    - path: handoff.md
+      contains: trace 提取器已经稳定
+

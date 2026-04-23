@@ -1,0 +1,14 @@
+task_id: large-file-targeted-read
+description: 面对大文件仍能读出精确目标值。
+prompt: |
+  请读取 docs/large.txt，告诉我 retention_window 的值。
+workspace:
+  setup: ../fixtures/large-file-targeted-read
+expected_outcome:
+  tool_pattern:
+    - Read
+  max_tool_calls: 1
+  max_turns: 1
+  output_contains:
+    - retention_window=96
+

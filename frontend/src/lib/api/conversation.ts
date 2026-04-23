@@ -3,7 +3,11 @@ import type {
   ChildSessionNotificationKind,
   ChildSessionNotificationMessage,
   CompactMeta,
+  ConversationStepCursor,
+  ConversationStepProgress,
   ConversationControlState,
+  PromptCacheBreakReason,
+  PromptCacheDiagnostics,
   ConversationPlanReference,
   ConversationTaskItem,
   ConversationTaskStatus,
@@ -11,6 +15,7 @@ import type {
   Message,
   ParentDelivery,
   Phase,
+  SystemPromptLayer,
   SubRunThreadTree,
   SubRunViewData,
   ToolStatus,
@@ -30,6 +35,7 @@ export interface ConversationSnapshotState {
   cursor: string | null;
   phase: Phase;
   control: ConversationControlState;
+  stepProgress: ConversationStepProgress;
   blocks: ConversationRecord[];
   childSummaries: ConversationRecord[];
 }
@@ -38,11 +44,43 @@ export interface ConversationViewProjection {
   cursor: string | null;
   phase: Phase;
   control: ConversationControlState;
+  stepProgress: ConversationStepProgress;
   messages: Message[];
   messageTree: SubRunThreadTree;
   messageFingerprint: string;
   childSubRuns: SubRunViewData[];
   childFingerprint: string;
+}
+
+function emptyStepProgress(): ConversationStepProgress {
+  return {
+    durable: null,
+    live: null,
+  };
+}
+
+function parseStepCursor(value: unknown): ConversationStepCursor | null {
+  const record = asRecord(value);
+  const turnId = pickString(record ?? {}, 'turnId');
+  const stepIndex = record?.stepIndex;
+  if (!turnId || typeof stepIndex !== 'number' || !Number.isFinite(stepIndex) || stepIndex < 0) {
+    return null;
+  }
+  return {
+    turnId,
+    stepIndex,
+  };
+}
+
+function parseStepProgress(value: unknown): ConversationStepProgress {
+  const record = asRecord(value);
+  if (!record) {
+    return emptyStepProgress();
+  }
+  return {
+    durable: parseStepCursor(record.durable),
+    live: parseStepCursor(record.live),
+  };
 }
 
 function parsePhase(value: unknown): Phase {
@@ -186,6 +224,57 @@ function parseCompactMeta(value: unknown): CompactMeta | undefined {
 
 function parsePreservedRecentTurns(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function parseSystemPromptLayer(value: unknown): SystemPromptLayer | undefined {
+  switch (value) {
+    case 'stable':
+    case 'semi_stable':
+    case 'inherited':
+    case 'dynamic':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parsePromptCacheBreakReason(value: unknown): PromptCacheBreakReason | undefined {
+  switch (value) {
+    case 'system_prompt_changed':
+    case 'tool_schemas_changed':
+    case 'model_changed':
+    case 'global_cache_strategy_changed':
+    case 'compacted_prompt':
+    case 'tool_result_rebudgeted':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parsePromptCacheDiagnostics(value: unknown): PromptCacheDiagnostics | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const reasons = Array.isArray(record.reasons)
+    ? record.reasons
+        .map((reason) => parsePromptCacheBreakReason(reason))
+        .filter((reason): reason is PromptCacheBreakReason => reason !== undefined)
+    : [];
+  return {
+    reasons,
+    previousCacheReadInputTokens:
+      typeof record.previousCacheReadInputTokens === 'number'
+        ? record.previousCacheReadInputTokens
+        : undefined,
+    currentCacheReadInputTokens:
+      typeof record.currentCacheReadInputTokens === 'number'
+        ? record.currentCacheReadInputTokens
+        : undefined,
+    expectedDrop: record.expectedDrop === true,
+    cacheBreakDetected: record.cacheBreakDetected === true,
+  };
 }
 
 function parseLastCompactMeta(value: unknown): LastCompactMeta | undefined {
@@ -345,6 +434,7 @@ function normalizeSnapshotState(payload: unknown): ConversationSnapshotState {
     cursor: pickOptionalString(record, 'cursor') ?? null,
     phase: control.phase,
     control,
+    stepProgress: parseStepProgress(record.stepProgress),
     blocks: Array.isArray(record.blocks)
       ? (record.blocks.filter(asRecord) as ConversationRecord[])
       : [],
@@ -354,11 +444,88 @@ function normalizeSnapshotState(payload: unknown): ConversationSnapshotState {
   };
 }
 
+function isApprovalLikeTurnText(text: string): boolean {
+  const normalizedEnglish = text
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ');
+  for (const phrase of ['approved', 'go ahead', 'implement it']) {
+    if (
+      normalizedEnglish === phrase ||
+      (phrase !== 'implement it' && normalizedEnglish.startsWith(`${phrase} `))
+    ) {
+      return true;
+    }
+  }
+
+  const normalizedChinese = Array.from(text)
+    .filter((ch) => !/\s/.test(ch) && !/[,.!?;:，。！？；：、】【、]/.test(ch))
+    .join('');
+  for (const phrase of ['同意', '可以', '按这个做', '开始实现']) {
+    const matched =
+      phrase === '同意' || phrase === '可以'
+        ? normalizedChinese === phrase
+        : normalizedChinese === phrase || normalizedChinese.startsWith(phrase);
+    if (matched) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function buildTurnProjectionFlags(state: ConversationSnapshotState): Map<string, { hideAssistant: boolean }> {
+  const flags = new Map<string, { hideAssistant: boolean }>();
+  const turnFacts = new Map<
+    string,
+    {
+      userTexts: string[];
+      hasAwaitingApprovalPlan: boolean;
+    }
+  >();
+
+  state.blocks.forEach((block) => {
+    const kind = pickString(block, 'kind');
+    const turnId = pickOptionalString(block, 'turnId');
+    if (!kind || !turnId) {
+      return;
+    }
+    const facts = turnFacts.get(turnId) ?? {
+      userTexts: [],
+      hasAwaitingApprovalPlan: false,
+    };
+
+    if (kind === 'user') {
+      facts.userTexts.push(pickString(block, 'markdown') ?? '');
+    } else if (kind === 'plan') {
+      const eventKind = pickString(block, 'eventKind');
+      const status = pickOptionalString(block, 'status');
+      if (status === 'awaiting_approval' || eventKind === 'presented') {
+        facts.hasAwaitingApprovalPlan = true;
+      }
+    }
+
+    turnFacts.set(turnId, facts);
+  });
+
+  for (const [turnId, facts] of turnFacts.entries()) {
+    flags.set(turnId, {
+      hideAssistant:
+        facts.hasAwaitingApprovalPlan &&
+        facts.userTexts.some((text) => isApprovalLikeTurnText(text)),
+    });
+  }
+
+  return flags;
+}
+
 function projectConversationMessages(
   state: ConversationSnapshotState,
   options?: { includeInlineChildSummaries?: boolean }
 ): Message[] {
   const messages: Message[] = [];
+  const turnProjectionFlags = buildTurnProjectionFlags(state);
   const queuedThinkingByTurn = new Map<
     string,
     Array<{
@@ -392,6 +559,9 @@ function projectConversationMessages(
       case 'thinking': {
         const markdown = pickString(block, 'markdown') ?? '';
         const streaming = pickString(block, 'status') === 'streaming';
+        if (turnId && turnProjectionFlags.get(turnId)?.hideAssistant) {
+          return;
+        }
         if (turnId) {
           const queue = queuedThinkingByTurn.get(turnId) ?? [];
           queue.push({
@@ -417,8 +587,14 @@ function projectConversationMessages(
       }
 
       case 'assistant': {
+        if (turnId && turnProjectionFlags.get(turnId)?.hideAssistant) {
+          queuedThinkingByTurn.delete(turnId);
+          return;
+        }
         const queuedThinking =
-          turnId !== null && turnId !== undefined ? queuedThinkingByTurn.get(turnId)?.shift() : undefined;
+          turnId !== null && turnId !== undefined
+            ? queuedThinkingByTurn.get(turnId)?.shift()
+            : undefined;
         if (
           turnId !== null &&
           turnId !== undefined &&
@@ -430,6 +606,7 @@ function projectConversationMessages(
           id: queuedThinking?.id ?? `conversation-assistant:${id}`,
           kind: 'assistant',
           turnId,
+          stepIndex: typeof block.stepIndex === 'number' ? block.stepIndex : undefined,
           text: pickString(block, 'markdown') ?? '',
           reasoningText: queuedThinking?.markdown,
           streaming:
@@ -438,6 +615,45 @@ function projectConversationMessages(
         });
         return;
       }
+
+      case 'prompt_metrics':
+        messages.push({
+          id: `conversation-prompt-metrics:${id}`,
+          kind: 'promptMetrics',
+          turnId,
+          stepIndex: typeof block.stepIndex === 'number' ? block.stepIndex : 0,
+          estimatedTokens: typeof block.estimatedTokens === 'number' ? block.estimatedTokens : 0,
+          contextWindow: typeof block.contextWindow === 'number' ? block.contextWindow : 0,
+          effectiveWindow: typeof block.effectiveWindow === 'number' ? block.effectiveWindow : 0,
+          thresholdTokens: typeof block.thresholdTokens === 'number' ? block.thresholdTokens : 0,
+          truncatedToolResults:
+            typeof block.truncatedToolResults === 'number' ? block.truncatedToolResults : 0,
+          providerInputTokens:
+            typeof block.providerInputTokens === 'number' ? block.providerInputTokens : undefined,
+          providerOutputTokens:
+            typeof block.providerOutputTokens === 'number' ? block.providerOutputTokens : undefined,
+          cacheCreationInputTokens:
+            typeof block.cacheCreationInputTokens === 'number'
+              ? block.cacheCreationInputTokens
+              : undefined,
+          cacheReadInputTokens:
+            typeof block.cacheReadInputTokens === 'number' ? block.cacheReadInputTokens : undefined,
+          providerCacheMetricsSupported: block.providerCacheMetricsSupported === true,
+          promptCacheReuseHits:
+            typeof block.promptCacheReuseHits === 'number' ? block.promptCacheReuseHits : undefined,
+          promptCacheReuseMisses:
+            typeof block.promptCacheReuseMisses === 'number'
+              ? block.promptCacheReuseMisses
+              : undefined,
+          promptCacheUnchangedLayers: Array.isArray(block.promptCacheUnchangedLayers)
+            ? block.promptCacheUnchangedLayers
+                .map((layer) => parseSystemPromptLayer(layer))
+                .filter((layer): layer is SystemPromptLayer => layer !== undefined)
+            : undefined,
+          promptCacheDiagnostics: parsePromptCacheDiagnostics(block.promptCacheDiagnostics),
+          timestamp: index,
+        });
+        return;
 
       case 'plan': {
         const blockers = asRecord(block.blockers);
@@ -597,11 +813,15 @@ function projectConversationMessages(
   });
 
   for (const [turnId, queuedThinking] of queuedThinkingByTurn.entries()) {
+    if (turnProjectionFlags.get(turnId)?.hideAssistant) {
+      continue;
+    }
     for (const thinking of queuedThinking) {
       messages.push({
         id: thinking.id,
         kind: 'assistant',
         turnId,
+        stepIndex: undefined,
         text: '',
         reasoningText: thinking.markdown,
         streaming: thinking.streaming,
@@ -666,6 +886,7 @@ export function projectConversationState(
     cursor: state.cursor,
     phase: state.control.phase,
     control: state.control,
+    stepProgress: state.stepProgress,
     messages,
     messageTree,
     messageFingerprint: messageTree.rootStreamFingerprint,
@@ -799,6 +1020,9 @@ export function applyConversationEnvelope(
   const envelopeCursor = pickOptionalString(envelope, 'cursor');
   if (envelopeCursor) {
     state.cursor = envelopeCursor;
+  }
+  if ('stepProgress' in envelope) {
+    state.stepProgress = parseStepProgress(envelope.stepProgress);
   }
 
   switch (kind) {

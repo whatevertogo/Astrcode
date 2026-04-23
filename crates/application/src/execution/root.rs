@@ -241,7 +241,6 @@ mod tests {
         let mut req = valid_request();
         req.control = Some(ExecutionControl {
             manual_compact: Some(true),
-            ..ExecutionControl::default()
         });
 
         let err = validate_root_request(&req).unwrap_err();
@@ -285,8 +284,6 @@ mod tests {
             description: "subagent".to_string(),
             mode: AgentMode::SubAgent,
             system_prompt: None,
-            allowed_tools: Vec::new(),
-            disallowed_tools: Vec::new(),
             model_preference: None,
         })
         .expect_err("subagent-only profile should be rejected");

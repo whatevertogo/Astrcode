@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AstrError, CapabilitySpec};
+use crate::CapabilitySpec;
 
 /// 插件类型。
 ///
@@ -50,15 +50,4 @@ pub struct PluginManifest {
     pub working_dir: Option<String>,
     /// 仓库地址（可选）
     pub repository: Option<String>,
-}
-
-impl PluginManifest {
-    /// 从 TOML 字符串解析插件清单。
-    ///
-    /// 解析失败时返回 `AstrError::Validation`，包含详细的错误信息。
-    pub fn from_toml(s: &str) -> std::result::Result<Self, AstrError> {
-        toml::from_str(s).map_err(|error| {
-            AstrError::Validation(format!("failed to parse plugin manifest TOML: {error}"))
-        })
-    }
 }

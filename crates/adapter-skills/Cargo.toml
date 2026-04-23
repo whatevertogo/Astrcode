@@ -8,6 +8,7 @@ build = "build.rs"
 
 [dependencies]
 astrcode-core = { path = "../core" }
+astrcode-support = { path = "../support" }
 log.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true

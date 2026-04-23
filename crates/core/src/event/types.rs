@@ -17,7 +17,7 @@ use crate::{
     ExecutionContinuation, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,
     InputQueuedPayload, ModeId, PersistedToolOutput, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides, Result, SubRunResult, SystemPromptLayer, ToolOutputStream,
-    UserMessageOrigin,
+    UserMessageOrigin, ports::PromptCacheDiagnostics,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -52,6 +52,8 @@ pub struct PromptMetricsPayload {
     pub prompt_cache_reuse_misses: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_cache_unchanged_layers: Vec<SystemPromptLayer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_diagnostics: Option<PromptCacheDiagnostics>,
 }
 
 /// 上下文压缩的触发方式。
@@ -98,6 +100,15 @@ pub struct CompactAppliedMeta {
     pub output_summary_chars: u32,
 }
 
+/// Turn 的 durable/query typed 终态语义。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnTerminalKind {
+    Completed,
+    Cancelled,
+    Error { message: String },
+}
+
 /// 存储事件载荷。
 ///
 /// 只描述事件本体，不包含跨变体共享的头部字段（`turn_id` 与 `agent`）。
@@ -136,6 +147,8 @@ pub enum StorageEventPayload {
         reasoning_content: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_signature: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_index: Option<u32>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",
@@ -260,6 +273,8 @@ pub enum StorageEventPayload {
         #[serde(with = "crate::local_rfc3339")]
         timestamp: DateTime<Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_kind: Option<TurnTerminalKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
     /// Durable input queue 消息入队。
@@ -313,7 +328,7 @@ pub enum StorageEventPayload {
 ///
 /// 1. 运行时产生事件 → 2. 通过 `EventLogWriter::append` 持久化 →
 /// 3. 通过 `EventTranslator` 转换为 `AgentEvent` → 4. SSE 推送到前端
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct StorageEvent {
     /// turn 级别关联 ID。SessionStart 没有该字段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +339,30 @@ pub struct StorageEvent {
     /// 事件具体载荷。
     #[serde(flatten)]
     pub payload: StorageEventPayload,
+}
+
+#[derive(Deserialize)]
+struct StorageEventSerde {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, flatten, skip_serializing_if = "AgentEventContext::is_empty")]
+    pub agent: AgentEventContext,
+    #[serde(flatten)]
+    pub payload: StorageEventPayload,
+}
+
+impl<'de> Deserialize<'de> for StorageEvent {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = StorageEventSerde::deserialize(deserializer)?;
+        Ok(Self {
+            turn_id: raw.turn_id,
+            agent: raw.agent,
+            payload: raw.payload,
+        })
+    }
 }
 
 impl StorageEvent {
@@ -434,10 +473,40 @@ mod tests {
 
         match event {
             StorageEvent {
-                payload: StorageEventPayload::TurnDone { reason, .. },
+                payload:
+                    StorageEventPayload::TurnDone {
+                        terminal_kind,
+                        reason,
+                        ..
+                    },
                 ..
             } => {
+                assert_eq!(terminal_kind, None);
                 assert_eq!(reason, None);
+            },
+            other => panic!("expected turn done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn turn_done_deserialization_preserves_unknown_reason_without_typing() {
+        let event: StorageEvent = serde_json::from_str(
+            r#"{"type":"turnDone","turn_id":"turn-1","timestamp":"2026-01-01T00:00:00Z","reason":"custom-free-text"}"#,
+        )
+        .expect("legacy turn done should deserialize");
+
+        match event {
+            StorageEvent {
+                payload:
+                    StorageEventPayload::TurnDone {
+                        terminal_kind,
+                        reason,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(terminal_kind, None);
+                assert_eq!(reason.as_deref(), Some("custom-free-text"));
             },
             other => panic!("expected turn done, got {other:?}"),
         }
@@ -464,6 +533,7 @@ mod tests {
                     prompt_cache_reuse_hits: 2,
                     prompt_cache_reuse_misses: 1,
                     prompt_cache_unchanged_layers: Vec::new(),
+                    prompt_cache_diagnostics: None,
                 },
             },
         };
@@ -649,7 +719,7 @@ mod tests {
             payload: StorageEventPayload::SubRunStarted {
                 tool_call_id: Some("call-1".to_string()),
                 resolved_overrides: ResolvedSubagentContextOverrides::default(),
-                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot,
                 timestamp: None,
             },
         };
@@ -739,7 +809,7 @@ mod tests {
             payload: StorageEventPayload::SubRunStarted {
                 tool_call_id: None,
                 resolved_overrides: ResolvedSubagentContextOverrides::default(),
-                resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+                resolved_limits: ResolvedExecutionLimitsSnapshot,
                 timestamp: None,
             },
         }

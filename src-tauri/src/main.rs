@@ -560,7 +560,7 @@ fn build_vite_unreachable_error_page(dev_url: &Url, entry_path: &str) -> String 
   </ol>
   <p>建议操作：</p>
   <pre>cd frontend && npm install && npm run dev</pre>
-  <p>然后重启桌面应用。如果只想验证已构建的前端产物：<code>cargo tauri build</code></p>
+  <p>然后重启桌面应用。如果只想验证已构建的前端产物：<code>npm run build</code></p>
 </body>
 </html>"#,
         dev_url, entry_path
@@ -591,8 +591,8 @@ fn build_frontend_unavailable_error_page(reason: &str, server_origin: Option<&st
   {server_hint}
   <p>建议操作：</p>
   <ol>
-    <li>开发模式使用 <code>cargo tauri dev</code></li>
-    <li>打包模式使用 <code>cargo tauri build</code></li>
+    <li>开发模式使用 <code>npm run dev:tauri</code></li>
+    <li>打包模式使用 <code>npm run build</code></li>
     <li>若只运行普通 <code>cargo build</code> 产物，请确认本地 <code>frontend/dist</code> 已构建且 sidecar server 可访问</li>
   </ol>
 </body>
@@ -614,10 +614,10 @@ fn build_packaged_frontend_missing_error_page(entry_path: &str) -> String {
 <body>
   <h1>⚠️ AstrCode 打包前端资源缺失</h1>
   <p>桌面端已进入 packaged 模式，但内嵌资源里找不到 <code>{entry_path}</code>。</p>
-  <p>这通常表示当前可执行文件不是由 <code>cargo tauri build</code> 产出，或者安装包/资源目录已损坏。</p>
+  <p>这通常表示当前可执行文件不是由 <code>npm run build</code> 产出，或者安装包/资源目录已损坏。</p>
   <p>建议操作：</p>
   <ol>
-    <li>重新执行 <code>cargo tauri build</code></li>
+    <li>重新执行 <code>npm run build</code></li>
     <li>如果使用安装包，请重新安装完整产物，不要单独拷贝 exe</li>
     <li>若只想直接运行构建产物，请改用 <code>cargo build</code> 或 <code>cargo build --release</code></li>
   </ol>

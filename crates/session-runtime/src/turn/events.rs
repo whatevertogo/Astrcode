@@ -3,7 +3,7 @@ use astrcode_core::ToolOutputStream;
 use astrcode_core::{
     AgentEventContext, CompactAppliedMeta, CompactTrigger, LlmUsage, PromptMetricsPayload,
     StorageEvent, StorageEventPayload, ToolCallRequest, ToolExecutionResult, UserMessageOrigin,
-    ports::PromptBuildCacheMetrics,
+    ports::{PromptBuildCacheMetrics, PromptCacheDiagnostics},
 };
 use chrono::{DateTime, Utc};
 
@@ -66,6 +66,7 @@ pub(crate) fn assistant_final_event(
     content: String,
     reasoning_content: Option<String>,
     reasoning_signature: Option<String>,
+    step_index: usize,
     timestamp: Option<DateTime<Utc>>,
 ) -> StorageEvent {
     StorageEvent {
@@ -75,6 +76,7 @@ pub(crate) fn assistant_final_event(
             content,
             reasoning_content,
             reasoning_signature,
+            step_index: Some(saturating_u32(step_index)),
             timestamp,
         },
     }
@@ -83,13 +85,35 @@ pub(crate) fn assistant_final_event(
 pub(crate) fn turn_done_event(
     turn_id: &str,
     agent: &AgentEventContext,
+    terminal_kind: Option<astrcode_core::TurnTerminalKind>,
     reason: Option<String>,
     timestamp: DateTime<Utc>,
 ) -> StorageEvent {
     StorageEvent {
         turn_id: Some(turn_id.to_string()),
         agent: agent.clone(),
-        payload: StorageEventPayload::TurnDone { timestamp, reason },
+        payload: StorageEventPayload::TurnDone {
+            timestamp,
+            terminal_kind,
+            reason,
+        },
+    }
+}
+
+pub(crate) fn turn_terminal_event(
+    turn_id: &str,
+    agent: &AgentEventContext,
+    stop_cause: crate::turn::loop_control::TurnStopCause,
+    timestamp: DateTime<Utc>,
+) -> StorageEvent {
+    StorageEvent {
+        turn_id: Some(turn_id.to_string()),
+        agent: agent.clone(),
+        payload: StorageEventPayload::TurnDone {
+            timestamp,
+            terminal_kind: Some(stop_cause.terminal_kind(None)),
+            reason: None,
+        },
     }
 }
 
@@ -159,6 +183,7 @@ pub(crate) fn prompt_metrics_event(
                 prompt_cache_reuse_hits: cache_metrics.reuse_hits,
                 prompt_cache_reuse_misses: cache_metrics.reuse_misses,
                 prompt_cache_unchanged_layers: cache_metrics.unchanged_layers,
+                prompt_cache_diagnostics: None,
             },
         },
     }
@@ -168,10 +193,11 @@ pub(crate) fn apply_prompt_metrics_usage(
     events: &mut [StorageEvent],
     step_index: usize,
     usage: Option<LlmUsage>,
+    diagnostics: Option<PromptCacheDiagnostics>,
 ) {
-    let Some(usage) = usage else {
+    if usage.is_none() && diagnostics.is_none() {
         return;
-    };
+    }
 
     let step_index = saturating_u32(step_index);
     let Some(StorageEvent {
@@ -188,10 +214,16 @@ pub(crate) fn apply_prompt_metrics_usage(
         return;
     };
 
-    metrics.provider_input_tokens = Some(saturating_u32(usage.input_tokens));
-    metrics.provider_output_tokens = Some(saturating_u32(usage.output_tokens));
-    metrics.cache_creation_input_tokens = Some(saturating_u32(usage.cache_creation_input_tokens));
-    metrics.cache_read_input_tokens = Some(saturating_u32(usage.cache_read_input_tokens));
+    if let Some(usage) = usage {
+        metrics.provider_input_tokens = Some(saturating_u32(usage.input_tokens));
+        metrics.provider_output_tokens = Some(saturating_u32(usage.output_tokens));
+        metrics.cache_creation_input_tokens =
+            Some(saturating_u32(usage.cache_creation_input_tokens));
+        metrics.cache_read_input_tokens = Some(saturating_u32(usage.cache_read_input_tokens));
+    }
+    if let Some(diagnostics) = diagnostics {
+        metrics.prompt_cache_diagnostics = Some(diagnostics);
+    }
 }
 
 pub(crate) fn tool_call_event(
@@ -286,7 +318,7 @@ mod tests {
         CompactAppliedStats, apply_prompt_metrics_usage, assistant_final_event,
         compact_applied_event, error_event, prompt_metrics_event, session_start_event,
         tool_call_delta_event, tool_call_event, tool_result_event, turn_done_event,
-        user_message_event,
+        turn_terminal_event, user_message_event,
     };
     use crate::context_window::token_usage::PromptTokenSnapshot;
 
@@ -360,6 +392,7 @@ mod tests {
             "done".to_string(),
             Some("reasoned path".to_string()),
             Some("sig-1".to_string()),
+            3,
             Some(timestamp),
         );
 
@@ -371,10 +404,12 @@ mod tests {
                 content,
                 reasoning_content,
                 reasoning_signature,
+                step_index,
                 timestamp: event_timestamp,
             } if content == "done"
                 && reasoning_content.as_deref() == Some("reasoned path")
                 && reasoning_signature.as_deref() == Some("sig-1")
+                && step_index == Some(3)
                 && event_timestamp == Some(timestamp)
         ));
     }
@@ -389,6 +424,7 @@ mod tests {
         let event = turn_done_event(
             "turn-done-1",
             &agent,
+            Some(astrcode_core::TurnTerminalKind::Completed),
             Some("completed".to_string()),
             timestamp,
         );
@@ -399,8 +435,37 @@ mod tests {
             event.payload,
             StorageEventPayload::TurnDone {
                 timestamp: event_timestamp,
+                terminal_kind,
                 reason,
-            } if event_timestamp == timestamp && reason.as_deref() == Some("completed")
+            } if event_timestamp == timestamp
+                && terminal_kind == Some(astrcode_core::TurnTerminalKind::Completed)
+                && reason.as_deref() == Some("completed")
+        ));
+    }
+
+    #[test]
+    fn turn_terminal_event_preserves_explicit_terminal_kind_without_reason() {
+        let timestamp = Utc
+            .with_ymd_and_hms(2026, 4, 14, 10, 12, 0)
+            .single()
+            .expect("timestamp should build");
+        let agent = AgentEventContext::root_execution("root-agent", "planner");
+        let event = turn_terminal_event(
+            "turn-done-2",
+            &agent,
+            crate::turn::loop_control::TurnStopCause::Cancelled,
+            timestamp,
+        );
+
+        assert!(matches!(
+            event.payload,
+            StorageEventPayload::TurnDone {
+                timestamp: event_timestamp,
+                terminal_kind,
+                reason,
+            } if event_timestamp == timestamp
+                && terminal_kind == Some(astrcode_core::TurnTerminalKind::Cancelled)
+                && reason.is_none()
         ));
     }
 
@@ -557,6 +622,7 @@ mod tests {
                 cache_creation_input_tokens: 700,
                 cache_read_input_tokens: 650,
             }),
+            None,
         );
 
         assert!(matches!(

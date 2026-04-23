@@ -6,6 +6,10 @@ use std::{
 };
 
 use astrcode_application::{ApplicationError, WatchEvent, WatchPort, WatchService, WatchSource};
+use astrcode_core::{
+    AgentEventContext, EventTranslator, SessionId, StorageEvent, StorageEventPayload,
+    TurnTerminalKind, UserMessageOrigin,
+};
 use tokio::sync::broadcast;
 
 use crate::{
@@ -199,4 +203,124 @@ pub(crate) async fn test_state_with_options(
         },
         context,
     )
+}
+
+async fn append_root_event(state: &crate::AppState, session_id: &str, event: StorageEvent) {
+    let session_state = state
+        ._runtime_handles
+        .session_runtime
+        .get_session_state(&SessionId::from(session_id.to_string()))
+        .await
+        .expect("session state should load");
+    let mut translator = EventTranslator::new(
+        session_state
+            .current_phase()
+            .expect("session phase should be readable"),
+    );
+    let stored = session_state
+        .writer
+        .clone()
+        .append(event)
+        .await
+        .expect("event should append");
+    let records = session_state
+        .translate_store_and_cache(&stored, &mut translator)
+        .expect("event should translate");
+    for record in records {
+        let _ = session_state.broadcaster.send(record);
+    }
+}
+
+pub(crate) async fn seed_completed_root_turn(
+    state: &crate::AppState,
+    session_id: &str,
+    turn_id: &str,
+) {
+    let agent = AgentEventContext::root_execution("root-agent", "test-profile");
+    append_root_event(
+        state,
+        session_id,
+        StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent: agent.clone(),
+            payload: StorageEventPayload::UserMessage {
+                content: "hello".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: chrono::Utc::now(),
+            },
+        },
+    )
+    .await;
+    append_root_event(
+        state,
+        session_id,
+        StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent: agent.clone(),
+            payload: StorageEventPayload::AssistantFinal {
+                content: "world".to_string(),
+                reasoning_content: None,
+                reasoning_signature: None,
+                step_index: None,
+                timestamp: Some(chrono::Utc::now()),
+            },
+        },
+    )
+    .await;
+    append_root_event(
+        state,
+        session_id,
+        StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent,
+            payload: StorageEventPayload::TurnDone {
+                timestamp: chrono::Utc::now(),
+                terminal_kind: Some(TurnTerminalKind::Completed),
+                reason: Some("completed".to_string()),
+            },
+        },
+    )
+    .await;
+}
+
+pub(crate) async fn seed_unfinished_root_turn(
+    state: &crate::AppState,
+    session_id: &str,
+    turn_id: &str,
+) {
+    append_root_event(
+        state,
+        session_id,
+        StorageEvent {
+            turn_id: Some(turn_id.to_string()),
+            agent: AgentEventContext::root_execution("root-agent", "test-profile"),
+            payload: StorageEventPayload::UserMessage {
+                content: "still running".to_string(),
+                origin: UserMessageOrigin::User,
+                timestamp: chrono::Utc::now(),
+            },
+        },
+    )
+    .await;
+}
+
+pub(crate) async fn mark_session_running(state: &crate::AppState, session_id: &str) {
+    state
+        ._runtime_handles
+        .session_runtime
+        .prepare_test_turn_runtime(session_id, "test-running-turn")
+        .await
+        .expect("session should enter running state");
+}
+
+pub(crate) async fn stored_events_for_session(
+    state: &crate::AppState,
+    session_id: &str,
+) -> Vec<astrcode_core::StoredEvent> {
+    state
+        ._runtime_handles
+        .session_runtime
+        .replay_stored_events(&SessionId::from(session_id.to_string()))
+        .await
+        .expect("events should replay")
 }

@@ -165,8 +165,8 @@ fn emit_llm_delta_live(
                 });
             }
         },
-        // ThinkingSignature 是 Anthropic API 的 thinking 完整性令牌。
-        // live UI 不消费它，但 durable AssistantFinal 需要保留这份事实。
+        // ThinkingSignature 预留给带推理完整性令牌的 provider。
+        // live UI 不消费它，但 durable AssistantFinal 仍保留这份事实。
         LlmEvent::ThinkingSignature(signature) => {
             *thinking_signature = Some(signature);
         },
@@ -273,6 +273,18 @@ mod tests {
     }
 
     #[test]
+    fn map_kernel_error_restores_llm_interrupted_variant_for_cancelled_messages() {
+        let mapped = map_kernel_error(KernelError::Invoke(
+            "operation cancelled: parent requested shutdown".to_string(),
+        ));
+
+        match mapped {
+            AstrError::LlmInterrupted => {},
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    #[test]
     fn emit_llm_delta_live_forwards_tool_call_delta_to_runner_sink() {
         let received = Arc::new(Mutex::new(Vec::new()));
         let sink_received = Arc::clone(&received);
@@ -352,6 +364,7 @@ mod tests {
             reasoning: None,
             usage: None,
             finish_reason: LlmFinishReason::Stop,
+            prompt_cache_diagnostics: None,
         };
 
         hydrate_reasoning_from_stream(
@@ -380,6 +393,7 @@ mod tests {
             }),
             usage: None,
             finish_reason: LlmFinishReason::Stop,
+            prompt_cache_diagnostics: None,
         };
 
         hydrate_reasoning_from_stream(&mut output, &["流式 reasoning".to_string()], Some("sig-2"));

@@ -1,4 +1,4 @@
-import type { SubRunViewData, ThreadItem } from '../../types';
+import type { ConversationStepProgress, SubRunViewData, ThreadItem } from '../../types';
 import { subRunNotice } from '../../lib/styles';
 import InputBar from './InputBar';
 import MessageList from './MessageList';
@@ -10,6 +10,7 @@ interface ChatProps {
   threadItems: ThreadItem[];
   childSubRuns: SubRunViewData[];
   subRunViews: Map<string, SubRunViewData>;
+  stepProgress: ConversationStepProgress;
   contentFingerprint: string;
   contextValue: ChatScreenContextValue;
 }
@@ -18,6 +19,7 @@ export default function Chat({
   threadItems,
   childSubRuns,
   subRunViews,
+  stepProgress,
   contentFingerprint,
   contextValue,
 }: ChatProps) {
@@ -30,6 +32,7 @@ export default function Chat({
           threadItems={threadItems}
           childSubRuns={childSubRuns}
           subRunViews={subRunViews}
+          stepProgress={stepProgress}
           contentFingerprint={contentFingerprint}
         />
         {contextValue.activeSubRunPath.length > 0 ? (

@@ -103,12 +103,7 @@ pub(crate) fn to_subrun_status_dto(summary: SubRunStatusSummary) -> SubRunStatus
         step_count: summary.step_count,
         estimated_tokens: summary.estimated_tokens,
         resolved_overrides: summary.resolved_overrides,
-        resolved_limits: summary
-            .resolved_limits
-            .map(|limits| ResolvedExecutionLimitsDto {
-                allowed_tools: limits.allowed_tools,
-                max_steps: limits.max_steps,
-            }),
+        resolved_limits: summary.resolved_limits.map(|_| ResolvedExecutionLimitsDto),
     }
 }
 
@@ -241,9 +236,6 @@ fn to_subrun_result_dto(result: astrcode_application::SubRunResult) -> SubRunRes
         astrcode_application::SubRunResult::Completed { outcome, handoff } => match outcome {
             astrcode_core::CompletedSubRunOutcome::Completed => {
                 SubRunResultDto::Completed { handoff }
-            },
-            astrcode_core::CompletedSubRunOutcome::TokenExceeded => {
-                SubRunResultDto::TokenExceeded { handoff }
             },
         },
         astrcode_application::SubRunResult::Failed { outcome, failure } => match outcome {

@@ -1,0 +1,17 @@
+task_id: plan-track-progress
+description: 在 plan mode 下同步计划和 todo 列表。
+prompt: |
+  请进入 plan mode，更新“扩容 eval 任务”的计划，并把待办写入 todo。
+workspace:
+  setup: ../fixtures/plan-track-progress
+expected_outcome:
+  tool_pattern:
+    - EnterPlanMode
+    - UpsertSessionPlan
+    - TodoWrite
+  max_tool_calls: 3
+  max_turns: 1
+  output_contains:
+    - 3 个待办
+    - 补 fixtures
+

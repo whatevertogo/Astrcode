@@ -1,0 +1,19 @@
+task_id: findfiles-read-write-migration
+description: 用 FindFiles 找到计划文件后生成迁移检查清单。
+prompt: |
+  找到 migration-plan.md，读取后生成 ops/checklist.md。
+workspace:
+  setup: ../fixtures/findfiles-read-write-migration
+expected_outcome:
+  tool_pattern:
+    - FindFiles
+    - Read
+    - Write
+  max_tool_calls: 3
+  max_turns: 1
+  file_changes:
+    - path: ops/checklist.md
+      contains: backup
+    - path: ops/checklist.md
+      contains: rollout
+

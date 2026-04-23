@@ -5,7 +5,7 @@
 //! ## 设计要点
 //!
 //! - 仅返回一层目录/文件条目，不递归
-//! - 每个条目返回 `name`、`type`（file/directory/symlink）、`size`、`modified`、
+//! - 每个条目返回 `name`、`type`（file/directory/symlink）、`sizeBytes`、`modified`、
 //!   `extension`（仅文件）
 //! - 默认最多 200 条，超出标记 `truncated`
 //! - 未指定路径时使用上下文工作目录
@@ -57,7 +57,7 @@ struct DirEntry {
     name: String,
     /// 条目类型：file / directory / symlink
     entry_type: String,
-    size: u64,
+    size_bytes: u64,
     modified: Option<std::time::SystemTime>,
     /// 仅文件有扩展名，目录和符号链接不返回此字段
     extension: Option<String>,
@@ -70,9 +70,10 @@ impl Tool for ListDirTool {
             name: "listDir".to_string(),
             description: concat!(
                 "List immediate directory entries with metadata ",
-                "(name, type, size, modified time, extension). ",
+                "(name, type, sizeBytes, modified time, extension). ",
                 "The `type` field is one of: file, directory, symlink. ",
-                "The `extension` field is only present for files."
+                "The `extension` field is only present for files. ",
+                "`sizeBytes` is the file size in bytes."
             )
             .to_string(),
             parameters: json!({
@@ -109,11 +110,11 @@ impl Tool for ListDirTool {
                 ToolPromptMetadata::new(
                     "List the immediate contents of a directory before drilling into specific \
                      files.",
-                    "List directory entries as structured metadata (name/type/size/modified). The \
-                     `type` field is \"file\", \"directory\", or \"symlink\". The `extension` \
-                     field only appears for files. Returns one level only — use `path` to drill \
-                     deeper. Directory `size` is always 0 on Windows; only file sizes are \
-                     meaningful.",
+                    "List directory entries as structured metadata \
+                     (name/type/sizeBytes/modified). The `type` field is \"file\", \"directory\", \
+                     or \"symlink\". The `extension` field only appears for files. Returns one \
+                     level only — use `path` to drill deeper. Directory `sizeBytes` is always 0 \
+                     on Windows; only file sizes are meaningful.",
                 )
                 .caveat(
                     "Truncated at maxEntries (default 200). If result count equals maxEntries, \
@@ -179,7 +180,7 @@ impl Tool for ListDirTool {
             entries.push(DirEntry {
                 name: entry.file_name().to_string_lossy().to_string(),
                 entry_type: entry_type.to_string(),
-                size: metadata.as_ref().map(|m| m.len()).unwrap_or(0),
+                size_bytes: metadata.as_ref().map(|m| m.len()).unwrap_or(0),
                 modified: metadata.and_then(|m| m.modified().ok()),
                 extension,
             });
@@ -217,7 +218,7 @@ impl Tool for ListDirTool {
                     |a, b| match (a.entry_type.as_str(), b.entry_type.as_str()) {
                         ("directory", "file" | "symlink") => std::cmp::Ordering::Less,
                         ("file" | "symlink", "directory") => std::cmp::Ordering::Greater,
-                        _ => b.size.cmp(&a.size),
+                        _ => b.size_bytes.cmp(&a.size_bytes),
                     },
                 );
             },
@@ -230,7 +231,7 @@ impl Tool for ListDirTool {
                 let mut obj = json!({
                     "name": e.name,
                     "type": e.entry_type,
-                    "size": e.size,
+                    "sizeBytes": e.size_bytes,
                     "modified": e.modified.map(|t| {
                         // 这里返回真实 RFC3339 UTC 时间，便于排序和跨端展示保持一致。
                         DateTime::<Utc>::from(t).to_rfc3339()
@@ -306,7 +307,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["name"], "a.txt");
         assert_eq!(entries[0]["type"], "file");
-        assert_eq!(entries[0]["size"], 11); // "hello world" 的字节数
+        assert_eq!(entries[0]["sizeBytes"], 11); // "hello world" 的字节数
         assert_eq!(entries[0]["extension"], "txt");
         let modified = entries[0]["modified"]
             .as_str()

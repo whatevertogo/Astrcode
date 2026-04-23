@@ -6,6 +6,7 @@ import { buildFocusedSubRunFilter, type SessionEventFilterQuery } from '../../li
 import type {
   Action,
   ConversationControlState,
+  ConversationStepProgress,
   Phase,
   SessionMeta,
   SubRunViewData,
@@ -61,6 +62,11 @@ export function useSessionCoordinator({
   });
   const [activeConversationControl, setActiveConversationControl] =
     useState<ConversationControlState | null>(null);
+  const [activeConversationStepProgress, setActiveConversationStepProgress] =
+    useState<ConversationStepProgress>({
+      durable: null,
+      live: null,
+    });
 
   const loadSessionBundle = useCallback(
     async (sessionId: string, subRunPath: string[]) => {
@@ -71,6 +77,7 @@ export function useSessionCoordinator({
         cursor: projection.cursor,
         phase: projection.phase,
         control: projection.control,
+        stepProgress: projection.stepProgress,
         messages: projection.messages,
         messageTree: projection.messageTree,
         messageFingerprint: projection.messageFingerprint,
@@ -102,6 +109,7 @@ export function useSessionCoordinator({
         contentFingerprint: loaded.childContentFingerprint,
       });
       setActiveConversationControl(loaded.control);
+      setActiveConversationStepProgress(loaded.stepProgress);
       // 先写入快照，再切换 active，避免会话切换瞬间渲染空白列表。
       activeSessionIdRef.current = sessionId;
       dispatch({ type: 'SET_ACTIVE', projectId, sessionId });
@@ -130,6 +138,7 @@ export function useSessionCoordinator({
           dispatch({ type: 'SET_PHASE', phase: projection.phase });
         }
         setActiveConversationControl(projection.control);
+        setActiveConversationStepProgress(projection.stepProgress);
       });
       if (activationGeneration !== sessionActivationGenerationRef.current) {
         return;
@@ -212,6 +221,7 @@ export function useSessionCoordinator({
           contentFingerprint: loaded.childContentFingerprint,
         });
         setActiveConversationControl(loaded.control);
+        setActiveConversationStepProgress(loaded.stepProgress);
         dispatch({
           type: 'INITIALIZE',
           projects: hydratedProjects,
@@ -242,6 +252,7 @@ export function useSessionCoordinator({
             dispatch({ type: 'SET_PHASE', phase: projection.phase });
           }
           setActiveConversationControl(projection.control);
+          setActiveConversationStepProgress(projection.stepProgress);
         });
         if (activationGeneration !== sessionActivationGenerationRef.current) {
           return;
@@ -259,6 +270,10 @@ export function useSessionCoordinator({
         contentFingerprint: '',
       });
       setActiveConversationControl(null);
+      setActiveConversationStepProgress({
+        durable: null,
+        live: null,
+      });
       dispatch({
         type: 'INITIALIZE',
         projects,
@@ -286,6 +301,7 @@ export function useSessionCoordinator({
   return {
     activeSubRunChildren,
     activeConversationControl,
+    activeConversationStepProgress,
     loadAndActivateSession,
     refreshSessions,
   };

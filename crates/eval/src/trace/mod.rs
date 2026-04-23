@@ -386,6 +386,7 @@ mod tests {
                         prompt_cache_reuse_hits: 0,
                         prompt_cache_reuse_misses: 0,
                         prompt_cache_unchanged_layers: Vec::new(),
+                        prompt_cache_diagnostics: None,
                     },
                 }],
                 compactions: Vec::new(),

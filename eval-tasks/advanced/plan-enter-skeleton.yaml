@@ -1,0 +1,16 @@
+task_id: plan-enter-skeleton
+description: 进入 plan mode 并产出基础三步计划。
+prompt: |
+  请进入 plan mode，为整理 release checklist 制定一个 3 步计划。
+workspace:
+  setup: ../fixtures/plan-enter-skeleton
+expected_outcome:
+  tool_pattern:
+    - EnterPlanMode
+    - UpsertSessionPlan
+  max_tool_calls: 2
+  max_turns: 1
+  output_contains:
+    - plan mode
+    - 3 步
+

@@ -52,9 +52,7 @@ function makeSubRunStartFixture(input: {
     subRunId: input.subRunId,
     agentProfile: input.agentProfile,
     resolvedOverrides: { ...DEFAULT_RESOLVED_OVERRIDES },
-    resolvedLimits: {
-      allowedTools: ['readFile'],
-    },
+    resolvedLimits: {},
     timestamp: input.timestamp,
   };
 }
@@ -261,9 +259,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 2,
       },
       {
@@ -296,9 +292,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 4,
       },
       {
@@ -353,9 +347,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 2,
       },
       {
@@ -388,9 +380,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 4,
       },
     ];
@@ -424,9 +414,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 1,
       },
       {
@@ -448,9 +436,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 2,
       },
       {
@@ -500,9 +486,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 2,
       },
       {
@@ -536,9 +520,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 4,
       },
       {
@@ -583,9 +565,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 6,
       },
     ];
@@ -634,9 +614,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 2,
       },
       {
@@ -659,9 +637,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 3,
       },
       {
@@ -684,9 +660,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 4,
       },
       {
@@ -709,9 +683,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 5,
       },
     ];
@@ -772,9 +744,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 2,
       },
     ];
@@ -810,9 +780,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 1,
       },
       {
@@ -1088,9 +1056,7 @@ describe('buildSubRunView', () => {
           includeRecoveryRefs: false,
           includeParentFindings: false,
         },
-        resolvedLimits: {
-          allowedTools: ['readFile'],
-        },
+        resolvedLimits: {},
         timestamp: 2,
       },
       {
@@ -1570,3 +1536,4 @@ describe('buildSubRunView', () => {
     expect(patchSubRunThreadTreeMessages(tree, nextMessages)).toBeNull();
   });
 });
+

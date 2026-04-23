@@ -1,0 +1,16 @@
+task_id: shell-failure-then-grep-log
+description: Shell 失败后继续从日志中诊断根因。
+prompt: |
+  先尝试构建；如果失败，请查看 build 日志并告诉我根因。
+workspace:
+  setup: ../fixtures/shell-failure-then-grep-log
+expected_outcome:
+  tool_pattern:
+    - Shell
+    - Grep
+  max_tool_calls: 2
+  max_turns: 1
+  output_contains:
+    - EADDRINUSE
+    - 127.0.0.1:3000
+

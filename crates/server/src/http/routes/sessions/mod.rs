@@ -60,27 +60,9 @@ pub(crate) fn validate_session_path_id(raw_session_id: &str) -> Result<String, A
     validate_path_id(raw_session_id, Some("session-"), true, "session")
 }
 
-/// 对 query/body 中的工作目录做规范化，确保后续删除/查询都基于真实目录事实。
-///
-/// Why: 路由层应在进入 application 之前就拦住不存在目录、文件路径和路径别名，
-/// 避免 API 面暴露“字符串匹配目录”的隐式删除语义。
-pub(crate) fn validate_working_dir(raw_working_dir: &str) -> Result<String, ApiError> {
-    let trimmed = raw_working_dir.trim();
-    if trimmed.is_empty() {
-        return Err(ApiError::bad_request(
-            "workingDir must not be empty".to_string(),
-        ));
-    }
-
-    let normalized =
-        astrcode_session_runtime::normalize_working_dir(std::path::PathBuf::from(trimmed))
-            .map_err(|error| ApiError::bad_request(error.to_string()))?;
-    Ok(normalized.display().to_string())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{validate_session_path_id, validate_working_dir};
+    use super::validate_session_path_id;
 
     #[test]
     fn validate_session_path_id_accepts_canonical_and_prefixed_values() {
@@ -101,34 +83,5 @@ mod tests {
         let err =
             validate_session_path_id("../../etc/passwd").expect_err("path traversal should fail");
         assert!(err.message.contains("invalid session id"));
-    }
-
-    #[test]
-    fn validate_working_dir_canonicalizes_existing_directory() {
-        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-        let nested = temp_dir.path().join(".").join("child");
-        std::fs::create_dir_all(&nested).expect("child dir should be created");
-
-        let normalized =
-            validate_working_dir(&nested.display().to_string()).expect("working dir should pass");
-
-        assert_eq!(
-            normalized,
-            std::fs::canonicalize(&nested)
-                .expect("working dir should canonicalize")
-                .display()
-                .to_string()
-        );
-    }
-
-    #[test]
-    fn validate_working_dir_rejects_missing_paths() {
-        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-        let missing = temp_dir.path().join("missing");
-
-        let err = validate_working_dir(&missing.display().to_string())
-            .expect_err("missing working dir should fail");
-
-        assert!(err.message.contains("workingDir"));
     }
 }

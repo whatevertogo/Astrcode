@@ -1,0 +1,16 @@
+task_id: subagent-single-task
+description: 委派单个子智能体完成独立读任务并正确收尾。
+prompt: |
+  请创建一个子智能体，让它总结 docs/brief.md，然后读取结果并关闭它。
+workspace:
+  setup: ../fixtures/subagent-single-task
+expected_outcome:
+  tool_pattern:
+    - SpawnAgent
+    - ObserveAgent
+    - CloseAgent
+  max_tool_calls: 3
+  max_turns: 1
+  output_contains:
+    - UI 冒烟
+

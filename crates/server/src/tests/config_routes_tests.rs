@@ -1,6 +1,4 @@
-use std::sync::atomic::Ordering;
-
-use astrcode_core::{SessionId, StorageEventPayload};
+use astrcode_core::StorageEventPayload;
 use astrcode_protocol::http::{
     CompactSessionResponse, ConfigReloadResponse, PromptAcceptedResponse,
 };
@@ -10,7 +8,11 @@ use axum::{
 };
 use tower::ServiceExt;
 
-use crate::{AUTH_HEADER_NAME, routes::build_api_router, test_support::test_state};
+use crate::{
+    AUTH_HEADER_NAME,
+    routes::build_api_router,
+    test_support::{mark_session_running, stored_events_for_session, test_state},
+};
 
 async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Response<Body>) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX)
@@ -56,13 +58,14 @@ async fn config_reload_rejects_when_session_is_running() {
         )
         .await
         .expect("session should be created");
-    let session_state = state
-        ._runtime_handles
-        .session_runtime
-        .get_session_state(&session.session_id.clone().into())
-        .await
-        .expect("session state should load");
-    session_state.running.store(true, Ordering::SeqCst);
+    assert!(
+        !state
+            ._runtime_handles
+            .session_runtime
+            .list_running_sessions()
+            .contains(&session.session_id.clone().into())
+    );
+    mark_session_running(&state, &session.session_id).await;
     let app = build_api_router().with_state(state);
 
     let response = app
@@ -94,13 +97,14 @@ async fn compact_route_defers_when_session_is_busy() {
         )
         .await
         .expect("session should be created");
-    let session_state = state
-        ._runtime_handles
-        .session_runtime
-        .get_session_state(&session.session_id.clone().into())
-        .await
-        .expect("session state should load");
-    session_state.running.store(true, Ordering::SeqCst);
+    assert!(
+        !state
+            ._runtime_handles
+            .session_runtime
+            .list_running_sessions()
+            .contains(&session.session_id.clone().into())
+    );
+    mark_session_running(&state, &session.session_id).await;
     let app = build_api_router().with_state(state.clone());
 
     let response = app
@@ -168,9 +172,7 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
                 .body(Body::from(
                     serde_json::json!({
                         "text": "hello",
-                        "control": {
-                            "maxSteps": 7
-                        }
+                        "control": {}
                     })
                     .to_string(),
                 ))
@@ -184,7 +186,6 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
     let accepted_control = payload
         .accepted_control
         .expect("accepted control should be returned");
-    assert_eq!(accepted_control.max_steps, Some(7));
     assert_eq!(accepted_control.manual_compact, None);
 }
 
@@ -305,12 +306,7 @@ async fn prompt_submission_registers_session_root_agent_context() {
     );
     assert_eq!(root_status.agent_profile, "default");
 
-    let events = state
-        ._runtime_handles
-        .session_runtime
-        .replay_stored_events(&SessionId::from(session.session_id.clone()))
-        .await
-        .expect("events should replay");
+    let events = stored_events_for_session(&state, &session.session_id).await;
     let user_message = events
         .into_iter()
         .find(|stored| {

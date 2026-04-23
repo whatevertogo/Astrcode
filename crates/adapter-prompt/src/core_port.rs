@@ -4,7 +4,7 @@
 //! 本模块将其适配到 `LayeredPromptBuilder` 的完整 prompt 构建能力上。
 
 use astrcode_core::{
-    Result, SystemPromptBlock, SystemPromptLayer,
+    PromptCacheGlobalStrategy, Result, SystemPromptBlock, SystemPromptLayer,
     ports::{PromptBuildCacheMetrics, PromptBuildOutput, PromptBuildRequest, PromptProvider},
 };
 use async_trait::async_trait;
@@ -79,7 +79,8 @@ impl PromptProvider for ComposerPromptProvider {
             .map_err(|e| astrcode_core::AstrError::Internal(e.to_string()))?;
 
         let system_prompt = output.plan.render_system().unwrap_or_default();
-        let prompt_cache_hints = output.cache_hints.clone();
+        let mut prompt_cache_hints = output.cache_hints.clone();
+        prompt_cache_hints.global_cache_strategy = select_global_cache_strategy(&ctx.tool_names);
         let system_prompt_blocks = build_system_prompt_blocks(&output.plan);
 
         Ok(PromptBuildOutput {
@@ -87,14 +88,13 @@ impl PromptProvider for ComposerPromptProvider {
             system_prompt_blocks,
             prompt_cache_hints: prompt_cache_hints.clone(),
             cache_metrics: summarize_prompt_cache_metrics(&output),
-            metadata: serde_json::json!({
-                "extra_tools_count": output.plan.extra_tools.len(),
-                "diagnostics_count": output.diagnostics.items.len(),
-                "profile": request.profile,
-                "step_index": request.step_index,
-                "turn_index": request.turn_index,
-                "promptCacheHints": prompt_cache_hints,
-            }),
+            metadata: build_output_metadata(
+                &request.profile,
+                request.step_index,
+                request.turn_index,
+                &output,
+                prompt_cache_hints,
+            ),
         })
     }
 }
@@ -171,6 +171,24 @@ fn summarize_prompt_cache_metrics(output: &crate::PromptBuildOutput) -> PromptBu
     metrics
 }
 
+fn build_output_metadata(
+    profile: &str,
+    step_index: usize,
+    turn_index: usize,
+    output: &crate::PromptBuildOutput,
+    prompt_cache_hints: astrcode_core::PromptCacheHints,
+) -> Value {
+    serde_json::json!({
+        "extra_tools_count": output.plan.extra_tools.len(),
+        "diagnostics_count": output.diagnostics.items.len(),
+        "profile": profile,
+        "step_index": step_index,
+        "turn_index": turn_index,
+        "promptCacheHints": prompt_cache_hints,
+        "promptSources": output.plan.source_metadata(),
+    })
+}
+
 fn build_system_prompt_blocks(plan: &crate::PromptPlan) -> Vec<SystemPromptBlock> {
     let ordered = plan.ordered_system_blocks();
     let mut last_cacheable_index = std::collections::HashMap::<SystemPromptLayer, usize>::new();
@@ -200,6 +218,17 @@ fn cacheable_prompt_layer(layer: SystemPromptLayer) -> bool {
     )
 }
 
+fn select_global_cache_strategy(tool_names: &[String]) -> PromptCacheGlobalStrategy {
+    // Why:
+    // - MCP 工具集合按用户/环境动态变化，比内建工具更容易让全局前缀抖动
+    // - 一旦检测到这类动态工具，就把“全局断点”预算让给 tools，system 只保留更稳定的层边界
+    if tool_names.iter().any(|name| name.starts_with("mcp__")) {
+        PromptCacheGlobalStrategy::ToolBased
+    } else {
+        PromptCacheGlobalStrategy::SystemPrompt
+    }
+}
+
 fn insert_json_string(
     vars: &mut std::collections::HashMap<String, String>,
     key: &str,
@@ -220,9 +249,12 @@ fn insert_json_string(
 mod tests {
     use std::path::PathBuf;
 
-    use astrcode_core::ports::PromptBuildRequest;
+    use astrcode_core::{
+        CapabilityKind, CapabilitySpec, PromptCacheGlobalStrategy, ports::PromptBuildRequest,
+    };
 
-    use super::build_prompt_vars;
+    use super::{build_output_metadata, build_prompt_vars, select_global_cache_strategy};
+    use crate::{BlockKind, PromptBlock, PromptDiagnostics, PromptPlan, block::BlockMetadata};
 
     #[test]
     fn build_prompt_vars_exposes_agent_max_subrun_depth() {
@@ -275,6 +307,107 @@ mod tests {
         assert_eq!(
             vars.get("agent.max_spawn_per_turn").map(String::as_str),
             Some("2")
+        );
+    }
+
+    #[test]
+    fn build_output_metadata_includes_prompt_source_projection() {
+        let request = PromptBuildRequest {
+            session_id: None,
+            turn_id: None,
+            working_dir: PathBuf::from("/workspace/demo"),
+            profile: "default".to_string(),
+            step_index: 1,
+            turn_index: 2,
+            profile_context: serde_json::Value::Null,
+            capabilities: Vec::new(),
+            skills: Vec::new(),
+            agent_profiles: Vec::new(),
+            prompt_declarations: Vec::new(),
+            metadata: serde_json::Value::Null,
+        };
+        let output = crate::PromptBuildOutput {
+            plan: PromptPlan {
+                system_blocks: vec![
+                    PromptBlock::new(
+                        "child.execution.contract",
+                        BlockKind::ExtensionInstruction,
+                        "Child Execution Contract",
+                        "contract",
+                        585,
+                        BlockMetadata {
+                            tags: vec!["source:builtin".into()],
+                            category: Some("extensions".into()),
+                            origin: Some("child-contract:fresh".to_string()),
+                        },
+                        0,
+                    )
+                    .with_layer(crate::PromptLayer::Inherited),
+                ],
+                ..PromptPlan::default()
+            },
+            diagnostics: PromptDiagnostics::default(),
+            cache_hints: Default::default(),
+        };
+
+        let metadata = build_output_metadata(
+            &request.profile,
+            request.step_index,
+            request.turn_index,
+            &output,
+            Default::default(),
+        );
+
+        assert_eq!(
+            metadata["promptSources"][0]["blockId"],
+            "child.execution.contract"
+        );
+        assert_eq!(metadata["promptSources"][0]["source"], "builtin");
+        assert_eq!(
+            metadata["promptSources"][0]["origin"],
+            "child-contract:fresh"
+        );
+    }
+
+    #[test]
+    fn select_global_cache_strategy_prefers_tool_based_when_mcp_tools_exist() {
+        let request = PromptBuildRequest {
+            session_id: None,
+            turn_id: None,
+            working_dir: PathBuf::from("/workspace/demo"),
+            profile: "default".to_string(),
+            step_index: 0,
+            turn_index: 0,
+            profile_context: serde_json::Value::Null,
+            capabilities: vec![
+                CapabilitySpec::builder("read_file", CapabilityKind::tool())
+                    .description("read")
+                    .input_schema(serde_json::json!({ "type": "object" }))
+                    .output_schema(serde_json::json!({ "type": "object" }))
+                    .build()
+                    .expect("builtin capability should build"),
+                CapabilitySpec::builder("mcp__demo__search", CapabilityKind::tool())
+                    .description("search")
+                    .input_schema(serde_json::json!({ "type": "object" }))
+                    .output_schema(serde_json::json!({ "type": "object" }))
+                    .build()
+                    .expect("mcp capability should build"),
+            ],
+            skills: Vec::new(),
+            agent_profiles: Vec::new(),
+            prompt_declarations: Vec::new(),
+            metadata: serde_json::Value::Null,
+        };
+        let tool_names = request
+            .capabilities
+            .iter()
+            .filter(|capability| capability.kind.is_tool())
+            .map(|capability| capability.name.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            select_global_cache_strategy(&tool_names),
+            PromptCacheGlobalStrategy::ToolBased
         );
     }
 }

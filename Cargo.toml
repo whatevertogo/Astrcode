@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/support",
     "crates/kernel",
     "crates/session-runtime",
     "crates/application",

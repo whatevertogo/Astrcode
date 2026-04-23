@@ -3,11 +3,18 @@
 //! Why: 这里专门表达“某个 turn 最终发生了什么”，
 //! 不让这类终态推断逻辑回流到 `application`。
 
-use astrcode_core::{AgentTurnOutcome, Phase, StorageEventPayload, StoredEvent};
+use astrcode_core::{
+    AgentTurnOutcome, Phase, StoredEvent, TurnProjectionSnapshot, TurnTerminalKind,
+};
+
+use crate::turn::projector::{
+    last_non_empty_assistant_event, last_non_empty_error_event, project_turn_projection,
+};
 
 #[derive(Debug, Clone)]
 pub struct TurnTerminalSnapshot {
     pub phase: Phase,
+    pub projection: Option<TurnProjectionSnapshot>,
     pub events: Vec<StoredEvent>,
 }
 
@@ -18,68 +25,22 @@ pub struct ProjectedTurnOutcome {
     pub technical_message: String,
 }
 
-pub(crate) fn has_terminal_turn_signal(events: &[StoredEvent]) -> bool {
-    events.iter().any(|stored| {
-        matches!(
-            stored.event.payload,
-            StorageEventPayload::TurnDone { .. } | StorageEventPayload::Error { .. }
-        )
-    })
-}
-
-pub(crate) fn project_turn_outcome(phase: Phase, events: &[StoredEvent]) -> ProjectedTurnOutcome {
-    let last_assistant = events
-        .iter()
-        .rev()
-        .find_map(|stored| match &stored.event.payload {
-            StorageEventPayload::AssistantFinal { content, .. } if !content.trim().is_empty() => {
-                Some(content.trim().to_string())
-            },
-            _ => None,
-        });
-    let last_error = events
-        .iter()
-        .rev()
-        .find_map(|stored| match &stored.event.payload {
-            StorageEventPayload::Error { message, .. } if !message.trim().is_empty() => {
-                Some(message.trim().to_string())
-            },
-            _ => None,
-        });
-    let last_turn_done_reason =
-        events
-            .iter()
-            .rev()
-            .find_map(|stored| match &stored.event.payload {
-                StorageEventPayload::TurnDone { reason, .. } => reason
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|reason| !reason.is_empty())
-                    .map(ToString::to_string),
-                _ => None,
-            });
-    let outcome = if matches!(phase, Phase::Interrupted) {
-        match last_error.as_deref() {
-            Some("interrupted") | None => AgentTurnOutcome::Cancelled,
-            Some(_) => AgentTurnOutcome::Failed,
-        }
-    } else if last_error.is_some() {
-        AgentTurnOutcome::Failed
-    } else if matches!(last_turn_done_reason.as_deref(), Some("token_exceeded")) {
-        // Why: `TurnDone.reason` 是 durable 终态语义，明确标注 token_exceeded 时，
-        // 不应再把这轮 turn 当作普通 completed。
-        AgentTurnOutcome::TokenExceeded
-    } else {
-        AgentTurnOutcome::Completed
-    };
+pub(crate) fn project_turn_outcome(
+    phase: Phase,
+    projection: Option<&TurnProjectionSnapshot>,
+    events: &[StoredEvent],
+) -> ProjectedTurnOutcome {
+    let replayed_projection = project_turn_projection(events);
+    let projection = projection.or(replayed_projection.as_ref());
+    let last_assistant = last_non_empty_assistant_event(events);
+    let last_error = last_non_empty_error_event(events);
+    let terminal_kind = resolve_terminal_kind(phase, projection, last_error.as_deref());
+    let outcome = project_agent_turn_outcome(terminal_kind.as_ref());
 
     let summary = match outcome {
         AgentTurnOutcome::Completed => last_assistant
             .clone()
             .unwrap_or_else(|| "子 Agent 已完成，但没有返回可读总结。".to_string()),
-        AgentTurnOutcome::TokenExceeded => last_assistant
-            .clone()
-            .unwrap_or_else(|| "子 Agent 因 token 限额结束，但没有返回可读总结。".to_string()),
         AgentTurnOutcome::Failed => last_error
             .clone()
             .or(last_assistant.clone())
@@ -88,11 +49,47 @@ pub(crate) fn project_turn_outcome(phase: Phase, events: &[StoredEvent]) -> Proj
             .clone()
             .unwrap_or_else(|| "子 Agent 已关闭。".to_string()),
     };
+    let technical_message = match terminal_kind {
+        Some(TurnTerminalKind::Error { message }) => last_error.unwrap_or_else(|| message.clone()),
+        _ => last_error.unwrap_or(summary.clone()),
+    };
 
     ProjectedTurnOutcome {
         outcome,
         summary: summary.clone(),
-        technical_message: last_error.unwrap_or(summary),
+        technical_message,
+    }
+}
+
+fn resolve_terminal_kind(
+    phase: Phase,
+    projection: Option<&TurnProjectionSnapshot>,
+    last_error: Option<&str>,
+) -> Option<TurnTerminalKind> {
+    if let Some(turn_done_kind) = projection.and_then(|projection| projection.terminal_kind.clone())
+    {
+        return Some(turn_done_kind);
+    }
+
+    if matches!(phase, Phase::Interrupted) {
+        return Some(TurnTerminalKind::Cancelled);
+    }
+
+    projection
+        .and_then(|projection| projection.last_error.as_deref())
+        .or(last_error)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(|message| TurnTerminalKind::Error {
+            message: message.to_string(),
+        })
+}
+
+fn project_agent_turn_outcome(terminal_kind: Option<&TurnTerminalKind>) -> AgentTurnOutcome {
+    match terminal_kind {
+        Some(TurnTerminalKind::Completed) | None => AgentTurnOutcome::Completed,
+        Some(TurnTerminalKind::Cancelled) => AgentTurnOutcome::Cancelled,
+        Some(TurnTerminalKind::Error { .. }) => AgentTurnOutcome::Failed,
     }
 }
 
@@ -100,31 +97,47 @@ pub(crate) fn project_turn_outcome(phase: Phase, events: &[StoredEvent]) -> Proj
 mod tests {
     use astrcode_core::{
         AgentEventContext, AgentTurnOutcome, Phase, StorageEvent, StorageEventPayload, StoredEvent,
+        TurnProjectionSnapshot,
     };
 
-    use super::{has_terminal_turn_signal, project_turn_outcome};
+    use super::project_turn_outcome;
+    use crate::turn::projector::{has_terminal_projection, project_turn_projection};
 
     #[test]
-    fn has_terminal_turn_signal_detects_turn_done() {
-        let events = vec![StoredEvent {
+    fn has_terminal_projection_detects_typed_terminal_kind() {
+        assert!(has_terminal_projection(Some(&TurnProjectionSnapshot {
+            terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+            last_error: None,
+        })));
+    }
+
+    #[test]
+    fn project_turn_projection_reads_typed_turn_done_terminal_kind() {
+        let projection = project_turn_projection(&[StoredEvent {
             storage_seq: 1,
             event: StorageEvent {
                 turn_id: Some("turn-1".to_string()),
                 agent: AgentEventContext::default(),
                 payload: StorageEventPayload::TurnDone {
                     timestamp: chrono::Utc::now(),
-                    reason: Some("completed".to_string()),
+                    terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+                    reason: None,
                 },
             },
-        }];
+        }])
+        .expect("projection should replay");
 
-        assert!(has_terminal_turn_signal(&events));
+        assert_eq!(
+            projection.terminal_kind,
+            Some(astrcode_core::TurnTerminalKind::Completed)
+        );
     }
 
     #[test]
     fn project_turn_outcome_prefers_assistant_summary_on_success() {
         let outcome = project_turn_outcome(
             Phase::Idle,
+            None,
             &[StoredEvent {
                 storage_seq: 1,
                 event: StorageEvent {
@@ -134,6 +147,7 @@ mod tests {
                         content: "完成总结".to_string(),
                         reasoning_content: None,
                         reasoning_signature: None,
+                        step_index: None,
                         timestamp: Some(chrono::Utc::now()),
                     },
                 },
@@ -145,74 +159,80 @@ mod tests {
     }
 
     #[test]
-    fn project_turn_outcome_marks_token_exceeded_when_turn_done_reason_matches() {
+    fn project_turn_outcome_prefers_typed_terminal_kind_over_reason() {
         let outcome = project_turn_outcome(
             Phase::Idle,
-            &[
-                StoredEvent {
-                    storage_seq: 1,
-                    event: StorageEvent {
-                        turn_id: Some("turn-1".to_string()),
-                        agent: AgentEventContext::default(),
-                        payload: StorageEventPayload::TurnDone {
-                            timestamp: chrono::Utc::now(),
-                            reason: Some("token_exceeded".to_string()),
-                        },
-                    },
-                },
-                StoredEvent {
-                    storage_seq: 2,
-                    event: StorageEvent {
-                        turn_id: Some("turn-1".to_string()),
-                        agent: AgentEventContext::default(),
-                        payload: StorageEventPayload::AssistantFinal {
-                            content: "仍然视为完成".to_string(),
-                            reasoning_content: None,
-                            reasoning_signature: None,
-                            timestamp: Some(chrono::Utc::now()),
-                        },
-                    },
-                },
-            ],
+            Some(&TurnProjectionSnapshot {
+                terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+                last_error: None,
+            }),
+            &[],
         );
 
-        assert_eq!(outcome.outcome, AgentTurnOutcome::TokenExceeded);
-        assert_eq!(outcome.summary, "仍然视为完成");
+        assert_eq!(outcome.outcome, AgentTurnOutcome::Completed);
     }
 
     #[test]
     fn project_turn_outcome_treats_unknown_turn_done_reason_as_completed() {
         let outcome = project_turn_outcome(
             Phase::Idle,
-            &[
-                StoredEvent {
-                    storage_seq: 1,
-                    event: StorageEvent {
-                        turn_id: Some("turn-1".to_string()),
-                        agent: AgentEventContext::default(),
-                        payload: StorageEventPayload::TurnDone {
-                            timestamp: chrono::Utc::now(),
-                            reason: Some("completed".to_string()),
-                        },
+            Some(&TurnProjectionSnapshot {
+                terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+                last_error: None,
+            }),
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent {
+                    turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
+                    payload: StorageEventPayload::AssistantFinal {
+                        content: "普通完成".to_string(),
+                        reasoning_content: None,
+                        reasoning_signature: None,
+                        step_index: None,
+                        timestamp: Some(chrono::Utc::now()),
                     },
                 },
-                StoredEvent {
-                    storage_seq: 2,
-                    event: StorageEvent {
-                        turn_id: Some("turn-1".to_string()),
-                        agent: AgentEventContext::default(),
-                        payload: StorageEventPayload::AssistantFinal {
-                            content: "普通完成".to_string(),
-                            reasoning_content: None,
-                            reasoning_signature: None,
-                            timestamp: Some(chrono::Utc::now()),
-                        },
-                    },
-                },
-            ],
+            }],
         );
 
         assert_eq!(outcome.outcome, AgentTurnOutcome::Completed);
         assert_eq!(outcome.summary, "普通完成");
+    }
+
+    #[test]
+    fn project_turn_outcome_treats_interrupted_phase_without_typed_terminal_as_cancelled() {
+        let outcome = project_turn_outcome(
+            Phase::Interrupted,
+            Some(&TurnProjectionSnapshot {
+                terminal_kind: None,
+                last_error: None,
+            }),
+            &[],
+        );
+
+        assert_eq!(outcome.outcome, AgentTurnOutcome::Cancelled);
+    }
+
+    #[test]
+    fn project_turn_outcome_uses_turn_done_event_when_projection_is_missing() {
+        let outcome = project_turn_outcome(
+            Phase::Idle,
+            None,
+            &[StoredEvent {
+                storage_seq: 1,
+                event: StorageEvent {
+                    turn_id: Some("turn-1".to_string()),
+                    agent: AgentEventContext::default(),
+                    payload: StorageEventPayload::TurnDone {
+                        timestamp: chrono::Utc::now(),
+                        terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
+                        reason: None,
+                    },
+                },
+            }],
+        );
+
+        assert_eq!(outcome.outcome, AgentTurnOutcome::Completed);
     }
 }

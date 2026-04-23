@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enter_plan_mode_emits_mode_change_event() {
+    async fn enter_plan_mode_only_emits_mode_change_event() {
         let tool = EnterPlanModeTool;
         let events = Arc::new(Mutex::new(Vec::new()));
         let ctx = test_tool_context_for(std::env::temp_dir())

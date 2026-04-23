@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
+    TurnTerminalKind,
 };
 
 use super::{TurnLoopTransition, TurnStopCause};
@@ -25,20 +26,14 @@ pub enum TurnFinishReason {
     Cancelled,
     /// 不可恢复错误
     Error,
-    /// 超过 step 上限
-    StepLimitExceeded,
 }
 
-impl From<TurnStopCause> for TurnFinishReason {
-    fn from(value: TurnStopCause) -> Self {
+impl From<&TurnTerminalKind> for TurnFinishReason {
+    fn from(value: &TurnTerminalKind) -> Self {
         match value {
-            TurnStopCause::Completed
-            | TurnStopCause::BudgetStoppedContinuation
-            | TurnStopCause::ContinuationLimitReached
-            | TurnStopCause::MaxOutputContinuationLimitReached => Self::NaturalEnd,
-            TurnStopCause::Cancelled => Self::Cancelled,
-            TurnStopCause::Error => Self::Error,
-            TurnStopCause::StepLimitExceeded => Self::StepLimitExceeded,
+            TurnTerminalKind::Completed => Self::NaturalEnd,
+            TurnTerminalKind::Cancelled => Self::Cancelled,
+            TurnTerminalKind::Error { .. } => Self::Error,
         }
     }
 }
@@ -115,8 +110,6 @@ pub struct TurnSummary {
     pub wall_duration: Duration,
     /// Turn 内 step 数量
     pub step_count: usize,
-    /// Turn 内 budget/恢复驱动的 continuation 次数
-    pub continuation_count: usize,
     /// Provider 报告的总 token 使用量（含 input + output）
     pub total_tokens_used: u64,
     /// Provider 报告的 cache read input tokens

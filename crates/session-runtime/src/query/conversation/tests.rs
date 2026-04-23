@@ -4,8 +4,9 @@ use astrcode_core::{
     AgentEvent, AgentEventContext, AgentLifecycleStatus, ChildAgentRef, ChildSessionNotification,
     ChildSessionNotificationKind, DeleteProjectResult, EventStore, ParentDelivery,
     ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics, Phase,
-    SessionEventRecord, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
-    StorageEventPayload, StoredEvent, ToolExecutionResult, ToolOutputStream, UserMessageOrigin,
+    PromptMetricsPayload, SessionEventRecord, SessionId, SessionMeta, SessionTurnAcquireResult,
+    StorageEvent, StorageEventPayload, StoredEvent, ToolExecutionResult, ToolOutputStream,
+    UserMessageOrigin,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -358,6 +359,299 @@ fn snapshot_keeps_task_write_as_normal_tool_call_block() {
 }
 
 #[test]
+fn snapshot_suppresses_failed_upsert_session_plan_retry_noise() {
+    let records = vec![
+        record(
+            "1.1",
+            AgentEvent::ToolCallStart {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                tool_call_id: "call-plan-save-failed".to_string(),
+                tool_name: "upsertSessionPlan".to_string(),
+                input: json!({
+                    "title": "Cleanup crates",
+                    "content": "# Plan: Cleanup crates"
+                }),
+            },
+        ),
+        record(
+            "1.2",
+            AgentEvent::ToolCallResult {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                result: ToolExecutionResult {
+                    tool_call_id: "call-plan-save-failed".to_string(),
+                    tool_name: "upsertSessionPlan".to_string(),
+                    ok: false,
+                    output: String::new(),
+                    error: Some(
+                        "validation error: session plan does not satisfy artifact contract \
+                         'canonical-plan': missing headings [## Existing Code To Reuse]"
+                            .to_string(),
+                    ),
+                    metadata: None,
+                    continuation: None,
+                    duration_ms: 1,
+                    truncated: false,
+                },
+            },
+        ),
+        record(
+            "1.3",
+            AgentEvent::ToolCallStart {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                tool_call_id: "call-plan-save-success".to_string(),
+                tool_name: "upsertSessionPlan".to_string(),
+                input: json!({
+                    "title": "Cleanup crates",
+                    "content": "# Plan: Cleanup crates\n\n## Existing Code To Reuse\n\n- None"
+                }),
+            },
+        ),
+        record(
+            "1.4",
+            AgentEvent::ToolCallResult {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                result: ToolExecutionResult {
+                    tool_call_id: "call-plan-save-success".to_string(),
+                    tool_name: "upsertSessionPlan".to_string(),
+                    ok: true,
+                    output: "updated session plan".to_string(),
+                    error: None,
+                    metadata: Some(json!({
+                        "planPath": "C:/Users/demo/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md",
+                        "slug": "cleanup-crates",
+                        "status": "awaiting_approval",
+                        "title": "Cleanup crates",
+                        "updatedAt": "2026-04-22T01:26:30Z"
+                    })),
+                    continuation: None,
+                    duration_ms: 7,
+                    truncated: false,
+                },
+            },
+        ),
+    ];
+
+    let snapshot = project_conversation_snapshot(&records, Phase::Idle);
+    assert_eq!(snapshot.blocks.len(), 1);
+    assert!(matches!(
+        &snapshot.blocks[0],
+        ConversationBlockFacts::Plan(block)
+            if block.tool_call_id == "call-plan-save-success"
+                && block.event_kind == ConversationPlanEventKind::Saved
+                && block.status.as_deref() == Some("awaiting_approval")
+    ));
+    assert!(
+        snapshot
+            .blocks
+            .iter()
+            .all(|block| !matches!(block, ConversationBlockFacts::ToolCall(_))),
+        "suppressed plan tools must not leak retry noise onto the generic tool surface"
+    );
+}
+
+#[test]
+fn snapshot_suppresses_draft_approval_assistant_leakage_even_after_mode_switch() {
+    let records = vec![
+        record(
+            "1.1",
+            AgentEvent::UserMessage {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                content: "按这个做，开始吧".to_string(),
+            },
+        ),
+        record(
+            "1.2",
+            AgentEvent::AssistantMessage {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                content: "计划已呈递。这是一个纯只读总结任务……".to_string(),
+                reasoning_content: Some("先补全草稿，再正式呈递审批。".to_string()),
+                step_index: Some(0),
+            },
+        ),
+        record(
+            "1.3",
+            AgentEvent::ToolCallResult {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                result: ToolExecutionResult {
+                    tool_call_id: "call-plan-save".to_string(),
+                    tool_name: "upsertSessionPlan".to_string(),
+                    ok: true,
+                    output: "updated session plan".to_string(),
+                    error: None,
+                    metadata: Some(json!({
+                        "schema": "sessionPlanResult",
+                        "planPath": "C:/Users/demo/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md",
+                        "title": "PROJECT_ARCHITECTURE.md 核心约束只读总结",
+                        "status": "awaiting_approval",
+                        "summary": "总结核心约束"
+                    })),
+                    continuation: None,
+                    duration_ms: 11,
+                    truncated: false,
+                },
+            },
+        ),
+        record(
+            "1.4",
+            AgentEvent::ToolCallResult {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                result: ToolExecutionResult {
+                    tool_call_id: "call-plan-exit".to_string(),
+                    tool_name: "exitPlanMode".to_string(),
+                    ok: true,
+                    output: "Before exiting plan mode, do one final self-review.".to_string(),
+                    error: None,
+                    metadata: Some(json!({
+                        "schema": "planModeExit",
+                        "eventKind": "presented",
+                        "plan": {
+                            "title": "PROJECT_ARCHITECTURE.md 核心约束只读总结",
+                            "planPath": "C:/Users/demo/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md",
+                            "status": "awaiting_approval"
+                        }
+                    })),
+                    continuation: None,
+                    duration_ms: 5,
+                    truncated: false,
+                },
+            },
+        ),
+    ];
+
+    let snapshot = project_conversation_snapshot(&records, Phase::Idle);
+
+    assert!(snapshot.blocks.iter().any(|block| matches!(
+        block,
+        ConversationBlockFacts::User(block)
+            if block.turn_id.as_deref() == Some("turn-1")
+    )));
+    assert!(snapshot.blocks.iter().any(|block| matches!(
+        block,
+        ConversationBlockFacts::Plan(block)
+            if block.turn_id.as_deref() == Some("turn-1")
+                && block.status.as_deref() == Some("awaiting_approval")
+    )));
+    assert!(snapshot.blocks.iter().all(|block| !matches!(
+        block,
+        ConversationBlockFacts::Assistant(block)
+            if block.turn_id.as_deref() == Some("turn-1")
+    )));
+    assert!(snapshot.blocks.iter().all(|block| !matches!(
+        block,
+        ConversationBlockFacts::Thinking(block)
+            if block.turn_id.as_deref() == Some("turn-1")
+    )));
+}
+
+#[test]
+fn replay_frames_suppress_draft_approval_assistant_leakage() {
+    let history = vec![
+        record(
+            "1.1",
+            AgentEvent::UserMessage {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                content: "按这个做，开始吧".to_string(),
+            },
+        ),
+        record(
+            "1.2",
+            AgentEvent::AssistantMessage {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                content: "计划已呈递。这是一个纯只读总结任务……".to_string(),
+                reasoning_content: Some("先补全草稿，再正式呈递审批。".to_string()),
+                step_index: Some(0),
+            },
+        ),
+        record(
+            "1.3",
+            AgentEvent::ToolCallResult {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                result: ToolExecutionResult {
+                    tool_call_id: "call-plan-save".to_string(),
+                    tool_name: "upsertSessionPlan".to_string(),
+                    ok: true,
+                    output: "updated session plan".to_string(),
+                    error: None,
+                    metadata: Some(json!({
+                        "schema": "sessionPlanResult",
+                        "planPath": "C:/Users/demo/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md",
+                        "title": "PROJECT_ARCHITECTURE.md 核心约束只读总结",
+                        "status": "awaiting_approval",
+                        "summary": "总结核心约束"
+                    })),
+                    continuation: None,
+                    duration_ms: 11,
+                    truncated: false,
+                },
+            },
+        ),
+        record(
+            "1.4",
+            AgentEvent::ToolCallResult {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                result: ToolExecutionResult {
+                    tool_call_id: "call-plan-exit".to_string(),
+                    tool_name: "exitPlanMode".to_string(),
+                    ok: true,
+                    output: "Before exiting plan mode, do one final self-review.".to_string(),
+                    error: None,
+                    metadata: Some(json!({
+                        "schema": "planModeExit",
+                        "eventKind": "presented",
+                        "plan": {
+                            "title": "PROJECT_ARCHITECTURE.md 核心约束只读总结",
+                            "planPath": "C:/Users/demo/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md",
+                            "status": "awaiting_approval"
+                        }
+                    })),
+                    continuation: None,
+                    duration_ms: 5,
+                    truncated: false,
+                },
+            },
+        ),
+    ];
+
+    let frames = build_conversation_replay_frames(&[], &history);
+
+    assert!(frames.iter().any(|frame| matches!(
+        &frame.delta,
+        ConversationDeltaFacts::AppendBlock { block }
+            if matches!(block.as_ref(), ConversationBlockFacts::Plan(_))
+    )));
+    assert!(frames.iter().all(|frame| !matches!(
+        &frame.delta,
+        ConversationDeltaFacts::AppendBlock { block }
+            if matches!(
+                block.as_ref(),
+                ConversationBlockFacts::Assistant(block)
+                    if block.turn_id.as_deref() == Some("turn-1")
+            )
+    )));
+    assert!(frames.iter().all(|frame| !matches!(
+        &frame.delta,
+        ConversationDeltaFacts::AppendBlock { block }
+            if matches!(
+                block.as_ref(),
+                ConversationBlockFacts::Thinking(block)
+                    if block.turn_id.as_deref() == Some("turn-1")
+            )
+    )));
+}
+
+#[test]
 fn live_then_durable_tool_delta_dedupes_chunk_on_same_tool_block() {
     let facts = sample_stream_replay_facts(
         vec![record(
@@ -398,6 +692,138 @@ fn live_then_durable_tool_delta_dedupes_chunk_on_same_tool_block() {
     assert!(
         replayed.is_empty(),
         "durable replay should not duplicate the live-emitted chunk"
+    );
+}
+
+#[test]
+fn snapshot_tracks_last_durable_step_cursor_from_prompt_metrics() {
+    let records = vec![
+        record(
+            "1.1",
+            AgentEvent::PromptMetrics {
+                turn_id: Some("turn-1".to_string()),
+                agent: sample_agent_context(),
+                metrics: PromptMetricsPayload {
+                    step_index: 0,
+                    estimated_tokens: 1200,
+                    context_window: 200_000,
+                    effective_window: 180_000,
+                    threshold_tokens: 144_000,
+                    truncated_tool_results: 0,
+                    provider_input_tokens: Some(800),
+                    provider_output_tokens: Some(120),
+                    cache_creation_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(640),
+                    provider_cache_metrics_supported: true,
+                    prompt_cache_reuse_hits: 2,
+                    prompt_cache_reuse_misses: 0,
+                    prompt_cache_unchanged_layers: Vec::new(),
+                    prompt_cache_diagnostics: None,
+                },
+            },
+        ),
+        record(
+            "1.2",
+            AgentEvent::AssistantMessage {
+                turn_id: "turn-1".to_string(),
+                agent: sample_agent_context(),
+                content: "first step".to_string(),
+                reasoning_content: None,
+                step_index: Some(0),
+            },
+        ),
+        record(
+            "1.3",
+            AgentEvent::PromptMetrics {
+                turn_id: Some("turn-1".to_string()),
+                agent: sample_agent_context(),
+                metrics: PromptMetricsPayload {
+                    step_index: 1,
+                    estimated_tokens: 1600,
+                    context_window: 200_000,
+                    effective_window: 180_000,
+                    threshold_tokens: 144_000,
+                    truncated_tool_results: 0,
+                    provider_input_tokens: Some(1100),
+                    provider_output_tokens: Some(96),
+                    cache_creation_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(896),
+                    provider_cache_metrics_supported: true,
+                    prompt_cache_reuse_hits: 3,
+                    prompt_cache_reuse_misses: 0,
+                    prompt_cache_unchanged_layers: Vec::new(),
+                    prompt_cache_diagnostics: None,
+                },
+            },
+        ),
+    ];
+
+    let snapshot = project_conversation_snapshot(&records, Phase::Streaming);
+
+    assert_eq!(
+        snapshot
+            .step_progress
+            .durable
+            .as_ref()
+            .map(|cursor| (cursor.turn_id.as_str(), cursor.step_index,)),
+        Some(("turn-1", 1))
+    );
+    assert!(snapshot.step_progress.live.is_none());
+}
+
+#[test]
+fn stream_projector_marks_live_step_after_last_durable_step() {
+    let facts = sample_stream_replay_facts(
+        vec![record(
+            "1.1",
+            AgentEvent::PromptMetrics {
+                turn_id: Some("turn-1".to_string()),
+                agent: sample_agent_context(),
+                metrics: PromptMetricsPayload {
+                    step_index: 0,
+                    estimated_tokens: 1200,
+                    context_window: 200_000,
+                    effective_window: 180_000,
+                    threshold_tokens: 144_000,
+                    truncated_tool_results: 0,
+                    provider_input_tokens: Some(800),
+                    provider_output_tokens: Some(120),
+                    cache_creation_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(640),
+                    provider_cache_metrics_supported: true,
+                    prompt_cache_reuse_hits: 2,
+                    prompt_cache_reuse_misses: 0,
+                    prompt_cache_unchanged_layers: Vec::new(),
+                    prompt_cache_diagnostics: None,
+                },
+            },
+        )],
+        Vec::new(),
+    );
+    let mut stream = ConversationStreamProjector::new(Some("1.1".to_string()), &facts);
+
+    let live_frames = stream.project_live_event(&AgentEvent::ModelDelta {
+        turn_id: "turn-1".to_string(),
+        agent: sample_agent_context(),
+        delta: "next step".to_string(),
+    });
+
+    assert_eq!(live_frames.len(), 1);
+    assert_eq!(
+        live_frames[0]
+            .step_progress
+            .durable
+            .as_ref()
+            .map(|cursor| (cursor.turn_id.as_str(), cursor.step_index)),
+        Some(("turn-1", 0))
+    );
+    assert_eq!(
+        live_frames[0]
+            .step_progress
+            .live
+            .as_ref()
+            .map(|cursor| (cursor.turn_id.as_str(), cursor.step_index)),
+        Some(("turn-1", 1))
     );
 }
 
@@ -554,6 +980,7 @@ async fn runtime_query_builds_snapshot_and_stream_replay_facts() {
                     content: "done".to_string(),
                     reasoning_content: Some("think".to_string()),
                     reasoning_signature: None,
+                    step_index: None,
                     timestamp: None,
                 },
             ),

@@ -304,7 +304,7 @@ impl AgentControl {
             storage_mode,
             lifecycle: AgentLifecycleStatus::Pending,
             last_turn_outcome: None,
-            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+            resolved_limits: ResolvedExecutionLimitsSnapshot,
             delegation: None,
         };
         let cancel = CancelToken::new();
@@ -373,7 +373,7 @@ impl AgentControl {
             storage_mode: SubRunStorageMode::IndependentSession,
             lifecycle: AgentLifecycleStatus::Running,
             last_turn_outcome: None,
-            resolved_limits: ResolvedExecutionLimitsSnapshot::default(),
+            resolved_limits: ResolvedExecutionLimitsSnapshot,
             delegation: None,
         };
         let cancel = CancelToken::new();

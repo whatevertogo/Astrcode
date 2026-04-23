@@ -19,10 +19,10 @@ use astrcode_adapter_skills::collect_asset_files;
 use astrcode_core::{GovernanceModeSpec, SkillSource, SkillSpec, is_valid_skill_name};
 use astrcode_plugin::{PluginLoader, Supervisor, default_initialize_message, default_profiles};
 use astrcode_protocol::plugin::{PeerDescriptor, SkillDescriptor};
+#[cfg(test)]
+use astrcode_support::hostpaths::resolve_home_dir;
 use log::warn;
 
-#[cfg(test)]
-use super::deps::core::home::resolve_home_dir;
 use super::deps::core::{CapabilityInvoker, PluginRegistry};
 
 /// 插件装配结果。

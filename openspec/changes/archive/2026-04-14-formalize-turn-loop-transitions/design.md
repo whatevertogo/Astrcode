@@ -63,17 +63,7 @@ Claude Code `query.ts` 已经证明，“显式 transition reason” 是把 agen
 
 治理层只消费稳定汇总结果，不反向参与判断。
 
-### D3: budget-driven auto-continue 与 transition 模型同时落地
-
-现有 spec 已经把 auto-continue 写成 turn-orchestration/turn-budget-governance 的正式能力。  
-本次 change 不再把 budget 视为将来再接的附加逻辑，而是把它作为首个正式 transition source 纳入模型：
-
-- `BudgetAllowsContinuation`
-- `BudgetStopsContinuation`
-
-这样后续截断恢复和工具流式调度可以复用同一套模式，不需要再为每条路径重新定义状态形状。
-
-### D4: 模块化 runner 保持不变，transition 只补语义骨架
+### D3: 模块化 runner 保持不变，transition 只补语义骨架
 
 `request -> llm_cycle -> tool_cycle -> compaction_cycle` 这条模块化流水线继续保留。  
 transition 模型的职责是：

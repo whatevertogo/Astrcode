@@ -29,10 +29,12 @@ mod plugins;
 mod prompt_facts;
 mod providers;
 pub(crate) mod runtime;
+mod runtime_coordinator;
 mod watch;
 use std::path::{Path as FsPath, PathBuf};
 
 use anyhow::{Context, Result as AnyhowResult, anyhow};
+use astrcode_support::hostpaths::resolve_home_dir;
 use axum::{
     Json, Router,
     body::Body,
@@ -471,7 +473,7 @@ fn clear_run_info_at_path(path: &FsPath, expected_pid: u32) -> AnyhowResult<()> 
 }
 
 fn run_info_path() -> AnyhowResult<PathBuf> {
-    let home_dir = deps::core::home::resolve_home_dir().map_err(|e| anyhow!("{e}"))?;
+    let home_dir = resolve_home_dir().map_err(|e| anyhow!("{e}"))?;
     Ok(run_info_path_in_home(home_dir.as_path()))
 }
 
@@ -483,6 +485,7 @@ fn run_info_path_in_home(home_dir: &FsPath) -> PathBuf {
 mod tests {
     use std::sync::OnceLock;
 
+    use astrcode_support::hostpaths::ASTRCODE_TEST_HOME_ENV;
     use axum::{
         Router,
         body::{Body, to_bytes},
@@ -663,10 +666,7 @@ mod tests {
             },
         )
         .expect("run info should be written");
-        std::env::set_var(
-            astrcode_core::home::ASTRCODE_TEST_HOME_ENV,
-            guard.home_dir(),
-        );
+        std::env::set_var(ASTRCODE_TEST_HOME_ENV, guard.home_dir());
 
         let app = Router::new()
             .route("/__astrcode__/run-info", get(serve_run_info))
@@ -695,7 +695,7 @@ mod tests {
             .await
             .expect("request should succeed");
         assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
-        std::env::remove_var(astrcode_core::home::ASTRCODE_TEST_HOME_ENV);
+        std::env::remove_var(ASTRCODE_TEST_HOME_ENV);
     }
 
     #[tokio::test]
@@ -714,10 +714,7 @@ mod tests {
             },
         )
         .expect("run info should be written");
-        std::env::set_var(
-            astrcode_core::home::ASTRCODE_TEST_HOME_ENV,
-            guard.home_dir(),
-        );
+        std::env::set_var(ASTRCODE_TEST_HOME_ENV, guard.home_dir());
 
         let app = Router::new()
             .route("/__astrcode__/run-info", get(serve_run_info))
@@ -743,6 +740,52 @@ mod tests {
         .expect("payload should deserialize");
         assert_eq!(payload["token"], "bootstrap-token");
         assert_eq!(payload["serverOrigin"], "http://127.0.0.1:62000");
-        std::env::remove_var(astrcode_core::home::ASTRCODE_TEST_HOME_ENV);
+        std::env::remove_var(ASTRCODE_TEST_HOME_ENV);
+    }
+
+    #[tokio::test]
+    async fn serve_run_info_returns_service_unavailable_for_expired_bootstrap_token() {
+        let _env_guard = run_info_env_lock().lock().await;
+        let (state, guard) = test_state(None).await;
+        write_run_info_in_home(
+            guard.home_dir(),
+            &LocalServerInfo {
+                port: 62000,
+                token: "expired-bootstrap-token".to_string(),
+                pid: std::process::id(),
+                started_at: format_local_rfc3339(chrono::Utc::now()),
+                expires_at_ms: 1,
+            },
+        )
+        .expect("run info should be written");
+        std::env::set_var(ASTRCODE_TEST_HOME_ENV, guard.home_dir());
+
+        let app = Router::new()
+            .route("/__astrcode__/run-info", get(serve_run_info))
+            .with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__astrcode__/run-info")
+                    .header(header::ORIGIN, "http://127.0.0.1:5173")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let payload: serde_json::Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body should be readable"),
+        )
+        .expect("payload should deserialize");
+        assert_eq!(
+            payload["error"],
+            "bootstrap token has expired; server may need restart"
+        );
+        std::env::remove_var(ASTRCODE_TEST_HOME_ENV);
     }
 }

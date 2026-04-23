@@ -36,6 +36,16 @@ pub mod surface;
 pub use connection::{McpConnection as McpConnectionExport, McpConnectionState};
 pub use surface::{McpIndexedResource, McpServerStatusSnapshot, McpSurfaceSnapshot};
 
+/// MCP reload 的最小回滚点。
+///
+/// 为什么只保存声明配置而不克隆活跃连接：
+/// - 活跃连接包含 transport/client 等运行时句柄，无法也不应直接克隆
+/// - 对 MCP 来说，声明配置才是唯一事实源；恢复时重新执行一次 reload 即可重建连接集合
+#[derive(Debug, Clone, Default)]
+pub struct McpReloadSnapshot {
+    declared_configs: Vec<McpServerConfig>,
+}
+
 /// 单个服务器的完整管理信息。
 #[allow(dead_code)]
 pub(crate) struct McpManagedConnection {
@@ -511,6 +521,23 @@ impl McpConnectionManager {
             declared.values().cloned().collect::<Vec<_>>()
         };
         self.reload_config(configs).await
+    }
+
+    /// 捕获当前 MCP reload 回滚点。
+    pub async fn capture_reload_snapshot(&self) -> McpReloadSnapshot {
+        let declared_configs = {
+            let declared = self.declared_configs.lock().await;
+            declared.values().cloned().collect::<Vec<_>>()
+        };
+        McpReloadSnapshot { declared_configs }
+    }
+
+    /// 按回滚点恢复声明配置与连接集合。
+    pub async fn restore_reload_snapshot(
+        &self,
+        snapshot: &McpReloadSnapshot,
+    ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
+        self.reload_config(snapshot.declared_configs.clone()).await
     }
 
     /// 返回所有已连接服务器的名称。
@@ -1328,5 +1355,59 @@ mod tests {
         // 未审批的服务器不进入连接流程，不算失败
         assert!(results.connected.is_empty());
         assert!(results.failed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reload_snapshot_restores_declared_server_set() {
+        let manager = McpConnectionManager::new();
+        let alpha = McpServerConfig {
+            name: "alpha".to_string(),
+            transport: McpTransportConfig::Stdio {
+                command: "echo".to_string(),
+                args: Vec::new(),
+                env: HashMap::new(),
+            },
+            scope: McpConfigScope::User,
+            enabled: false,
+            timeout_secs: 120,
+            init_timeout_secs: 30,
+            max_reconnect_attempts: 5,
+        };
+        let beta = McpServerConfig {
+            name: "beta".to_string(),
+            ..alpha.clone()
+        };
+
+        manager
+            .reload_config(vec![alpha])
+            .await
+            .expect("alpha reload");
+        let snapshot = manager.capture_reload_snapshot().await;
+
+        manager
+            .reload_config(vec![beta])
+            .await
+            .expect("beta reload");
+        let names = manager
+            .current_surface()
+            .await
+            .server_statuses
+            .into_iter()
+            .map(|status| status.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["beta".to_string()]);
+
+        manager
+            .restore_reload_snapshot(&snapshot)
+            .await
+            .expect("restore should succeed");
+        let restored_names = manager
+            .current_surface()
+            .await
+            .server_statuses
+            .into_iter()
+            .map(|status| status.name)
+            .collect::<Vec<_>>();
+        assert_eq!(restored_names, vec!["alpha".to_string()]);
     }
 }

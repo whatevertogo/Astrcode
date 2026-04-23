@@ -33,9 +33,12 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, Result, ShellFamily, SideEffect, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolExecutionResult, ToolOutputStream, ToolPromptMetadata, default_shell_label,
-    resolve_shell, tool_result_persist::maybe_persist_tool_result,
+    AstrError, ResolvedShell, Result, ShellFamily, SideEffect, Tool, ToolCapabilityMetadata,
+    ToolContext, ToolDefinition, ToolExecutionResult, ToolOutputStream, ToolPromptMetadata,
+};
+use astrcode_support::{
+    shell::{default_shell_label, resolve_shell},
+    tool_results::maybe_persist_tool_result,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -644,7 +647,7 @@ fn command_spec(shell: Option<&str>, command: &str) -> Result<CommandSpec> {
     Ok(command_spec_for_family(resolved_shell, command))
 }
 
-fn command_spec_for_family(shell: astrcode_core::ResolvedShell, command: &str) -> CommandSpec {
+fn command_spec_for_family(shell: ResolvedShell, command: &str) -> CommandSpec {
     let args = match shell.family {
         ShellFamily::PowerShell => vec![
             "-NoProfile".to_string(),
@@ -678,6 +681,7 @@ mod tests {
     use std::{collections::VecDeque, io, path::Path};
 
     use astrcode_core::ToolOutputDelta;
+    use astrcode_support::shell::detect_shell_family;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -973,23 +977,20 @@ mod tests {
     #[test]
     fn detect_shell_family_supports_common_shell_names() {
         assert!(matches!(
-            astrcode_core::detect_shell_family("pwsh"),
+            detect_shell_family("pwsh"),
             Some(ShellFamily::PowerShell)
         ));
         assert!(matches!(
-            astrcode_core::detect_shell_family("powershell.exe"),
+            detect_shell_family("powershell.exe"),
             Some(ShellFamily::PowerShell)
         ));
+        assert!(matches!(detect_shell_family("cmd"), Some(ShellFamily::Cmd)));
         assert!(matches!(
-            astrcode_core::detect_shell_family("cmd"),
-            Some(ShellFamily::Cmd)
-        ));
-        assert!(matches!(
-            astrcode_core::detect_shell_family("/bin/bash"),
+            detect_shell_family("/bin/bash"),
             Some(ShellFamily::Posix)
         ));
         assert!(matches!(
-            astrcode_core::detect_shell_family("wsl.exe"),
+            detect_shell_family("wsl.exe"),
             Some(ShellFamily::Wsl)
         ));
     }

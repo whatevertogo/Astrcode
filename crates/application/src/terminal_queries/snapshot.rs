@@ -7,7 +7,7 @@ use crate::{
     App, ApplicationError,
     terminal::{
         ConversationFocus, TerminalFacts, TerminalRehydrateFacts, TerminalRehydrateReason,
-        TerminalStreamFacts, TerminalStreamReplayFacts,
+        TerminalStreamFacts, TerminalStreamReplayFacts, runtime_mapping,
     },
 };
 
@@ -24,7 +24,8 @@ impl App {
         let transcript = self
             .session_runtime
             .conversation_snapshot(&focus_session_id)
-            .await?;
+            .await
+            .map(runtime_mapping::map_snapshot)?;
         let session_title = self
             .session_runtime
             .list_session_metas()
@@ -74,10 +75,16 @@ impl App {
             super::cursor::validate_cursor_format(requested_cursor)?;
             let transcript = self
                 .session_runtime
-                .conversation_snapshot(&focus_session_id)
+                .session_transcript_snapshot(&focus_session_id)
                 .await?;
-            let latest_cursor = crate::terminal::latest_transcript_cursor(&transcript);
-            if super::cursor::cursor_is_after_head(requested_cursor, latest_cursor.as_deref())? {
+            let latest_cursor = transcript.cursor.clone();
+            let cursor_missing_from_transcript = !transcript
+                .records
+                .iter()
+                .any(|record| record.event_id == requested_cursor);
+            if super::cursor::cursor_is_after_head(requested_cursor, latest_cursor.as_deref())?
+                || cursor_missing_from_transcript
+            {
                 return Ok(TerminalStreamFacts::RehydrateRequired(
                     TerminalRehydrateFacts {
                         session_id: session_id.to_string(),
@@ -89,10 +96,11 @@ impl App {
             }
         }
 
-        let replay = self
+        let mapped = self
             .session_runtime
             .conversation_stream_replay(&focus_session_id, last_event_id)
-            .await?;
+            .await
+            .map(runtime_mapping::map_stream_replay)?;
         let control = self.terminal_control_facts(session_id).await?;
         let child_summaries = self
             .conversation_child_summaries(session_id, &focus)
@@ -102,7 +110,8 @@ impl App {
         Ok(TerminalStreamFacts::Replay(Box::new(
             TerminalStreamReplayFacts {
                 active_session_id: session_id.to_string(),
-                replay,
+                replay: mapped.replay,
+                stream: mapped.stream,
                 control,
                 child_summaries,
                 slash_candidates,

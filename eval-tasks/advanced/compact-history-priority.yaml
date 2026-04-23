@@ -1,0 +1,15 @@
+task_id: compact-history-priority
+description: 读取两份摘要并正确区分历史不变量与最近决策。
+prompt: |
+  请读取 summary-1.md 和 summary-2.md，告诉我较早的不变量和最近的决策各是什么。
+workspace:
+  setup: ../fixtures/compact-history-priority
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Read
+  max_tool_calls: 2
+  max_turns: 1
+  output_contains:
+    - UTF-8
+    - 并发上限固定为 2

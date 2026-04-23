@@ -12,10 +12,10 @@ use astrcode_core::{
     AgentInboxEnvelope, AgentLifecycleStatus, AgentTurnOutcome, ChildSessionNotification,
     DelegationMetadata, SubRunHandle,
 };
-use astrcode_kernel::{AgentControlError, Kernel, PendingParentDelivery};
+use astrcode_kernel::{AgentControlError, Kernel};
 use async_trait::async_trait;
 
-use super::AppKernelPort;
+use super::{AppKernelPort, RecoverableParentDelivery};
 
 /// Agent 编排子域依赖的 kernel 稳定端口。
 ///
@@ -68,7 +68,7 @@ pub trait AgentKernelPort: AppKernelPort {
     async fn checkout_parent_delivery_batch(
         &self,
         parent_session_id: &str,
-    ) -> Option<Vec<PendingParentDelivery>>;
+    ) -> Option<Vec<RecoverableParentDelivery>>;
     async fn pending_parent_delivery_count(&self, parent_session_id: &str) -> usize;
     async fn requeue_parent_delivery_batch(&self, parent_session_id: &str, delivery_ids: &[String]);
     async fn consume_parent_delivery_batch(
@@ -189,10 +189,22 @@ impl AgentKernelPort for Kernel {
     async fn checkout_parent_delivery_batch(
         &self,
         parent_session_id: &str,
-    ) -> Option<Vec<PendingParentDelivery>> {
+    ) -> Option<Vec<RecoverableParentDelivery>> {
         self.agent()
             .checkout_parent_delivery_batch(parent_session_id)
             .await
+            .map(|deliveries| {
+                deliveries
+                    .into_iter()
+                    .map(|value| RecoverableParentDelivery {
+                        delivery_id: value.delivery_id,
+                        parent_session_id: value.parent_session_id,
+                        parent_turn_id: value.parent_turn_id,
+                        queued_at_ms: value.queued_at_ms,
+                        notification: value.notification,
+                    })
+                    .collect()
+            })
     }
 
     async fn pending_parent_delivery_count(&self, parent_session_id: &str) -> usize {

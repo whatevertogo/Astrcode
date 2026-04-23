@@ -23,6 +23,7 @@
       }
     ]
   },
+  "stepProgress": {},
   "blocks": [
     {
       "kind": "tool_call",

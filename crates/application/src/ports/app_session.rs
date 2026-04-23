@@ -7,18 +7,21 @@
 //! 同时提供 `SessionRuntime` 对 `AppSessionPort` 的 blanket impl。
 
 use astrcode_core::{
-    ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionId,
-    SessionMeta, StoredEvent, TaskSnapshot,
+    ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionMeta,
+    StoredEvent, TaskSnapshot,
 };
 use astrcode_session_runtime::{
-    ConversationSnapshotFacts, ConversationStreamReplayFacts, ForkPoint, ForkResult,
-    SessionCatalogEvent, SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay,
-    SessionRuntime, SessionTranscriptSnapshot,
+    ConversationSnapshotFacts, ConversationStreamReplayFacts, SessionCatalogEvent,
+    SessionControlStateSnapshot, SessionModeSnapshot, SessionReplay, SessionRuntime,
+    SessionTranscriptSnapshot, SubRunStatusSnapshot,
 };
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use super::AppAgentPromptSubmission;
+use crate::{
+    session_identity::normalize_external_session_id, session_use_cases::SessionForkSelector,
+};
 
 /// `App` 依赖的 session-runtime 稳定端口。
 ///
@@ -31,9 +34,9 @@ pub trait AppSessionPort: Send + Sync {
     async fn create_session(&self, working_dir: String) -> astrcode_core::Result<SessionMeta>;
     async fn fork_session(
         &self,
-        session_id: &SessionId,
-        fork_point: ForkPoint,
-    ) -> astrcode_core::Result<ForkResult>;
+        session_id: &str,
+        selector: SessionForkSelector,
+    ) -> astrcode_core::Result<SessionMeta>;
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()>;
     async fn delete_project(&self, working_dir: &str)
     -> astrcode_core::Result<DeleteProjectResult>;
@@ -85,8 +88,13 @@ pub trait AppSessionPort: Send + Sync {
     ) -> astrcode_core::Result<Vec<ChildSessionNode>>;
     async fn session_stored_events(
         &self,
-        session_id: &SessionId,
+        session_id: &str,
     ) -> astrcode_core::Result<Vec<StoredEvent>>;
+    async fn durable_subrun_status_snapshot(
+        &self,
+        parent_session_id: &str,
+        requested_subrun_id: &str,
+    ) -> astrcode_core::Result<Option<SubRunStatusSnapshot>>;
     async fn session_replay(
         &self,
         session_id: &str,
@@ -115,10 +123,34 @@ impl AppSessionPort for SessionRuntime {
 
     async fn fork_session(
         &self,
-        session_id: &SessionId,
-        fork_point: ForkPoint,
-    ) -> astrcode_core::Result<ForkResult> {
-        self.fork_session(session_id, fork_point).await
+        session_id: &str,
+        selector: SessionForkSelector,
+    ) -> astrcode_core::Result<SessionMeta> {
+        let fork_point = match selector {
+            SessionForkSelector::Latest => astrcode_session_runtime::ForkPoint::Latest,
+            SessionForkSelector::TurnEnd { turn_id } => {
+                astrcode_session_runtime::ForkPoint::TurnEnd(turn_id)
+            },
+            SessionForkSelector::StorageSeq { storage_seq } => {
+                astrcode_session_runtime::ForkPoint::StorageSeq(storage_seq)
+            },
+        };
+        let result = self
+            .fork_session(
+                &astrcode_core::SessionId::from(normalize_external_session_id(session_id)),
+                fork_point,
+            )
+            .await?;
+        self.list_session_metas()
+            .await?
+            .into_iter()
+            .find(|meta| meta.session_id == result.new_session_id.as_str())
+            .ok_or_else(|| {
+                astrcode_core::AstrError::Internal(format!(
+                    "forked session '{}' was created but metadata is unavailable",
+                    result.new_session_id
+                ))
+            })
     }
 
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()> {
@@ -215,9 +247,21 @@ impl AppSessionPort for SessionRuntime {
 
     async fn session_stored_events(
         &self,
-        session_id: &SessionId,
+        session_id: &str,
     ) -> astrcode_core::Result<Vec<StoredEvent>> {
-        self.replay_stored_events(session_id).await
+        self.replay_stored_events(&astrcode_core::SessionId::from(
+            normalize_external_session_id(session_id),
+        ))
+        .await
+    }
+
+    async fn durable_subrun_status_snapshot(
+        &self,
+        parent_session_id: &str,
+        requested_subrun_id: &str,
+    ) -> astrcode_core::Result<Option<SubRunStatusSnapshot>> {
+        self.durable_subrun_status_snapshot(parent_session_id, requested_subrun_id)
+            .await
     }
 
     async fn session_replay(

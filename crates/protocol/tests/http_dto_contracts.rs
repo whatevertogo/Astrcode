@@ -22,21 +22,6 @@ fn subrun_result_dto_roundtrip_preserves_tagged_union_shape() {
         serde_json::from_value(encoded).expect("deserialize completed result");
     assert_eq!(decoded, completed);
 
-    let token_exceeded = SubRunResultDto::TokenExceeded {
-        handoff: SubRunHandoffDto {
-            findings: vec!["partial".to_string()],
-            artifacts: Vec::new(),
-            delivery: None,
-        },
-    };
-    let encoded = serde_json::to_value(&token_exceeded).expect("serialize token exceeded result");
-    assert_eq!(encoded.get("status"), Some(&json!("token_exceeded")));
-    assert!(encoded.get("handoff").is_some());
-    assert!(encoded.get("failure").is_none());
-    let decoded: SubRunResultDto =
-        serde_json::from_value(encoded).expect("deserialize token exceeded result");
-    assert_eq!(decoded, token_exceeded);
-
     let cancelled = SubRunResultDto::Cancelled {
         failure: SubRunFailureDto {
             code: SubRunFailureCodeDto::Interrupted,
@@ -85,7 +70,6 @@ fn subrun_execution_metrics_serialize_cancelled_field_name() {
         failures: 2,
         completed: 7,
         cancelled: 1,
-        token_exceeded: 2,
         independent_session_total: 9,
         total_duration_ms: 1200,
         last_duration_ms: 80,

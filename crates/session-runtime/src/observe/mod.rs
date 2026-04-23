@@ -7,7 +7,7 @@
 //! - `observe` 只承载 replay/live 订阅语义、scope/filter 与状态来源
 //! - 同步快照投影算法统一留在 `query`
 
-use astrcode_core::SubRunHandle;
+use astrcode_core::{ResolvedSubagentContextOverrides, SubRunHandle};
 
 use crate::state::SessionSnapshot;
 
@@ -51,4 +51,5 @@ pub struct SubRunStatusSnapshot {
     pub result: Option<astrcode_core::SubRunResult>,
     pub step_count: Option<u32>,
     pub estimated_tokens: Option<u64>,
+    pub resolved_overrides: Option<ResolvedSubagentContextOverrides>,
 }

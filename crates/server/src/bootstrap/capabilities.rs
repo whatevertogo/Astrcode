@@ -7,7 +7,10 @@
 //! `CapabilitySurfaceSync` 负责在外部能力变化时重建整份 surface，
 //! 但始终保留稳定本地能力不被刷掉。
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::{Arc, RwLock},
+};
 
 use astrcode_adapter_skills::{LayeredSkillCatalog, load_builtin_skills};
 use astrcode_adapter_tools::{
@@ -122,6 +125,7 @@ pub(crate) struct CapabilitySurfaceSync {
     router: CapabilityRouter,
     kernel: Arc<Kernel>,
     tool_search_index: Arc<ToolSearchIndex>,
+    current_external_invokers: Arc<RwLock<Vec<Arc<dyn CapabilityInvoker>>>>,
 }
 
 impl CapabilitySurfaceSync {
@@ -135,6 +139,7 @@ impl CapabilitySurfaceSync {
             kernel,
             stable_local_invokers,
             tool_search_index,
+            current_external_invokers: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -148,7 +153,7 @@ impl CapabilitySurfaceSync {
         external_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     ) -> Result<()> {
         let mut invokers = self.stable_local_invokers.clone();
-        invokers.extend(external_invokers);
+        invokers.extend(external_invokers.clone());
         self.router.replace_invokers(invokers.clone())?;
         self.kernel
             .surface()
@@ -159,11 +164,23 @@ impl CapabilitySurfaceSync {
             .map(|invoker| invoker.capability_spec())
             .collect();
         self.tool_search_index.replace_from_specs(external_specs);
+        *self
+            .current_external_invokers
+            .write()
+            .expect("capability surface sync external invokers lock should not be poisoned") =
+            external_invokers;
         Ok(())
     }
 
     pub(crate) fn current_capabilities(&self) -> Vec<super::deps::core::CapabilitySpec> {
         self.kernel.surface().snapshot().capability_specs
+    }
+
+    pub(crate) fn current_external_invokers(&self) -> Vec<Arc<dyn CapabilityInvoker>> {
+        self.current_external_invokers
+            .read()
+            .expect("capability surface sync external invokers lock should not be poisoned")
+            .clone()
     }
 }
 
@@ -390,6 +407,14 @@ mod tests {
         assert_eq!(current_specs, previous_specs);
         let current_search = tool_search_index.search("demo", 10);
         assert_eq!(current_search, previous_search);
+        assert_eq!(sync.current_external_invokers().len(), 1);
+        assert_eq!(
+            sync.current_external_invokers()[0]
+                .capability_spec()
+                .name
+                .as_str(),
+            "mcp__demo__search"
+        );
     }
 
     #[test]

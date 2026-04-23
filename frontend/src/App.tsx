@@ -93,6 +93,7 @@ export default function App() {
   const {
     activeSubRunChildren,
     activeConversationControl,
+    activeConversationStepProgress,
     loadAndActivateSession,
     refreshSessions,
   } = useSessionCoordinator({
@@ -440,6 +441,7 @@ export default function App() {
           threadItems={threadItems}
           childSubRuns={activeSubRunChildren.subRuns}
           subRunViews={activeSubRunThreadTree?.subRuns ?? new Map()}
+          stepProgress={activeConversationStepProgress}
           contentFingerprint={contentFingerprint}
           contextValue={chatContextValue}
         />

@@ -504,7 +504,9 @@ impl TurnBuilder {
                     Some(message),
                 );
             },
-            StorageEventPayload::TurnDone { timestamp, reason } => {
+            StorageEventPayload::TurnDone {
+                timestamp, reason, ..
+            } => {
                 self.trace.completed_at = Some(timestamp);
                 self.trace.completion_reason = reason;
                 self.trace.incomplete = false;
@@ -978,10 +980,7 @@ mod tests {
                     payload: StorageEventPayload::SubRunStarted {
                         tool_call_id: Some("call-1".to_string()),
                         resolved_overrides: ResolvedSubagentContextOverrides::default(),
-                        resolved_limits: ResolvedExecutionLimitsSnapshot {
-                            allowed_tools: vec!["Read".to_string()],
-                            max_steps: Some(3),
-                        },
+                        resolved_limits: ResolvedExecutionLimitsSnapshot,
                         timestamp: Some(Utc.with_ymd_and_hms(2026, 4, 20, 8, 0, 0).unwrap()),
                     },
                 },

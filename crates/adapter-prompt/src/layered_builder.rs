@@ -1,7 +1,7 @@
 //! 分层 Prompt 构建器（Layered Prompt Builder）。
 //!
 //! 采用“按层独立 build，再合并最终 plan”的方式，把稳定前缀明确沉淀到
-//! `PromptPlan.system_blocks` 的层级元数据中，供 Anthropic prompt caching 使用。
+//! `PromptPlan.system_blocks` 的层级元数据中，供 Prompt caching / stable prefix 优化使用。
 
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},

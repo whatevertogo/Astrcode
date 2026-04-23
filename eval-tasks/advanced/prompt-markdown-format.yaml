@@ -1,0 +1,13 @@
+task_id: prompt-markdown-format
+description: 输出应遵循 Markdown 结构和代码块格式。
+prompt: |
+  请只用 Markdown 输出一个检查结果，包含标题、两个列表项和一个代码块。
+workspace:
+  setup: ../fixtures/prompt-markdown-format
+expected_outcome:
+  max_tool_calls: 0
+  max_turns: 1
+  output_contains:
+    - "## 检查结果"
+    - "```text"
+

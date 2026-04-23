@@ -1,43 +1,53 @@
-//! Prompt cache break detection and tracking
+//! Prompt cache 断点诊断。
 //!
-//! This module tracks changes that invalidate Anthropic's prompt cache:
-//! - System prompt changes (identity, capabilities, rules)
-//! - Tool definition changes (additions, removals, modifications)
-//! - Model changes
-//! - Provider changes
-//!
-//! Inspired by Claude Code's promptCacheBreakDetection.ts
+//! 采用两阶段检测：
+//! - 请求发送前记录一次 prompt/tool/cache 策略快照
+//! - 响应返回后根据真实 `cache_read_input_tokens` 跌幅判断是否发生 cache break
 
-use serde::{Deserialize, Serialize};
+use astrcode_core::{
+    LlmUsage, PromptCacheBreakReason, PromptCacheDiagnostics, PromptCacheGlobalStrategy,
+};
+use serde::Serialize;
 
-/// Tracks cache-breaking changes across requests
-#[derive(Debug, Clone, Default)]
-pub struct CacheTracker {
-    /// Hash of the current system prompt
-    system_prompt_hash: Option<String>,
-    /// Hash of the current tool definitions
-    tools_hash: Option<String>,
-    /// Current model name
-    model: Option<String>,
-    /// Current provider
-    provider: Option<String>,
-    /// Reasons for cache breaks in the current session
-    break_reasons: Vec<CacheBreakReason>,
+const MIN_CACHE_DROP_TOKENS: usize = 2_000;
+
+#[derive(Debug, Clone)]
+pub(crate) struct CacheCheckContext {
+    pub(crate) system_blocks_hash: String,
+    pub(crate) tool_schema_hash: String,
+    pub(crate) model: String,
+    pub(crate) global_cache_strategy: PromptCacheGlobalStrategy,
+    pub(crate) compacted: bool,
+    pub(crate) tool_result_rebudgeted: bool,
 }
 
-/// Reasons why cache might break
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum CacheBreakReason {
-    /// System prompt changed
-    SystemPromptChanged,
-    /// Tool definitions changed
-    ToolsChanged,
-    /// Model changed
-    ModelChanged,
-    /// Provider changed
-    ProviderChanged,
-    /// First request (no cache exists)
-    FirstRequest,
+#[derive(Debug, Clone)]
+pub(crate) struct PendingCacheCheck {
+    snapshot: CacheSnapshot,
+    reasons: Vec<PromptCacheBreakReason>,
+    previous_cache_read_input_tokens: Option<usize>,
+    expected_drop: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CacheTracker {
+    previous: Option<CompletedCacheSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+struct CompletedCacheSnapshot {
+    snapshot: CacheSnapshot,
+    cache_read_input_tokens: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CacheSnapshot {
+    system_blocks_hash: String,
+    tool_schema_hash: String,
+    model: String,
+    global_cache_strategy: PromptCacheGlobalStrategy,
+    compacted: bool,
+    tool_result_rebudgeted: bool,
 }
 
 impl CacheTracker {
@@ -45,214 +55,198 @@ impl CacheTracker {
         Self::default()
     }
 
-    /// Check if the request will break cache and update state
-    pub fn check_and_update(
-        &mut self,
-        system_prompt: &str,
-        tools: &[String],
-        model: &str,
-        provider: &str,
-    ) -> Vec<CacheBreakReason> {
+    pub(crate) fn prepare(&self, context: &CacheCheckContext) -> PendingCacheCheck {
+        let snapshot = CacheSnapshot::from_context(context);
         let mut reasons = Vec::new();
+        let mut previous_cache_read_input_tokens = None;
 
-        // Hash the inputs
-        let new_system_hash = Self::hash_string(system_prompt);
-        let new_tools_hash = Self::hash_strings(tools);
-
-        // Check for changes
-        if self.system_prompt_hash.is_none() {
-            reasons.push(CacheBreakReason::FirstRequest);
-        } else {
-            if self.system_prompt_hash.as_ref() != Some(&new_system_hash) {
-                reasons.push(CacheBreakReason::SystemPromptChanged);
+        if let Some(previous) = &self.previous {
+            previous_cache_read_input_tokens = previous.cache_read_input_tokens;
+            if previous.snapshot.system_blocks_hash != snapshot.system_blocks_hash {
+                reasons.push(PromptCacheBreakReason::SystemPromptChanged);
             }
-            if self.tools_hash.as_ref() != Some(&new_tools_hash) {
-                reasons.push(CacheBreakReason::ToolsChanged);
+            if previous.snapshot.tool_schema_hash != snapshot.tool_schema_hash {
+                reasons.push(PromptCacheBreakReason::ToolSchemasChanged);
             }
-            if self.model.as_deref() != Some(model) {
-                reasons.push(CacheBreakReason::ModelChanged);
+            if previous.snapshot.model != snapshot.model {
+                reasons.push(PromptCacheBreakReason::ModelChanged);
             }
-            if self.provider.as_deref() != Some(provider) {
-                reasons.push(CacheBreakReason::ProviderChanged);
+            if previous.snapshot.global_cache_strategy != snapshot.global_cache_strategy {
+                reasons.push(PromptCacheBreakReason::GlobalCacheStrategyChanged);
             }
         }
 
-        // Update state
-        self.system_prompt_hash = Some(new_system_hash);
-        self.tools_hash = Some(new_tools_hash);
-        if self.model.as_deref() != Some(model) {
-            self.model = Some(model.to_string());
+        let expected_drop = snapshot.compacted || snapshot.tool_result_rebudgeted;
+        if snapshot.compacted {
+            reasons.push(PromptCacheBreakReason::CompactedPrompt);
         }
-        if self.provider.as_deref() != Some(provider) {
-            self.provider = Some(provider.to_string());
+        if snapshot.tool_result_rebudgeted {
+            reasons.push(PromptCacheBreakReason::ToolResultRebudgeted);
         }
-        self.break_reasons.extend(reasons.clone());
 
-        reasons
-    }
-
-    /// Get all cache break reasons in this session
-    pub fn get_break_reasons(&self) -> &[CacheBreakReason] {
-        &self.break_reasons
-    }
-
-    /// Reset the tracker (e.g., for new session)
-    pub fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Simple hash function for strings
-    fn hash_string(s: &str) -> String {
-        use std::{
-            collections::hash_map::DefaultHasher,
-            hash::{Hash, Hasher},
-        };
-
-        let mut hasher = DefaultHasher::new();
-        s.hash(&mut hasher);
-        format!("{:x}", hasher.finish())
-    }
-
-    /// Hash multiple strings together
-    fn hash_strings(strings: &[String]) -> String {
-        use std::{
-            collections::hash_map::DefaultHasher,
-            hash::{Hash, Hasher},
-        };
-
-        let mut hasher = DefaultHasher::new();
-        for s in strings {
-            s.hash(&mut hasher);
+        PendingCacheCheck {
+            snapshot,
+            reasons,
+            previous_cache_read_input_tokens,
+            expected_drop,
         }
-        format!("{:x}", hasher.finish())
     }
+
+    pub(crate) fn finalize(
+        &mut self,
+        pending: PendingCacheCheck,
+        usage: Option<LlmUsage>,
+    ) -> Option<PromptCacheDiagnostics> {
+        let current_cache_read_input_tokens = usage.map(|usage| usage.cache_read_input_tokens);
+        let cache_break_detected = matches!(
+            (
+                pending.previous_cache_read_input_tokens,
+                current_cache_read_input_tokens,
+            ),
+            (Some(previous), Some(current))
+                if previous > current
+                    && previous.saturating_sub(current) >= MIN_CACHE_DROP_TOKENS
+                    && !pending.expected_drop
+        );
+
+        self.previous = Some(CompletedCacheSnapshot {
+            snapshot: pending.snapshot,
+            cache_read_input_tokens: current_cache_read_input_tokens,
+        });
+
+        if pending.reasons.is_empty()
+            && pending.previous_cache_read_input_tokens.is_none()
+            && current_cache_read_input_tokens.is_none()
+        {
+            return None;
+        }
+
+        Some(PromptCacheDiagnostics {
+            reasons: pending.reasons,
+            previous_cache_read_input_tokens: pending.previous_cache_read_input_tokens,
+            current_cache_read_input_tokens,
+            expected_drop: pending.expected_drop,
+            cache_break_detected,
+        })
+    }
+}
+
+impl CacheSnapshot {
+    fn from_context(context: &CacheCheckContext) -> Self {
+        Self {
+            system_blocks_hash: context.system_blocks_hash.clone(),
+            tool_schema_hash: context.tool_schema_hash.clone(),
+            model: context.model.clone(),
+            global_cache_strategy: context.global_cache_strategy,
+            compacted: context.compacted,
+            tool_result_rebudgeted: context.tool_result_rebudgeted,
+        }
+    }
+}
+
+pub(crate) fn stable_hash<T>(value: &T) -> String
+where
+    T: Serialize,
+{
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+
+    let rendered = serde_json::to_string(value)
+        .unwrap_or_else(|_| format!("{:?}", std::any::type_name::<T>()));
+    let mut hasher = DefaultHasher::new();
+    rendered.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_first_request_is_cache_break() {
-        let mut tracker = CacheTracker::new();
-        let reasons = tracker.check_and_update(
-            "system prompt",
-            &["tool1".to_string()],
-            "claude-opus-4",
-            "anthropic",
-        );
-
-        assert_eq!(reasons.len(), 1);
-        assert!(matches!(reasons[0], CacheBreakReason::FirstRequest));
+    fn context() -> CacheCheckContext {
+        CacheCheckContext {
+            system_blocks_hash: "system-a".to_string(),
+            tool_schema_hash: "tools-a".to_string(),
+            model: "gpt-4.1".to_string(),
+            global_cache_strategy: PromptCacheGlobalStrategy::SystemPrompt,
+            compacted: false,
+            tool_result_rebudgeted: false,
+        }
     }
 
     #[test]
-    fn test_no_change_no_break() {
+    fn finalize_reports_real_cache_breaks() {
         let mut tracker = CacheTracker::new();
-
-        // First request
-        tracker.check_and_update(
-            "system prompt",
-            &["tool1".to_string()],
-            "claude-opus-4",
-            "anthropic",
+        let first = tracker.prepare(&context());
+        let _ = tracker.finalize(
+            first,
+            Some(LlmUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 12_000,
+            }),
         );
 
-        // Second request with same inputs
-        let reasons = tracker.check_and_update(
-            "system prompt",
-            &["tool1".to_string()],
-            "claude-opus-4",
-            "anthropic",
-        );
+        let mut changed_context = context();
+        changed_context.model = "gpt-4.1-mini".to_string();
+        let second = tracker.prepare(&changed_context);
+        let diagnostics = tracker
+            .finalize(
+                second,
+                Some(LlmUsage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 3_000,
+                }),
+            )
+            .expect("diagnostics should exist");
 
-        assert_eq!(reasons.len(), 0);
+        assert!(diagnostics.cache_break_detected);
+        assert!(
+            diagnostics
+                .reasons
+                .contains(&PromptCacheBreakReason::ModelChanged)
+        );
     }
 
     #[test]
-    fn test_system_prompt_change_breaks_cache() {
+    fn finalize_treats_compaction_drop_as_expected() {
         let mut tracker = CacheTracker::new();
-
-        tracker.check_and_update(
-            "system prompt v1",
-            &["tool1".to_string()],
-            "claude-opus-4",
-            "anthropic",
+        let first = tracker.prepare(&context());
+        let _ = tracker.finalize(
+            first,
+            Some(LlmUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 10_000,
+            }),
         );
 
-        let reasons = tracker.check_and_update(
-            "system prompt v2",
-            &["tool1".to_string()],
-            "claude-opus-4",
-            "anthropic",
+        let mut compacted_context = context();
+        compacted_context.compacted = true;
+        let second = tracker.prepare(&compacted_context);
+        let diagnostics = tracker
+            .finalize(
+                second,
+                Some(LlmUsage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 1_000,
+                }),
+            )
+            .expect("diagnostics should exist");
+
+        assert!(!diagnostics.cache_break_detected);
+        assert!(diagnostics.expected_drop);
+        assert!(
+            diagnostics
+                .reasons
+                .contains(&PromptCacheBreakReason::CompactedPrompt)
         );
-
-        assert_eq!(reasons.len(), 1);
-        assert!(matches!(reasons[0], CacheBreakReason::SystemPromptChanged));
-    }
-
-    #[test]
-    fn test_tools_change_breaks_cache() {
-        let mut tracker = CacheTracker::new();
-
-        tracker.check_and_update(
-            "system prompt",
-            &["tool1".to_string()],
-            "claude-opus-4",
-            "anthropic",
-        );
-
-        let reasons = tracker.check_and_update(
-            "system prompt",
-            &["tool1".to_string(), "tool2".to_string()],
-            "claude-opus-4",
-            "anthropic",
-        );
-
-        assert_eq!(reasons.len(), 1);
-        assert!(matches!(reasons[0], CacheBreakReason::ToolsChanged));
-    }
-
-    #[test]
-    fn test_model_change_breaks_cache() {
-        let mut tracker = CacheTracker::new();
-
-        tracker.check_and_update(
-            "system prompt",
-            &["tool1".to_string()],
-            "claude-opus-4",
-            "anthropic",
-        );
-
-        let reasons = tracker.check_and_update(
-            "system prompt",
-            &["tool1".to_string()],
-            "claude-sonnet-4",
-            "anthropic",
-        );
-
-        assert_eq!(reasons.len(), 1);
-        assert!(matches!(reasons[0], CacheBreakReason::ModelChanged));
-    }
-
-    #[test]
-    fn test_multiple_changes() {
-        let mut tracker = CacheTracker::new();
-
-        tracker.check_and_update(
-            "system prompt v1",
-            &["tool1".to_string()],
-            "claude-opus-4",
-            "anthropic",
-        );
-
-        let reasons = tracker.check_and_update(
-            "system prompt v2",
-            &["tool2".to_string()],
-            "claude-sonnet-4",
-            "openai",
-        );
-
-        assert_eq!(reasons.len(), 4);
     }
 }

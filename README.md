@@ -12,11 +12,11 @@
 
 ## 功能特性
 
-- **多模型支持**：支持 Anthropic Claude、OpenAI 兼容 API（DeepSeek、OpenAI 等），运行时切换 Profile 和 Model
+- **多模型支持**：统一走 OpenAI 家族接口，支持 OpenAI Responses、OpenAI Chat Completions 与兼容网关（DeepSeek 等），运行时切换 Profile 和 Model
 - **流式响应**：实时显示 AI 生成的代码和文本，支持 thinking 内容展示
 - **内置工具集**：文件读写、编辑、搜索、Shell 执行、Skill 加载等
 - **Agent 协作**：支持主/子 Agent 模式，内置 spawn / send / observe / close 工具链
-- **Skill 系统**：Claude 风格两阶段 Skill 加载，支持项目级、用户级和内置 Skill
+- **Skill 系统**：Claude 风格两阶段 Skill 加载，支持 builtin / MCP / plugin / 用户级 / 项目级多层覆盖
 - **MCP 支持**：完整的 Model Context Protocol 接入，支持 stdio / HTTP / SSE 传输
 - **插件系统**：基于 stdio JSON-RPC 的插件扩展，提供 Rust SDK(未完善)
 - **会话管理**：多会话切换、按项目分组、事件溯源持久化、会话历史浏览
@@ -79,7 +79,7 @@ npm install
 cd frontend && npm install
 
 # 运行桌面端
-cargo tauri dev
+npm run dev:tauri
 
 # 或单独运行服务端 / CLI
 cargo run -p astrcode-server
@@ -120,7 +120,7 @@ cd frontend && npm install
 
 ```bash
 # 桌面端开发（推荐）
-cargo tauri dev
+npm run dev:tauri
 
 # 只启动前端
 cd frontend && npm run dev
@@ -135,7 +135,7 @@ cargo run -p astrcode-server
 
 ```bash
 # 桌面端构建
-cargo tauri build
+npm run build
 
 # 浏览器端构建
 cd frontend && npm run build
@@ -147,6 +147,7 @@ cd frontend && npm run build
 
 当前仓库已经先补齐 release、安装入口和维护文档；桌面端/终端的正式截图与 GIF 会在下一轮产品化迭代补上。
 
+![AstrCode Icon](src-tauri/icons/icon.png)
 
 ## 配置
 
@@ -161,9 +162,10 @@ cd frontend && npm run build
   "profiles": [
     {
       "name": "deepseek",
-      "providerKind": "openai-compatible",
+      "providerKind": "openai",
       "baseUrl": "https://api.deepseek.com",
       "apiKey": "env:DEEPSEEK_API_KEY",
+      "apiMode": "chat_completions",
       "models": [
         {
           "id": "deepseek-chat",
@@ -190,8 +192,9 @@ cd frontend && npm run build
 
 `models` 为对象列表，每个模型需要配置 `maxTokens` 和 `contextLimit`：
 
-- **OpenAI-compatible profile**：手动设置 `maxTokens` 和 `contextLimit`
-- **Anthropic profile**：`contextLimit` 默认 200,000，`maxTokens` 默认 8,192；若配置中显式设置了这些值则使用配置值
+- **OpenAI profile**：统一使用 `providerKind: "openai"`
+- **`apiMode: "chat_completions"`**：适合 DeepSeek 等 OpenAI 兼容网关
+- **`apiMode: "responses"`**：适合 OpenAI 官方原生 Responses API
 
 ### 多 Profile 配置
 
@@ -202,26 +205,21 @@ cd frontend && npm run build
   "profiles": [
     {
       "name": "deepseek",
-      "providerKind": "openai-compatible",
+      "providerKind": "openai",
       "baseUrl": "https://api.deepseek.com",
       "apiKey": "env:DEEPSEEK_API_KEY",
+      "apiMode": "chat_completions",
       "models": [{ "id": "deepseek-chat", "maxTokens": 8096, "contextLimit": 128000 }]
     },
     {
-      "name": "anthropic",
-      "providerKind": "anthropic",
-      "baseUrl": "https://api.anthropic.com",
-      "apiKey": "env:ANTHROPIC_API_KEY",
-      "models": [{ "id": "claude-sonnet-4-5-20250514" }]
-    },
-    {
       "name": "openai",
-      "providerKind": "openai-compatible",
-      "baseUrl": "https://api.openai.com",
+      "providerKind": "openai",
+      "baseUrl": "https://api.openai.com/v1",
       "apiKey": "env:OPENAI_API_KEY",
+      "apiMode": "responses",
       "models": [
-        { "id": "gpt-4o", "maxTokens": 16384, "contextLimit": 200000 },
-        { "id": "gpt-4o-mini", "maxTokens": 16384, "contextLimit": 128000 }
+        { "id": "gpt-4.1", "maxTokens": 32768, "contextLimit": 128000 },
+        { "id": "gpt-4.1-mini", "maxTokens": 32768, "contextLimit": 128000 }
       ]
     }
   ]
@@ -260,7 +258,7 @@ cd frontend && npm run build
 | Home / 测试隔离 | `ASTRCODE_TEST_HOME` | 为测试隔离临时 home 目录 |
 | Plugin | `ASTRCODE_PLUGIN_DIRS` | 追加插件发现目录，按系统路径分隔符解析 |
 | Provider 默认值 | `DEEPSEEK_API_KEY` | DeepSeek 默认 profile 的 API Key |
-| Provider 默认值 | `ANTHROPIC_API_KEY` | Anthropic 默认 profile 的 API Key |
+| Provider 默认值 | `OPENAI_API_KEY` | OpenAI 默认 profile 的 API Key |
 | Runtime | `ASTRCODE_MAX_TOOL_CONCURRENCY` | 并发工具上限兜底 |
 | Build / Tauri | `TAURI_ENV_TARGET_TRIPLE` | 构建 sidecar 时指定目标 triple |
 
@@ -276,7 +274,7 @@ AstrCode/
 │   ├── application/          # 用例编排、执行控制、治理与观测
 │   ├── server/               # Axum HTTP/SSE 边界与唯一组合根
 │   ├── adapter-storage/      # JSONL 事件日志持久化与文件系统存储
-│   ├── adapter-llm/          # LLM provider（Anthropic / OpenAI-compatible）
+│   ├── adapter-llm/          # LLM provider（OpenAI Responses / Chat Completions）
 │   ├── adapter-prompt/       # Prompt 组装（贡献者模式 + 分层缓存构建）
 │   ├── adapter-tools/        # 内置工具定义与 Agent 协作工具
 │   ├── adapter-skills/       # Skill 发现、解析、物化与目录管理
@@ -343,7 +341,7 @@ AstrCode/
 ### Agent 协作
 
 - 内置 Agent profile：explore、reviewer、execute
-- Agent 文件来源：builtin + 用户级（`~/.astrcode/agents`）+ 项目级（`.astrcode/agents`，祖先链扫描）
+- Agent 文件来源：builtin + 用户级（`~/.claude/agents`、`~/.astrcode/agents`）+ 项目级（祖先链上的 `.claude/agents`、`.astrcode/agents`）
 - 子 Agent spawn 时按 task-scoped capability grant 裁剪能力面
 - Agent 工具链：`spawn` -> `send` -> `observe` -> `close` 全生命周期管理
 
@@ -351,7 +349,12 @@ AstrCode/
 
 - 两阶段加载：system prompt 先展示 skill 索引，命中后再调用 `Skill` tool 加载完整 `SKILL.md`
 - 目录格式：`skill-name/SKILL.md`（Markdown + YAML frontmatter）
-- 加载来源：builtin（运行时物化到 `~/.astrcode/runtime/builtin-skills/`）+ 项目级 + 用户级
+- 加载来源：
+  - builtin（运行时物化到 `~/.astrcode/runtime/builtin-skills/`）
+  - base external skills：MCP + plugin
+  - 用户级（`~/.claude/skills/`、`~/.astrcode/skills/`）
+  - 项目级（祖先链上的 `.claude/skills/`、`.astrcode/skills/`）
+- 覆盖优先级：`builtin < mcp < plugin < user < project`
 - 资产目录（`references/`、`scripts/`）随 skill 一起索引
 
 ### MCP 支持
@@ -363,8 +366,9 @@ AstrCode/
 
 ### 插件系统
 
-- 基于 stdio JSON-RPC 双向通信
-- 插件生命周期管理（discovered -> loaded -> failed -> disabled）
+- 基于 stdio 双向通信
+- 插件生命周期状态机：`Discovered -> Initialized / Failed`
+- 健康状态独立维护：`Unknown / Healthy / Degraded / Unavailable`
 - 能力路由与权限检查
 - 流式执行支持
 - 提供 Rust SDK（`crates/sdk`），包含 `ToolHandler`、`HookRegistry`、`PluginContext`、`StreamWriter`
@@ -403,39 +407,74 @@ Tauri 仅作为"薄壳"，负责：
 
 | 端点 | 方法 | 描述 |
 |------|------|------|
-| `/api/auth/exchange` | POST | Token 认证交换 |
-| `/api/sessions` | GET/POST | 会话列表/创建 |
-| `/api/sessions/{id}/messages` | GET | 获取会话消息 |
-| `/api/sessions/{id}/prompts` | POST | 提交 prompt（支持 `tokenBudget` / `maxSteps` / `manualCompact` 执行控制） |
-| `/api/sessions/{id}/interrupt` | POST | 中断会话 |
-| `/api/sessions/{id}/events` | GET (SSE) | 实时事件流 |
-| `/api/sessions/{id}` | DELETE | 删除会话 |
-| `/api/projects` | DELETE | 删除项目（所有会话） |
-| `/api/config` | GET | 获取配置 |
-| `/api/config/reload` | POST | 统一治理重载 |
-| `/api/config/active-selection` | POST | 保存当前选择 |
-| `/api/models/current` | GET | 当前模型信息 |
-| `/api/models` | GET | 可用模型列表 |
-| `/api/models/test` | POST | 测试模型连接 |
-| `/api/runtime/plugins` | GET | 插件运行状态 |
-| `/api/runtime/plugins/reload` | POST | 重新加载插件 |
+| `/api/auth/exchange` | POST | 用 bootstrap token 换取 API 会话 token |
+| `/api/sessions` | GET / POST | 列出所有会话，或创建新会话 |
+| `/api/modes` | GET | 列出所有可用治理 mode |
+| `/api/session-events` | GET (SSE) | 订阅会话目录事件流 |
+| `/api/sessions/{id}/composer/options` | GET | 获取输入框候选项 |
+| `/api/sessions/{id}/prompts` | POST | 向会话提交用户提示 |
+| `/api/sessions/{id}/compact` | POST | 手动触发会话上下文压缩 |
+| `/api/sessions/{id}/fork` | POST | 从稳定前缀 fork 新会话 |
+| `/api/sessions/{id}/interrupt` | POST | 中断当前会话执行 |
+| `/api/sessions/{id}/mode` | GET / POST | 查询或切换当前 session mode |
+| `/api/sessions/{id}` | DELETE | 删除单个会话 |
+| `/api/projects` | DELETE | 删除整个项目下的所有会话 |
+| `/api/v1/conversation/sessions/{id}/snapshot` | GET | 获取 authoritative conversation snapshot |
+| `/api/v1/conversation/sessions/{id}/stream` | GET (SSE) | 订阅 authoritative conversation delta 流 |
+| `/api/v1/conversation/sessions/{id}/slash-candidates` | GET | 获取 slash candidates |
+| `/api/config` | GET | 获取当前配置视图 |
+| `/api/config/reload` | POST | 通过治理入口重载配置、MCP、plugin 和统一 capability surface |
+| `/api/config/active-selection` | POST | 保存当前激活的 profile / model 选择 |
+| `/api/models/current` | GET | 获取当前激活的模型信息 |
+| `/api/models` | GET | 列出所有可用模型选项 |
+| `/api/models/test` | POST | 测试指定模型连接 |
+| `/api/logs` | POST | 前端日志上报 |
+| `/api/v1/agents` | GET | 列出可用 Agent Profiles |
+| `/api/v1/agents/{id}/execute` | POST | 创建 root execution 并返回 session / turn 标识 |
+| `/api/v1/sessions/{id}/subruns/{sub_run_id}` | GET | 查询子会话执行状态 |
+| `/api/v1/sessions/{id}/agents/{agent_id}/close` | POST | 关闭 agent 及其子树 |
+| `/api/mcp/status` | GET | 获取 MCP 运行状态 |
+| `/api/mcp/approve` | POST | 批准待接入的 MCP server |
+| `/api/mcp/reject` | POST | 拒绝待接入的 MCP server |
+| `/api/mcp/reconnect` | POST | 重连 MCP server |
+| `/api/mcp/reset-project-choices` | POST | 重置项目级 MCP 选择 |
+| `/api/mcp/server` | POST | 新增或更新 MCP server 配置 |
+| `/api/mcp/server/remove` | POST | 删除 MCP server 配置 |
+| `/api/mcp/server/enabled` | POST | 启用或禁用 MCP server |
+
 
 ### SSE 事件
 
-通过 Server-Sent Events 推送实时更新：
+Server 当前有两类 SSE 流：
 
-| 事件 | 描述 |
+#### 1. 会话目录事件流
+
+- 端点：`GET /api/session-events`
+- 用途：推送会话目录级变化（会话创建、更新、删除等）
+- 载荷：`SessionCatalogEventEnvelope`
+- SSE event name：正常目录事件由后端映射为目录事件信封；流关闭时会额外发送 `error`
+
+#### 2. Authoritative Conversation Delta 流
+
+- 端点：`GET /api/v1/conversation/sessions/{id}/stream`
+- 用途：推送单个会话的 authoritative hydration / delta 更新
+- 载荷：`ConversationStreamEnvelopeDto`
+- SSE event name：固定为 `message`
+
+`ConversationStreamEnvelopeDto` 的 `delta.kind` 当前包括：
+
+| kind | 描述 |
 |------|------|
-| `phaseChanged` | 阶段变化（idle/thinking/streaming/callingTool） |
-| `modelDelta` | 流式文本片段 |
-| `thinkingDelta` | 推理内容片段 |
-| `assistantMessage` | 最终助手消息 |
-| `toolCallStart` | 工具调用开始 |
-| `toolCallResult` | 工具调用结果 |
-| `promptMetrics` | 回合级 token / 缓存命中率指标 |
-| `compactApplied` | 上下文压缩完成，携带压缩摘要信息 |
-| `turnDone` | 对话回合结束 |
-| `error` | 错误信息 |
+| `append_block` | 追加新的 conversation block |
+| `patch_block` | 对已有 block 做增量更新 |
+| `complete_block` | 将 block 标记为完成 / 失败 / 取消 |
+| `update_control_state` | 更新控制态（phase / mode 等） |
+| `upsert_child_summary` | 新增或更新子 Agent 摘要 |
+| `remove_child_summary` | 移除子 Agent 摘要 |
+| `replace_slash_candidates` | 替换 slash candidates |
+| `set_banner` | 设置顶部 banner |
+| `clear_banner` | 清除顶部 banner |
+| `rehydrate_required` | 提示前端执行重新拉取 / 重建视图 |
 
 ## 开发指南
 

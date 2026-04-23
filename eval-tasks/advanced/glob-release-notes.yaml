@@ -1,0 +1,14 @@
+task_id: glob-release-notes
+description: 通过 Glob 找到最新的发布说明文件。
+prompt: |
+  请用 Glob 查看 notes 目录，告诉我最新的发布说明文件名。
+workspace:
+  setup: ../fixtures/glob-release-notes
+expected_outcome:
+  tool_pattern:
+    - Glob
+  max_tool_calls: 1
+  max_turns: 1
+  output_contains:
+    - 2026-04.md
+

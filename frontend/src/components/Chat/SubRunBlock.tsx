@@ -15,7 +15,6 @@ import {
   pillDanger,
   pillNeutral,
   pillSuccess,
-  pillWarning,
   subtleActionButton,
 } from '../../lib/styles';
 
@@ -42,7 +41,7 @@ interface SubRunBlockProps {
   displayMode?: 'thread' | 'directory';
 }
 
-type SubRunStatus = 'running' | 'completed' | 'cancelled' | 'token_exceeded' | 'failed';
+type SubRunStatus = 'running' | 'completed' | 'cancelled' | 'failed';
 
 function toSubRunStatus(finishMessage?: SubRunFinishMessage): SubRunStatus {
   return finishMessage?.result.status ?? 'running';
@@ -51,24 +50,20 @@ function toSubRunStatus(finishMessage?: SubRunFinishMessage): SubRunStatus {
 function getStatusLabel(status: SubRunStatus): string {
   switch (status) {
     case 'completed':
-      return 'completed';
+      return '已完成';
     case 'cancelled':
-      return 'cancelled';
-    case 'token_exceeded':
-      return 'token exceeded';
+      return '已取消';
     case 'failed':
-      return 'failed';
+      return '失败';
     case 'running':
     default:
-      return 'running';
+      return '运行中';
   }
 }
 
 function getStorageModeLabel(startMessage?: SubRunStartMessage, childSessionId?: string): string {
   const storageMode = startMessage?.resolvedOverrides.storageMode ?? startMessage?.storageMode;
-  return storageMode === 'independentSession' || childSessionId
-    ? 'independent session'
-    : 'independent session';
+  return storageMode === 'independentSession' || childSessionId ? '独立会话' : '独立会话';
 }
 
 function getStatusVariant(status: SubRunStatus): string {
@@ -77,8 +72,6 @@ function getStatusVariant(status: SubRunStatus): string {
       return pillSuccess;
     case 'cancelled':
       return pillNeutral;
-    case 'token_exceeded':
-      return pillWarning;
     case 'failed':
       return pillDanger;
     case 'running':
@@ -115,7 +108,7 @@ function getResultFailure(result?: SubRunResult) {
 }
 
 function isSuccessfulTerminalStatus(status: SubRunStatus): boolean {
-  return status === 'completed' || status === 'token_exceeded';
+  return status === 'completed';
 }
 
 function SubRunBlock({
@@ -138,7 +131,6 @@ function SubRunBlock({
   const [userInteracted, setUserInteracted] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const detailsRef = useRef<HTMLDetailsElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const previousFingerprintRef = useRef('');
@@ -158,7 +150,7 @@ function SubRunBlock({
   const isBackgroundRunning = status === 'running';
   const navigationLabel =
     childSessionId !== undefined
-      ? '打开独立会话'
+      ? '打开子会话'
       : displayMode === 'directory'
         ? '进入子执行'
         : '查看子执行';
@@ -173,8 +165,11 @@ function SubRunBlock({
       : childSessionId
         ? '这是独立子会话，请打开会话查看完整输出。'
         : '这是独立子会话；如果还没有会话入口，请稍后再查看。');
-  const shouldAutoOpen = !userInteracted && isBackgroundRunning;
+  const hasRenderableContent =
+    Boolean(resultFailure) || Boolean(latestDeliveryMessage) || activityItems.length > 0;
+  const shouldAutoOpen = !userInteracted && (isBackgroundRunning || hasRenderableContent);
   const cancelTargetAgentId = startMessage?.agentId ?? subRunId;
+  const [isOpen, setIsOpen] = useState(isBackgroundRunning || hasRenderableContent);
 
   const updateStreamStickiness = useCallback(() => {
     const container = streamRef.current;
@@ -233,12 +228,11 @@ function SubRunBlock({
     if (!shouldAutoOpen) {
       return;
     }
-    const details = detailsRef.current;
-    if (!details || details.open) {
+    if (isOpen) {
       return;
     }
-    details.open = true;
-  }, [shouldAutoOpen]);
+    setIsOpen(true);
+  }, [isOpen, shouldAutoOpen]);
 
   const handleCancel = useCallback(async () => {
     if (!sessionId || cancelling) {
@@ -330,8 +324,8 @@ function SubRunBlock({
           <div className="py-1 text-text-secondary text-xs leading-relaxed">
             {childSessionId
               ? isBackgroundRunning
-                ? '该子 Agent 运行在独立会话中；请点击"打开独立会话"查看实时输出。'
-                : '该子 Agent 的完整输出保存在独立会话中；请点击"打开独立会话"查看。'
+                ? '该子 Agent 运行在独立会话中；请点击"打开子会话"查看实时输出。'
+                : '该子 Agent 的完整输出保存在独立会话中；请点击"打开子会话"查看。'
               : isBackgroundRunning
                 ? '独立子会话正在初始化；会话入口就绪后可直接打开查看。'
                 : '该子执行没有生成可直接展示的内联输出。'}
@@ -396,11 +390,12 @@ function SubRunBlock({
 
   return (
     <details
-      ref={detailsRef}
       className="group mb-1.5 ml-[var(--chat-assistant-content-offset)] block min-w-0 max-w-full animate-block-enter motion-reduce:animate-none"
+      open={isOpen}
       onToggle={(event) => {
         if (event.target === event.currentTarget && event.nativeEvent.isTrusted) {
           setUserInteracted(true);
+          setIsOpen(event.currentTarget.open);
         }
       }}
     >
@@ -434,67 +429,48 @@ function SubRunBlock({
       <div
         className={cn(expandableBody, 'min-w-0 max-w-full overflow-x-hidden flex flex-col gap-3')}
       >
-        {displayMode === 'directory' ? (
-          <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div className="flex-1 basis-[260px] min-w-0 text-[13px] leading-relaxed text-text-secondary whitespace-pre-wrap overflow-wrap-anywhere">
-              {activitySummary}
+        {renderToolbar()}
+        {cancelError && (
+          <div className="text-danger text-xs leading-relaxed font-mono whitespace-pre-wrap overflow-wrap-anywhere">
+            {cancelError}
+          </div>
+        )}
+        {resultFailure && (
+          <div className="flex flex-col gap-2">
+            <div className="text-xs font-semibold text-danger">执行失败</div>
+            <div className="text-[13px] leading-relaxed text-text-primary whitespace-pre-wrap overflow-wrap-anywhere">
+              {resultFailure.displayMessage}
             </div>
-            {(onFocusSubRun || (childSessionId && onOpenChildSession)) && (
-              <button
-                type="button"
-                className={cn(infoButton, 'min-h-[30px]')}
-                onClick={() => void handleOpenView()}
-              >
-                {navigationLabel}
-              </button>
+            {resultFailure.technicalMessage && (
+              <details className="m-0 bg-transparent border-none group">
+                <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
+                  <span>技术详情</span>
+                  <span className={chevronIcon}>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="9 18 15 12 9 6"></polyline>
+                    </svg>
+                  </span>
+                </summary>
+                <div className="mt-2 mb-2">
+                  <div className="text-danger text-xs leading-relaxed font-mono whitespace-pre-wrap overflow-wrap-anywhere">
+                    {resultFailure.technicalMessage}
+                  </div>
+                </div>
+              </details>
             )}
           </div>
-        ) : (
-          <>
-            {renderToolbar()}
-            {cancelError && (
-              <div className="text-danger text-xs leading-relaxed font-mono whitespace-pre-wrap overflow-wrap-anywhere">
-                {cancelError}
-              </div>
-            )}
-            {resultFailure && (
-              <div className="flex flex-col gap-2">
-                <div className="text-xs font-semibold text-danger">执行失败</div>
-                <div className="text-[13px] leading-relaxed text-text-primary whitespace-pre-wrap overflow-wrap-anywhere">
-                  {resultFailure.displayMessage}
-                </div>
-                {resultFailure.technicalMessage && (
-                  <details className="m-0 bg-transparent border-none group">
-                    <summary className="inline-flex items-center gap-2 py-1 min-h-[24px] cursor-pointer select-none bg-transparent border-none text-text-secondary transition-opacity duration-150 ease-out text-sm font-medium list-none [&::-webkit-details-marker]:hidden hover:opacity-80">
-                      <span>技术详情</span>
-                      <span className={chevronIcon}>
-                        <svg
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="9 18 15 12 9 6"></polyline>
-                        </svg>
-                      </span>
-                    </summary>
-                    <div className="mt-2 mb-2">
-                      <div className="text-danger text-xs leading-relaxed font-mono whitespace-pre-wrap overflow-wrap-anywhere">
-                        {resultFailure.technicalMessage}
-                      </div>
-                    </div>
-                  </details>
-                )}
-              </div>
-            )}
-            {renderFinalReply()}
-            {renderActivity()}
-          </>
         )}
+        {renderFinalReply()}
+        {renderActivity()}
       </div>
     </details>
   );

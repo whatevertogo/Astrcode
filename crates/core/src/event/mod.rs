@@ -30,7 +30,7 @@ pub use self::{
     translate::{EventTranslator, replay_records},
     types::{
         CompactAppliedMeta, CompactMode, CompactTrigger, PromptMetricsPayload, StorageEvent,
-        StorageEventPayload, StoredEvent,
+        StorageEventPayload, StoredEvent, TurnTerminalKind,
     },
 };
 

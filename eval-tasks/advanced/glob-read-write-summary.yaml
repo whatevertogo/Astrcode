@@ -1,0 +1,17 @@
+task_id: glob-read-write-summary
+description: 通过 Glob 找到最新发布说明后写出摘要文件。
+prompt: |
+  找到最新的 notes 文件，读取它，然后写一个 summary.md 摘要。
+workspace:
+  setup: ../fixtures/glob-read-write-summary
+expected_outcome:
+  tool_pattern:
+    - Glob
+    - Read
+    - Write
+  max_tool_calls: 3
+  max_turns: 1
+  file_changes:
+    - path: summary.md
+      contains: 2026-04
+

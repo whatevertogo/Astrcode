@@ -1,9 +1,6 @@
 use std::collections::BTreeSet;
 
-use astrcode_client::{
-    AstrcodeConversationAgentLifecycleDto, AstrcodeConversationBlockDto,
-    AstrcodeConversationBlockStatusDto,
-};
+use astrcode_client::{AgentLifecycleDto, ConversationBlockDto, ConversationBlockStatusDto};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptCell {
@@ -55,7 +52,7 @@ pub enum TranscriptCellKind {
     ChildHandoff {
         handoff_kind: String,
         title: String,
-        lifecycle: AstrcodeConversationAgentLifecycleDto,
+        lifecycle: AgentLifecycleDto,
         message: String,
         child_session_id: String,
         child_agent_id: String,
@@ -63,35 +60,33 @@ pub enum TranscriptCellKind {
 }
 
 impl TranscriptCell {
-    pub fn from_block(
-        block: &AstrcodeConversationBlockDto,
-        expanded_ids: &BTreeSet<String>,
-    ) -> Self {
+    pub fn from_block(block: &ConversationBlockDto, expanded_ids: &BTreeSet<String>) -> Self {
         let id = match block {
-            AstrcodeConversationBlockDto::User(block) => block.id.clone(),
-            AstrcodeConversationBlockDto::Assistant(block) => block.id.clone(),
-            AstrcodeConversationBlockDto::Thinking(block) => block.id.clone(),
-            AstrcodeConversationBlockDto::Plan(block) => block.id.clone(),
-            AstrcodeConversationBlockDto::ToolCall(block) => block.id.clone(),
-            AstrcodeConversationBlockDto::Error(block) => block.id.clone(),
-            AstrcodeConversationBlockDto::SystemNote(block) => block.id.clone(),
-            AstrcodeConversationBlockDto::ChildHandoff(block) => block.id.clone(),
+            ConversationBlockDto::User(block) => block.id.clone(),
+            ConversationBlockDto::Assistant(block) => block.id.clone(),
+            ConversationBlockDto::Thinking(block) => block.id.clone(),
+            ConversationBlockDto::PromptMetrics(block) => block.id.clone(),
+            ConversationBlockDto::Plan(block) => block.id.clone(),
+            ConversationBlockDto::ToolCall(block) => block.id.clone(),
+            ConversationBlockDto::Error(block) => block.id.clone(),
+            ConversationBlockDto::SystemNote(block) => block.id.clone(),
+            ConversationBlockDto::ChildHandoff(block) => block.id.clone(),
         };
         let expanded = expanded_ids.contains(&id)
             || matches!(
                 block,
-                AstrcodeConversationBlockDto::Thinking(thinking)
-                    if matches!(thinking.status, AstrcodeConversationBlockStatusDto::Streaming)
+                ConversationBlockDto::Thinking(thinking)
+                    if matches!(thinking.status, ConversationBlockStatusDto::Streaming)
             );
         match block {
-            AstrcodeConversationBlockDto::User(block) => Self {
+            ConversationBlockDto::User(block) => Self {
                 id,
                 expanded,
                 kind: TranscriptCellKind::User {
                     body: block.markdown.clone(),
                 },
             },
-            AstrcodeConversationBlockDto::Assistant(block) => Self {
+            ConversationBlockDto::Assistant(block) => Self {
                 id,
                 expanded,
                 kind: TranscriptCellKind::Assistant {
@@ -99,7 +94,7 @@ impl TranscriptCell {
                     status: block.status.into(),
                 },
             },
-            AstrcodeConversationBlockDto::Thinking(block) => Self {
+            ConversationBlockDto::Thinking(block) => Self {
                 id,
                 expanded,
                 kind: TranscriptCellKind::Thinking {
@@ -107,7 +102,21 @@ impl TranscriptCell {
                     status: block.status.into(),
                 },
             },
-            AstrcodeConversationBlockDto::Plan(block) => Self {
+            ConversationBlockDto::PromptMetrics(block) => Self {
+                id,
+                expanded,
+                kind: TranscriptCellKind::SystemNote {
+                    note_kind: "prompt_metrics".to_string(),
+                    markdown: format!(
+                        "step #{} | context {} / {} | cache read {}",
+                        block.step_index,
+                        block.effective_window,
+                        block.context_window,
+                        block.cache_read_input_tokens.unwrap_or_default()
+                    ),
+                },
+            },
+            ConversationBlockDto::Plan(block) => Self {
                 id,
                 expanded,
                 kind: TranscriptCellKind::SystemNote {
@@ -122,7 +131,7 @@ impl TranscriptCell {
                         .unwrap_or_else(|| format!("{} ({})", block.title, block.plan_path)),
                 },
             },
-            AstrcodeConversationBlockDto::ToolCall(block) => Self {
+            ConversationBlockDto::ToolCall(block) => Self {
                 id,
                 expanded,
                 kind: TranscriptCellKind::ToolCall {
@@ -151,7 +160,7 @@ impl TranscriptCell {
                         .map(|child_ref| child_ref.open_session_id.clone()),
                 },
             },
-            AstrcodeConversationBlockDto::Error(block) => Self {
+            ConversationBlockDto::Error(block) => Self {
                 id,
                 expanded,
                 kind: TranscriptCellKind::Error {
@@ -160,7 +169,7 @@ impl TranscriptCell {
                     message: block.message.clone(),
                 },
             },
-            AstrcodeConversationBlockDto::SystemNote(block) => Self {
+            ConversationBlockDto::SystemNote(block) => Self {
                 id,
                 expanded,
                 kind: TranscriptCellKind::SystemNote {
@@ -169,7 +178,7 @@ impl TranscriptCell {
                     markdown: block.markdown.clone(),
                 },
             },
-            AstrcodeConversationBlockDto::ChildHandoff(block) => Self {
+            ConversationBlockDto::ChildHandoff(block) => Self {
                 id,
                 expanded,
                 kind: TranscriptCellKind::ChildHandoff {
@@ -189,13 +198,13 @@ impl TranscriptCell {
     }
 }
 
-impl From<AstrcodeConversationBlockStatusDto> for TranscriptCellStatus {
-    fn from(value: AstrcodeConversationBlockStatusDto) -> Self {
+impl From<ConversationBlockStatusDto> for TranscriptCellStatus {
+    fn from(value: ConversationBlockStatusDto) -> Self {
         match value {
-            AstrcodeConversationBlockStatusDto::Streaming => Self::Streaming,
-            AstrcodeConversationBlockStatusDto::Complete => Self::Complete,
-            AstrcodeConversationBlockStatusDto::Failed => Self::Failed,
-            AstrcodeConversationBlockStatusDto::Cancelled => Self::Cancelled,
+            ConversationBlockStatusDto::Streaming => Self::Streaming,
+            ConversationBlockStatusDto::Complete => Self::Complete,
+            ConversationBlockStatusDto::Failed => Self::Failed,
+            ConversationBlockStatusDto::Cancelled => Self::Cancelled,
         }
     }
 }

@@ -37,7 +37,6 @@ pub enum SubRunOutcomeDto {
     Completed,
     Failed,
     Cancelled,
-    TokenExceeded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -45,7 +44,6 @@ pub enum SubRunOutcomeDto {
 pub enum SubRunResultDto {
     Running { handoff: SubRunHandoffDto },
     Completed { handoff: SubRunHandoffDto },
-    TokenExceeded { handoff: SubRunHandoffDto },
     Failed { failure: SubRunFailureDto },
     Cancelled { failure: SubRunFailureDto },
 }

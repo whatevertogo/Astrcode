@@ -210,9 +210,8 @@ pub enum UserMessageOrigin {
     User,
     /// 从 durable 输入队列恢复并注入的内部输入。
     QueuedInput,
-    /// turn 内 budget 允许继续时注入的内部续写提示。
-    AutoContinueNudge,
     /// assistant 输出被截断后，为同一 turn 续写而注入的内部提示。
+    #[serde(alias = "auto_continue_nudge")]
     ContinuationPrompt,
     /// 子会话交付后用于唤醒父会话继续决策的内部提示。
     ReactivationPrompt,
@@ -274,7 +273,7 @@ pub struct AssistantContentParts {
 ///
 /// ## 为什么需要这个函数
 ///
-/// 某些 LLM（如 Anthropic Claude）使用 `<think>...</think>` 标签包裹推理过程。
+/// 某些 LLM 会使用 `<think>...</think>` 标签包裹推理过程。
 /// 但 LLM 可能在不同位置以不同方式输出这些标签：
 /// - 作为独立的 reasoning_content 字段（由 LLM API 返回）
 /// - 内联在文本内容中（某些模型/提供商的输出风格）
@@ -375,7 +374,7 @@ fn collapse_extra_blank_lines(input: &str) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{ToolExecutionResult, split_assistant_content};
+    use super::{ToolExecutionResult, UserMessageOrigin, split_assistant_content};
     use crate::{AgentId, ExecutionResultCommon, SessionId, SubRunId};
 
     #[test]
@@ -468,5 +467,13 @@ mod tests {
         assert_eq!(result.metadata, Some(json!({ "schema": "subRunResult" })));
         assert_eq!(result.duration_ms, 17);
         assert!(result.truncated);
+    }
+
+    #[test]
+    fn user_message_origin_accepts_legacy_auto_continue_nudge_alias() {
+        let parsed: UserMessageOrigin =
+            serde_json::from_str("\"auto_continue_nudge\"").expect("legacy origin should parse");
+
+        assert_eq!(parsed, UserMessageOrigin::ContinuationPrompt);
     }
 }

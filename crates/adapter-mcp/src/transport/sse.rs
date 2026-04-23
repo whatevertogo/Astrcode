@@ -87,10 +87,13 @@ impl McpTransport for SseTransport {
             }
         }
 
-        let response = req_builder
-            .send()
-            .await
-            .map_err(|e| AstrError::http("MCP SSE request", e))?;
+        let response = req_builder.send().await.map_err(|error| {
+            AstrError::http_with_source(
+                "MCP SSE request",
+                error.is_timeout() || error.is_connect() || error.is_body(),
+                error,
+            )
+        })?;
 
         let status = response.status();
         if !status.is_success() {

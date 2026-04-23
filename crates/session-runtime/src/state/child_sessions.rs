@@ -31,62 +31,42 @@ pub(crate) fn child_node_from_stored_event(stored: &StoredEvent) -> Option<Child
 impl SessionState {
     /// 写入或覆盖一个 child-session durable 节点（按 sub_run_id 去重）。
     pub fn upsert_child_session_node(&self, node: ChildSessionNode) -> Result<()> {
-        support::lock_anyhow(&self.child_nodes, "session child nodes")?
-            .insert(node.sub_run_id().to_string(), node);
+        support::lock_anyhow(&self.projection_registry, "session projection registry")?
+            .children
+            .upsert(node);
         Ok(())
     }
 
     /// 查询某个 sub-run 对应的 child-session 节点快照。
     pub fn child_session_node(&self, sub_run_id: &str) -> Result<Option<ChildSessionNode>> {
         Ok(
-            support::lock_anyhow(&self.child_nodes, "session child nodes")?
-                .get(sub_run_id)
-                .cloned(),
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .child_session_node(sub_run_id),
         )
     }
 
     /// 列出当前 session 所有 child-session 节点快照（按 sub_run_id 排序）。
     pub fn list_child_session_nodes(&self) -> Result<Vec<ChildSessionNode>> {
-        let nodes = support::lock_anyhow(&self.child_nodes, "session child nodes")?;
-        let mut result: Vec<_> = nodes.values().cloned().collect();
-        result.sort_by(|a, b| a.sub_run_id().cmp(b.sub_run_id()));
-        Ok(result)
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .list_child_session_nodes(),
+        )
     }
 
     /// 查找某个 agent 的直接子节点。
     pub fn child_nodes_for_parent(&self, parent_agent_id: &str) -> Result<Vec<ChildSessionNode>> {
-        let nodes = support::lock_anyhow(&self.child_nodes, "session child nodes")?;
-        let mut result: Vec<_> = nodes
-            .values()
-            .filter(|node| {
-                node.parent_agent_id()
-                    .is_some_and(|id| id.as_str() == parent_agent_id)
-            })
-            .cloned()
-            .collect();
-        result.sort_by(|a, b| a.sub_run_id().cmp(b.sub_run_id()));
-        Ok(result)
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .child_nodes_for_parent(parent_agent_id),
+        )
     }
 
     /// 收集指定 agent 子树的所有后代节点（不含自身）。
     pub fn subtree_nodes(&self, root_agent_id: &str) -> Result<Vec<ChildSessionNode>> {
-        let nodes = support::lock_anyhow(&self.child_nodes, "session child nodes")?;
-        let mut result = Vec::new();
-        let mut queue = std::collections::VecDeque::new();
-        queue.push_back(root_agent_id.to_string());
-        while let Some(agent_id) = queue.pop_front() {
-            for node in nodes.values() {
-                if node
-                    .parent_agent_id()
-                    .is_some_and(|id| id.as_str() == agent_id)
-                {
-                    queue.push_back(node.agent_id().to_string());
-                    result.push(node.clone());
-                }
-            }
-        }
-        result.sort_by(|a, b| a.sub_run_id().cmp(b.sub_run_id()));
-        Ok(result)
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .subtree_nodes(root_agent_id),
+        )
     }
 }
 

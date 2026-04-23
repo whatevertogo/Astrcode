@@ -1,0 +1,14 @@
+task_id: plan-review-readiness
+description: 读取草稿计划并指出退出 plan mode 前缺失的关键章节。
+prompt: |
+  请读取 draft-plan.md，告诉我它缺少哪个关键章节才能退出 plan mode。
+workspace:
+  setup: ../fixtures/plan-review-readiness
+expected_outcome:
+  tool_pattern:
+    - Read
+  max_tool_calls: 2
+  max_turns: 1
+  output_contains:
+    - "## Verification"
+    - plan mode

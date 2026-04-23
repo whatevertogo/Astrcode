@@ -8,10 +8,10 @@
 //! - **ActionPolicies**: 动作策略规则集（Allow / Deny / Ask 三种裁决效果）
 //! - **GovernanceModeSpec**: 完整模式定义（能力表面 + 动作策略 + 子策略 + 执行策略 + 提示词程序 +
 //!   转换策略）
-//! - **ResolvedTurnEnvelope**: 运行时 turn 级解析后的完整治理信封
+//! - **ResolvedTurnEnvelope**: 当前命名沿用 envelope，但语义上是治理 compile 阶段产物
 //!
 //! 模式由声明式配置文件加载，运行时通过 `GovernanceModeSpec::validate()` 校验后，
-//! 由治理层解析为 `ResolvedTurnEnvelope` 注入每个 turn 的执行上下文。
+//! 由治理层先编译为 `ResolvedTurnEnvelope`，再由 application bind 成 turn 可执行治理快照。
 
 use serde::{Deserialize, Serialize};
 
@@ -271,6 +271,130 @@ impl TransitionPolicySpec {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeArtifactDef {
+    pub artifact_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_template: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_headings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actionable_sections: Vec<String>,
+}
+
+impl ModeArtifactDef {
+    pub fn validate(&self) -> Result<()> {
+        validate_non_empty_trimmed("mode.artifact.artifactType", &self.artifact_type)?;
+        if let Some(template) = &self.file_template {
+            validate_non_empty_trimmed("mode.artifact.fileTemplate", template)?;
+        }
+        if let Some(template) = &self.schema_template {
+            validate_non_empty_trimmed("mode.artifact.schemaTemplate", template)?;
+        }
+        normalize_non_empty_unique_string_list(
+            &self.required_headings,
+            "mode.artifact.requiredHeadings",
+        )?;
+        normalize_non_empty_unique_string_list(
+            &self.actionable_sections,
+            "mode.artifact.actionableSections",
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeExitGateDef {
+    pub review_passes: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_checklist: Vec<String>,
+}
+
+impl ModeExitGateDef {
+    pub fn validate(&self) -> Result<()> {
+        if self.review_passes == 0 {
+            return Err(AstrError::Validation(
+                "mode.exitGate.reviewPasses 必须大于 0".to_string(),
+            ));
+        }
+        normalize_non_empty_unique_string_list(
+            &self.review_checklist,
+            "mode.exitGate.reviewChecklist",
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModePromptHooks {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reentry_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts_template: Option<String>,
+}
+
+impl ModePromptHooks {
+    pub fn validate(&self) -> Result<()> {
+        let mut has_any = false;
+        for (field, value) in [
+            (
+                "mode.promptHooks.reentryPrompt",
+                self.reentry_prompt.as_ref(),
+            ),
+            (
+                "mode.promptHooks.initialTemplate",
+                self.initial_template.as_ref(),
+            ),
+            ("mode.promptHooks.exitPrompt", self.exit_prompt.as_ref()),
+            (
+                "mode.promptHooks.factsTemplate",
+                self.facts_template.as_ref(),
+            ),
+        ] {
+            if let Some(value) = value {
+                validate_non_empty_trimmed(field, value)?;
+                has_any = true;
+            }
+        }
+        if !has_any {
+            return Err(AstrError::Validation(
+                "mode.promptHooks 至少需要一个非空模板".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CompiledModeContracts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<ModeArtifactDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_gate: Option<ModeExitGateDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_hooks: Option<ModePromptHooks>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundModeToolContractSnapshot {
+    pub mode_id: ModeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<ModeArtifactDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_gate: Option<ModeExitGateDef>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GovernanceModeSpec {
@@ -286,6 +410,12 @@ pub struct GovernanceModeSpec {
     pub execution_policy: ModeExecutionPolicySpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_program: Vec<PromptProgramEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<ModeArtifactDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_gate: Option<ModeExitGateDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_hooks: Option<ModePromptHooks>,
     #[serde(default)]
     pub transition_policy: TransitionPolicySpec,
 }
@@ -299,6 +429,15 @@ impl GovernanceModeSpec {
         self.action_policies.validate()?;
         self.child_policy.validate()?;
         self.execution_policy.validate()?;
+        if let Some(artifact) = &self.artifact {
+            artifact.validate()?;
+        }
+        if let Some(exit_gate) = &self.exit_gate {
+            exit_gate.validate()?;
+        }
+        if let Some(prompt_hooks) = &self.prompt_hooks {
+            prompt_hooks.validate()?;
+        }
         self.transition_policy.validate()?;
         for entry in &self.prompt_program {
             entry.validate()?;
@@ -317,8 +456,6 @@ pub struct ResolvedChildPolicy {
     pub allow_recursive_delegation: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_profile_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub restricted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -332,9 +469,9 @@ pub struct ResolvedChildPolicy {
 pub struct ResolvedTurnEnvelope {
     pub mode_id: ModeId,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_tools: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_declarations: Vec<PromptDeclaration>,
+    #[serde(default)]
+    pub mode_contracts: CompiledModeContracts,
     #[serde(default)]
     pub action_policies: ActionPolicies,
     #[serde(default)]
@@ -355,6 +492,14 @@ impl ResolvedTurnEnvelope {
             "inherit".to_string()
         }
     }
+
+    pub fn bound_tool_contract_snapshot(&self) -> BoundModeToolContractSnapshot {
+        BoundModeToolContractSnapshot {
+            mode_id: self.mode_id.clone(),
+            artifact: self.mode_contracts.artifact.clone(),
+            exit_gate: self.mode_contracts.exit_gate.clone(),
+        }
+    }
 }
 
 fn validate_non_empty_trimmed(field: &str, value: impl AsRef<str>) -> Result<()> {
@@ -371,8 +516,9 @@ const fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionPolicies, BUILTIN_MODE_CODE_ID, CapabilitySelector, GovernanceModeSpec, ModeId,
-        PromptProgramEntry, ResolvedTurnEnvelope, SubmitBusyPolicy,
+        ActionPolicies, BUILTIN_MODE_CODE_ID, BoundModeToolContractSnapshot, CapabilitySelector,
+        CompiledModeContracts, GovernanceModeSpec, ModeArtifactDef, ModeExitGateDef, ModeId,
+        ModePromptHooks, PromptProgramEntry, ResolvedTurnEnvelope, SubmitBusyPolicy,
     };
     use crate::{CapabilityKind, PromptDeclaration, SideEffect, SystemPromptLayer};
 
@@ -411,6 +557,23 @@ mod tests {
                 content: "plan first".to_string(),
                 priority_hint: Some(600),
             }],
+            artifact: Some(ModeArtifactDef {
+                artifact_type: "canonical-plan".to_string(),
+                file_template: Some("# Plan".to_string()),
+                schema_template: Some("markdown-plan-v1".to_string()),
+                required_headings: vec!["Context".to_string(), "Implementation Steps".to_string()],
+                actionable_sections: vec!["Implementation Steps".to_string()],
+            }),
+            exit_gate: Some(ModeExitGateDef {
+                review_passes: 1,
+                review_checklist: vec!["验证实现步骤".to_string()],
+            }),
+            prompt_hooks: Some(ModePromptHooks {
+                reentry_prompt: Some("read the plan first".to_string()),
+                initial_template: Some("## Implementation Steps".to_string()),
+                exit_prompt: Some("use approved plan".to_string()),
+                facts_template: Some("targetPlanPath={{target_plan_path}}".to_string()),
+            }),
             transition_policy: Default::default(),
         };
 
@@ -422,10 +585,39 @@ mod tests {
     }
 
     #[test]
+    fn mode_artifact_def_rejects_blank_artifact_type() {
+        let error = ModeArtifactDef {
+            artifact_type: "  ".to_string(),
+            ..ModeArtifactDef::default()
+        }
+        .validate()
+        .expect_err("blank artifact type should fail");
+        assert!(error.to_string().contains("artifactType"));
+    }
+
+    #[test]
+    fn mode_exit_gate_def_rejects_zero_review_passes() {
+        let error = ModeExitGateDef {
+            review_passes: 0,
+            review_checklist: vec!["检查计划".to_string()],
+        }
+        .validate()
+        .expect_err("zero review passes should fail");
+        assert!(error.to_string().contains("reviewPasses"));
+    }
+
+    #[test]
+    fn mode_prompt_hooks_require_at_least_one_non_empty_template() {
+        let error = ModePromptHooks::default()
+            .validate()
+            .expect_err("empty hooks should fail");
+        assert!(error.to_string().contains("至少需要一个"));
+    }
+
+    #[test]
     fn resolved_turn_envelope_reports_required_approval_mode_when_rule_asks() {
         let envelope = ResolvedTurnEnvelope {
             mode_id: ModeId::review(),
-            allowed_tools: vec!["readFile".to_string()],
             prompt_declarations: vec![PromptDeclaration {
                 block_id: "mode.review".to_string(),
                 title: "Review".to_string(),
@@ -439,6 +631,7 @@ mod tests {
                 capability_name: None,
                 origin: None,
             }],
+            mode_contracts: CompiledModeContracts::default(),
             action_policies: ActionPolicies {
                 default_effect: crate::ActionPolicyEffect::Ask,
                 rules: Vec::new(),
@@ -450,5 +643,41 @@ mod tests {
         };
 
         assert_eq!(envelope.approval_mode(), "required");
+    }
+
+    #[test]
+    fn resolved_turn_envelope_projects_bound_tool_contract_snapshot() {
+        let envelope = ResolvedTurnEnvelope {
+            mode_id: ModeId::plan(),
+            prompt_declarations: Vec::new(),
+            mode_contracts: CompiledModeContracts {
+                artifact: Some(ModeArtifactDef {
+                    artifact_type: "canonical-plan".to_string(),
+                    file_template: None,
+                    schema_template: None,
+                    required_headings: vec!["Implementation Steps".to_string()],
+                    actionable_sections: vec!["Implementation Steps".to_string()],
+                }),
+                exit_gate: Some(ModeExitGateDef {
+                    review_passes: 1,
+                    review_checklist: vec!["检查验证步骤".to_string()],
+                }),
+                prompt_hooks: None,
+            },
+            action_policies: ActionPolicies::default(),
+            child_policy: Default::default(),
+            submit_busy_policy: SubmitBusyPolicy::BranchOnBusy,
+            fork_mode: None,
+            diagnostics: Vec::new(),
+        };
+
+        assert_eq!(
+            envelope.bound_tool_contract_snapshot(),
+            BoundModeToolContractSnapshot {
+                mode_id: ModeId::plan(),
+                artifact: envelope.mode_contracts.artifact.clone(),
+                exit_gate: envelope.mode_contracts.exit_gate.clone(),
+            }
+        );
     }
 }

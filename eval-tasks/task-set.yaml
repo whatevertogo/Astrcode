@@ -2,3 +2,43 @@ tasks:
   - core/file-read-accuracy.yaml
   - core/file-edit-precision.yaml
   - core/tool-chain-efficiency.yaml
+  - core/prompt-direct-answer.yaml
+  - core/multi-read-context-summary.yaml
+  - core/write-plan-checklist.yaml
+  - core/compact-context-retention.yaml
+  - core/compact-followup-edit.yaml
+  - core/plan-review-readiness.yaml
+  - core/tool-argument-discipline.yaml
+  - advanced/write-bootstrap-config.yaml
+  - advanced/grep-auth-error.yaml
+  - advanced/glob-release-notes.yaml
+  - advanced/shell-read-version.yaml
+  - advanced/apply-patch-banner.yaml
+  - advanced/grep-read-edit-timeout.yaml
+  - advanced/glob-read-write-summary.yaml
+  - advanced/listdir-read-edit-status.yaml
+  - advanced/findfiles-read-write-migration.yaml
+  - advanced/read-edit-shell-verify.yaml
+  - advanced/bugfix-null-guard.yaml
+  - advanced/feature-flag-endpoint.yaml
+  - advanced/code-review-leak-fix.yaml
+  - advanced/project-bootstrap.yaml
+  - advanced/compact-retain-api-contract.yaml
+  - advanced/compact-multi-hop-followup.yaml
+  - advanced/compact-history-priority.yaml
+  - advanced/plan-enter-skeleton.yaml
+  - advanced/plan-revise-after-read.yaml
+  - advanced/plan-exit-after-verification.yaml
+  - advanced/plan-track-progress.yaml
+  - advanced/subagent-single-task.yaml
+  - advanced/subagent-parent-uses-result.yaml
+  - advanced/subagent-recovery-after-error.yaml
+  - advanced/missing-file-findfiles-fallback.yaml
+  - advanced/shell-failure-then-grep-log.yaml
+  - advanced/toolsearch-skill-fallback.yaml
+  - advanced/prompt-multi-request-chinese.yaml
+  - advanced/prompt-refuse-system-delete.yaml
+  - advanced/prompt-markdown-format.yaml
+  - advanced/large-file-targeted-read.yaml
+  - advanced/empty-dir-safe-response.yaml
+  - advanced/binary-file-skip.yaml

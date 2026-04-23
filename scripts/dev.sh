@@ -72,4 +72,4 @@ wait_frontend_ready "${FRONTEND_URL}" 60
 
 echo "[start] 启动 Tauri 开发环境..."
 cd "${REPO_ROOT}"
-cargo tauri dev
+node scripts/tauri-cli.js dev

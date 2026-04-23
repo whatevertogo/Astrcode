@@ -1,38 +1,24 @@
-use astrcode_core::{AgentEventContext, EventTranslator, Phase, Result, SessionId};
+use astrcode_core::{AgentEventContext, EventTranslator, Result, SessionId};
 use chrono::Utc;
 
 use crate::{
     SessionRuntime,
     state::append_and_broadcast,
-    turn::{events::error_event, submit::persist_pending_manual_compact_if_any},
+    turn::{
+        TurnStopCause,
+        events::turn_terminal_event,
+        finalize::{DeferredManualCompactContext, persist_pending_manual_compact_if_any},
+    },
 };
 
 impl SessionRuntime {
     pub async fn interrupt_session(&self, session_id: &str) -> Result<()> {
         let session_id = SessionId::from(crate::state::normalize_session_id(session_id));
         let actor = self.ensure_loaded_session(&session_id).await?;
-        let is_running = actor
-            .state()
-            .running
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let active_turn_id = actor
-            .state()
-            .active_turn_id
-            .lock()
-            .map_err(|_| astrcode_core::AstrError::LockPoisoned("session active turn".to_string()))?
-            .clone();
-
-        if !is_running || active_turn_id.is_none() {
+        let Some(interrupted) = actor.turn_runtime().interrupt_if_running()? else {
             return Ok(());
-        }
-
-        let cancel = actor
-            .state()
-            .cancel
-            .lock()
-            .map_err(|_| astrcode_core::AstrError::LockPoisoned("session cancel".to_string()))?
-            .clone();
-        cancel.cancel();
+        };
+        let active_turn_id = interrupted.turn_id.clone();
 
         if let Some(active_turn_id) = active_turn_id.as_deref() {
             let cancelled = self
@@ -50,21 +36,26 @@ impl SessionRuntime {
         }
 
         let mut translator = EventTranslator::new(actor.state().current_phase()?);
-        let event = error_event(
-            active_turn_id.as_deref(),
-            &AgentEventContext::default(),
-            "interrupted".to_string(),
-            Some(Utc::now()),
-        );
-        append_and_broadcast(actor.state(), &event, &mut translator).await?;
-        crate::state::complete_session_execution(actor.state(), Phase::Interrupted);
+        if let Some(active_turn_id) = active_turn_id.as_deref() {
+            let event = turn_terminal_event(
+                active_turn_id,
+                &AgentEventContext::default(),
+                TurnStopCause::Cancelled,
+                Utc::now(),
+            );
+            append_and_broadcast(actor.state(), &event, &mut translator).await?;
+        }
         persist_pending_manual_compact_if_any(
-            self.kernel.gateway(),
-            self.prompt_facts_provider.as_ref(),
-            &self.event_store,
-            actor.working_dir(),
-            actor.state(),
-            session_id.as_str(),
+            DeferredManualCompactContext {
+                gateway: self.kernel.gateway(),
+                prompt_facts_provider: self.prompt_facts_provider.as_ref(),
+                event_store: &self.event_store,
+                working_dir: actor.working_dir(),
+                turn_runtime: actor.turn_runtime(),
+                session_state: actor.state(),
+                session_id: session_id.as_str(),
+            },
+            interrupted.pending_request,
         )
         .await;
         Ok(())
@@ -79,7 +70,7 @@ mod tests {
         LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits, Phase, PromptBuildOutput,
         PromptBuildRequest, PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider,
         ResolvedRuntimeConfig, ResourceProvider, ResourceReadResult, ResourceRequestContext,
-        Result,
+        Result, SessionTurnLease,
     };
     use astrcode_kernel::Kernel;
     use async_trait::async_trait;
@@ -105,6 +96,7 @@ mod tests {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::Stop,
+                prompt_cache_diagnostics: None,
             })
         }
 
@@ -153,6 +145,10 @@ mod tests {
     #[derive(Debug)]
     struct NoopPromptFactsProvider;
 
+    struct StubTurnLease;
+
+    impl SessionTurnLease for StubTurnLease {}
+
     #[async_trait]
     impl PromptFactsProvider for NoopPromptFactsProvider {
         async fn resolve_prompt_facts(&self, _request: &PromptFactsRequest) -> Result<PromptFacts> {
@@ -200,21 +196,21 @@ mod tests {
         )
         .await;
         actor
-            .state()
-            .request_manual_compact(crate::state::PendingManualCompactRequest {
+            .turn_runtime()
+            .request_manual_compact(crate::turn::PendingManualCompactRequest {
                 runtime: ResolvedRuntimeConfig::default(),
                 instructions: None,
             })
             .expect("manual compact flag should set");
         actor
-            .state()
-            .running
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        *actor
-            .state()
-            .active_turn_id
-            .lock()
-            .expect("active turn lock should work") = Some("turn-1".to_string());
+            .turn_runtime()
+            .prepare(
+                session_id.as_str(),
+                "turn-1",
+                astrcode_core::CancelToken::new(),
+                Box::new(StubTurnLease),
+            )
+            .expect("turn runtime should enter running state");
 
         runtime
             .interrupt_session(&session_id)

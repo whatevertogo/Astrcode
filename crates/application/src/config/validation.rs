@@ -6,9 +6,9 @@
 
 use std::collections::HashSet;
 
-use astrcode_core::{AstrError, Config, ModelConfig, Result};
+use astrcode_core::{AstrError, Config, ModelConfig, OpenAiApiMode, Result};
 
-use super::constants::{PROVIDER_KIND_ANTHROPIC, PROVIDER_KIND_OPENAI};
+use super::constants::PROVIDER_KIND_OPENAI;
 
 macro_rules! validate_positive_fields {
     ($($value:expr => $field:expr),* $(,)?) => {{
@@ -67,7 +67,6 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
     validate_positive_fields!(
         runtime.max_tool_concurrency => "runtime.maxToolConcurrency",
         runtime.tool_result_max_bytes => "runtime.toolResultMaxBytes",
-        runtime.max_steps => "runtime.maxSteps",
         runtime.max_tracked_files => "runtime.maxTrackedFiles",
         runtime.max_recovered_files => "runtime.maxRecoveredFiles",
         runtime.recovery_token_budget => "runtime.recoveryTokenBudget",
@@ -88,8 +87,6 @@ fn validate_runtime_params(runtime: &astrcode_core::RuntimeConfig) -> Result<()>
     validate_positive_fields!(
         runtime.compact_keep_recent_turns => "runtime.compactKeepRecentTurns",
         runtime.compact_max_retry_attempts => "runtime.compactMaxRetryAttempts",
-        runtime.max_output_continuation_attempts => "runtime.maxOutputContinuationAttempts",
-        runtime.max_continuations => "runtime.maxContinuations",
     )?;
 
     validate_positive_fields!(
@@ -178,14 +175,21 @@ fn validate_profiles(profiles: &[astrcode_core::Profile]) -> Result<()> {
                 for model in &profile.models {
                     if model.max_tokens.is_none() || model.context_limit.is_none() {
                         return Err(AstrError::Validation(format!(
-                            "openai-compatible profile '{}' model '{}' must set both maxTokens \
-                             and contextLimit",
+                            "openai profile '{}' model '{}' must set both maxTokens and \
+                             contextLimit",
                             profile.name, model.id
                         )));
                     }
                 }
+                if matches!(profile.api_mode, Some(OpenAiApiMode::Responses))
+                    && profile.base_url.trim().is_empty()
+                {
+                    return Err(AstrError::Validation(format!(
+                        "openai profile '{}' responses mode requires a non-empty baseUrl",
+                        profile.name,
+                    )));
+                }
             },
-            PROVIDER_KIND_ANTHROPIC => {},
             other => {
                 return Err(AstrError::Validation(format!(
                     "profile '{}' has unsupported provider_kind '{}'",
@@ -280,6 +284,20 @@ mod tests {
     }
 
     #[test]
+    fn responses_mode_with_empty_base_url_fails() {
+        let mut config = Config::default();
+        let openai = config
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.name == "openai")
+            .expect("openai profile should exist");
+        openai.base_url.clear();
+        openai.api_mode = Some(OpenAiApiMode::Responses);
+
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
     fn zero_threshold_percent_fails() {
         let mut config = Config::default();
         config.runtime.compact_threshold_percent = Some(0);
@@ -287,11 +305,11 @@ mod tests {
     }
 
     #[test]
-    fn zero_max_steps_fails() {
+    fn zero_max_tool_concurrency_fails() {
         let mut config = Config::default();
-        config.runtime.max_steps = Some(0);
-        let error = validate_config(&config).expect_err("maxSteps=0 should fail");
-        assert!(error.to_string().contains("runtime.maxSteps"));
+        config.runtime.max_tool_concurrency = Some(0);
+        let error = validate_config(&config).expect_err("maxToolConcurrency=0 should fail");
+        assert!(error.to_string().contains("runtime.maxToolConcurrency"));
     }
 
     #[test]

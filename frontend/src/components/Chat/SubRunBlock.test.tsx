@@ -49,12 +49,12 @@ function makeFailedResult(
   failure: {
     code: 'transport' | 'provider_http' | 'stream_parse' | 'interrupted' | 'internal';
     displayMessage: '子 Agent 调用模型时网络连接中断，未完成任务。';
-    technicalMessage: 'HTTP request error: failed to read anthropic response stream';
+    technicalMessage: 'HTTP request error: failed to read openai response stream';
     retryable: true;
   } = {
     code: 'transport',
     displayMessage: '子 Agent 调用模型时网络连接中断，未完成任务。',
-    technicalMessage: 'HTTP request error: failed to read anthropic response stream',
+    technicalMessage: 'HTTP request error: failed to read openai response stream',
     retryable: true,
   }
 ): SubRunResult {
@@ -64,26 +64,22 @@ function makeFailedResult(
   };
 }
 
-function makeTokenExceededResult(
-  handoff: {
-    findings: string[];
-    artifacts: {
-      kind: string;
-      id: string;
-      label: string;
-      sessionId?: string;
-      storageSeq?: number;
-      uri?: string;
-    }[];
-    delivery?: ParentDelivery;
+function makeCancelledResult(
+  failure: {
+    code: 'transport' | 'provider_http' | 'stream_parse' | 'interrupted' | 'internal';
+    displayMessage: string;
+    technicalMessage: string;
+    retryable: boolean;
   } = {
-    findings: [],
-    artifacts: [],
+    code: 'interrupted',
+    displayMessage: '父级已取消该子任务。',
+    technicalMessage: 'parent requested shutdown',
+    retryable: false,
   }
 ): SubRunResult {
   return {
-    status: 'token_exceeded',
-    handoff,
+    status: 'cancelled',
+    failure,
   };
 }
 
@@ -105,6 +101,7 @@ describe('SubRunBlock result rendering', () => {
     expect(html).toContain('独立子会话正在初始化；会话入口可用后即可直接打开。');
     expect(html).toContain('取消子会话');
     expect(html).toContain('思考与工具');
+    expect(html).toContain('运行中');
   });
 
   it('renders failure details without parent handoff section for failed sub-runs', () => {
@@ -134,8 +131,39 @@ describe('SubRunBlock result rendering', () => {
 
     expect(html).toContain('执行失败');
     expect(html).toContain('子 Agent 调用模型时网络连接中断，未完成任务。');
-    expect(html).toContain('HTTP request error: failed to read anthropic response stream');
+    expect(html).toContain('HTTP request error: failed to read openai response stream');
     expect(html).not.toContain('调用参数');
+  });
+
+  it('renders cancelled sub-runs with precise interrupted details instead of aborted placeholders', () => {
+    const finishMessage: SubRunFinishMessage = {
+      id: 'subrun-finish-cancelled',
+      kind: 'subRunFinish',
+      subRunId: 'subrun-cancelled',
+      result: makeCancelledResult(),
+      stepCount: 1,
+      estimatedTokens: 12,
+      timestamp: Date.now(),
+    };
+
+    const html = renderToStaticMarkup(
+      <SubRunBlock
+        subRunId="subrun-cancelled"
+        sessionId="session-1"
+        title="reviewer"
+        finishMessage={finishMessage}
+        threadItems={[]}
+        streamFingerprint=""
+        hasDescriptorLineage={true}
+        renderThreadItems={renderThreadItems}
+        onCancelSubRun={async () => {}}
+      />
+    );
+
+    expect(html).toContain('已取消');
+    expect(html).toContain('父级已取消该子任务。');
+    expect(html).toContain('parent requested shutdown');
+    expect(html).not.toContain('aborted');
   });
 
   it('renders focused-view entry for sub-runs without shared-session label', () => {
@@ -156,9 +184,7 @@ describe('SubRunBlock result rendering', () => {
         includeRecoveryRefs: false,
         includeParentFindings: false,
       },
-      resolvedLimits: {
-        allowedTools: ['readFile'],
-      },
+      resolvedLimits: {},
       timestamp: Date.now(),
     };
 
@@ -178,7 +204,7 @@ describe('SubRunBlock result rendering', () => {
     );
 
     expect(html).toContain('查看子执行');
-    expect(html).toContain('independent session');
+    expect(html).toContain('独立会话');
     expect(html).not.toContain('调用参数');
   });
 
@@ -201,9 +227,7 @@ describe('SubRunBlock result rendering', () => {
         includeRecoveryRefs: false,
         includeParentFindings: false,
       },
-      resolvedLimits: {
-        allowedTools: ['readFile'],
-      },
+      resolvedLimits: {},
       timestamp: Date.now(),
     };
 
@@ -222,8 +246,8 @@ describe('SubRunBlock result rendering', () => {
       />
     );
 
-    expect(html).toContain('打开独立会话');
-    expect(html).toContain('independent session');
+    expect(html).toContain('打开子会话');
+    expect(html).toContain('独立会话');
     expect(html).not.toContain('Object (');
   });
 
@@ -243,12 +267,12 @@ describe('SubRunBlock result rendering', () => {
       />
     );
 
-    expect(html).toContain('打开独立会话');
-    expect(html).toContain('independent session');
+    expect(html).toContain('打开子会话');
+    expect(html).toContain('独立会话');
     expect(html).toContain('独立子会话正在后台运行，请打开会话查看实时输出。');
   });
 
-  it('renders directory-mode summary without nested stream copy', () => {
+  it('renders directory-mode summary together with nested content', () => {
     const finishMessage: SubRunFinishMessage = {
       id: 'subrun-finish-2',
       kind: 'subRunFinish',
@@ -291,7 +315,7 @@ describe('SubRunBlock result rendering', () => {
 
     expect(html).toContain('进入子执行');
     expect(html).toContain('完成了静态分析并整理出两个风险点。');
-    expect(html).not.toContain('思考与工具');
+    expect(html).toContain('思考与工具');
   });
 
   // 子会话视图不展示 raw JSON — 目录模式下不应出现 Object/Array 等 JSON 结构标记
@@ -430,27 +454,27 @@ describe('SubRunBlock result rendering', () => {
       />
     );
 
-    expect(html).toContain('打开独立会话');
+    expect(html).toContain('打开子会话');
     expect(html).toContain('这是完整子会话报告，不应该再内嵌在父会话里。');
     expect(html).toContain('已向父会话汇报');
     expect(html).toContain('<li>finding-1</li>');
   });
 
-  it('renders token-exceeded delivery summary in the parent card', () => {
+  it('renders completed delivery summary in the parent card', () => {
     const finishMessage: SubRunFinishMessage = {
-      id: 'subrun-finish-token-exceeded',
+      id: 'subrun-finish-completed',
       kind: 'subRunFinish',
-      subRunId: 'subrun-token-exceeded',
-      result: makeTokenExceededResult({
+      subRunId: 'subrun-completed',
+      result: makeCompletedResult({
         findings: ['partial-finding'],
         artifacts: [],
         delivery: {
-          idempotencyKey: 'delivery-token-exceeded-summary',
+          idempotencyKey: 'delivery-completed-summary',
           origin: 'explicit',
           terminalSemantics: 'terminal',
           kind: 'completed',
           payload: {
-            message: '达到 token 上限，但已返回阶段性结论。',
+            message: '已返回阶段性结论。',
             findings: ['partial-finding'],
             artifacts: [],
           },
@@ -463,7 +487,7 @@ describe('SubRunBlock result rendering', () => {
 
     const html = renderToStaticMarkup(
       <SubRunBlock
-        subRunId="subrun-token-exceeded"
+        subRunId="subrun-completed"
         sessionId="session-parent"
         title="reviewer"
         finishMessage={finishMessage}
@@ -527,3 +551,4 @@ describe('SubRunBlock result rendering', () => {
     expect(html).not.toContain('最终回复');
   });
 });
+

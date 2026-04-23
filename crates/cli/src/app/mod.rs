@@ -14,11 +14,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use astrcode_client::{
-    AstrcodeClient, AstrcodeClientError, AstrcodeClientTransport,
-    AstrcodeConversationSlashCandidatesResponseDto, AstrcodeConversationSnapshotResponseDto,
-    AstrcodeCurrentModelInfoDto, AstrcodeModeSummaryDto, AstrcodeModelOptionDto,
-    AstrcodePromptAcceptedResponse, AstrcodeReqwestTransport, AstrcodeSessionListItem,
-    AstrcodeSessionModeStateDto, ClientConfig, ConversationStreamItem,
+    AstrcodeClient, ClientConfig, ClientError, ClientTransport,
+    ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
+    ConversationStreamItem, CurrentModelInfoDto, ModeSummaryDto, ModelOptionDto,
+    PromptAcceptedResponse, ReqwestTransport, SessionListItem, SessionModeStateDto,
 };
 use clap::Parser;
 use crossterm::{
@@ -67,7 +66,7 @@ struct CliArgs {
 #[derive(Debug)]
 struct SnapshotLoadedAction {
     session_id: String,
-    result: Result<AstrcodeConversationSnapshotResponseDto, AstrcodeClientError>,
+    result: Result<ConversationSnapshotResponseDto, ClientError>,
 }
 
 #[derive(Debug)]
@@ -81,8 +80,8 @@ enum Action {
     },
     Mouse(MouseEvent),
     Quit,
-    SessionsRefreshed(Result<Vec<AstrcodeSessionListItem>, AstrcodeClientError>),
-    SessionCreated(Result<AstrcodeSessionListItem, AstrcodeClientError>),
+    SessionsRefreshed(Result<Vec<SessionListItem>, ClientError>),
+    SessionCreated(Result<SessionListItem, ClientError>),
     SnapshotLoaded(Box<SnapshotLoadedAction>),
     StreamBatch {
         session_id: String,
@@ -90,35 +89,35 @@ enum Action {
     },
     SlashCandidatesLoaded {
         query: String,
-        result: Result<AstrcodeConversationSlashCandidatesResponseDto, AstrcodeClientError>,
+        result: Result<ConversationSlashCandidatesResponseDto, ClientError>,
     },
-    CurrentModelLoaded(Result<AstrcodeCurrentModelInfoDto, AstrcodeClientError>),
-    ModesLoaded(Result<Vec<AstrcodeModeSummaryDto>, AstrcodeClientError>),
+    CurrentModelLoaded(Result<CurrentModelInfoDto, ClientError>),
+    ModesLoaded(Result<Vec<ModeSummaryDto>, ClientError>),
     ModelOptionsLoaded {
         query: String,
-        result: Result<Vec<AstrcodeModelOptionDto>, AstrcodeClientError>,
+        result: Result<Vec<ModelOptionDto>, ClientError>,
     },
     PromptSubmitted {
         session_id: String,
-        result: Result<AstrcodePromptAcceptedResponse, AstrcodeClientError>,
+        result: Result<PromptAcceptedResponse, ClientError>,
     },
     ModelSelectionSaved {
         profile_name: String,
         model: String,
-        result: Result<(), AstrcodeClientError>,
+        result: Result<(), ClientError>,
     },
     CompactRequested {
         session_id: String,
-        result: Result<astrcode_client::AstrcodeCompactSessionResponse, AstrcodeClientError>,
+        result: Result<astrcode_client::CompactSessionResponse, ClientError>,
     },
     SessionModeLoaded {
         session_id: String,
-        result: Result<AstrcodeSessionModeStateDto, AstrcodeClientError>,
+        result: Result<SessionModeStateDto, ClientError>,
     },
     ModeSwitched {
         session_id: String,
         requested_mode_id: String,
-        result: Result<AstrcodeSessionModeStateDto, AstrcodeClientError>,
+        result: Result<SessionModeStateDto, ClientError>,
     },
 }
 
@@ -312,7 +311,7 @@ impl SharedStreamPacer {
     }
 }
 
-struct AppController<T = AstrcodeReqwestTransport> {
+struct AppController<T = ReqwestTransport> {
     client: AstrcodeClient<T>,
     state: CliState,
     chat_surface: ChatSurfaceState,
@@ -365,7 +364,7 @@ impl Drop for TerminalRestoreGuard {
 
 impl<T> AppController<T>
 where
-    T: AstrcodeClientTransport + 'static,
+    T: ClientTransport + 'static,
 {
     fn new(
         client: AstrcodeClient<T>,
@@ -547,12 +546,11 @@ where
                         .find(|option| option.profile_name == profile_name && option.model == model)
                         .map(|option| option.provider_kind.clone())
                         .unwrap_or_else(|| "unknown".to_string());
-                    self.state
-                        .update_current_model(AstrcodeCurrentModelInfoDto {
-                            profile_name,
-                            model: model.clone(),
-                            provider_kind,
-                        });
+                    self.state.update_current_model(CurrentModelInfoDto {
+                        profile_name,
+                        model: model.clone(),
+                        provider_kind,
+                    });
                     self.state.set_status(format!("ready · model {model}"));
                     self.refresh_current_model().await;
                 },
@@ -887,10 +885,7 @@ fn required_working_dir(state: &CliState) -> Result<&Path> {
         .context("working directory is required for /new")
 }
 
-fn filter_resume_sessions(
-    sessions: &[AstrcodeSessionListItem],
-    query: &str,
-) -> Vec<AstrcodeSessionListItem> {
+fn filter_resume_sessions(sessions: &[SessionListItem], query: &str) -> Vec<SessionListItem> {
     let mut items = sessions
         .iter()
         .filter(|session| {
@@ -911,17 +906,17 @@ fn filter_resume_sessions(
 }
 
 fn slash_candidates_with_local_commands(
-    candidates: &[astrcode_client::AstrcodeConversationSlashCandidateDto],
-    modes: &[astrcode_client::AstrcodeModeSummaryDto],
+    candidates: &[astrcode_client::ConversationSlashCandidateDto],
+    modes: &[astrcode_client::ModeSummaryDto],
     query: &str,
-) -> Vec<astrcode_client::AstrcodeConversationSlashCandidateDto> {
+) -> Vec<astrcode_client::ConversationSlashCandidateDto> {
     let mut merged = candidates.to_vec();
-    let model_candidate = astrcode_client::AstrcodeConversationSlashCandidateDto {
+    let model_candidate = astrcode_client::ConversationSlashCandidateDto {
         id: "model".to_string(),
         title: "/model".to_string(),
         description: "选择当前已配置的模型".to_string(),
         keywords: vec!["model".to_string(), "profile".to_string()],
-        action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::ExecuteCommand,
+        action_kind: astrcode_client::ConversationSlashActionKindDto::ExecuteCommand,
         action_value: "/model".to_string(),
     };
 
@@ -940,7 +935,7 @@ fn slash_candidates_with_local_commands(
         merged.push(model_candidate);
     }
 
-    let mode_candidate = astrcode_client::AstrcodeConversationSlashCandidateDto {
+    let mode_candidate = astrcode_client::ConversationSlashCandidateDto {
         id: "mode".to_string(),
         title: "/mode".to_string(),
         description: "查看或切换当前 session 的治理 mode".to_string(),
@@ -951,7 +946,7 @@ fn slash_candidates_with_local_commands(
             "review".to_string(),
             "code".to_string(),
         ],
-        action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::ExecuteCommand,
+        action_kind: astrcode_client::ConversationSlashActionKindDto::ExecuteCommand,
         action_value: "/mode".to_string(),
     };
     if !merged
@@ -970,7 +965,7 @@ fn slash_candidates_with_local_commands(
     }
 
     for mode in modes {
-        let candidate = astrcode_client::AstrcodeConversationSlashCandidateDto {
+        let candidate = astrcode_client::ConversationSlashCandidateDto {
             id: format!("mode:{}", mode.id),
             title: format!("/mode {}", mode.id),
             description: format!("切换到 {} · {}", mode.name, mode.description),
@@ -980,7 +975,7 @@ fn slash_candidates_with_local_commands(
                 mode.id.clone(),
                 mode.name.clone(),
             ],
-            action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::ExecuteCommand,
+            action_kind: astrcode_client::ConversationSlashActionKindDto::ExecuteCommand,
             action_value: format!("/mode {}", mode.id),
         };
         if !merged.iter().any(|existing| existing.id == candidate.id)
@@ -1000,10 +995,7 @@ fn slash_candidates_with_local_commands(
     merged
 }
 
-fn filter_model_options(
-    options: &[AstrcodeModelOptionDto],
-    query: &str,
-) -> Vec<AstrcodeModelOptionDto> {
+fn filter_model_options(options: &[ModelOptionDto], query: &str) -> Vec<ModelOptionDto> {
     let mut items = options
         .iter()
         .filter(|option| {
@@ -1058,8 +1050,8 @@ mod tests {
     };
 
     use astrcode_client::{
-        AstrcodeClientTransport, AstrcodePhaseDto, AstrcodeSseEvent, AstrcodeTransportError,
-        AstrcodeTransportMethod, AstrcodeTransportRequest, AstrcodeTransportResponse,
+        ClientTransport, PhaseDto, SseEvent, TransportError, TransportMethod, TransportRequest,
+        TransportResponse,
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -1076,8 +1068,8 @@ mod tests {
         working_dir: &str,
         title: &str,
         updated_at: &str,
-    ) -> AstrcodeSessionListItem {
-        AstrcodeSessionListItem {
+    ) -> SessionListItem {
+        SessionListItem {
             session_id: session_id.to_string(),
             working_dir: working_dir.to_string(),
             display_name: title.to_string(),
@@ -1086,7 +1078,7 @@ mod tests {
             updated_at: updated_at.to_string(),
             parent_session_id: None,
             parent_storage_seq: None,
-            phase: AstrcodePhaseDto::Idle,
+            phase: PhaseDto::Idle,
         }
     }
 
@@ -1115,12 +1107,12 @@ mod tests {
     #[derive(Debug)]
     enum MockCall {
         Request {
-            expected: AstrcodeTransportRequest,
-            result: Result<AstrcodeTransportResponse, AstrcodeTransportError>,
+            expected: TransportRequest,
+            result: Result<TransportResponse, TransportError>,
         },
         Stream {
-            expected: AstrcodeTransportRequest,
-            events: Vec<Result<AstrcodeSseEvent, AstrcodeTransportError>>,
+            expected: TransportRequest,
+            events: Vec<Result<SseEvent, TransportError>>,
         },
     }
 
@@ -1146,11 +1138,11 @@ mod tests {
     }
 
     #[async_trait]
-    impl AstrcodeClientTransport for MockTransport {
+    impl ClientTransport for MockTransport {
         async fn execute(
             &self,
-            request: AstrcodeTransportRequest,
-        ) -> Result<AstrcodeTransportResponse, AstrcodeTransportError> {
+            request: TransportRequest,
+        ) -> Result<TransportResponse, TransportError> {
             let Some(MockCall::Request { expected, result }) =
                 self.calls.lock().expect("mock lock poisoned").pop_front()
             else {
@@ -1162,12 +1154,10 @@ mod tests {
 
         async fn open_sse(
             &self,
-            request: AstrcodeTransportRequest,
+            request: TransportRequest,
             buffer: usize,
-        ) -> Result<
-            tokio::sync::mpsc::Receiver<Result<AstrcodeSseEvent, AstrcodeTransportError>>,
-            AstrcodeTransportError,
-        > {
+        ) -> Result<tokio::sync::mpsc::Receiver<Result<SseEvent, TransportError>>, TransportError>
+        {
             let Some(MockCall::Stream { expected, events }) =
                 self.calls.lock().expect("mock lock poisoned").pop_front()
             else {
@@ -1196,8 +1186,8 @@ mod tests {
         )
     }
 
-    fn snapshot_response(session_id: &str, title: &str) -> AstrcodeTransportResponse {
-        AstrcodeTransportResponse {
+    fn snapshot_response(session_id: &str, title: &str) -> TransportResponse {
+        TransportResponse {
             status: 200,
             body: json!({
                 "sessionId": session_id,
@@ -1228,7 +1218,7 @@ mod tests {
 
     async fn handle_next_action<T>(controller: &mut AppController<T>)
     where
-        T: AstrcodeClientTransport + 'static,
+        T: ClientTransport + 'static,
     {
         let action = timeout(Duration::from_millis(200), controller.actions_rx.recv())
             .await
@@ -1263,8 +1253,8 @@ mod tests {
         let created = session("session-new", "D:/repo-a", "new", "2026-04-15T12:30:00Z");
 
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Post,
+            expected: TransportRequest {
+                method: TransportMethod::Post,
                 url: "http://localhost:5529/api/sessions".to_string(),
                 auth_token: Some("session-token".to_string()),
                 query: Vec::new(),
@@ -1272,14 +1262,14 @@ mod tests {
                     "workingDir": "D:/repo-a"
                 })),
             },
-            result: Ok(AstrcodeTransportResponse {
+            result: Ok(TransportResponse {
                 status: 201,
                 body: serde_json::to_string(&created).expect("session should serialize"),
             }),
         });
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url: "http://localhost:5529/api/v1/conversation/sessions/session-new/snapshot"
                     .to_string(),
                 auth_token: Some("session-token".to_string()),
@@ -1289,8 +1279,8 @@ mod tests {
             result: Ok(snapshot_response("session-new", "new")),
         });
         transport.push(MockCall::Stream {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url: "http://localhost:5529/api/v1/conversation/sessions/session-new/stream"
                     .to_string(),
                 auth_token: Some("session-token".to_string()),
@@ -1300,14 +1290,14 @@ mod tests {
             events: Vec::new(),
         });
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url: "http://localhost:5529/api/sessions".to_string(),
                 auth_token: Some("session-token".to_string()),
                 query: Vec::new(),
                 json_body: None,
             },
-            result: Ok(AstrcodeTransportResponse {
+            result: Ok(TransportResponse {
                 status: 200,
                 body: serde_json::to_string(&vec![created.clone(), existing])
                     .expect("sessions should serialize"),
@@ -1362,8 +1352,8 @@ mod tests {
         let existing = session("session-old", "D:/repo-a", "old", "2026-04-15T10:00:00Z");
 
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Post,
+            expected: TransportRequest {
+                method: TransportMethod::Post,
                 url: "http://localhost:5529/api/sessions".to_string(),
                 auth_token: Some("session-token".to_string()),
                 query: Vec::new(),
@@ -1371,7 +1361,7 @@ mod tests {
                     "workingDir": "D:/repo-a"
                 })),
             },
-            result: Err(AstrcodeTransportError::Http {
+            result: Err(TransportError::Http {
                 status: 500,
                 body: json!({
                     "code": "transport_unavailable",
@@ -1381,14 +1371,14 @@ mod tests {
             }),
         });
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url: "http://localhost:5529/api/sessions".to_string(),
                 auth_token: Some("session-token".to_string()),
                 query: Vec::new(),
                 json_body: None,
             },
-            result: Ok(AstrcodeTransportResponse {
+            result: Ok(TransportResponse {
                 status: 200,
                 body: serde_json::to_string(&vec![existing.clone()])
                     .expect("sessions should serialize"),
@@ -1425,8 +1415,8 @@ mod tests {
     async fn submitting_prompt_restores_transcript_tail_follow_mode() {
         let transport = MockTransport::default();
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Post,
+            expected: TransportRequest {
+                method: TransportMethod::Post,
                 url: "http://localhost:5529/api/sessions/session-1/prompts".to_string(),
                 auth_token: Some("session-token".to_string()),
                 query: Vec::new(),
@@ -1434,7 +1424,7 @@ mod tests {
                     "text": "hello"
                 })),
             },
-            result: Ok(AstrcodeTransportResponse {
+            result: Ok(TransportResponse {
                 status: 202,
                 body: json!({
                     "sessionId": "session-1",
@@ -1470,8 +1460,8 @@ mod tests {
     async fn submitting_skill_slash_sends_structured_skill_invocation() {
         let transport = MockTransport::default();
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Post,
+            expected: TransportRequest {
+                method: TransportMethod::Post,
                 url: "http://localhost:5529/api/sessions/session-1/prompts".to_string(),
                 auth_token: Some("session-token".to_string()),
                 query: Vec::new(),
@@ -1483,7 +1473,7 @@ mod tests {
                     }
                 })),
             },
-            result: Ok(AstrcodeTransportResponse {
+            result: Ok(TransportResponse {
                 status: 202,
                 body: json!({
                     "sessionId": "session-1",
@@ -1507,12 +1497,12 @@ mod tests {
         );
         controller.state.conversation.active_session_id = Some("session-1".to_string());
         controller.state.conversation.slash_candidates =
-            vec![astrcode_client::AstrcodeConversationSlashCandidateDto {
+            vec![astrcode_client::ConversationSlashCandidateDto {
                 id: "review".to_string(),
                 title: "Review".to_string(),
                 description: "review skill".to_string(),
                 keywords: vec!["review".to_string()],
-                action_kind: astrcode_client::AstrcodeConversationSlashActionKindDto::InsertText,
+                action_kind: astrcode_client::ConversationSlashActionKindDto::InsertText,
                 action_value: "/review".to_string(),
             }];
         controller
@@ -1533,8 +1523,8 @@ mod tests {
         let session_two = session("session-2", "D:/repo-b", "repo-b", "2026-04-15T12:00:00Z");
 
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url: "http://localhost:5529/api/v1/conversation/sessions/session-1/snapshot"
                     .to_string(),
                 auth_token: Some("session-token".to_string()),
@@ -1544,8 +1534,8 @@ mod tests {
             result: Ok(snapshot_response("session-1", "repo-a")),
         });
         transport.push(MockCall::Stream {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url: "http://localhost:5529/api/v1/conversation/sessions/session-1/stream"
                     .to_string(),
                 auth_token: Some("session-token".to_string()),
@@ -1555,8 +1545,8 @@ mod tests {
             events: Vec::new(),
         });
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url:
                     "http://localhost:5529/api/v1/conversation/sessions/session-1/slash-candidates"
                         .to_string(),
@@ -1564,7 +1554,7 @@ mod tests {
                 query: vec![("q".to_string(), "review".to_string())],
                 json_body: None,
             },
-            result: Ok(AstrcodeTransportResponse {
+            result: Ok(TransportResponse {
                 status: 200,
                 body: json!({
                     "items": [{
@@ -1580,8 +1570,8 @@ mod tests {
             }),
         });
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Post,
+            expected: TransportRequest {
+                method: TransportMethod::Post,
                 url: "http://localhost:5529/api/sessions/session-1/compact".to_string(),
                 auth_token: Some("session-token".to_string()),
                 query: Vec::new(),
@@ -1591,7 +1581,7 @@ mod tests {
                     }
                 })),
             },
-            result: Ok(AstrcodeTransportResponse {
+            result: Ok(TransportResponse {
                 status: 202,
                 body: json!({
                     "accepted": true,
@@ -1602,22 +1592,22 @@ mod tests {
             }),
         });
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url: "http://localhost:5529/api/sessions".to_string(),
                 auth_token: Some("session-token".to_string()),
                 query: Vec::new(),
                 json_body: None,
             },
-            result: Ok(AstrcodeTransportResponse {
+            result: Ok(TransportResponse {
                 status: 200,
                 body: serde_json::to_string(&vec![session_one.clone(), session_two.clone()])
                     .expect("sessions should serialize"),
             }),
         });
         transport.push(MockCall::Request {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url: "http://localhost:5529/api/v1/conversation/sessions/session-2/snapshot"
                     .to_string(),
                 auth_token: Some("session-token".to_string()),
@@ -1627,8 +1617,8 @@ mod tests {
             result: Ok(snapshot_response("session-2", "repo-b")),
         });
         transport.push(MockCall::Stream {
-            expected: AstrcodeTransportRequest {
-                method: AstrcodeTransportMethod::Get,
+            expected: TransportRequest {
+                method: TransportMethod::Get,
                 url: "http://localhost:5529/api/v1/conversation/sessions/session-2/stream"
                     .to_string(),
                 auth_token: Some("session-token".to_string()),
@@ -1714,7 +1704,7 @@ mod tests {
                 .iter()
                 .any(|block| matches!(
                     block,
-                    astrcode_client::AstrcodeConversationBlockDto::Assistant(block)
+                    astrcode_client::ConversationBlockDto::Assistant(block)
                         if block.id == "assistant:session-2"
                 )),
             "session two snapshot should replace transcript"
@@ -1725,19 +1715,18 @@ mod tests {
             .handle_action(Action::StreamBatch {
                 session_id: "session-1".to_string(),
                 items: vec![ConversationStreamItem::Delta(Box::new(
-                    astrcode_client::AstrcodeConversationStreamEnvelopeDto {
+                    astrcode_client::ConversationStreamEnvelopeDto {
                         session_id: "session-1".to_string(),
-                        cursor: astrcode_client::AstrcodeConversationCursorDto(
-                            "cursor:old".to_string(),
-                        ),
-                        delta: astrcode_client::AstrcodeConversationDeltaDto::AppendBlock {
-                            block: astrcode_client::AstrcodeConversationBlockDto::Assistant(
-                                astrcode_client::AstrcodeConversationAssistantBlockDto {
+                        cursor: astrcode_client::ConversationCursorDto("cursor:old".to_string()),
+                        step_progress: Default::default(),
+                        delta: astrcode_client::ConversationDeltaDto::AppendBlock {
+                            block: astrcode_client::ConversationBlockDto::Assistant(
+                                astrcode_client::ConversationAssistantBlockDto {
                                     id: "assistant:stale".to_string(),
                                     turn_id: None,
-                                    status:
-                                        astrcode_client::AstrcodeConversationBlockStatusDto::Complete,
+                                    status: astrcode_client::ConversationBlockStatusDto::Complete,
                                     markdown: "stale".to_string(),
+                                    step_index: None,
                                 },
                             ),
                         },

@@ -12,7 +12,8 @@
 //! - `Interrupted`: 被用户中断
 
 use crate::{
-    AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload, UserMessageOrigin,
+    AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload, TurnTerminalKind,
+    UserMessageOrigin,
 };
 
 /// Determines the target phase for a storage event.
@@ -44,9 +45,12 @@ pub fn target_phase(event: &StorageEvent) -> Phase {
         StorageEventPayload::ToolCall { .. }
         | StorageEventPayload::ToolCallDelta { .. }
         | StorageEventPayload::ToolResult { .. } => Phase::CallingTool,
-        StorageEventPayload::TurnDone { .. } => Phase::Idle,
-        StorageEventPayload::Error { message, .. } if message == "interrupted" => {
-            Phase::Interrupted
+        StorageEventPayload::TurnDone { terminal_kind, .. } => {
+            if matches!(terminal_kind, Some(TurnTerminalKind::Cancelled)) {
+                Phase::Interrupted
+            } else {
+                Phase::Idle
+            }
         },
         StorageEventPayload::Error { .. } => Phase::Idle,
     }
@@ -71,8 +75,8 @@ pub fn normalize_recovered_phase(phase: Phase) -> Phase {
 /// 这是 SSE 推送和前端状态指示器的唯一 phase 来源。
 ///
 /// 关键设计：
-/// - 内部唤醒消息（AutoContinueNudge / QueuedInput / ContinuationPrompt / ReactivationPrompt /
-///   RecentUserContextDigest / RecentUserContext / CompactSummary）不触发 phase 变更，避免 UI 闪烁
+/// - 内部唤醒消息（QueuedInput / ContinuationPrompt / ReactivationPrompt / RecentUserContextDigest
+///   / RecentUserContext / CompactSummary）不触发 phase 变更，避免 UI 闪烁
 /// - 辅助事件（PromptMetrics / CompactApplied / SubRun 等）也不触发 phase 变更
 /// - `force_to` 用于 SessionStart → Idle 和 TurnDone → Idle 这类必须变更的场景
 pub struct PhaseTracker {
@@ -97,8 +101,7 @@ impl PhaseTracker {
         if matches!(
             &event.payload,
             StorageEventPayload::UserMessage {
-                origin: UserMessageOrigin::AutoContinueNudge
-                    | UserMessageOrigin::QueuedInput
+                origin: UserMessageOrigin::QueuedInput
                     | UserMessageOrigin::ContinuationPrompt
                     | UserMessageOrigin::ReactivationPrompt
                     | UserMessageOrigin::RecentUserContextDigest
@@ -219,10 +222,6 @@ mod tests {
             Phase::Idle
         );
         assert_eq!(
-            target_phase(&user_message(UserMessageOrigin::AutoContinueNudge)),
-            Phase::Idle
-        );
-        assert_eq!(
             target_phase(&user_message(UserMessageOrigin::ContinuationPrompt)),
             Phase::Idle
         );
@@ -241,15 +240,6 @@ mod tests {
                 .is_none()
         );
         assert_eq!(tracker.current(), Phase::Idle);
-        assert!(
-            tracker
-                .on_event(
-                    &user_message(UserMessageOrigin::AutoContinueNudge),
-                    Some("turn-1".to_string()),
-                    AgentEventContext::default(),
-                )
-                .is_none()
-        );
         assert!(
             tracker
                 .on_event(

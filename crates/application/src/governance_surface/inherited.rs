@@ -16,9 +16,7 @@ pub(crate) async fn resolve_inherited_parent_messages(
     overrides: &ResolvedSubagentContextOverrides,
 ) -> Result<Vec<LlmMessage>, ApplicationError> {
     let parent_events = session_runtime
-        .session_stored_events(&astrcode_core::SessionId::from(
-            parent_session_id.to_string(),
-        ))
+        .session_stored_events(parent_session_id)
         .await
         .map_err(ApplicationError::from)?;
     let projected = project(

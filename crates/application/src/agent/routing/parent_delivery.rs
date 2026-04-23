@@ -23,12 +23,12 @@ impl AgentOrchestrationService {
         ChildSessionNotification {
             notification_id: notification_id.clone().into(),
             child_ref: child.child_ref_with_status(status),
-            kind: parent_delivery_notification_kind(payload),
+            kind: payload.notification_kind(),
             source_tool_call_id: ctx.tool_call_id().map(ToString::to_string).map(Into::into),
             delivery: Some(ParentDelivery {
                 idempotency_key: notification_id,
                 origin: ParentDeliveryOrigin::Explicit,
-                terminal_semantics: parent_delivery_terminal_semantics(payload),
+                terminal_semantics: payload.terminal_semantics(),
                 source_turn_id: Some(source_turn_id.to_string()),
                 payload: payload.clone(),
             }),
@@ -134,28 +134,6 @@ impl AgentOrchestrationService {
             )
             .await?;
         Ok(())
-    }
-}
-
-fn parent_delivery_terminal_semantics(
-    payload: &ParentDeliveryPayload,
-) -> ParentDeliveryTerminalSemantics {
-    match payload {
-        ParentDeliveryPayload::Progress(_) => ParentDeliveryTerminalSemantics::NonTerminal,
-        ParentDeliveryPayload::Completed(_)
-        | ParentDeliveryPayload::Failed(_)
-        | ParentDeliveryPayload::CloseRequest(_) => ParentDeliveryTerminalSemantics::Terminal,
-    }
-}
-
-fn parent_delivery_notification_kind(
-    payload: &ParentDeliveryPayload,
-) -> ChildSessionNotificationKind {
-    match payload {
-        ParentDeliveryPayload::Progress(_) => ChildSessionNotificationKind::ProgressSummary,
-        ParentDeliveryPayload::Completed(_) => ChildSessionNotificationKind::Delivered,
-        ParentDeliveryPayload::Failed(_) => ChildSessionNotificationKind::Failed,
-        ParentDeliveryPayload::CloseRequest(_) => ChildSessionNotificationKind::Closed,
     }
 }
 

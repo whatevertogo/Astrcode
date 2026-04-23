@@ -13,15 +13,12 @@ test-support = ["dep:tempfile"]
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
-dirs.workspace = true
 log.workspace = true
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
-toml.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

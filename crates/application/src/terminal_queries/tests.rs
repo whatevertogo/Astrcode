@@ -9,9 +9,7 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use astrcode_core::{AgentEvent, ExecutionTaskItem, ExecutionTaskStatus, TaskSnapshot};
-use astrcode_session_runtime::{
-    ConversationBlockFacts, SessionControlStateSnapshot, SessionRuntime,
-};
+use astrcode_session_runtime::{SessionControlStateSnapshot, SessionRuntime};
 use async_trait::async_trait;
 use tokio::time::timeout;
 
@@ -25,7 +23,9 @@ use crate::{
     },
     composer::ComposerSkillSummary,
     mcp::RegisterMcpServerInput,
-    terminal::{ConversationFocus, TerminalRehydrateReason, TerminalStreamFacts},
+    terminal::{
+        ConversationBlockFacts, ConversationFocus, TerminalRehydrateReason, TerminalStreamFacts,
+    },
     test_support::StubSessionPort,
 };
 
@@ -185,7 +185,7 @@ async fn terminal_stream_facts_expose_live_llm_deltas_before_durable_completion(
     else {
         panic!("fresh stream should start from replay facts");
     };
-    let mut live_receiver = replay.replay.replay.live_receiver;
+    let mut live_receiver = replay.stream.live_receiver;
 
     let accepted = harness
         .app
@@ -327,7 +327,7 @@ async fn terminal_stream_facts_returns_replay_for_valid_cursor() {
     match facts {
         TerminalStreamFacts::Replay(replay) => {
             assert_eq!(replay.active_session_id, session.session_id);
-            assert!(replay.replay.replay.history.is_empty());
+            assert!(replay.replay.history.is_empty());
             assert!(replay.replay.replay_frames.is_empty());
             assert_eq!(
                 replay
@@ -373,6 +373,54 @@ async fn terminal_stream_facts_falls_back_to_rehydrate_for_future_cursor() {
             assert_eq!(rehydrate.reason, TerminalRehydrateReason::CursorExpired);
             assert_eq!(rehydrate.requested_cursor, "999999.9");
             assert!(rehydrate.latest_cursor.is_some());
+        },
+    }
+}
+
+#[tokio::test]
+async fn terminal_stream_facts_rehydrates_when_cursor_is_missing_from_transcript() {
+    let harness = build_terminal_app_harness(&[]);
+    let project = tempfile::tempdir().expect("tempdir should be created");
+    let session = harness
+        .app
+        .create_session(project.path().display().to_string())
+        .await
+        .expect("session should be created");
+    harness
+        .app
+        .submit_prompt(&session.session_id, "hello".to_string())
+        .await
+        .expect("prompt should submit");
+
+    let transcript = harness
+        .session_runtime
+        .session_transcript_snapshot(&session.session_id)
+        .await
+        .expect("transcript snapshot should build");
+    let candidate = transcript
+        .records
+        .iter()
+        .find_map(|record| {
+            let (storage_seq, subindex) = record.event_id.split_once('.')?;
+            let subindex = subindex.parse::<u32>().ok()?;
+            Some(format!("{storage_seq}.{}", subindex.saturating_add(1)))
+        })
+        .expect("session should produce at least one durable cursor");
+
+    let facts = harness
+        .app
+        .terminal_stream_facts(&session.session_id, Some(candidate.as_str()))
+        .await
+        .expect("stream facts should build");
+
+    match facts {
+        TerminalStreamFacts::Replay(_) => {
+            panic!("missing transcript cursor should require rehydrate");
+        },
+        TerminalStreamFacts::RehydrateRequired(rehydrate) => {
+            assert_eq!(rehydrate.reason, TerminalRehydrateReason::CursorExpired);
+            assert_eq!(rehydrate.requested_cursor, candidate);
+            assert_eq!(rehydrate.latest_cursor, transcript.cursor);
         },
     }
 }
@@ -650,7 +698,7 @@ async fn terminal_control_facts_include_authoritative_active_tasks() {
             current_mode_id: astrcode_core::ModeId::code(),
             last_mode_changed_at: None,
         }),
-        active_task_snapshot: Some(TaskSnapshot {
+        active_task_snapshot: Arc::new(std::sync::Mutex::new(Some(TaskSnapshot {
             owner: astrcode_session_runtime::ROOT_AGENT_ID.to_string(),
             items: vec![
                 ExecutionTaskItem {
@@ -664,7 +712,7 @@ async fn terminal_control_facts_include_authoritative_active_tasks() {
                     active_form: None,
                 },
             ],
-        }),
+        }))),
         ..StubSessionPort::default()
     });
     let app = build_terminal_app(

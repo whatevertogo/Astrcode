@@ -1,24 +1,28 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_core::{
-    AgentEventContext, ApprovalPending, CancelToken, CapabilityCall,
-    CompletedParentDeliveryPayload, EventStore, EventTranslator, ExecutionAccepted, LlmMessage,
-    ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, ParentDeliveryTerminalSemantics,
-    Phase, PolicyContext, PromptDeclaration, ResolvedExecutionLimitsSnapshot,
-    ResolvedRuntimeConfig, ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder,
-    SessionId, StorageEvent, StorageEventPayload, StoredEvent, TurnId, UserMessageOrigin,
+    AgentEventContext, ApprovalPending, BoundModeToolContractSnapshot, CancelToken, CapabilityCall,
+    EventStore, EventTranslator, ExecutionAccepted, LlmMessage, ModeId, Phase, PolicyContext,
+    PromptDeclaration, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
+    ResolvedSubagentContextOverrides, Result, RuntimeMetricsRecorder, SessionId, TurnId,
+    UserMessageOrigin,
 };
 use astrcode_kernel::CapabilityRouter;
 use chrono::Utc;
 
 use crate::{
-    SessionRuntime, TurnOutcome,
+    SessionRuntime,
     actor::SessionActor,
-    prepare_session_execution,
-    query::current_turn_messages,
     run_turn,
-    state::{append_and_broadcast, checkpoint_if_compacted, complete_session_execution},
-    turn::events::{error_event, user_message_event},
+    turn::{
+        branch::SubmitTarget,
+        events::{turn_terminal_event, user_message_event},
+        finalize::{
+            persist_pending_manual_compact_if_any, persist_storage_events,
+            persist_subrun_finished_event, persist_turn_failure,
+        },
+        subrun_events::subrun_started_event,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,11 +47,26 @@ struct TurnExecutionTask {
     finalize: TurnFinalizeContext,
 }
 
+struct TurnCoordinator {
+    kernel: Arc<astrcode_kernel::Kernel>,
+    prompt_facts_provider: Arc<dyn astrcode_core::PromptFactsProvider>,
+    event_store: Arc<dyn EventStore>,
+    metrics: Arc<dyn RuntimeMetricsRecorder>,
+    submit_target: SubmitTarget,
+    turn_id: TurnId,
+    runtime: ResolvedRuntimeConfig,
+    live_user_input: Option<String>,
+    queued_inputs: Vec<String>,
+    submission: AgentPromptSubmission,
+}
+
 #[derive(Clone, Default)]
 pub struct AgentPromptSubmission {
     pub agent: AgentEventContext,
     pub capability_router: Option<CapabilityRouter>,
+    pub current_mode_id: ModeId,
     pub prompt_declarations: Vec<PromptDeclaration>,
+    pub bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
     pub resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
     pub resolved_overrides: Option<ResolvedSubagentContextOverrides>,
     pub injected_messages: Vec<LlmMessage>,
@@ -73,6 +92,110 @@ struct TurnFinalizeContext {
     actor: Arc<SessionActor>,
     session_id: String,
     turn_started_at: Instant,
+    generation: u64,
+    persisted: PersistedTurnContext,
+}
+
+impl TurnCoordinator {
+    async fn start(self) -> Result<ExecutionAccepted> {
+        let accepted = self.accepted();
+        let task = self.prepare().await?;
+        tokio::spawn(execute_turn_and_finalize(task));
+        Ok(accepted)
+    }
+
+    fn accepted(&self) -> ExecutionAccepted {
+        ExecutionAccepted {
+            session_id: self.submit_target.session_id.clone(),
+            turn_id: self.turn_id.clone(),
+            agent_id: None,
+            branched_from_session_id: self.submit_target.branched_from_session_id.clone(),
+        }
+    }
+
+    async fn prepare(self) -> Result<TurnExecutionTask> {
+        let Self {
+            kernel,
+            prompt_facts_provider,
+            event_store,
+            metrics,
+            submit_target,
+            turn_id,
+            runtime,
+            live_user_input,
+            queued_inputs,
+            submission,
+        } = self;
+        let cancel = CancelToken::new();
+        let generation = submit_target.actor.turn_runtime().prepare(
+            submit_target.session_id.as_str(),
+            turn_id.as_str(),
+            cancel.clone(),
+            submit_target.turn_lease,
+        )?;
+
+        let prepared = prepare_turn_submission(
+            submit_target.actor.state(),
+            turn_id.as_str(),
+            live_user_input,
+            queued_inputs,
+            submission,
+        )
+        .await;
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = submit_target.actor.turn_runtime().force_complete();
+                return Err(error);
+            },
+        };
+
+        Ok(TurnExecutionTask {
+            kernel: Arc::clone(&kernel),
+            request: crate::turn::RunnerRequest {
+                event_store: Arc::clone(&event_store),
+                session_id: submit_target.session_id.to_string(),
+                working_dir: submit_target.actor.working_dir().to_string(),
+                turn_id: turn_id.to_string(),
+                messages: prepared.messages,
+                last_assistant_at: submit_target
+                    .actor
+                    .state()
+                    .snapshot_projected_state()?
+                    .last_assistant_at,
+                session_state: Arc::clone(submit_target.actor.state()),
+                runtime,
+                cancel,
+                agent: prepared.persisted.agent.clone(),
+                current_mode_id: prepared.current_mode_id,
+                prompt_facts_provider: Arc::clone(&prompt_facts_provider),
+                capability_router: prepared.capability_router,
+                prompt_declarations: prepared.prompt_declarations,
+                bound_mode_tool_contract: prepared.bound_mode_tool_contract,
+                prompt_governance: prepared.prompt_governance,
+            },
+            finalize: TurnFinalizeContext {
+                kernel,
+                prompt_facts_provider,
+                event_store,
+                metrics,
+                actor: Arc::clone(&submit_target.actor),
+                session_id: submit_target.session_id.to_string(),
+                turn_started_at: Instant::now(),
+                generation,
+                persisted: prepared.persisted,
+            },
+        })
+    }
+}
+
+struct PreparedTurnSubmission {
+    capability_router: Option<CapabilityRouter>,
+    current_mode_id: ModeId,
+    prompt_declarations: Vec<PromptDeclaration>,
+    bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
+    prompt_governance: Option<astrcode_core::PromptGovernanceContext>,
+    messages: Vec<LlmMessage>,
     persisted: PersistedTurnContext,
 }
 
@@ -94,7 +217,6 @@ async fn finalize_turn_execution(
     finalize: TurnFinalizeContext,
     result: Result<crate::TurnRunResult>,
 ) {
-    let terminal_phase = terminal_phase_for_result(&result);
     let mut translator = EventTranslator::new(
         finalize
             .actor
@@ -105,15 +227,39 @@ async fn finalize_turn_execution(
 
     match result {
         Ok(turn_result) => {
-            persist_turn_events(
-                &finalize.event_store,
+            if !turn_result.events.is_empty() {
+                if let Err(error) = persist_storage_events(
+                    &finalize.event_store,
+                    finalize.actor.state(),
+                    &finalize.session_id,
+                    &mut translator,
+                    &turn_result.events,
+                )
+                .await
+                {
+                    log::error!(
+                        "failed to persist trailing turn events for session '{}': {}",
+                        finalize.session_id,
+                        error
+                    );
+                }
+            }
+            if let Err(error) = persist_subrun_finished_event(
                 finalize.actor.state(),
-                &finalize.session_id,
                 &mut translator,
-                turn_result,
-                &finalize.persisted,
+                &finalize.persisted.turn_id,
+                &finalize.persisted.agent,
+                &turn_result,
+                finalize.persisted.source_tool_call_id.clone(),
             )
-            .await;
+            .await
+            {
+                log::error!(
+                    "failed to persist subrun finished event for session '{}': {}",
+                    finalize.session_id,
+                    error
+                );
+            }
         },
         Err(error) if error.is_cancelled() => {
             log::warn!(
@@ -121,6 +267,26 @@ async fn finalize_turn_execution(
                 finalize.session_id,
                 error
             );
+            if let Err(append_error) = persist_storage_events(
+                &finalize.event_store,
+                finalize.actor.state(),
+                &finalize.session_id,
+                &mut translator,
+                &[turn_terminal_event(
+                    &finalize.persisted.turn_id,
+                    &finalize.persisted.agent,
+                    crate::turn::TurnStopCause::Cancelled,
+                    Utc::now(),
+                )],
+            )
+            .await
+            {
+                log::error!(
+                    "failed to persist cancelled turn terminal event for session '{}': {}",
+                    finalize.session_id,
+                    append_error
+                );
+            }
         },
         Err(error) => {
             log::error!(
@@ -134,179 +300,121 @@ async fn finalize_turn_execution(
                 &finalize.persisted.turn_id,
                 finalize.persisted.agent.clone(),
                 &mut translator,
+                finalize.persisted.source_tool_call_id.clone(),
                 error.to_string(),
             )
             .await;
         },
     }
 
-    complete_session_execution(finalize.actor.state(), terminal_phase);
-    persist_pending_manual_compact_if_any(
-        finalize.kernel.gateway(),
-        finalize.prompt_facts_provider.as_ref(),
-        &finalize.event_store,
-        finalize.actor.working_dir(),
-        finalize.actor.state(),
-        &finalize.session_id,
-    )
-    .await;
-}
-
-fn terminal_phase_for_result(result: &Result<crate::TurnRunResult>) -> Phase {
-    match result {
-        Ok(outcome) => match outcome.outcome {
-            TurnOutcome::Completed => Phase::Idle,
-            TurnOutcome::Cancelled | TurnOutcome::Error { .. } => Phase::Interrupted,
-        },
-        Err(_) => Phase::Interrupted,
-    }
-}
-
-async fn persist_turn_events(
-    event_store: &Arc<dyn EventStore>,
-    session_state: &Arc<crate::SessionState>,
-    session_id: &str,
-    translator: &mut EventTranslator,
-    turn_result: crate::TurnRunResult,
-    persisted: &PersistedTurnContext,
-) {
-    let mut persisted_events = Vec::<StoredEvent>::new();
-    for event in &turn_result.events {
-        match append_and_broadcast(session_state, event, translator).await {
-            Ok(stored) => persisted_events.push(stored),
-            Err(error) => {
-                log::error!(
-                    "failed to persist turn event for session '{}': {}",
-                    session_id,
-                    error
-                );
-                break;
-            },
-        }
-    }
-    if let Some(event) = subrun_finished_event(
-        &persisted.turn_id,
-        &persisted.agent,
-        &turn_result,
-        persisted.source_tool_call_id.clone(),
-    ) {
-        if let Err(error) = append_and_broadcast(session_state, &event, translator).await {
-            log::error!(
-                "failed to persist subrun finished event for session '{}': {}",
-                session_id,
-                error
-            );
-        }
-    }
-    checkpoint_if_compacted(
-        event_store,
-        &SessionId::from(session_id.to_string()),
-        session_state,
-        &persisted_events,
-    )
-    .await;
-}
-
-async fn persist_turn_failure(
-    session_state: &Arc<crate::SessionState>,
-    session_id: &str,
-    turn_id: &str,
-    agent: AgentEventContext,
-    translator: &mut EventTranslator,
-    message: String,
-) {
-    let failure = error_event(Some(turn_id), &agent, message, Some(Utc::now()));
-    if let Err(append_error) = append_and_broadcast(session_state, &failure, translator).await {
-        log::error!(
-            "failed to persist turn failure for session '{}': {}",
-            session_id,
-            append_error
-        );
-    }
-}
-
-async fn persist_deferred_manual_compact(
-    gateway: &astrcode_kernel::KernelGateway,
-    prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
-    event_store: &Arc<dyn EventStore>,
-    working_dir: &str,
-    session_state: &Arc<crate::SessionState>,
-    session_id: &str,
-    request: &crate::state::PendingManualCompactRequest,
-) {
-    session_state.set_compacting(true);
-    let built = crate::turn::manual_compact::build_manual_compact_events(
-        crate::turn::manual_compact::ManualCompactRequest {
-            gateway,
-            prompt_facts_provider,
-            session_state,
-            session_id,
-            working_dir: std::path::Path::new(working_dir),
-            runtime: &request.runtime,
-            trigger: astrcode_core::CompactTrigger::Deferred,
-            instructions: request.instructions.as_deref(),
-        },
-    )
-    .await;
-    session_state.set_compacting(false);
-    let events = match built {
-        Ok(Some(events)) => events,
-        Ok(None) => return,
+    let pending_manual_compact = match finalize.actor.turn_runtime().complete(finalize.generation) {
+        Ok((completed, pending)) => completed.then_some(pending).flatten(),
         Err(error) => {
             log::warn!(
-                "failed to build deferred compact for session '{}': {}",
-                session_id,
+                "failed to complete turn runtime state for session '{}': {}",
+                finalize.session_id,
                 error
             );
-            return;
+            None
         },
     };
-    let mut compact_translator =
-        EventTranslator::new(session_state.current_phase().unwrap_or(Phase::Idle));
-    let mut persisted = Vec::<StoredEvent>::with_capacity(events.len());
-    for event in &events {
-        match append_and_broadcast(session_state, event, &mut compact_translator).await {
-            Ok(stored) => persisted.push(stored),
-            Err(error) => {
-                log::warn!(
-                    "failed to persist deferred compact for session '{}': {}",
-                    session_id,
-                    error
-                );
-                break;
-            },
-        }
-    }
-    checkpoint_if_compacted(
-        event_store,
-        &SessionId::from(session_id.to_string()),
-        session_state,
-        &persisted,
+    persist_pending_manual_compact_if_any(
+        crate::turn::finalize::DeferredManualCompactContext {
+            gateway: finalize.kernel.gateway(),
+            prompt_facts_provider: finalize.prompt_facts_provider.as_ref(),
+            event_store: &finalize.event_store,
+            working_dir: finalize.actor.working_dir(),
+            turn_runtime: finalize.actor.turn_runtime(),
+            session_state: finalize.actor.state(),
+            session_id: &finalize.session_id,
+        },
+        pending_manual_compact,
     )
     .await;
 }
 
-pub(crate) async fn persist_pending_manual_compact_if_any(
-    gateway: &astrcode_kernel::KernelGateway,
-    prompt_facts_provider: &dyn astrcode_core::PromptFactsProvider,
-    event_store: &Arc<dyn EventStore>,
-    working_dir: &str,
+async fn prepare_turn_submission(
     session_state: &Arc<crate::SessionState>,
-    session_id: &str,
-) {
-    let pending_runtime = session_state.take_pending_manual_compact().ok().flatten();
-    if let Some(request) = pending_runtime {
-        persist_deferred_manual_compact(
-            gateway,
-            prompt_facts_provider,
-            event_store,
-            working_dir,
-            session_state,
-            session_id,
-            &request,
-        )
-        .await;
+    turn_id: &str,
+    live_user_input: Option<String>,
+    queued_inputs: Vec<String>,
+    submission: AgentPromptSubmission,
+) -> Result<PreparedTurnSubmission> {
+    let AgentPromptSubmission {
+        agent,
+        capability_router,
+        current_mode_id,
+        prompt_declarations,
+        bound_mode_tool_contract,
+        resolved_limits,
+        resolved_overrides,
+        injected_messages,
+        source_tool_call_id,
+        policy_context: _,
+        governance_revision: _,
+        approval: _,
+        prompt_governance,
+    } = submission;
+
+    let mut translator = EventTranslator::new(session_state.current_phase()?);
+    for content in &queued_inputs {
+        let queued_event = user_message_event(
+            turn_id,
+            &agent,
+            content.clone(),
+            UserMessageOrigin::QueuedInput,
+            Utc::now(),
+        );
+        session_state
+            .append_and_broadcast(&queued_event, &mut translator)
+            .await?;
     }
+    if let Some(text) = &live_user_input {
+        let user_message = user_message_event(
+            turn_id,
+            &agent,
+            text.clone(),
+            UserMessageOrigin::User,
+            Utc::now(),
+        );
+        session_state
+            .append_and_broadcast(&user_message, &mut translator)
+            .await?;
+    }
+    if let Some(event) = subrun_started_event(
+        turn_id,
+        &agent,
+        resolved_limits.clone(),
+        resolved_overrides.clone(),
+        source_tool_call_id.clone(),
+    ) {
+        session_state
+            .append_and_broadcast(&event, &mut translator)
+            .await?;
+    }
+    let mut messages = session_state.current_turn_messages()?;
+    if !injected_messages.is_empty() {
+        let insert_at = if live_user_input.is_some() {
+            messages.len().saturating_sub(1)
+        } else {
+            messages.len()
+        };
+        messages.splice(insert_at..insert_at, injected_messages);
+    }
+
+    Ok(PreparedTurnSubmission {
+        capability_router,
+        current_mode_id,
+        prompt_declarations,
+        bound_mode_tool_contract,
+        prompt_governance,
+        messages,
+        persisted: PersistedTurnContext {
+            turn_id: turn_id.to_string(),
+            agent,
+            source_tool_call_id,
+        },
+    })
 }
 
 impl SessionRuntime {
@@ -459,7 +567,6 @@ impl SessionRuntime {
 
         let requested_session_id = SessionId::from(crate::state::normalize_session_id(&session_id));
         let turn_id = turn_id.unwrap_or_else(|| TurnId::from(astrcode_core::generate_turn_id()));
-        let cancel = CancelToken::new();
         let submit_target = match busy_policy {
             SubmitBusyPolicy::BranchOnBusy => Some(
                 self.resolve_submit_target(
@@ -481,248 +588,53 @@ impl SessionRuntime {
             return Ok(None);
         };
 
-        let AgentPromptSubmission {
-            agent,
-            capability_router,
-            prompt_declarations,
-            resolved_limits,
-            resolved_overrides,
-            injected_messages,
-            source_tool_call_id,
-            policy_context: _,
-            governance_revision: _,
-            approval: _,
-            prompt_governance,
-        } = submission;
-
-        prepare_session_execution(
-            submit_target.actor.state(),
-            submit_target.session_id.as_str(),
-            turn_id.as_str(),
-            cancel.clone(),
-            submit_target.turn_lease,
-        )?;
-        *submit_target
-            .actor
-            .state()
-            .phase
-            .lock()
-            .map_err(|_| astrcode_core::AstrError::LockPoisoned("session phase".to_string()))? =
-            Phase::Thinking;
-
-        let mut translator = EventTranslator::new(submit_target.actor.state().current_phase()?);
-        for content in &queued_inputs {
-            let queued_event = user_message_event(
-                turn_id.as_str(),
-                &agent,
-                content.clone(),
-                UserMessageOrigin::QueuedInput,
-                Utc::now(),
-            );
-            append_and_broadcast(submit_target.actor.state(), &queued_event, &mut translator)
-                .await?;
-        }
-        if let Some(text) = &live_user_input {
-            let user_message = user_message_event(
-                turn_id.as_str(),
-                &agent,
-                text.clone(),
-                UserMessageOrigin::User,
-                Utc::now(),
-            );
-            append_and_broadcast(submit_target.actor.state(), &user_message, &mut translator)
-                .await?;
-        }
-        if let Some(event) = subrun_started_event(
-            turn_id.as_str(),
-            &agent,
-            resolved_limits.clone(),
-            resolved_overrides.clone(),
-            source_tool_call_id.clone(),
-        ) {
-            append_and_broadcast(submit_target.actor.state(), &event, &mut translator).await?;
-        }
-        let mut messages = current_turn_messages(submit_target.actor.state())?;
-        if !injected_messages.is_empty() {
-            let insert_at = if live_user_input.is_some() {
-                messages.len().saturating_sub(1)
-            } else {
-                messages.len()
-            };
-            messages.splice(insert_at..insert_at, injected_messages);
-        }
-
-        tokio::spawn(execute_turn_and_finalize(TurnExecutionTask {
-            kernel: Arc::clone(&self.kernel),
-            request: crate::turn::RunnerRequest {
-                session_id: submit_target.session_id.to_string(),
-                working_dir: submit_target.actor.working_dir().to_string(),
-                turn_id: turn_id.to_string(),
-                messages,
-                last_assistant_at: submit_target
-                    .actor
-                    .state()
-                    .snapshot_projected_state()?
-                    .last_assistant_at,
-                session_state: Arc::clone(submit_target.actor.state()),
-                runtime,
-                cancel: cancel.clone(),
-                agent: agent.clone(),
-                prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
-                capability_router,
-                prompt_declarations,
-                prompt_governance,
-            },
-            finalize: TurnFinalizeContext {
+        Ok(Some(
+            TurnCoordinator {
                 kernel: Arc::clone(&self.kernel),
                 prompt_facts_provider: Arc::clone(&self.prompt_facts_provider),
                 event_store: Arc::clone(&self.event_store),
                 metrics: Arc::clone(&self.metrics),
-                actor: Arc::clone(&submit_target.actor),
-                session_id: submit_target.session_id.to_string(),
-                turn_started_at: Instant::now(),
-                persisted: PersistedTurnContext {
-                    turn_id: turn_id.to_string(),
-                    agent: agent.clone(),
-                    source_tool_call_id,
-                },
-            },
-        }));
-
-        Ok(Some(ExecutionAccepted {
-            session_id: submit_target.session_id,
-            turn_id,
-            agent_id: None,
-            branched_from_session_id: submit_target.branched_from_session_id,
-        }))
+                submit_target,
+                turn_id,
+                runtime,
+                live_user_input,
+                queued_inputs,
+                submission,
+            }
+            .start()
+            .await?,
+        ))
     }
-}
-
-fn subrun_started_event(
-    turn_id: &str,
-    agent: &AgentEventContext,
-    resolved_limits: Option<ResolvedExecutionLimitsSnapshot>,
-    resolved_overrides: Option<ResolvedSubagentContextOverrides>,
-    source_tool_call_id: Option<String>,
-) -> Option<StorageEvent> {
-    if agent.invocation_kind != Some(astrcode_core::InvocationKind::SubRun) {
-        return None;
-    }
-
-    Some(StorageEvent {
-        turn_id: Some(turn_id.to_string()),
-        agent: agent.clone(),
-        payload: StorageEventPayload::SubRunStarted {
-            tool_call_id: source_tool_call_id,
-            resolved_overrides: resolved_overrides.unwrap_or_default(),
-            resolved_limits: resolved_limits.unwrap_or_default(),
-            timestamp: Some(Utc::now()),
-        },
-    })
-}
-
-fn subrun_finished_event(
-    turn_id: &str,
-    agent: &AgentEventContext,
-    turn_result: &crate::TurnRunResult,
-    source_tool_call_id: Option<String>,
-) -> Option<StorageEvent> {
-    if agent.invocation_kind != Some(astrcode_core::InvocationKind::SubRun) {
-        return None;
-    }
-
-    let summary = turn_result
-        .messages
-        .iter()
-        .rev()
-        .find_map(|message| match message {
-            astrcode_core::LlmMessage::Assistant { content, .. } if !content.trim().is_empty() => {
-                Some(content.trim().to_string())
-            },
-            _ => None,
-        })
-        .unwrap_or_else(|| match &turn_result.outcome {
-            crate::TurnOutcome::Completed => "子 Agent 已完成，但没有返回可读总结。".to_string(),
-            crate::TurnOutcome::Cancelled => "子 Agent 已关闭。".to_string(),
-            crate::TurnOutcome::Error { message } => message.trim().to_string(),
-        });
-
-    let result = match &turn_result.outcome {
-        crate::TurnOutcome::Completed => astrcode_core::SubRunResult::Completed {
-            outcome: astrcode_core::CompletedSubRunOutcome::Completed,
-            handoff: astrcode_core::SubRunHandoff {
-                findings: Vec::new(),
-                artifacts: Vec::new(),
-                delivery: Some(ParentDelivery {
-                    idempotency_key: format!(
-                        "subrun-finished:{}:{}",
-                        agent.sub_run_id.as_deref().unwrap_or("unknown-subrun"),
-                        turn_id
-                    ),
-                    origin: ParentDeliveryOrigin::Fallback,
-                    terminal_semantics: ParentDeliveryTerminalSemantics::Terminal,
-                    source_turn_id: Some(turn_id.to_string()),
-                    payload: ParentDeliveryPayload::Completed(CompletedParentDeliveryPayload {
-                        message: summary,
-                        findings: Vec::new(),
-                        artifacts: Vec::new(),
-                    }),
-                }),
-            },
-        },
-        crate::TurnOutcome::Cancelled => astrcode_core::SubRunResult::Failed {
-            outcome: astrcode_core::FailedSubRunOutcome::Cancelled,
-            failure: astrcode_core::SubRunFailure {
-                code: astrcode_core::SubRunFailureCode::Interrupted,
-                display_message: summary,
-                technical_message: "interrupted".to_string(),
-                retryable: false,
-            },
-        },
-        crate::TurnOutcome::Error { message } => astrcode_core::SubRunResult::Failed {
-            outcome: astrcode_core::FailedSubRunOutcome::Failed,
-            failure: astrcode_core::SubRunFailure {
-                code: astrcode_core::SubRunFailureCode::Internal,
-                display_message: summary,
-                technical_message: message.clone(),
-                retryable: true,
-            },
-        },
-    };
-
-    Some(StorageEvent {
-        turn_id: Some(turn_id.to_string()),
-        agent: agent.clone(),
-        payload: StorageEventPayload::SubRunFinished {
-            tool_call_id: source_tool_call_id,
-            result,
-            step_count: turn_result.summary.step_count as u32,
-            estimated_tokens: turn_result.summary.total_tokens_used,
-            timestamp: Some(Utc::now()),
-        },
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::Duration,
     };
 
     use astrcode_core::{
-        LlmFinishReason, LlmMessage, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
+        CancelToken, LlmFinishReason, LlmMessage, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
         PromptBuildOutput, PromptBuildRequest, PromptProvider, ResourceProvider,
-        ResourceReadResult, ResourceRequestContext, StorageEventPayload, UserMessageOrigin,
+        ResourceReadResult, ResourceRequestContext, SessionTurnLease, StorageEventPayload, Tool,
+        ToolContext, ToolDefinition, ToolExecutionResult, UserMessageOrigin,
     };
-    use astrcode_kernel::Kernel;
+    use astrcode_kernel::{Kernel, ToolCapabilityInvoker};
     use async_trait::async_trait;
+    use serde_json::json;
+    use tokio::time::timeout;
 
     use super::*;
     use crate::{
-        TurnCollaborationSummary, TurnFinishReason, TurnRunResult, TurnSummary,
+        TurnCollaborationSummary, TurnFinishReason, TurnOutcome, TurnRunResult, TurnSummary,
         turn::{
             TurnLoopTransition, TurnStopCause,
+            events::turn_done_event,
+            subrun_events::subrun_finished_event,
             test_support::{
                 BranchingTestEventStore, NoopMetrics, append_root_turn_event_to_actor,
                 assert_contains_compact_summary, assert_contains_error_message, test_actor,
@@ -733,6 +645,10 @@ mod tests {
 
     #[derive(Debug)]
     struct SummaryLlmProvider;
+
+    struct StubTurnLease;
+
+    impl SessionTurnLease for StubTurnLease {}
 
     #[async_trait]
     impl LlmProvider for SummaryLlmProvider {
@@ -748,6 +664,7 @@ mod tests {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::Stop,
+                prompt_cache_diagnostics: None,
             })
         }
 
@@ -805,7 +722,35 @@ mod tests {
         )
     }
 
+    fn step_flush_kernel(provider: Arc<StepFlushLlmProvider>) -> Arc<Kernel> {
+        let router = astrcode_kernel::CapabilityRouter::builder()
+            .register_invoker(Arc::new(
+                ToolCapabilityInvoker::new(Arc::new(StepFlushProbeTool))
+                    .expect("tool invoker should build"),
+            ))
+            .build()
+            .expect("router should build");
+        Arc::new(
+            Kernel::builder()
+                .with_capabilities(router)
+                .with_llm_provider(provider)
+                .with_prompt_provider(Arc::new(TestPromptProvider))
+                .with_resource_provider(Arc::new(TestResourceProvider))
+                .build()
+                .expect("kernel should build"),
+        )
+    }
+
     fn finalize_context(actor: Arc<SessionActor>) -> TurnFinalizeContext {
+        let generation = actor
+            .turn_runtime()
+            .prepare(
+                "session-1",
+                "turn-1",
+                CancelToken::new(),
+                Box::new(StubTurnLease),
+            )
+            .expect("turn runtime should prepare for finalize");
         TurnFinalizeContext {
             kernel: summary_kernel(),
             prompt_facts_provider: Arc::new(crate::turn::test_support::NoopPromptFactsProvider),
@@ -814,6 +759,7 @@ mod tests {
             actor,
             session_id: "session-1".to_string(),
             turn_started_at: Instant::now(),
+            generation,
             persisted: PersistedTurnContext {
                 turn_id: "turn-1".to_string(),
                 agent: AgentEventContext::default(),
@@ -844,7 +790,85 @@ mod tests {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::Stop,
+                prompt_cache_diagnostics: None,
             })
+        }
+
+        fn model_limits(&self) -> ModelLimits {
+            ModelLimits {
+                context_window: 64_000,
+                max_output_tokens: 8_000,
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct StepFlushProbeTool;
+
+    #[async_trait]
+    impl Tool for StepFlushProbeTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "step_flush_probe".to_string(),
+                description: "records whether completed steps survive later cancellation"
+                    .to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            tool_call_id: String,
+            _input: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolExecutionResult> {
+            Ok(ToolExecutionResult {
+                tool_call_id,
+                tool_name: "step_flush_probe".to_string(),
+                ok: true,
+                output: "step flushed result".to_string(),
+                error: None,
+                metadata: None,
+                continuation: None,
+                duration_ms: 0,
+                truncated: false,
+            })
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct StepFlushLlmProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LlmProvider for StepFlushLlmProvider {
+        async fn generate(
+            &self,
+            request: LlmRequest,
+            _sink: Option<astrcode_core::LlmEventSink>,
+        ) -> Result<LlmOutput> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => Ok(LlmOutput {
+                    content: String::new(),
+                    tool_calls: vec![astrcode_core::ToolCallRequest {
+                        id: "call-step-1".to_string(),
+                        name: "step_flush_probe".to_string(),
+                        args: json!({}),
+                    }],
+                    reasoning: None,
+                    usage: None,
+                    finish_reason: LlmFinishReason::ToolCalls,
+                    prompt_cache_diagnostics: None,
+                }),
+                1 => loop {
+                    if request.cancel.is_cancelled() {
+                        return Err(astrcode_core::AstrError::Cancelled);
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                },
+                call_index => panic!("unexpected llm call index {call_index}"),
+            }
         }
 
         fn model_limits(&self) -> ModelLimits {
@@ -859,14 +883,19 @@ mod tests {
         TurnRunResult {
             outcome: TurnOutcome::Completed,
             messages: Vec::new(),
-            events: Vec::new(),
+            events: vec![turn_done_event(
+                "turn-1",
+                &AgentEventContext::default(),
+                Some(astrcode_core::TurnTerminalKind::Completed),
+                None,
+                chrono::Utc::now(),
+            )],
             summary: TurnSummary {
                 finish_reason: TurnFinishReason::NaturalEnd,
                 stop_cause: TurnStopCause::Completed,
                 last_transition: Some(TurnLoopTransition::ToolCycleCompleted),
                 wall_duration: Duration::default(),
                 step_count: 1,
-                continuation_count: 0,
                 total_tokens_used: 0,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
@@ -902,7 +931,7 @@ mod tests {
                 .state()
                 .current_phase()
                 .expect("phase should be readable"),
-            Phase::Interrupted
+            Phase::Idle
         );
         let stored = actor
             .state()
@@ -925,8 +954,8 @@ mod tests {
         )
         .await;
         actor
-            .state()
-            .request_manual_compact(crate::state::PendingManualCompactRequest {
+            .turn_runtime()
+            .request_manual_compact(crate::turn::PendingManualCompactRequest {
                 runtime: ResolvedRuntimeConfig::default(),
                 instructions: None,
             })
@@ -966,8 +995,8 @@ mod tests {
         )
         .await;
         actor
-            .state()
-            .request_manual_compact(crate::state::PendingManualCompactRequest {
+            .turn_runtime()
+            .request_manual_compact(crate::turn::PendingManualCompactRequest {
                 runtime: ResolvedRuntimeConfig::default(),
                 instructions: None,
             })
@@ -984,7 +1013,7 @@ mod tests {
                 .state()
                 .current_phase()
                 .expect("phase should be readable"),
-            Phase::Interrupted
+            Phase::Idle
         );
         let stored = actor
             .state()
@@ -1257,6 +1286,115 @@ mod tests {
                 && inherited_answer == "parent answer"
                 && child_task == "child task"
         ));
+    }
+
+    #[tokio::test]
+    async fn submit_prompt_inner_persists_completed_step_before_later_cancellation() {
+        let event_store = Arc::new(BranchingTestEventStore::default());
+        let provider = Arc::new(StepFlushLlmProvider::default());
+        let runtime = SessionRuntime::new(
+            step_flush_kernel(Arc::clone(&provider)),
+            Arc::new(crate::turn::test_support::NoopPromptFactsProvider),
+            event_store.clone() as Arc<dyn EventStore>,
+            Arc::new(NoopMetrics),
+        );
+        let session = runtime
+            .create_session(".")
+            .await
+            .expect("test session should be created");
+
+        let accepted = runtime
+            .submit_prompt_inner(SubmitPromptRequest {
+                session_id: session.session_id.clone(),
+                turn_id: None,
+                live_user_input: Some("hello".to_string()),
+                queued_inputs: Vec::new(),
+                runtime: ResolvedRuntimeConfig::default(),
+                busy_policy: SubmitBusyPolicy::RejectOnBusy,
+                submission: AgentPromptSubmission::default(),
+            })
+            .await
+            .expect("submit should not error")
+            .expect("submit should be accepted");
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if provider.calls.load(Ordering::SeqCst) >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("turn should advance into the second llm step before cancellation");
+
+        let actor = runtime
+            .ensure_loaded_session(&accepted.session_id)
+            .await
+            .expect("session actor should load");
+        assert!(
+            actor
+                .turn_runtime()
+                .interrupt_if_running()
+                .expect("interrupt should succeed")
+                .is_some(),
+            "turn should still be running while the second llm step is blocked"
+        );
+
+        let snapshot = runtime
+            .wait_for_turn_terminal_snapshot(
+                accepted.session_id.as_str(),
+                accepted.turn_id.as_str(),
+            )
+            .await
+            .expect("cancelled turn should still reach a terminal snapshot");
+
+        assert!(snapshot.events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::ToolCall { tool_call_id, tool_name, .. }
+                if tool_call_id == "call-step-1" && tool_name == "step_flush_probe"
+        )));
+        assert!(snapshot.events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::ToolResult { tool_call_id, output, .. }
+                if tool_call_id == "call-step-1" && output == "step flushed result"
+        )));
+        assert!(snapshot.events.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::TurnDone { terminal_kind, .. }
+                if *terminal_kind == Some(astrcode_core::TurnTerminalKind::Cancelled)
+        )));
+    }
+
+    #[tokio::test]
+    async fn prepare_turn_submission_preserves_bound_mode_tool_contract_snapshot() {
+        let actor = test_actor().await;
+        let prepared = prepare_turn_submission(
+            actor.state(),
+            "turn-1",
+            Some("hello".to_string()),
+            Vec::new(),
+            AgentPromptSubmission {
+                current_mode_id: "plan".into(),
+                bound_mode_tool_contract: Some(BoundModeToolContractSnapshot {
+                    mode_id: "plan".into(),
+                    artifact: None,
+                    exit_gate: None,
+                }),
+                ..AgentPromptSubmission::default()
+            },
+        )
+        .await
+        .expect("submission should prepare");
+
+        assert_eq!(prepared.current_mode_id.as_str(), "plan");
+        assert_eq!(
+            prepared
+                .bound_mode_tool_contract
+                .as_ref()
+                .map(|snapshot| snapshot.mode_id.as_str()),
+            Some("plan")
+        );
     }
 
     #[test]

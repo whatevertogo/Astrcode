@@ -20,8 +20,9 @@ use std::{
 
 use astrcode_core::{
     AstrError, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata, tool_result_persist::maybe_persist_tool_result,
+    ToolExecutionResult, ToolPromptMetadata,
 };
+use astrcode_support::tool_results::maybe_persist_tool_result;
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;

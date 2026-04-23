@@ -1,7 +1,7 @@
 import { isTauri as coreIsTauri } from '@tauri-apps/api/core';
 
 const TAURI_UNAVAILABLE_MESSAGE =
-  'Tauri IPC 不可用。当前运行在浏览器调试模式；如需桌面能力，请使用 cargo tauri dev 启动桌面应用。';
+  'Tauri IPC 不可用。当前运行在浏览器调试模式；如需桌面能力，请使用 `npm run dev:tauri` 启动桌面应用。';
 const TAURI_WAIT_TIMEOUT_MS = 8000;
 const TAURI_WAIT_INTERVAL_MS = 50;
 

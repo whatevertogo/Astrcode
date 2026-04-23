@@ -168,7 +168,7 @@ pub struct CapabilitySpec {
 - 但职责上仍然只是 transport DTO
 - 运行时内部的 prompt、router、policy、plugin supervisor 决策都应围绕 `CapabilitySpec`
 
-### 2. 事件驱动架构
+### 2. 事件溯源架构
 
 采用 **Event Sourcing** 模式：
 - 所有状态变更记录为不可变事件

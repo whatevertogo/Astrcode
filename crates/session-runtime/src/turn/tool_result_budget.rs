@@ -11,8 +11,8 @@ use std::{
 
 use astrcode_core::{
     LlmMessage, PersistedToolOutput, Result, StorageEventPayload, is_persisted_output,
-    persist_tool_result,
 };
+use astrcode_support::{hostpaths::project_dir, tool_results::persist_tool_result};
 
 use crate::{SessionState, turn::events::tool_result_reference_applied_event};
 
@@ -249,9 +249,7 @@ fn trailing_tool_batch_start(messages: &[LlmMessage]) -> Option<usize> {
 }
 
 fn resolve_session_dir(working_dir: &Path, session_id: &str) -> Result<PathBuf> {
-    Ok(astrcode_core::project::project_dir(working_dir)?
-        .join("sessions")
-        .join(session_id))
+    Ok(project_dir(working_dir)?.join("sessions").join(session_id))
 }
 
 #[cfg(test)]

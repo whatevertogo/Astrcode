@@ -60,6 +60,7 @@ fn extractor_reads_session_jsonl_file_from_disk() {
             agent: AgentEventContext::root_execution("agent-root", "default"),
             payload: StorageEventPayload::TurnDone {
                 timestamp: Utc.with_ymd_and_hms(2026, 4, 20, 8, 0, 2).unwrap(),
+                terminal_kind: None,
                 reason: Some("completed".to_string()),
             },
         },
@@ -85,6 +86,7 @@ fn extractor_reads_session_jsonl_file_from_disk() {
             agent: AgentEventContext::root_execution("agent-root", "default"),
             payload: StorageEventPayload::TurnDone {
                 timestamp: Utc.with_ymd_and_hms(2026, 4, 20, 8, 1, 5).unwrap(),
+                terminal_kind: None,
                 reason: Some("completed".to_string()),
             },
         },

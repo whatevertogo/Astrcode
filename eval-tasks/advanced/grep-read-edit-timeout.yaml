@@ -1,0 +1,17 @@
+task_id: grep-read-edit-timeout
+description: 先定位再读取并修改超时常量，覆盖工具链编排。
+prompt: |
+  先定位 REQUEST_TIMEOUT_MS，再读取 src/settings.ts，把它改成 4500。
+workspace:
+  setup: ../fixtures/grep-read-edit-timeout
+expected_outcome:
+  tool_pattern:
+    - Grep
+    - Read
+    - Edit
+  max_tool_calls: 3
+  max_turns: 1
+  file_changes:
+    - path: src/settings.ts
+      exact: "export const REQUEST_TIMEOUT_MS = 4500;\n"
+

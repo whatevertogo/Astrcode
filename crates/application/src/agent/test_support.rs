@@ -36,9 +36,49 @@ pub(crate) struct AgentTestHarness {
     pub(crate) session_runtime: Arc<SessionRuntime>,
     pub(crate) service: AgentOrchestrationService,
     pub(crate) metrics: Arc<RuntimeObservabilityCollector>,
-    pub(crate) event_store: Arc<InMemoryEventStore>,
+
     pub(crate) config_service: Arc<ConfigService>,
     pub(crate) profiles: Arc<ProfileResolutionService>,
+}
+
+impl AgentTestHarness {
+    pub(crate) async fn append_events_to_session(
+        &self,
+        session_id: &str,
+        phase: Phase,
+        events: &[StorageEvent],
+    ) -> Result<()> {
+        let state = self
+            .session_runtime
+            .get_session_state(&SessionId::from(session_id.to_string()))
+            .await?;
+        let mut translator = astrcode_core::EventTranslator::new(phase);
+        for event in events {
+            let stored = state.writer.clone().append(event.clone()).await?;
+            let records = state.translate_store_and_cache(&stored, &mut translator)?;
+            for record in records {
+                let _ = state.broadcaster.send(record);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn prepare_busy_turn(&self, session_id: &str, turn_id: &str) -> Result<u64> {
+        self.session_runtime
+            .prepare_test_turn_runtime(session_id, turn_id)
+            .await
+    }
+
+    pub(crate) async fn complete_turn_state(
+        &self,
+        session_id: &str,
+        generation: u64,
+        _phase: Phase,
+    ) -> Result<()> {
+        self.session_runtime
+            .complete_test_turn_runtime(session_id, generation)
+            .await
+    }
 }
 
 pub(crate) fn build_agent_test_harness(llm_behavior: TestLlmBehavior) -> Result<AgentTestHarness> {
@@ -99,7 +139,6 @@ pub(crate) fn build_agent_test_harness_with_agent_config(
         session_runtime,
         service,
         metrics,
-        event_store,
         config_service,
         profiles,
     })
@@ -112,8 +151,6 @@ pub(crate) fn sample_profile(id: &str) -> AgentProfile {
         description: format!("test profile {id}"),
         mode: AgentMode::SubAgent,
         system_prompt: Some(format!("你是 {id}")),
-        allowed_tools: Vec::new(),
-        disallowed_tools: Vec::new(),
         model_preference: None,
     }
 }
@@ -175,11 +212,8 @@ impl AgentTestEnvGuard {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp_home = tempfile::tempdir().expect("temp home should be created");
-        let previous_test_home = std::env::var_os(astrcode_core::home::ASTRCODE_TEST_HOME_ENV);
-        std::env::set_var(
-            astrcode_core::home::ASTRCODE_TEST_HOME_ENV,
-            temp_home.path(),
-        );
+        let previous_test_home = std::env::var_os(astrcode_core::env::ASTRCODE_TEST_HOME_ENV);
+        std::env::set_var(astrcode_core::env::ASTRCODE_TEST_HOME_ENV, temp_home.path());
         Self {
             _lock: lock,
             _temp_home: temp_home,
@@ -191,8 +225,8 @@ impl AgentTestEnvGuard {
 impl Drop for AgentTestEnvGuard {
     fn drop(&mut self) {
         match &self.previous_test_home {
-            Some(value) => std::env::set_var(astrcode_core::home::ASTRCODE_TEST_HOME_ENV, value),
-            None => std::env::remove_var(astrcode_core::home::ASTRCODE_TEST_HOME_ENV),
+            Some(value) => std::env::set_var(astrcode_core::env::ASTRCODE_TEST_HOME_ENV, value),
+            None => std::env::remove_var(astrcode_core::env::ASTRCODE_TEST_HOME_ENV),
         }
     }
 }
@@ -238,6 +272,7 @@ impl LlmProvider for TestLlmProvider {
                 reasoning: None,
                 usage: None,
                 finish_reason: LlmFinishReason::Stop,
+                prompt_cache_diagnostics: None,
             }),
             TestLlmBehavior::Stream {
                 reasoning_chunks,
@@ -262,6 +297,7 @@ impl LlmProvider for TestLlmProvider {
                     }),
                     usage: None,
                     finish_reason: LlmFinishReason::Stop,
+                    prompt_cache_diagnostics: None,
                 })
             },
             TestLlmBehavior::Fail { message } => {

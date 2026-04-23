@@ -47,7 +47,6 @@ async fn spawn_direct_child(
                 description: "检查 crates".to_string(),
                 prompt: "请检查 crates 目录".to_string(),
                 context: None,
-                capability_grant: None,
             },
             &parent_ctx,
         )
@@ -609,7 +608,6 @@ async fn close_reports_cascade_scope_for_descendants() {
                 description: "进一步检查".to_string(),
                 prompt: "请进一步检查测试覆盖".to_string(),
                 context: None,
-                capability_grant: None,
             },
             &child_ctx,
         )

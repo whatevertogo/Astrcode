@@ -88,6 +88,8 @@ pub struct EvalReport {
     pub summary: EvalReportSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<EvalBaselineComparison>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 pub struct ReportWriter;
@@ -134,6 +136,7 @@ impl ReportWriter {
                 avg_estimated_tokens,
             },
             baseline: None,
+            warnings: Vec::new(),
         }
     }
 

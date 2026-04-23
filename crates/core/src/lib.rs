@@ -40,9 +40,8 @@
 //! ### 基础设施
 //!
 //! - [`env`][]: 环境变量解析
-//! - [`home`][]: 主目录管理
 //! - [`local_server`][]: 本地服务器信息
-//! - [`project`][]: 项目信息
+//! - [`project`][]: 项目标识与目录名算法
 //! - [`shell`][]: Shell 检测与解析
 //! - [`tool_result_persist`][]: 工具结果持久化
 
@@ -59,7 +58,6 @@ pub mod event;
 mod execution_control;
 mod execution_result;
 mod execution_task;
-pub mod home;
 pub mod hook;
 pub mod ids;
 pub mod local_server;
@@ -88,6 +86,7 @@ pub mod support;
 pub mod test_support;
 mod tool;
 pub mod tool_result_persist;
+mod workflow;
 
 pub use action::{
     AssistantContentParts, LlmMessage, ReasoningContent, ToolCallRequest, ToolDefinition,
@@ -106,8 +105,8 @@ pub use agent::{
     ParentDeliveryKind, ParentDeliveryOrigin, ParentDeliveryPayload,
     ParentDeliveryTerminalSemantics, ParentExecutionRef, ProgressParentDeliveryPayload,
     ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides, SendAgentParams,
-    SendToChildParams, SendToParentParams, SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure,
-    SubRunFailureCode, SubRunHandle, SubRunHandoff, SubRunResult, SubRunStatus, SubRunStorageMode,
+    SendToChildParams, SendToParentParams, SpawnAgentParams, SubRunFailure, SubRunFailureCode,
+    SubRunHandle, SubRunHandoff, SubRunResult, SubRunStatus, SubRunStorageMode,
     SubagentContextOverrides,
     executor::{CollaborationExecutor, SubAgentExecutor},
     input_queue::{
@@ -130,15 +129,16 @@ pub use compact_summary::{
 pub use composer::{ComposerOption, ComposerOptionActionKind, ComposerOptionKind};
 pub use config::{
     ActiveSelection, AgentConfig, Config, ConfigOverlay, CurrentModelSelection, ModelConfig,
-    ModelOption, ModelSelection, Profile, ResolvedAgentConfig, ResolvedRuntimeConfig,
-    RuntimeConfig, TestConnectionResult, max_tool_concurrency, resolve_agent_config,
-    resolve_runtime_config,
+    ModelOption, ModelSelection, OpenAiApiMode, Profile, ResolvedAgentConfig,
+    ResolvedRuntimeConfig, RuntimeConfig, TestConnectionResult, max_tool_concurrency,
+    resolve_agent_config, resolve_runtime_config,
 };
 pub use error::{AstrError, Result, ResultExt};
 pub use event::{
     AgentEvent, CompactAppliedMeta, CompactMode, CompactTrigger, EventTranslator, Phase,
-    PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent, generate_session_id,
-    generate_turn_id, normalize_recovered_phase, phase_of_storage_event, replay_records,
+    PromptMetricsPayload, StorageEvent, StorageEventPayload, StoredEvent, TurnTerminalKind,
+    generate_session_id, generate_turn_id, normalize_recovered_phase, phase_of_storage_event,
+    replay_records,
 };
 pub use execution_control::ExecutionControl;
 pub use execution_result::{ExecutionContinuation, ExecutionResultCommon};
@@ -155,9 +155,11 @@ pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
 pub use mcp::{McpApprovalData, McpApprovalStatus};
 pub use mode::{
     ActionPolicies, ActionPolicyEffect, ActionPolicyRule, BUILTIN_MODE_CODE_ID,
-    BUILTIN_MODE_PLAN_ID, BUILTIN_MODE_REVIEW_ID, CapabilitySelector, ChildPolicySpec,
-    GovernanceModeSpec, ModeExecutionPolicySpec, ModeId, PromptProgramEntry, ResolvedChildPolicy,
-    ResolvedTurnEnvelope, SubmitBusyPolicy, TransitionPolicySpec,
+    BUILTIN_MODE_PLAN_ID, BUILTIN_MODE_REVIEW_ID, BoundModeToolContractSnapshot,
+    CapabilitySelector, ChildPolicySpec, CompiledModeContracts, GovernanceModeSpec,
+    ModeArtifactDef, ModeExecutionPolicySpec, ModeExitGateDef, ModeId, ModePromptHooks,
+    PromptProgramEntry, ResolvedChildPolicy, ResolvedTurnEnvelope, SubmitBusyPolicy,
+    TransitionPolicySpec,
 };
 pub use observability::{
     AgentCollaborationScorecardSnapshot, ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot,
@@ -172,27 +174,28 @@ pub use policy::{
 };
 pub use ports::{
     EventStore, LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, McpSettingsStore, ModelLimits, PromptAgentProfileSummary, PromptBuildCacheMetrics,
-    PromptBuildOutput, PromptBuildRequest, PromptCacheHints, PromptDeclaration,
+    LlmUsage, McpSettingsStore, ModelLimits, ProjectionRegistrySnapshot, PromptAgentProfileSummary,
+    PromptBuildCacheMetrics, PromptBuildOutput, PromptBuildRequest, PromptCacheBreakReason,
+    PromptCacheDiagnostics, PromptCacheGlobalStrategy, PromptCacheHints, PromptDeclaration,
     PromptDeclarationKind, PromptDeclarationRenderTarget, PromptDeclarationSource,
     PromptEntrySummary, PromptFacts, PromptFactsProvider, PromptFactsRequest,
     PromptGovernanceContext, PromptLayerFingerprints, PromptProvider, PromptSkillSummary,
     RecoveredSessionState, ResourceProvider, ResourceReadResult, ResourceRequestContext,
-    SessionRecoveryCheckpoint, SkillCatalog,
+    SessionRecoveryCheckpoint, SkillCatalog, TurnProjectionSnapshot,
 };
 pub use projection::{AgentState, AgentStateProjector, project};
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
 pub use runtime::{
     ExecutionAccepted, ExecutionOrchestrationBoundary, LiveSubRunControlBoundary,
-    LoopRunnerBoundary, ManagedRuntimeComponent, RuntimeCoordinator, RuntimeHandle,
-    SessionTruthBoundary,
+    LoopRunnerBoundary, ManagedRuntimeComponent, RuntimeHandle, SessionTruthBoundary,
 };
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
 pub use session_catalog::SessionCatalogEvent;
-pub use session_plan::{SessionPlanState, SessionPlanStatus, session_plan_content_digest};
-pub use shell::{
-    ResolvedShell, ShellFamily, default_shell_label, detect_shell_family, resolve_shell,
+pub use session_plan::{
+    SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER, SessionPlanState, SessionPlanStatus,
+    session_plan_content_digest,
 };
+pub use shell::{ResolvedShell, ShellFamily};
 pub use skill::{SkillSource, SkillSpec, is_valid_skill_name, normalize_skill_name};
 pub use store::{
     EventLogWriter, SessionManager, SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease,
@@ -207,6 +210,10 @@ pub use tool::{
 };
 pub use tool_result_persist::{
     DEFAULT_TOOL_RESULT_INLINE_LIMIT, PersistedToolOutput, PersistedToolResult,
-    TOOL_RESULT_PREVIEW_LIMIT, TOOL_RESULTS_DIR, is_persisted_output, maybe_persist_tool_result,
-    persist_tool_result, persisted_output_absolute_path,
+    TOOL_RESULT_PREVIEW_LIMIT, TOOL_RESULTS_DIR, is_persisted_output,
+    persisted_output_absolute_path,
+};
+pub use workflow::{
+    WorkflowArtifactRef, WorkflowBridgeState, WorkflowDef, WorkflowInstanceState, WorkflowPhaseDef,
+    WorkflowSignal, WorkflowTransitionDef, WorkflowTransitionTrigger,
 };

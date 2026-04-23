@@ -1,0 +1,15 @@
+task_id: compact-retain-api-contract
+description: 从 compact 摘要中提取 API 契约与超时约束。
+prompt: |
+  请读取 compact-summary.md，告诉我 compact 后仍需保留的 API 契约和超时上限。
+workspace:
+  setup: ../fixtures/compact-retain-api-contract
+expected_outcome:
+  tool_pattern:
+    - Read
+  max_tool_calls: 1
+  max_turns: 1
+  output_contains:
+    - /api/sessions
+    - 30 秒
+

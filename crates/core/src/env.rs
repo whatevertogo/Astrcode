@@ -19,8 +19,8 @@ pub const TAURI_ENV_TARGET_TRIPLE_ENV: &str = "TAURI_ENV_TARGET_TRIPLE";
 /// Default DeepSeek API key environment variable name.
 pub const DEEPSEEK_API_KEY_ENV: &str = "DEEPSEEK_API_KEY";
 
-/// Default Anthropic API key environment variable name.
-pub const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+/// Default OpenAI API key environment variable name.
+pub const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
 
 /// Maximum number of concurrency-safe tools that may execute in parallel within a single step.
 pub const ASTRCODE_MAX_TOOL_CONCURRENCY_ENV: &str = "ASTRCODE_MAX_TOOL_CONCURRENCY";

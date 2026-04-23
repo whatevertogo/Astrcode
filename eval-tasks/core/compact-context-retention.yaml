@@ -1,0 +1,14 @@
+task_id: compact-context-retention
+description: 从 compact 摘要中提取关键约束，覆盖压缩后上下文保留质量。
+prompt: |
+  请读取 compact-summary.md，并告诉我数据库连接池大小以及不能改动的 API 路径。
+workspace:
+  setup: ../fixtures/compact-context-retention
+expected_outcome:
+  tool_pattern:
+    - Read
+  max_tool_calls: 2
+  max_turns: 1
+  output_contains:
+    - "16"
+    - /v1/chat

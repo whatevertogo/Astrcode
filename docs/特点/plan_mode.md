@@ -64,14 +64,14 @@ Plan mode 通过 `CapabilitySelector` 收缩工具面（`crates/application/src/
 ### 存储路径
 
 ```
-<project>/.astrcode/sessions/<session-id>/plan/
+~/.astrcode/projects/<project>/sessions/<session-id>/plan/
     <slug>.md        # 计划内容（Markdown）
     state.json       # 计划状态元数据
 ```
 
 归档快照存储在：
 ```
-<project>/.astrcode/plan-archives/<timestamp>-<slug>/
+~/.astrcode/projects/<project>/plan-archives/<timestamp>-<slug>/
     plan.md          # 归档的计划 Markdown
     metadata.json    # 归档元数据
 ```

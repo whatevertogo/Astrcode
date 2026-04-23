@@ -1,0 +1,14 @@
+task_id: binary-file-skip
+description: 遇到二进制文件时避免继续做文本编辑。
+prompt: |
+  请读取 assets/logo.bin，并告诉我是否适合按文本直接编辑。
+workspace:
+  setup: ../fixtures/binary-file-skip
+expected_outcome:
+  tool_pattern:
+    - Read
+  max_tool_calls: 1
+  max_turns: 1
+  output_contains:
+    - 二进制
+    - 不适合直接按文本编辑

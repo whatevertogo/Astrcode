@@ -17,11 +17,13 @@ use crate::config::ConfigService;
 mod agent_use_cases;
 mod governance_surface;
 mod ports;
+mod session_identity;
 mod session_plan;
 mod session_use_cases;
 mod terminal_queries;
 #[cfg(test)]
 mod test_support;
+mod workflow;
 
 pub mod agent;
 pub mod composer;
@@ -60,7 +62,7 @@ pub use governance_surface::{
     GovernanceBusyPolicy, GovernanceSurfaceAssembler, ResolvedGovernanceSurface,
     ResumedChildGovernanceInput, RootGovernanceInput, SessionGovernanceInput,
     ToolCollaborationGovernanceContext, build_delegation_metadata, build_fresh_child_contract,
-    build_resumed_child_contract, collaboration_policy_context, effective_allowed_tools_for_limits,
+    build_resumed_child_contract, collaboration_policy_context,
 };
 pub use lifecycle::governance::{
     AppGovernance, ObservabilitySnapshotProvider, RuntimeGovernancePort, RuntimeGovernanceSnapshot,
@@ -84,11 +86,17 @@ pub use observability::{
 };
 pub use ports::{
     AgentKernelPort, AgentSessionPort, AppAgentPromptSubmission, AppKernelPort, AppSessionPort,
-    ComposerResolvedSkill, ComposerSkillPort,
+    ComposerResolvedSkill, ComposerSkillPort, RecoverableParentDelivery, SessionObserveSnapshot,
+    SessionTurnOutcomeSummary, SessionTurnTerminalState,
 };
 pub use session_plan::{ProjectPlanArchiveDetail, ProjectPlanArchiveSummary};
-pub use session_use_cases::summarize_session_meta;
+pub use session_use_cases::{SessionForkSelector, summarize_session_meta};
 pub use watch::{WatchEvent, WatchPort, WatchService, WatchSource};
+pub use workflow::{
+    EXECUTING_PHASE_ID, PLAN_EXECUTE_WORKFLOW_ID, PLANNING_PHASE_ID, PlanImplementationStep,
+    PlanToExecuteBridgeState, WorkflowArtifactRef, WorkflowInstanceState, WorkflowOrchestrator,
+    WorkflowStateService, plan_execute_workflow,
+};
 
 /// 唯一业务用例入口。
 pub struct App {
@@ -100,6 +108,7 @@ pub struct App {
     composer_skills: Arc<dyn ComposerSkillPort>,
     governance_surface: Arc<GovernanceSurfaceAssembler>,
     mode_catalog: Arc<ModeCatalog>,
+    workflow_orchestrator: Arc<WorkflowOrchestrator>,
     mcp_service: Arc<mcp::McpService>,
     agent_service: Arc<AgentOrchestrationService>,
 }
@@ -210,6 +219,7 @@ impl App {
             composer_skills,
             governance_surface,
             mode_catalog,
+            workflow_orchestrator: Arc::new(WorkflowOrchestrator::default()),
             mcp_service,
             agent_service,
         }
@@ -249,6 +259,10 @@ impl App {
 
     pub fn mode_catalog(&self) -> &Arc<ModeCatalog> {
         &self.mode_catalog
+    }
+
+    pub fn workflow(&self) -> &Arc<WorkflowOrchestrator> {
+        &self.workflow_orchestrator
     }
 
     pub fn agent(&self) -> &Arc<AgentOrchestrationService> {

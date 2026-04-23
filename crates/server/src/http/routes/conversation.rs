@@ -5,7 +5,8 @@ use astrcode_application::{
     terminal::{
         ConversationAuthoritativeSummary, ConversationChildSummarySummary,
         ConversationControlSummary, ConversationFocus, ConversationSlashCandidateSummary,
-        TerminalStreamFacts, TerminalStreamReplayFacts, summarize_conversation_authoritative,
+        ConversationStreamProjector, TerminalStreamFacts, TerminalStreamReplayFacts,
+        summarize_conversation_authoritative,
     },
 };
 use astrcode_core::AgentEvent;
@@ -13,7 +14,6 @@ use astrcode_protocol::http::conversation::v1::{
     ConversationDeltaDto, ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
     ConversationStreamEnvelopeDto,
 };
-use astrcode_session_runtime::ConversationStreamProjector as RuntimeConversationStreamProjector;
 use async_stream::stream;
 use axum::{
     Json,
@@ -36,6 +36,7 @@ use crate::{
         project_conversation_control_summary_delta, project_conversation_frame,
         project_conversation_rehydrate_envelope, project_conversation_slash_candidate_summaries,
         project_conversation_slash_candidates, project_conversation_snapshot,
+        project_conversation_step_progress,
     },
 };
 
@@ -233,8 +234,8 @@ fn build_conversation_stream(
     let mut stream_state =
         ConversationStreamProjectorState::new(session_id.clone(), cursor, &facts);
     let initial_envelopes = stream_state.seed_initial_replay(&facts);
-    let mut durable_receiver = facts.replay.replay.receiver;
-    let mut live_receiver = facts.replay.replay.live_receiver;
+    let mut durable_receiver = facts.stream.receiver;
+    let mut live_receiver = facts.stream.live_receiver;
     let app = state.app.clone();
     let session_id_for_stream = session_id.clone();
     let mut live_receiver_open = true;
@@ -290,8 +291,8 @@ fn build_conversation_stream(
                                 for envelope in stream_state.recover_from(&recovered) {
                                     yield Ok::<Event, Infallible>(to_conversation_sse_event(envelope));
                                 }
-                                durable_receiver = recovered.replay.replay.receiver;
-                                live_receiver = recovered.replay.replay.live_receiver;
+                                durable_receiver = recovered.stream.receiver;
+                                live_receiver = recovered.stream.live_receiver;
                                 live_receiver_open = true;
                             }
                             Ok(TerminalStreamFacts::RehydrateRequired(rehydrate)) => {
@@ -369,7 +370,7 @@ impl ConversationAuthoritativeFacts {
 
 struct ConversationStreamProjectorState {
     session_id: String,
-    projector: RuntimeConversationStreamProjector,
+    projector: ConversationStreamProjector,
     authoritative: ConversationAuthoritativeFacts,
 }
 
@@ -381,7 +382,7 @@ impl ConversationStreamProjectorState {
     ) -> Self {
         Self {
             session_id,
-            projector: RuntimeConversationStreamProjector::new(last_sent_cursor, &facts.replay),
+            projector: ConversationStreamProjector::new(last_sent_cursor, &facts.replay),
             authoritative: ConversationAuthoritativeFacts::from_replay(facts),
         }
     }
@@ -491,10 +492,16 @@ impl ConversationStreamProjectorState {
             return Vec::new();
         }
         let cursor_owned = cursor.to_string();
+        let step_progress = project_conversation_step_progress(self.projector.step_progress());
         deltas
             .into_iter()
             .map(|delta| {
-                make_conversation_envelope(self.session_id.as_str(), cursor_owned.as_str(), delta)
+                make_conversation_envelope(
+                    self.session_id.as_str(),
+                    cursor_owned.as_str(),
+                    step_progress.clone(),
+                    delta,
+                )
             })
             .collect()
     }
@@ -526,6 +533,7 @@ fn single_envelope_stream(envelope: ConversationStreamEnvelopeDto) -> Conversati
 fn make_conversation_envelope(
     session_id: &str,
     cursor: &str,
+    step_progress: astrcode_protocol::http::conversation::v1::ConversationStepProgressDto,
     delta: ConversationDeltaDto,
 ) -> ConversationStreamEnvelopeDto {
     ConversationStreamEnvelopeDto {
@@ -533,6 +541,7 @@ fn make_conversation_envelope(
         cursor: astrcode_protocol::http::conversation::v1::ConversationCursorDto(
             cursor.to_string(),
         ),
+        step_progress,
         delta,
     }
 }
@@ -584,18 +593,19 @@ type ConversationSse = Sse<axum::response::sse::KeepAliveStream<ConversationEven
 
 #[cfg(test)]
 mod tests {
-    use astrcode_application::terminal::{
-        TaskItemFacts, TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
-        summarize_conversation_authoritative,
+    use astrcode_application::{
+        SessionReplay,
+        terminal::{
+            ConversationBlockFacts, ConversationBlockPatchFacts, ConversationDeltaFacts,
+            ConversationDeltaFrameFacts, ConversationStreamReplayFacts, TaskItemFacts,
+            TerminalChildSummaryFacts, TerminalControlFacts, TerminalStreamReplayFacts,
+            summarize_conversation_authoritative,
+        },
     };
     use astrcode_core::{
         AgentEventContext, AgentLifecycleStatus, ChildExecutionIdentity, ChildSessionLineageKind,
         ChildSessionNode, ChildSessionStatusSource, ExecutionTaskStatus, ParentExecutionRef, Phase,
         SessionEventRecord, ToolExecutionResult, ToolOutputStream,
-    };
-    use astrcode_session_runtime::{
-        ConversationBlockPatchFacts, ConversationDeltaFacts, ConversationDeltaFrameFacts,
-        ConversationStreamReplayFacts as RuntimeConversationStreamReplayFacts, SessionReplay,
     };
     use serde_json::json;
     use tokio::sync::broadcast;
@@ -677,6 +687,7 @@ mod tests {
             json!({
                 "sessionId": "session-root",
                 "cursor": "1.3",
+                "stepProgress": {},
                 "kind": "patch_block",
                 "blockId": "tool:call-1:call",
                 "patch": {
@@ -733,6 +744,7 @@ mod tests {
             json!({
                 "sessionId": "session-root",
                 "cursor": "1.4",
+                "stepProgress": {},
                 "kind": "upsert_child_summary",
                 "child": {
                     "childSessionId": "session-child-1",
@@ -792,6 +804,7 @@ mod tests {
             json!({
                 "sessionId": "session-root",
                 "cursor": "1.4",
+                "stepProgress": {},
                 "kind": "update_control_state",
                 "control": {
                     "phase": "callingTool",
@@ -826,7 +839,7 @@ mod tests {
 
         TerminalStreamReplayFacts {
             active_session_id: "session-root".to_string(),
-            replay: RuntimeConversationStreamReplayFacts {
+            replay: ConversationStreamReplayFacts {
                 cursor: history.last().map(|record| record.event_id.clone()),
                 phase: Phase::CallingTool,
                 seed_records: seed_records.clone(),
@@ -834,6 +847,7 @@ mod tests {
                     .iter()
                     .map(|record| ConversationDeltaFrameFacts {
                         cursor: record.event_id.clone(),
+                        step_progress: Default::default(),
                         delta: match &record.event {
                             AgentEvent::ToolCallDelta {
                                 tool_call_id,
@@ -848,24 +862,23 @@ mod tests {
                                 },
                             },
                             _ => ConversationDeltaFacts::AppendBlock {
-                                block: Box::new(
-                                    astrcode_session_runtime::ConversationBlockFacts::User(
-                                        astrcode_session_runtime::ConversationUserBlockFacts {
-                                            id: "noop".to_string(),
-                                            turn_id: None,
-                                            markdown: String::new(),
-                                        },
-                                    ),
-                                ),
+                                block: Box::new(ConversationBlockFacts::User(
+                                    astrcode_application::terminal::ConversationUserBlockFacts {
+                                        id: "noop".to_string(),
+                                        turn_id: None,
+                                        markdown: String::new(),
+                                    },
+                                )),
                             },
                         },
                     })
                     .collect(),
-                replay: SessionReplay {
-                    history,
-                    receiver,
-                    live_receiver,
-                },
+                history: history.clone(),
+            },
+            stream: SessionReplay {
+                history,
+                receiver,
+                live_receiver,
             },
             control: TerminalControlFacts {
                 phase: Phase::CallingTool,

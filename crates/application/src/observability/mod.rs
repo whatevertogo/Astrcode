@@ -213,7 +213,6 @@ mod tests {
                 failures: 1,
                 completed: 5,
                 cancelled: 0,
-                token_exceeded: 0,
                 independent_session_total: 2,
                 total_duration_ms: 18,
                 last_duration_ms: 3,

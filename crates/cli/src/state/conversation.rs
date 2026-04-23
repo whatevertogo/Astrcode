@@ -1,38 +1,37 @@
 use std::collections::{BTreeSet, HashMap};
 
 use astrcode_client::{
-    AstrcodeConversationBannerDto, AstrcodeConversationBlockDto, AstrcodeConversationBlockPatchDto,
-    AstrcodeConversationBlockStatusDto, AstrcodeConversationChildSummaryDto,
-    AstrcodeConversationControlStateDto, AstrcodeConversationCursorDto,
-    AstrcodeConversationDeltaDto, AstrcodeConversationErrorEnvelopeDto,
-    AstrcodeConversationSlashCandidateDto, AstrcodeConversationSnapshotResponseDto,
-    AstrcodeConversationStreamEnvelopeDto, AstrcodePhaseDto, AstrcodeSessionListItem,
+    ConversationBannerDto, ConversationBlockDto, ConversationBlockPatchDto,
+    ConversationBlockStatusDto, ConversationChildSummaryDto, ConversationControlStateDto,
+    ConversationCursorDto, ConversationDeltaDto, ConversationErrorEnvelopeDto,
+    ConversationSlashCandidateDto, ConversationSnapshotResponseDto, ConversationStreamEnvelopeDto,
+    PhaseDto, SessionListItem,
 };
 
 use super::{RenderState, TranscriptCell};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationState {
-    pub sessions: Vec<AstrcodeSessionListItem>,
+    pub sessions: Vec<SessionListItem>,
     pub active_session_id: Option<String>,
     pub active_session_title: Option<String>,
-    pub cursor: Option<AstrcodeConversationCursorDto>,
-    pub control: Option<AstrcodeConversationControlStateDto>,
-    pub transcript: Vec<AstrcodeConversationBlockDto>,
+    pub cursor: Option<ConversationCursorDto>,
+    pub control: Option<ConversationControlStateDto>,
+    pub transcript: Vec<ConversationBlockDto>,
     pub transcript_index: HashMap<String, usize>,
-    pub child_summaries: Vec<AstrcodeConversationChildSummaryDto>,
-    pub slash_candidates: Vec<AstrcodeConversationSlashCandidateDto>,
-    pub banner: Option<AstrcodeConversationBannerDto>,
+    pub child_summaries: Vec<ConversationChildSummaryDto>,
+    pub slash_candidates: Vec<ConversationSlashCandidateDto>,
+    pub banner: Option<ConversationBannerDto>,
 }
 
 impl ConversationState {
-    pub fn update_sessions(&mut self, sessions: Vec<AstrcodeSessionListItem>) {
+    pub fn update_sessions(&mut self, sessions: Vec<SessionListItem>) {
         self.sessions = sessions;
     }
 
     pub fn activate_snapshot(
         &mut self,
-        snapshot: AstrcodeConversationSnapshotResponseDto,
+        snapshot: ConversationSnapshotResponseDto,
         render: &mut RenderState,
     ) {
         self.active_session_id = Some(snapshot.session_id);
@@ -49,7 +48,7 @@ impl ConversationState {
 
     pub fn apply_stream_envelope(
         &mut self,
-        envelope: AstrcodeConversationStreamEnvelopeDto,
+        envelope: ConversationStreamEnvelopeDto,
         render: &mut RenderState,
         expanded_ids: &BTreeSet<String>,
     ) -> bool {
@@ -57,26 +56,26 @@ impl ConversationState {
         self.apply_delta(envelope.delta, render, expanded_ids)
     }
 
-    pub fn set_banner_error(&mut self, error: AstrcodeConversationErrorEnvelopeDto) {
-        self.banner = Some(AstrcodeConversationBannerDto { error });
+    pub fn set_banner_error(&mut self, error: ConversationErrorEnvelopeDto) {
+        self.banner = Some(ConversationBannerDto { error });
     }
 
     pub fn clear_banner(&mut self) {
         self.banner = None;
     }
 
-    pub fn active_phase(&self) -> Option<AstrcodePhaseDto> {
+    pub fn active_phase(&self) -> Option<PhaseDto> {
         self.control.as_ref().map(|control| control.phase)
     }
 
     fn apply_delta(
         &mut self,
-        delta: AstrcodeConversationDeltaDto,
+        delta: ConversationDeltaDto,
         render: &mut RenderState,
         _expanded_ids: &BTreeSet<String>,
     ) -> bool {
         match delta {
-            AstrcodeConversationDeltaDto::AppendBlock { block } => {
+            ConversationDeltaDto::AppendBlock { block } => {
                 self.transcript.push(block);
                 if let Some(block) = self.transcript.last() {
                     self.transcript_index
@@ -85,7 +84,7 @@ impl ConversationState {
                 render.mark_dirty();
                 false
             },
-            AstrcodeConversationDeltaDto::PatchBlock { block_id, patch } => {
+            ConversationDeltaDto::PatchBlock { block_id, patch } => {
                 if let Some((index, block)) = self.find_block_mut(block_id.as_str()) {
                     let changed = apply_block_patch(block, patch);
                     let _ = index;
@@ -97,7 +96,7 @@ impl ConversationState {
                 }
                 false
             },
-            AstrcodeConversationDeltaDto::CompleteBlock { block_id, status } => {
+            ConversationDeltaDto::CompleteBlock { block_id, status } => {
                 if let Some((index, block)) = self.find_block_mut(block_id.as_str()) {
                     let changed = set_block_status(block, status);
                     let _ = index;
@@ -109,14 +108,14 @@ impl ConversationState {
                 }
                 false
             },
-            AstrcodeConversationDeltaDto::UpdateControlState { control } => {
+            ConversationDeltaDto::UpdateControlState { control } => {
                 if self.control.as_ref() != Some(&control) {
                     self.control = Some(control);
                     render.mark_dirty();
                 }
                 false
             },
-            AstrcodeConversationDeltaDto::UpsertChildSummary { child } => {
+            ConversationDeltaDto::UpsertChildSummary { child } => {
                 if let Some(existing) = self
                     .child_summaries
                     .iter_mut()
@@ -128,29 +127,29 @@ impl ConversationState {
                 }
                 false
             },
-            AstrcodeConversationDeltaDto::RemoveChildSummary { child_session_id } => {
+            ConversationDeltaDto::RemoveChildSummary { child_session_id } => {
                 self.child_summaries
                     .retain(|child| child.child_session_id != child_session_id);
                 false
             },
-            AstrcodeConversationDeltaDto::ReplaceSlashCandidates { candidates } => {
+            ConversationDeltaDto::ReplaceSlashCandidates { candidates } => {
                 self.slash_candidates = candidates;
                 true
             },
-            AstrcodeConversationDeltaDto::SetBanner { banner } => {
+            ConversationDeltaDto::SetBanner { banner } => {
                 if self.banner.as_ref() != Some(&banner) {
                     self.banner = Some(banner);
                     render.mark_dirty();
                 }
                 false
             },
-            AstrcodeConversationDeltaDto::ClearBanner => {
+            ConversationDeltaDto::ClearBanner => {
                 if self.banner.take().is_some() {
                     render.mark_dirty();
                 }
                 false
             },
-            AstrcodeConversationDeltaDto::RehydrateRequired { error } => {
+            ConversationDeltaDto::RehydrateRequired { error } => {
                 self.set_banner_error(error);
                 false
             },
@@ -166,10 +165,7 @@ impl ConversationState {
             .collect();
     }
 
-    fn find_block_mut(
-        &mut self,
-        block_id: &str,
-    ) -> Option<(usize, &mut AstrcodeConversationBlockDto)> {
+    fn find_block_mut(&mut self, block_id: &str) -> Option<(usize, &mut ConversationBlockDto)> {
         let index = *self.transcript_index.get(block_id)?;
         self.transcript.get_mut(index).map(|block| (index, block))
     }
@@ -192,62 +188,60 @@ impl ConversationState {
     }
 }
 
-fn block_id_of(block: &AstrcodeConversationBlockDto) -> &str {
+fn block_id_of(block: &ConversationBlockDto) -> &str {
     match block {
-        AstrcodeConversationBlockDto::User(block) => &block.id,
-        AstrcodeConversationBlockDto::Assistant(block) => &block.id,
-        AstrcodeConversationBlockDto::Thinking(block) => &block.id,
-        AstrcodeConversationBlockDto::Plan(block) => &block.id,
-        AstrcodeConversationBlockDto::ToolCall(block) => &block.id,
-        AstrcodeConversationBlockDto::Error(block) => &block.id,
-        AstrcodeConversationBlockDto::SystemNote(block) => &block.id,
-        AstrcodeConversationBlockDto::ChildHandoff(block) => &block.id,
+        ConversationBlockDto::User(block) => &block.id,
+        ConversationBlockDto::Assistant(block) => &block.id,
+        ConversationBlockDto::Thinking(block) => &block.id,
+        ConversationBlockDto::PromptMetrics(block) => &block.id,
+        ConversationBlockDto::Plan(block) => &block.id,
+        ConversationBlockDto::ToolCall(block) => &block.id,
+        ConversationBlockDto::Error(block) => &block.id,
+        ConversationBlockDto::SystemNote(block) => &block.id,
+        ConversationBlockDto::ChildHandoff(block) => &block.id,
     }
 }
 
-fn apply_block_patch(
-    block: &mut AstrcodeConversationBlockDto,
-    patch: AstrcodeConversationBlockPatchDto,
-) -> bool {
+fn apply_block_patch(block: &mut ConversationBlockDto, patch: ConversationBlockPatchDto) -> bool {
     match patch {
-        AstrcodeConversationBlockPatchDto::AppendMarkdown { markdown } => match block {
-            AstrcodeConversationBlockDto::Assistant(block) => {
+        ConversationBlockPatchDto::AppendMarkdown { markdown } => match block {
+            ConversationBlockDto::Assistant(block) => {
                 normalize_markdown_append(&mut block.markdown, &markdown)
             },
-            AstrcodeConversationBlockDto::Thinking(block) => {
+            ConversationBlockDto::Thinking(block) => {
                 normalize_markdown_append(&mut block.markdown, &markdown)
             },
-            AstrcodeConversationBlockDto::SystemNote(block) => {
+            ConversationBlockDto::SystemNote(block) => {
                 normalize_markdown_append(&mut block.markdown, &markdown)
             },
-            AstrcodeConversationBlockDto::User(block) => {
+            ConversationBlockDto::User(block) => {
                 normalize_markdown_append(&mut block.markdown, &markdown)
             },
-            AstrcodeConversationBlockDto::Plan(_) => false,
-            AstrcodeConversationBlockDto::ToolCall(_)
-            | AstrcodeConversationBlockDto::Error(_)
-            | AstrcodeConversationBlockDto::ChildHandoff(_) => false,
+            ConversationBlockDto::Plan(_) => false,
+            ConversationBlockDto::ToolCall(_)
+            | ConversationBlockDto::Error(_)
+            | ConversationBlockDto::PromptMetrics(_)
+            | ConversationBlockDto::ChildHandoff(_) => false,
         },
-        AstrcodeConversationBlockPatchDto::ReplaceMarkdown { markdown } => match block {
-            AstrcodeConversationBlockDto::Assistant(block) => {
+        ConversationBlockPatchDto::ReplaceMarkdown { markdown } => match block {
+            ConversationBlockDto::Assistant(block) => {
                 replace_if_changed(&mut block.markdown, markdown)
             },
-            AstrcodeConversationBlockDto::Thinking(block) => {
+            ConversationBlockDto::Thinking(block) => {
                 replace_if_changed(&mut block.markdown, markdown)
             },
-            AstrcodeConversationBlockDto::SystemNote(block) => {
+            ConversationBlockDto::SystemNote(block) => {
                 replace_if_changed(&mut block.markdown, markdown)
             },
-            AstrcodeConversationBlockDto::User(block) => {
-                replace_if_changed(&mut block.markdown, markdown)
-            },
-            AstrcodeConversationBlockDto::Plan(_) => false,
-            AstrcodeConversationBlockDto::ToolCall(_)
-            | AstrcodeConversationBlockDto::Error(_)
-            | AstrcodeConversationBlockDto::ChildHandoff(_) => false,
+            ConversationBlockDto::User(block) => replace_if_changed(&mut block.markdown, markdown),
+            ConversationBlockDto::Plan(_) => false,
+            ConversationBlockDto::ToolCall(_)
+            | ConversationBlockDto::Error(_)
+            | ConversationBlockDto::PromptMetrics(_)
+            | ConversationBlockDto::ChildHandoff(_) => false,
         },
-        AstrcodeConversationBlockPatchDto::AppendToolStream { stream, chunk } => {
-            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+        ConversationBlockPatchDto::AppendToolStream { stream, chunk } => {
+            if let ConversationBlockDto::ToolCall(block) = block {
                 if enum_wire_name(&stream).as_deref() == Some("stderr") {
                     if chunk.is_empty() {
                         return false;
@@ -264,43 +258,43 @@ fn apply_block_patch(
                 false
             }
         },
-        AstrcodeConversationBlockPatchDto::ReplaceSummary { summary } => {
-            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+        ConversationBlockPatchDto::ReplaceSummary { summary } => {
+            if let ConversationBlockDto::ToolCall(block) = block {
                 replace_option_if_changed(&mut block.summary, summary)
             } else {
                 false
             }
         },
-        AstrcodeConversationBlockPatchDto::ReplaceMetadata { metadata } => {
-            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+        ConversationBlockPatchDto::ReplaceMetadata { metadata } => {
+            if let ConversationBlockDto::ToolCall(block) = block {
                 replace_option_if_changed(&mut block.metadata, metadata)
             } else {
                 false
             }
         },
-        AstrcodeConversationBlockPatchDto::ReplaceError { error } => {
-            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+        ConversationBlockPatchDto::ReplaceError { error } => {
+            if let ConversationBlockDto::ToolCall(block) = block {
                 replace_if_changed(&mut block.error, error)
             } else {
                 false
             }
         },
-        AstrcodeConversationBlockPatchDto::ReplaceDuration { duration_ms } => {
-            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+        ConversationBlockPatchDto::ReplaceDuration { duration_ms } => {
+            if let ConversationBlockDto::ToolCall(block) = block {
                 replace_option_if_changed(&mut block.duration_ms, duration_ms)
             } else {
                 false
             }
         },
-        AstrcodeConversationBlockPatchDto::ReplaceChildRef { child_ref } => {
-            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+        ConversationBlockPatchDto::ReplaceChildRef { child_ref } => {
+            if let ConversationBlockDto::ToolCall(block) = block {
                 replace_option_if_changed(&mut block.child_ref, child_ref)
             } else {
                 false
             }
         },
-        AstrcodeConversationBlockPatchDto::SetTruncated { truncated } => {
-            if let AstrcodeConversationBlockDto::ToolCall(block) = block {
+        ConversationBlockPatchDto::SetTruncated { truncated } => {
+            if let ConversationBlockDto::ToolCall(block) = block {
                 if block.truncated != truncated {
                     block.truncated = truncated;
                     true
@@ -311,7 +305,7 @@ fn apply_block_patch(
                 false
             }
         },
-        AstrcodeConversationBlockPatchDto::SetStatus { status } => set_block_status(block, status),
+        ConversationBlockPatchDto::SetStatus { status } => set_block_status(block, status),
     }
 }
 
@@ -375,25 +369,17 @@ fn debug_missing_block(operation: &str, block_id: &str) {
 #[cfg(not(debug_assertions))]
 fn debug_missing_block(_operation: &str, _block_id: &str) {}
 
-fn set_block_status(
-    block: &mut AstrcodeConversationBlockDto,
-    status: AstrcodeConversationBlockStatusDto,
-) -> bool {
+fn set_block_status(block: &mut ConversationBlockDto, status: ConversationBlockStatusDto) -> bool {
     match block {
-        AstrcodeConversationBlockDto::Assistant(block) => {
-            replace_if_changed(&mut block.status, status)
-        },
-        AstrcodeConversationBlockDto::Thinking(block) => {
-            replace_if_changed(&mut block.status, status)
-        },
-        AstrcodeConversationBlockDto::Plan(_) => false,
-        AstrcodeConversationBlockDto::ToolCall(block) => {
-            replace_if_changed(&mut block.status, status)
-        },
-        AstrcodeConversationBlockDto::User(_)
-        | AstrcodeConversationBlockDto::Error(_)
-        | AstrcodeConversationBlockDto::SystemNote(_)
-        | AstrcodeConversationBlockDto::ChildHandoff(_) => false,
+        ConversationBlockDto::Assistant(block) => replace_if_changed(&mut block.status, status),
+        ConversationBlockDto::Thinking(block) => replace_if_changed(&mut block.status, status),
+        ConversationBlockDto::Plan(_) => false,
+        ConversationBlockDto::ToolCall(block) => replace_if_changed(&mut block.status, status),
+        ConversationBlockDto::User(_)
+        | ConversationBlockDto::Error(_)
+        | ConversationBlockDto::PromptMetrics(_)
+        | ConversationBlockDto::SystemNote(_)
+        | ConversationBlockDto::ChildHandoff(_) => false,
     }
 }
 
@@ -418,10 +404,9 @@ fn replace_option_if_changed<T: PartialEq>(slot: &mut Option<T>, next: T) -> boo
 #[cfg(test)]
 mod tests {
     use astrcode_client::{
-        AstrcodeConversationAssistantBlockDto, AstrcodeConversationBlockDto,
-        AstrcodeConversationBlockPatchDto, AstrcodeConversationBlockStatusDto,
-        AstrcodeConversationCursorDto, AstrcodeConversationDeltaDto,
-        AstrcodeConversationStreamEnvelopeDto,
+        ConversationAssistantBlockDto, ConversationBlockDto, ConversationBlockPatchDto,
+        ConversationBlockStatusDto, ConversationCursorDto, ConversationDeltaDto,
+        ConversationStreamEnvelopeDto,
     };
 
     use super::{ConversationState, normalize_markdown_append};
@@ -458,12 +443,13 @@ mod tests {
     #[test]
     fn duplicate_markdown_replay_does_not_mark_surface_dirty() {
         let mut conversation = ConversationState {
-            transcript: vec![AstrcodeConversationBlockDto::Assistant(
-                AstrcodeConversationAssistantBlockDto {
+            transcript: vec![ConversationBlockDto::Assistant(
+                ConversationAssistantBlockDto {
                     id: "assistant-1".to_string(),
                     turn_id: Some("turn-1".to_string()),
-                    status: AstrcodeConversationBlockStatusDto::Streaming,
+                    status: ConversationBlockStatusDto::Streaming,
                     markdown: "你好，世界".to_string(),
+                    step_index: None,
                 },
             )],
             transcript_index: [("assistant-1".to_string(), 0)].into_iter().collect(),
@@ -473,12 +459,13 @@ mod tests {
         render.take_frame_dirty();
 
         conversation.apply_stream_envelope(
-            AstrcodeConversationStreamEnvelopeDto {
+            ConversationStreamEnvelopeDto {
                 session_id: "session-1".to_string(),
-                cursor: AstrcodeConversationCursorDto("1.1".to_string()),
-                delta: AstrcodeConversationDeltaDto::PatchBlock {
+                cursor: ConversationCursorDto("1.1".to_string()),
+                step_progress: Default::default(),
+                delta: ConversationDeltaDto::PatchBlock {
                     block_id: "assistant-1".to_string(),
-                    patch: AstrcodeConversationBlockPatchDto::AppendMarkdown {
+                    patch: ConversationBlockPatchDto::AppendMarkdown {
                         markdown: "世界".to_string(),
                     },
                 },

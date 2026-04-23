@@ -1,0 +1,18 @@
+task_id: subagent-recovery-after-error
+description: 子智能体首次失败后，父智能体应能恢复并继续完成任务。
+prompt: |
+  请启动子智能体检查 flaky case；如果失败，给它 fallback 指令并继续直到拿到结果。
+workspace:
+  setup: ../fixtures/subagent-recovery-after-error
+expected_outcome:
+  tool_pattern:
+    - SpawnAgent
+    - ObserveAgent
+    - SendToAgent
+    - ObserveAgent
+    - CloseAgent
+  max_tool_calls: 5
+  max_turns: 1
+  output_contains:
+    - fallback fixture 可用
+

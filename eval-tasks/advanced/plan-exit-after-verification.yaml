@@ -1,0 +1,16 @@
+task_id: plan-exit-after-verification
+description: 读取已有计划后正确退出 plan mode。
+prompt: |
+  请读取 draft-plan.md，确认它是否已经可以退出 plan mode，并执行退出。
+workspace:
+  setup: ../fixtures/plan-exit-after-verification
+expected_outcome:
+  tool_pattern:
+    - Read
+    - ExitPlanMode
+  max_tool_calls: 2
+  max_turns: 1
+  output_contains:
+    - 可以退出
+    - plan mode
+

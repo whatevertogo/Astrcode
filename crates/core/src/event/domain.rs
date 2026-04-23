@@ -78,6 +78,8 @@ pub enum AgentEvent {
         /// 推理内容（Claude extended thinking）
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_index: Option<u32>,
     },
     /// 工具调用开始
     ToolCallStart {

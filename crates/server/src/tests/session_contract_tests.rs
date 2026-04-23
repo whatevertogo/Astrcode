@@ -1,98 +1,21 @@
 use astrcode_core::{
-    AgentEventContext, CancelToken, EventTranslator, SessionId, SpawnAgentParams, StorageEvent,
-    StorageEventPayload, ToolContext, UserMessageOrigin, agent::executor::SubAgentExecutor,
+    AgentEventContext, CancelToken, SpawnAgentParams, ToolContext,
+    agent::executor::SubAgentExecutor,
 };
-use astrcode_session_runtime::append_and_broadcast;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
 use tower::ServiceExt;
 
-use crate::{AUTH_HEADER_NAME, routes::build_api_router, test_support::test_state};
+use crate::{
+    AUTH_HEADER_NAME,
+    routes::build_api_router,
+    test_support::{seed_completed_root_turn, seed_unfinished_root_turn, test_state},
+};
 
 // Why: 这些契约测试是 API 接口稳定性的核心保障，
 // 防止 server 在重构后回退到隐式容错或启发式行为。
-
-async fn append_root_event(state: &crate::AppState, session_id: &str, event: StorageEvent) {
-    let session_state = state
-        ._runtime_handles
-        .session_runtime
-        .get_session_state(&SessionId::from(session_id.to_string()))
-        .await
-        .expect("session state should load");
-    let mut translator = EventTranslator::new(
-        session_state
-            .current_phase()
-            .expect("session phase should be readable"),
-    );
-    append_and_broadcast(&session_state, &event, &mut translator)
-        .await
-        .expect("event should persist");
-}
-
-async fn seed_completed_root_turn(state: &crate::AppState, session_id: &str, turn_id: &str) {
-    let agent = AgentEventContext::root_execution("root-agent", "test-profile");
-    append_root_event(
-        state,
-        session_id,
-        StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent: agent.clone(),
-            payload: StorageEventPayload::UserMessage {
-                content: "hello".to_string(),
-                origin: UserMessageOrigin::User,
-                timestamp: chrono::Utc::now(),
-            },
-        },
-    )
-    .await;
-    append_root_event(
-        state,
-        session_id,
-        StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent: agent.clone(),
-            payload: StorageEventPayload::AssistantFinal {
-                content: "world".to_string(),
-                reasoning_content: None,
-                reasoning_signature: None,
-                timestamp: Some(chrono::Utc::now()),
-            },
-        },
-    )
-    .await;
-    append_root_event(
-        state,
-        session_id,
-        StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent,
-            payload: StorageEventPayload::TurnDone {
-                timestamp: chrono::Utc::now(),
-                reason: Some("completed".to_string()),
-            },
-        },
-    )
-    .await;
-}
-
-async fn seed_unfinished_root_turn(state: &crate::AppState, session_id: &str, turn_id: &str) {
-    append_root_event(
-        state,
-        session_id,
-        StorageEvent {
-            turn_id: Some(turn_id.to_string()),
-            agent: AgentEventContext::root_execution("root-agent", "test-profile"),
-            payload: StorageEventPayload::UserMessage {
-                content: "still running".to_string(),
-                origin: UserMessageOrigin::User,
-                timestamp: chrono::Utc::now(),
-            },
-        },
-    )
-    .await;
-}
 
 async fn spawn_test_child_agent(
     state: &crate::AppState,
@@ -130,7 +53,6 @@ async fn spawn_test_child_agent(
                 description: "explore agent".to_string(),
                 prompt: "请阅读代码".to_string(),
                 context: None,
-                capability_grant: None,
             },
             &ctx,
         )

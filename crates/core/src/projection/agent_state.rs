@@ -132,7 +132,6 @@ impl AgentStateProjector {
                 if !matches!(
                     origin,
                     UserMessageOrigin::ReactivationPrompt
-                        | UserMessageOrigin::AutoContinueNudge
                         | UserMessageOrigin::ContinuationPrompt
                 ) {
                     self.state.messages.push(LlmMessage::User {
@@ -150,6 +149,7 @@ impl AgentStateProjector {
                 reasoning_content,
                 reasoning_signature,
                 timestamp,
+                ..
             } => {
                 self.flush_pending_assistant();
                 let parts = split_assistant_content(content, reasoning_content.as_deref());
@@ -542,18 +542,24 @@ mod tests {
                 content: content.into(),
                 reasoning_content: reasoning_content.map(str::to_string),
                 reasoning_signature: None,
+                step_index: None,
                 timestamp: None,
             },
         )
     }
 
-    fn turn_done(turn_id: Option<&str>, agent: AgentEventContext, reason: &str) -> StorageEvent {
+    fn turn_done(
+        turn_id: Option<&str>,
+        agent: AgentEventContext,
+        terminal_kind: crate::TurnTerminalKind,
+    ) -> StorageEvent {
         event(
             turn_id,
             agent,
             StorageEventPayload::TurnDone {
                 timestamp: ts(),
-                reason: Some(reason.into()),
+                terminal_kind: Some(terminal_kind),
+                reason: None,
             },
         )
     }
@@ -673,12 +679,6 @@ mod tests {
             user_message(
                 Some("turn-internal"),
                 root_agent(),
-                "请继续。",
-                UserMessageOrigin::AutoContinueNudge,
-            ),
-            user_message(
-                Some("turn-internal"),
-                root_agent(),
                 "从上次截断处继续。",
                 UserMessageOrigin::ContinuationPrompt,
             ),
@@ -715,7 +715,7 @@ mod tests {
             session_start("s1", "/tmp"),
             user_message(None, root_agent(), "hi", UserMessageOrigin::User),
             assistant_final(None, root_agent(), "hello!", None),
-            turn_done(None, root_agent(), "completed"),
+            turn_done(None, root_agent(), crate::TurnTerminalKind::Completed),
         ];
         let state = project(&events);
         assert_eq!(state.phase, Phase::Idle);
@@ -734,7 +734,11 @@ mod tests {
                 UserMessageOrigin::User,
             ),
             assistant_final(Some("turn-root"), root_agent(), "root answer", None),
-            turn_done(Some("turn-root"), root_agent(), "completed"),
+            turn_done(
+                Some("turn-root"),
+                root_agent(),
+                crate::TurnTerminalKind::Completed,
+            ),
             user_message(
                 Some("turn-child"),
                 child_agent("session-child"),
@@ -750,7 +754,7 @@ mod tests {
             turn_done(
                 Some("turn-child"),
                 child_agent("session-child"),
-                "completed",
+                crate::TurnTerminalKind::Completed,
             ),
         ];
 
@@ -787,7 +791,11 @@ mod tests {
                 "child answer",
                 None,
             ),
-            turn_done(Some("turn-child"), child_agent, "completed"),
+            turn_done(
+                Some("turn-child"),
+                child_agent,
+                crate::TurnTerminalKind::Completed,
+            ),
         ];
 
         let state = project(&events);
@@ -815,11 +823,11 @@ mod tests {
                 10,
             ),
             assistant_final(None, root_agent(), "Here are the files", None),
-            turn_done(None, root_agent(), "completed"),
+            turn_done(None, root_agent(), crate::TurnTerminalKind::Completed),
             // Turn 2: simple user → assistant
             user_message(None, root_agent(), "thanks", UserMessageOrigin::User),
             assistant_final(None, root_agent(), "You're welcome!", None),
-            turn_done(None, root_agent(), "completed"),
+            turn_done(None, root_agent(), crate::TurnTerminalKind::Completed),
         ];
         let state = project(&events);
 
@@ -884,7 +892,7 @@ mod tests {
                     timestamp: Some(ts()),
                 },
             ),
-            turn_done(None, root_agent(), "completed"),
+            turn_done(None, root_agent(), crate::TurnTerminalKind::Completed),
         ];
         let state = project(&events);
         assert_eq!(state.messages.len(), 2); // User + Assistant only
@@ -898,7 +906,7 @@ mod tests {
             user_message(None, root_agent(), "run tool", UserMessageOrigin::User),
             tool_call(None, root_agent(), "tc1", "listDir", json!({"path": "."})),
             tool_result(None, root_agent(), "tc1", "listDir", "[]", 2),
-            turn_done(None, root_agent(), "completed"),
+            turn_done(None, root_agent(), crate::TurnTerminalKind::Completed),
         ];
 
         let state = project(&events);
@@ -946,7 +954,7 @@ mod tests {
                  section.\nSuggested first read: { path: \"~/.astrcode/tool-results/sample.txt\", \
                  charOffset: 0, maxChars: 20000 }\n</persisted-output>",
             ),
-            turn_done(None, root_agent(), "completed"),
+            turn_done(None, root_agent(), crate::TurnTerminalKind::Completed),
         ];
 
         let state = project(&events);
@@ -969,10 +977,11 @@ mod tests {
                     content: "hi".into(),
                     reasoning_content: Some("thinking".into()),
                     reasoning_signature: Some("sig".into()),
+                    step_index: None,
                     timestamp: None,
                 },
             ),
-            turn_done(None, root_agent(), "completed"),
+            turn_done(None, root_agent(), crate::TurnTerminalKind::Completed),
         ];
 
         let batch = project(&events);
@@ -1000,7 +1009,11 @@ mod tests {
                 UserMessageOrigin::User,
             ),
             assistant_final(Some("turn-1"), root_agent(), "first-answer", None),
-            turn_done(Some("turn-1"), root_agent(), "completed"),
+            turn_done(
+                Some("turn-1"),
+                root_agent(),
+                crate::TurnTerminalKind::Completed,
+            ),
             user_message(
                 Some("turn-2"),
                 root_agent(),
@@ -1008,7 +1021,11 @@ mod tests {
                 UserMessageOrigin::User,
             ),
             assistant_final(Some("turn-2"), root_agent(), "second-answer", None),
-            turn_done(Some("turn-2"), root_agent(), "completed"),
+            turn_done(
+                Some("turn-2"),
+                root_agent(),
+                crate::TurnTerminalKind::Completed,
+            ),
             compact_applied("condensed work", 1, 2),
         ];
 

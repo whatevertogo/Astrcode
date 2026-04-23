@@ -9,6 +9,7 @@ use std::{
 };
 
 use astrcode_core::{McpApprovalData, McpSettingsStore};
+use astrcode_support::hostpaths::resolve_home_dir;
 use serde::{Deserialize, Serialize};
 
 /// 基于 JSON 文件的 MCP 审批设置存储。
@@ -24,7 +25,7 @@ impl FileMcpSettingsStore {
 
     /// 默认审批文件位置：`~/.astrcode/mcp-approvals.json`。
     pub fn default_path() -> astrcode_core::Result<Self> {
-        let home = astrcode_core::home::resolve_home_dir()?;
+        let home = resolve_home_dir()?;
         Ok(Self::new(home.join(".astrcode").join("mcp-approvals.json")))
     }
 

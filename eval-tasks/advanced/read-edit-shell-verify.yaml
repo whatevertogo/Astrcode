@@ -1,0 +1,17 @@
+task_id: read-edit-shell-verify
+description: 读取配置并编辑状态后，再用 Shell 做一次校验。
+prompt: |
+  读取 config/app.env，把 status.txt 改成 verified，再用 Shell 验证状态文件内容。
+workspace:
+  setup: ../fixtures/read-edit-shell-verify
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Edit
+    - Shell
+  max_tool_calls: 3
+  max_turns: 1
+  file_changes:
+    - path: status.txt
+      exact: "verified\n"
+

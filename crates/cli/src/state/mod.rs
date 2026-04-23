@@ -9,10 +9,9 @@ mod transcript_cell;
 use std::{path::PathBuf, time::Duration};
 
 use astrcode_client::{
-    AstrcodeConversationErrorEnvelopeDto, AstrcodeConversationSlashCandidateDto,
-    AstrcodeConversationSnapshotResponseDto, AstrcodeConversationStreamEnvelopeDto,
-    AstrcodeCurrentModelInfoDto, AstrcodeModeSummaryDto, AstrcodeModelOptionDto, AstrcodePhaseDto,
-    AstrcodeSessionListItem,
+    ConversationErrorEnvelopeDto, ConversationSlashCandidateDto, ConversationSnapshotResponseDto,
+    ConversationStreamEnvelopeDto, CurrentModelInfoDto, ModeSummaryDto, ModelOptionDto, PhaseDto,
+    SessionListItem,
 };
 pub use conversation::ConversationState;
 pub use debug::DebugChannelState;
@@ -218,21 +217,21 @@ impl CliState {
         self.render.mark_dirty();
     }
 
-    pub fn update_sessions(&mut self, sessions: Vec<AstrcodeSessionListItem>) {
+    pub fn update_sessions(&mut self, sessions: Vec<SessionListItem>) {
         self.conversation.update_sessions(sessions);
         self.interaction
             .sync_resume_items(self.conversation.sessions.clone());
         self.render.mark_dirty();
     }
 
-    pub fn update_current_model(&mut self, current_model: AstrcodeCurrentModelInfoDto) {
+    pub fn update_current_model(&mut self, current_model: CurrentModelInfoDto) {
         if self.shell.current_model.as_ref() != Some(&current_model) {
             self.shell.current_model = Some(current_model);
             self.render.mark_dirty();
         }
     }
 
-    pub fn update_model_options(&mut self, model_options: Vec<AstrcodeModelOptionDto>) {
+    pub fn update_model_options(&mut self, model_options: Vec<ModelOptionDto>) {
         if self.shell.model_options != model_options {
             self.shell.model_options = model_options.clone();
             self.interaction.sync_model_items(model_options);
@@ -240,18 +239,14 @@ impl CliState {
         }
     }
 
-    pub fn update_modes(&mut self, modes: Vec<AstrcodeModeSummaryDto>) {
+    pub fn update_modes(&mut self, modes: Vec<ModeSummaryDto>) {
         if self.shell.available_modes != modes {
             self.shell.available_modes = modes;
             self.render.mark_dirty();
         }
     }
 
-    pub fn set_resume_query(
-        &mut self,
-        query: impl Into<String>,
-        items: Vec<AstrcodeSessionListItem>,
-    ) {
+    pub fn set_resume_query(&mut self, query: impl Into<String>, items: Vec<SessionListItem>) {
         self.interaction.set_resume_palette(query, items);
         self.render.mark_dirty();
     }
@@ -259,17 +254,13 @@ impl CliState {
     pub fn set_slash_query(
         &mut self,
         query: impl Into<String>,
-        items: Vec<AstrcodeConversationSlashCandidateDto>,
+        items: Vec<ConversationSlashCandidateDto>,
     ) {
         self.interaction.set_slash_palette(query, items);
         self.render.mark_dirty();
     }
 
-    pub fn set_model_query(
-        &mut self,
-        query: impl Into<String>,
-        items: Vec<AstrcodeModelOptionDto>,
-    ) {
+    pub fn set_model_query(&mut self, query: impl Into<String>, items: Vec<ModelOptionDto>) {
         self.interaction.set_model_palette(query, items);
         self.render.mark_dirty();
     }
@@ -328,7 +319,7 @@ impl CliState {
         self.interaction.selected_palette()
     }
 
-    pub fn activate_snapshot(&mut self, snapshot: AstrcodeConversationSnapshotResponseDto) {
+    pub fn activate_snapshot(&mut self, snapshot: ConversationSnapshotResponseDto) {
         self.conversation
             .activate_snapshot(snapshot, &mut self.render);
         self.interaction.reset_for_snapshot();
@@ -340,7 +331,7 @@ impl CliState {
         self.render.mark_dirty();
     }
 
-    pub fn apply_stream_envelope(&mut self, envelope: AstrcodeConversationStreamEnvelopeDto) {
+    pub fn apply_stream_envelope(&mut self, envelope: ConversationStreamEnvelopeDto) {
         let expanded_ids = &self.interaction.transcript.expanded_cells;
         let slash_candidates_changed =
             self.conversation
@@ -354,7 +345,7 @@ impl CliState {
         self.render.mark_dirty();
     }
 
-    pub fn set_banner_error(&mut self, error: AstrcodeConversationErrorEnvelopeDto) {
+    pub fn set_banner_error(&mut self, error: ConversationErrorEnvelopeDto) {
         self.conversation.set_banner_error(error);
         self.interaction.set_focus(PaneFocus::Composer);
         self.render.mark_dirty();
@@ -365,7 +356,7 @@ impl CliState {
         self.render.mark_dirty();
     }
 
-    pub fn active_phase(&self) -> Option<AstrcodePhaseDto> {
+    pub fn active_phase(&self) -> Option<PhaseDto> {
         self.conversation.active_phase()
     }
 
@@ -412,9 +403,7 @@ impl CliState {
         }
         if !matches!(
             control.phase,
-            AstrcodePhaseDto::Thinking
-                | AstrcodePhaseDto::CallingTool
-                | AstrcodePhaseDto::Streaming
+            PhaseDto::Thinking | PhaseDto::CallingTool | PhaseDto::Streaming
         ) {
             return false;
         }
@@ -454,23 +443,22 @@ fn transcript_cell_visible_in_browser(cell: &TranscriptCell) -> bool {
 #[cfg(test)]
 mod tests {
     use astrcode_client::{
-        AstrcodeConversationAssistantBlockDto, AstrcodeConversationBlockDto,
-        AstrcodeConversationBlockPatchDto, AstrcodeConversationBlockStatusDto,
-        AstrcodeConversationControlStateDto, AstrcodeConversationCursorDto,
-        AstrcodeConversationDeltaDto, AstrcodeConversationSlashActionKindDto,
+        ConversationAssistantBlockDto, ConversationBlockDto, ConversationBlockPatchDto,
+        ConversationBlockStatusDto, ConversationControlStateDto, ConversationCursorDto,
+        ConversationDeltaDto, ConversationSlashActionKindDto,
     };
 
     use super::*;
     use crate::capability::{ColorLevel, GlyphMode};
 
-    fn sample_snapshot() -> AstrcodeConversationSnapshotResponseDto {
-        AstrcodeConversationSnapshotResponseDto {
+    fn sample_snapshot() -> ConversationSnapshotResponseDto {
+        ConversationSnapshotResponseDto {
             session_id: "session-1".to_string(),
             session_title: "Session 1".to_string(),
-            cursor: AstrcodeConversationCursorDto("1.2".to_string()),
-            phase: AstrcodePhaseDto::Idle,
-            control: AstrcodeConversationControlStateDto {
-                phase: AstrcodePhaseDto::Idle,
+            cursor: ConversationCursorDto("1.2".to_string()),
+            phase: PhaseDto::Idle,
+            control: ConversationControlStateDto {
+                phase: PhaseDto::Idle,
                 can_submit_prompt: true,
                 can_request_compact: true,
                 compact_pending: false,
@@ -481,21 +469,23 @@ mod tests {
                 active_plan: None,
                 active_tasks: None,
             },
-            blocks: vec![AstrcodeConversationBlockDto::Assistant(
-                AstrcodeConversationAssistantBlockDto {
+            step_progress: Default::default(),
+            blocks: vec![ConversationBlockDto::Assistant(
+                ConversationAssistantBlockDto {
                     id: "assistant-1".to_string(),
                     turn_id: Some("turn-1".to_string()),
-                    status: AstrcodeConversationBlockStatusDto::Streaming,
+                    status: ConversationBlockStatusDto::Streaming,
                     markdown: "hello".to_string(),
+                    step_index: None,
                 },
             )],
             child_summaries: Vec::new(),
-            slash_candidates: vec![AstrcodeConversationSlashCandidateDto {
+            slash_candidates: vec![ConversationSlashCandidateDto {
                 id: "review".to_string(),
                 title: "Review".to_string(),
                 description: "review skill".to_string(),
                 keywords: vec!["review".to_string()],
-                action_kind: AstrcodeConversationSlashActionKindDto::InsertText,
+                action_kind: ConversationSlashActionKindDto::InsertText,
                 action_value: "/review".to_string(),
             }],
             banner: None,
@@ -516,19 +506,19 @@ mod tests {
     fn applies_snapshot_and_stream_deltas() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.activate_snapshot(sample_snapshot());
-        state.apply_stream_envelope(AstrcodeConversationStreamEnvelopeDto {
+        state.apply_stream_envelope(ConversationStreamEnvelopeDto {
             session_id: "session-1".to_string(),
-            cursor: AstrcodeConversationCursorDto("1.3".to_string()),
-            delta: AstrcodeConversationDeltaDto::PatchBlock {
+            cursor: ConversationCursorDto("1.3".to_string()),
+            step_progress: Default::default(),
+            delta: ConversationDeltaDto::PatchBlock {
                 block_id: "assistant-1".to_string(),
-                patch: AstrcodeConversationBlockPatchDto::AppendMarkdown {
+                patch: ConversationBlockPatchDto::AppendMarkdown {
                     markdown: " world".to_string(),
                 },
             },
         });
 
-        let AstrcodeConversationBlockDto::Assistant(block) = &state.conversation.transcript[0]
-        else {
+        let ConversationBlockDto::Assistant(block) = &state.conversation.transcript[0] else {
             panic!("assistant block should remain present");
         };
         assert_eq!(block.markdown, "hello world");
@@ -546,19 +536,19 @@ mod tests {
     fn replace_markdown_patch_overwrites_streamed_content() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.activate_snapshot(sample_snapshot());
-        state.apply_stream_envelope(AstrcodeConversationStreamEnvelopeDto {
+        state.apply_stream_envelope(ConversationStreamEnvelopeDto {
             session_id: "session-1".to_string(),
-            cursor: AstrcodeConversationCursorDto("1.4".to_string()),
-            delta: AstrcodeConversationDeltaDto::PatchBlock {
+            cursor: ConversationCursorDto("1.4".to_string()),
+            step_progress: Default::default(),
+            delta: ConversationDeltaDto::PatchBlock {
                 block_id: "assistant-1".to_string(),
-                patch: AstrcodeConversationBlockPatchDto::ReplaceMarkdown {
+                patch: ConversationBlockPatchDto::ReplaceMarkdown {
                     markdown: "replaced".to_string(),
                 },
             },
         });
 
-        let AstrcodeConversationBlockDto::Assistant(block) = &state.conversation.transcript[0]
-        else {
+        let ConversationBlockDto::Assistant(block) = &state.conversation.transcript[0] else {
             panic!("assistant block should remain present");
         };
         assert_eq!(block.markdown, "replaced");
@@ -569,12 +559,12 @@ mod tests {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.set_slash_query(
             "review",
-            vec![AstrcodeConversationSlashCandidateDto {
+            vec![ConversationSlashCandidateDto {
                 id: "review".to_string(),
                 title: "Review".to_string(),
                 description: "review skill".to_string(),
                 keywords: vec!["review".to_string()],
-                action_kind: AstrcodeConversationSlashActionKindDto::InsertText,
+                action_kind: ConversationSlashActionKindDto::InsertText,
                 action_value: "/review".to_string(),
             }],
         );
@@ -618,8 +608,8 @@ mod tests {
     #[test]
     fn ticking_advances_streaming_thinking() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
-        state.conversation.control = Some(AstrcodeConversationControlStateDto {
-            phase: AstrcodePhaseDto::Thinking,
+        state.conversation.control = Some(ConversationControlStateDto {
+            phase: PhaseDto::Thinking,
             can_submit_prompt: true,
             can_request_compact: true,
             compact_pending: false,
@@ -639,17 +629,19 @@ mod tests {
     fn browser_filters_out_streaming_cells() {
         let mut state = CliState::new("http://127.0.0.1:5529".to_string(), None, capabilities());
         state.conversation.transcript = vec![
-            AstrcodeConversationBlockDto::Assistant(AstrcodeConversationAssistantBlockDto {
+            ConversationBlockDto::Assistant(ConversationAssistantBlockDto {
                 id: "assistant-streaming".to_string(),
                 turn_id: Some("turn-1".to_string()),
-                status: AstrcodeConversationBlockStatusDto::Streaming,
+                status: ConversationBlockStatusDto::Streaming,
                 markdown: "draft".to_string(),
+                step_index: None,
             }),
-            AstrcodeConversationBlockDto::Assistant(AstrcodeConversationAssistantBlockDto {
+            ConversationBlockDto::Assistant(ConversationAssistantBlockDto {
                 id: "assistant-complete".to_string(),
                 turn_id: Some("turn-1".to_string()),
-                status: AstrcodeConversationBlockStatusDto::Complete,
+                status: ConversationBlockStatusDto::Complete,
                 markdown: "done".to_string(),
+                step_index: None,
             }),
         ];
 

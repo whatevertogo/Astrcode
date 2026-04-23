@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
-use astrcode_client::{
-    AstrcodeCurrentModelInfoDto, AstrcodeModeSummaryDto, AstrcodeModelOptionDto,
-};
+use astrcode_client::{CurrentModelInfoDto, ModeSummaryDto, ModelOptionDto};
 
 use crate::capability::TerminalCapabilities;
 
@@ -11,9 +9,9 @@ pub struct ShellState {
     pub connection_origin: String,
     pub working_dir: Option<PathBuf>,
     pub capabilities: TerminalCapabilities,
-    pub current_model: Option<AstrcodeCurrentModelInfoDto>,
-    pub model_options: Vec<AstrcodeModelOptionDto>,
-    pub available_modes: Vec<AstrcodeModeSummaryDto>,
+    pub current_model: Option<CurrentModelInfoDto>,
+    pub model_options: Vec<ModelOptionDto>,
+    pub available_modes: Vec<ModeSummaryDto>,
 }
 
 impl Default for ShellState {

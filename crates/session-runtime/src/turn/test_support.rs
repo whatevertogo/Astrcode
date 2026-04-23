@@ -327,6 +327,7 @@ pub(crate) fn root_assistant_final_event(
         content.into(),
         None,
         None,
+        0,
         Some(chrono::Utc::now()),
     )
 }
@@ -335,6 +336,7 @@ pub(crate) fn root_turn_done_event(turn_id: &str, reason: Option<String>) -> Sto
     turn_done_event(
         turn_id,
         &astrcode_core::AgentEventContext::default(),
+        None,
         reason,
         chrono::Utc::now(),
     )
@@ -390,15 +392,6 @@ pub(crate) fn assert_contains_compact_summary(events: &[StoredEvent], expected_s
             StorageEventPayload::CompactApplied { summary, .. } if summary.contains(expected_summary)
         )),
         "expected stored events to contain CompactApplied('{expected_summary}')"
-    );
-}
-
-pub(crate) fn assert_has_turn_done(events: &[StorageEvent]) {
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(&event.payload, StorageEventPayload::TurnDone { .. })),
-        "expected events to contain TurnDone"
     );
 }
 

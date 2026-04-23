@@ -35,11 +35,9 @@ pub(super) async fn finalize_and_execute_tool_calls(
     } = finalized_streaming;
     apply_streaming_stats(execution, stats);
 
-    let event_emission_mode = if used_streaming_path {
-        ToolEventEmissionMode::Buffered
-    } else {
-        ToolEventEmissionMode::Immediate
-    };
+    // Why: durable truth 现在以 step 为提交边界，工具结构事件也必须与
+    // PromptMetrics / AssistantFinal 同批落盘，避免 turn 中断时留下半个 step。
+    let event_emission_mode = ToolEventEmissionMode::Buffered;
     let mut executed_remaining = if remaining_tool_calls.is_empty() {
         empty_tool_cycle_result()
     } else {
@@ -53,13 +51,17 @@ pub(super) async fn finalize_and_execute_tool_calls(
             .await?
     };
 
-    if event_emission_mode == ToolEventEmissionMode::Buffered {
+    if used_streaming_path {
         merge_buffered_and_remaining_tool_results(
             execution,
             output,
             &matched_results,
             &mut executed_remaining,
         )?;
+    } else {
+        execution
+            .journal
+            .extend(std::mem::take(&mut executed_remaining.events));
     }
 
     track_tool_results(execution, resources.working_dir, &executed_remaining);
@@ -75,20 +77,25 @@ pub(super) async fn finalize_and_execute_tool_calls(
 }
 
 fn apply_streaming_stats(execution: &mut TurnExecutionContext, stats: StreamingToolStats) {
-    execution.streaming_tool_launch_count = execution
-        .streaming_tool_launch_count
+    execution.streaming_tools.launch_count = execution
+        .streaming_tools
+        .launch_count
         .saturating_add(stats.launched_count);
-    execution.streaming_tool_match_count = execution
-        .streaming_tool_match_count
+    execution.streaming_tools.match_count = execution
+        .streaming_tools
+        .match_count
         .saturating_add(stats.matched_count);
-    execution.streaming_tool_fallback_count = execution
-        .streaming_tool_fallback_count
+    execution.streaming_tools.fallback_count = execution
+        .streaming_tools
+        .fallback_count
         .saturating_add(stats.fallback_count);
-    execution.streaming_tool_discard_count = execution
-        .streaming_tool_discard_count
+    execution.streaming_tools.discard_count = execution
+        .streaming_tools
+        .discard_count
         .saturating_add(stats.discard_count);
-    execution.streaming_tool_overlap_ms = execution
-        .streaming_tool_overlap_ms
+    execution.streaming_tools.overlap_ms = execution
+        .streaming_tools
+        .overlap_ms
         .saturating_add(stats.overlap_ms);
 }
 
@@ -165,7 +172,7 @@ fn merge_buffered_and_remaining_tool_results(
         }
     }
     combined_events.append(&mut ungrouped_events);
-    execution.events.extend(combined_events);
+    execution.journal.extend(combined_events);
     executed_remaining.tool_messages = merged_tool_messages;
     executed_remaining.raw_results = merged_raw_results;
     Ok(())
@@ -216,10 +223,13 @@ fn track_tool_results(
     tool_result: &ToolCycleResult,
 ) {
     for (call, result) in &tool_result.raw_results {
+        execution.budget.file_access_tracker.record_tool_result(
+            call,
+            result,
+            Path::new(working_dir),
+        );
         execution
-            .file_access_tracker
-            .record_tool_result(call, result, Path::new(working_dir));
-        execution
+            .budget
             .micro_compact_state
             .record_tool_result(result.tool_call_id.clone(), Instant::now());
     }

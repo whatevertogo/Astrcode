@@ -21,6 +21,7 @@ mod catalog;
 mod command;
 mod context_window;
 mod heuristics;
+pub mod identity;
 mod observe;
 mod query;
 mod state;
@@ -38,18 +39,18 @@ pub use query::{
     ConversationChildHandoffKind, ConversationDeltaFacts, ConversationDeltaFrameFacts,
     ConversationDeltaProjector, ConversationErrorBlockFacts, ConversationPlanBlockFacts,
     ConversationPlanBlockersFacts, ConversationPlanEventKind, ConversationPlanReviewFacts,
-    ConversationPlanReviewKind, ConversationSnapshotFacts, ConversationStreamProjector,
+    ConversationPlanReviewKind, ConversationPromptMetricsBlockFacts, ConversationSnapshotFacts,
+    ConversationStepCursorFacts, ConversationStepProgressFacts, ConversationStreamProjector,
     ConversationStreamReplayFacts, ConversationSystemNoteBlockFacts, ConversationSystemNoteKind,
     ConversationThinkingBlockFacts, ConversationTranscriptErrorKind, ConversationUserBlockFacts,
     LastCompactMetaSnapshot, ProjectedTurnOutcome, SessionControlStateSnapshot,
     SessionModeSnapshot, SessionReplay, SessionTranscriptSnapshot, ToolCallBlockFacts,
     ToolCallStreamsFacts, TurnTerminalSnapshot, recoverable_parent_deliveries,
 };
-pub(crate) use state::{InputQueueEventAppend, SessionStateEventSink, append_input_queue_event};
+#[cfg(test)]
+pub(crate) use state::SessionStateEventSink;
 pub use state::{
-    SessionSnapshot, SessionState, append_and_broadcast, complete_session_execution,
-    display_name_from_working_dir, normalize_session_id, normalize_working_dir,
-    prepare_session_execution,
+    SessionSnapshot, SessionState, display_name_from_working_dir, normalize_working_dir,
 };
 pub use turn::{
     AgentPromptSubmission, ForkPoint, ForkResult, TurnCollaborationSummary, TurnFinishReason,
@@ -154,14 +155,7 @@ impl SessionRuntime {
         let mut sessions = self
             .sessions
             .iter()
-            .filter(|entry| {
-                entry
-                    .value()
-                    .actor
-                    .state()
-                    .running
-                    .load(std::sync::atomic::Ordering::SeqCst)
-            })
+            .filter(|entry| entry.value().actor.turn_runtime().is_running())
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>();
         sessions.sort();
@@ -324,9 +318,49 @@ impl SessionRuntime {
         session_id: &str,
         turn_id: &str,
     ) -> Result<TurnTerminalSnapshot> {
-        self.query()
-            .wait_for_turn_terminal_snapshot(session_id, turn_id)
-            .await
+        turn::wait_for_turn_terminal_snapshot(self, session_id, turn_id).await
+    }
+
+    /// 仅供跨 crate 集成测试设置单 session 的 runtime running 状态。
+    ///
+    /// Why: application/server 测试需要快速制造“busy session”场景，但不应继续直接操作
+    /// `SessionState` 的 turn runtime proxy。
+    #[doc(hidden)]
+    pub async fn prepare_test_turn_runtime(&self, session_id: &str, turn_id: &str) -> Result<u64> {
+        let session_id = SessionId::from(state::normalize_session_id(session_id));
+        let actor = self.ensure_loaded_session(&session_id).await?;
+        let lease = match self
+            .event_store
+            .try_acquire_turn(&session_id, turn_id)
+            .await?
+        {
+            astrcode_core::SessionTurnAcquireResult::Acquired(lease) => lease,
+            astrcode_core::SessionTurnAcquireResult::Busy(busy) => {
+                return Err(astrcode_core::AstrError::Validation(format!(
+                    "session '{}' unexpectedly busy while preparing test turn '{}': {}",
+                    session_id, turn_id, busy.turn_id
+                )));
+            },
+        };
+        actor.turn_runtime().prepare(
+            session_id.as_str(),
+            turn_id,
+            astrcode_core::CancelToken::new(),
+            lease,
+        )
+    }
+
+    /// 仅供跨 crate 集成测试清理通过 `prepare_test_turn_runtime()` 创建的 runtime running 状态。
+    #[doc(hidden)]
+    pub async fn complete_test_turn_runtime(
+        &self,
+        session_id: &str,
+        generation: u64,
+    ) -> Result<()> {
+        let session_id = SessionId::from(state::normalize_session_id(session_id));
+        let actor = self.ensure_loaded_session(&session_id).await?;
+        let _ = actor.turn_runtime().complete(generation)?;
+        Ok(())
     }
 
     /// 生成面向 agent 编排的单 session observe 快照。
@@ -349,6 +383,17 @@ impl SessionRuntime {
     ) -> Result<Vec<String>> {
         self.query()
             .pending_delivery_ids_for_agent(session_id, agent_id)
+            .await
+    }
+
+    /// 读取 durable child session 事件并投影指定 sub-run 的稳定状态快照。
+    pub async fn durable_subrun_status_snapshot(
+        &self,
+        parent_session_id: &str,
+        requested_subrun_id: &str,
+    ) -> Result<Option<SubRunStatusSnapshot>> {
+        self.query()
+            .durable_subrun_status_snapshot(parent_session_id, requested_subrun_id)
             .await
     }
 
@@ -442,11 +487,11 @@ impl SessionRuntime {
         session_id: &str,
         turn_id: &str,
     ) -> Result<ProjectedTurnOutcome> {
-        self.query().project_turn_outcome(session_id, turn_id).await
+        turn::wait_and_project_turn_outcome(self, session_id, turn_id).await
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
-        let session_id = SessionId::from(normalize_session_id(session_id));
+        let session_id = SessionId::from(state::normalize_session_id(session_id));
         self.ensure_session_exists(&session_id).await?;
         self.event_store.delete_session(&session_id).await?;
         self.sessions.remove(&session_id);
@@ -514,7 +559,7 @@ impl SessionRuntime {
             .list_session_metas()
             .await?
             .into_iter()
-            .find(|meta| normalize_session_id(&meta.session_id) == session_id.as_str())
+            .find(|meta| state::normalize_session_id(&meta.session_id) == session_id.as_str())
             .ok_or_else(|| SessionRuntimeError::SessionNotFound(session_id.to_string()))?;
         Ok(meta.phase)
     }
@@ -531,7 +576,7 @@ impl SessionRuntime {
             .list_session_metas()
             .await?
             .into_iter()
-            .find(|meta| normalize_session_id(&meta.session_id) == session_id.as_str())
+            .find(|meta| state::normalize_session_id(&meta.session_id) == session_id.as_str())
             .ok_or_else(|| SessionRuntimeError::SessionNotFound(session_id.to_string()))?;
         let recovered = self.event_store.recover_session(session_id).await?;
         let actor = Arc::new(SessionActor::from_recovery(
@@ -562,7 +607,7 @@ impl SessionRuntime {
             .list_session_metas()
             .await?
             .into_iter()
-            .any(|meta| normalize_session_id(&meta.session_id) == session_id.as_str());
+            .any(|meta| state::normalize_session_id(&meta.session_id) == session_id.as_str());
         if exists {
             Ok(())
         } else {

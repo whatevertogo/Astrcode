@@ -36,6 +36,7 @@ import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api
 import type {
   ComposerOption,
   ConfigView,
+  ConversationStepProgress,
   CurrentModelInfo,
   DeleteProjectResult,
   ExecutionControl,
@@ -56,6 +57,37 @@ const SSE_RECONNECT_BASE_DELAY_MS = 500;
 const SSE_RECONNECT_MAX_DELAY_MS = 5_000;
 const SSE_RECONNECT_FATAL_ATTEMPTS = 3;
 
+function isRehydrateRequiredEnvelope(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') {
+    return false;
+  }
+  return (payload as { kind?: unknown }).kind === 'rehydrate_required';
+}
+
+export function processConversationStreamEnvelope(
+  conversationState: ConversationSnapshotState,
+  payload: string,
+  filter?: SessionEventFilterQuery,
+  messageTree?: ConversationViewProjection['messageTree']
+):
+  | {
+      kind: 'projection';
+      projection: ConversationViewProjection;
+    }
+  | {
+      kind: 'rehydrate_required';
+    } {
+  const envelope = JSON.parse(payload);
+  if (isRehydrateRequiredEnvelope(envelope)) {
+    return { kind: 'rehydrate_required' };
+  }
+  applyConversationEnvelope(conversationState, envelope);
+  return {
+    kind: 'projection',
+    projection: projectConversationState(conversationState, filter?.subRunId, messageTree),
+  };
+}
+
 function shouldRetryEventStream(error: unknown): boolean {
   const message =
     error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
@@ -63,7 +95,13 @@ function shouldRetryEventStream(error: unknown): boolean {
 }
 
 function projectionSignature(projection: ConversationViewProjection): string {
-  return `${projection.phase}::${projection.messageFingerprint}::${projection.childFingerprint}`;
+  return `${projection.phase}::${projection.messageFingerprint}::${projection.childFingerprint}::${stepProgressSignature(projection.stepProgress)}`;
+}
+
+function stepProgressSignature(stepProgress: ConversationStepProgress): string {
+  const fingerprintOf = (cursor: ConversationStepProgress['durable']): string =>
+    cursor ? `${cursor.turnId}:${cursor.stepIndex}` : 'none';
+  return `${fingerprintOf(stepProgress.durable)}|${fingerprintOf(stepProgress.live)}`;
 }
 
 export function useAgent() {
@@ -277,12 +315,20 @@ export function useAgent() {
                 if (!conversationState) {
                   return;
                 }
-                applyConversationEnvelope(conversationState, JSON.parse(payload));
-                const projection = projectConversationState(
+                const result = processConversationStreamEnvelope(
                   conversationState,
-                  connectedSessionFilterRef.current?.subRunId,
+                  payload,
+                  connectedSessionFilterRef.current,
                   messageTreeRef.current ?? undefined
                 );
+                if (result.kind === 'rehydrate_required') {
+                  void recoverConversationProjection(
+                    sessionId,
+                    connectedSessionFilterRef.current
+                  );
+                  return;
+                }
+                const projection = result.projection;
                 // TODO(stream-backpressure): 如果服务端开始做时间窗 coalescing，这里可以继续保留
                 // “单帧只提交最后一个 projection” 的策略，避免高频 delta 把主线程重新打满。
                 messageTreeRef.current = projection.messageTree;
@@ -342,6 +388,7 @@ export function useAgent() {
       failActiveConnection,
       flushProjectedConversation,
       queueProjectedConversation,
+      recoverConversationProjection,
     ]
   );
 

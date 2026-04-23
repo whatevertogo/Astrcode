@@ -1,0 +1,17 @@
+task_id: plan-revise-after-read
+description: 读取规格后进入 plan mode 并修订计划内容。
+prompt: |
+  请读取 docs/spec.md，再进入 plan mode，修订 rollout 计划并补齐 Verification 与 Rollback。
+workspace:
+  setup: ../fixtures/plan-revise-after-read
+expected_outcome:
+  tool_pattern:
+    - Read
+    - EnterPlanMode
+    - UpsertSessionPlan
+  max_tool_calls: 3
+  max_turns: 1
+  output_contains:
+    - Verification
+    - Rollback
+

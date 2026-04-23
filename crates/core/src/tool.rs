@@ -16,10 +16,11 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, CancelToken, CapabilityKind, CapabilitySpec, CapabilitySpecBuildError,
-    InvocationKind, InvocationMode, ModeId, PermissionSpec, Result, SessionId, SideEffect,
-    Stability, StorageEvent, ToolDefinition, ToolExecutionResult, ToolOutputDelta,
-    ToolOutputStream, TurnId, tool_result_persist::DEFAULT_TOOL_RESULT_INLINE_LIMIT,
+    AgentEventContext, BoundModeToolContractSnapshot, CancelToken, CapabilityKind, CapabilitySpec,
+    CapabilitySpecBuildError, InvocationKind, InvocationMode, ModeId, PermissionSpec, Result,
+    SessionId, SideEffect, Stability, StorageEvent, ToolDefinition, ToolExecutionResult,
+    ToolOutputDelta, ToolOutputStream, TurnId,
+    tool_result_persist::DEFAULT_TOOL_RESULT_INLINE_LIMIT,
 };
 
 /// 工具执行的默认最大输出大小（1 MB）
@@ -111,6 +112,8 @@ pub struct ToolContext {
     agent: Arc<AgentEventContext>,
     /// 工具执行开始时当前会话的治理 mode。
     current_mode_id: ModeId,
+    /// 当前 turn 绑定后的 mode tool contract 快照。
+    bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
     /// Maximum output size in bytes. Defaults to 1MB.
     max_output_size: usize,
     /// Optional override for session-scoped persisted tool artifacts.
@@ -153,6 +156,7 @@ impl ToolContext {
             tool_call_id: None,
             agent: Arc::new(AgentEventContext::default()),
             current_mode_id: ModeId::default(),
+            bound_mode_tool_contract: None,
             max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
             session_storage_root: None,
             tool_output_sender: None,
@@ -210,6 +214,15 @@ impl ToolContext {
         self
     }
 
+    /// 为工具上下文注入当前 turn 绑定后的 mode contract 快照。
+    pub fn with_bound_mode_tool_contract(
+        mut self,
+        bound_mode_tool_contract: BoundModeToolContractSnapshot,
+    ) -> Self {
+        self.bound_mode_tool_contract = Some(bound_mode_tool_contract);
+        self
+    }
+
     /// 为工具上下文注入 turn 事件发射器。
     pub fn with_event_sink(mut self, event_sink: Arc<dyn ToolEventSink>) -> Self {
         self.event_sink = Some(event_sink);
@@ -263,6 +276,10 @@ impl ToolContext {
     /// 返回工具执行开始时当前会话的治理 mode。
     pub fn current_mode_id(&self) -> &ModeId {
         &self.current_mode_id
+    }
+
+    pub fn bound_mode_tool_contract(&self) -> Option<&BoundModeToolContractSnapshot> {
+        self.bound_mode_tool_contract.as_ref()
     }
 
     /// Returns the maximum output size in bytes.
@@ -341,6 +358,7 @@ impl Clone for ToolContext {
             tool_call_id: self.tool_call_id.clone(),
             agent: self.agent.clone(),
             current_mode_id: self.current_mode_id.clone(),
+            bound_mode_tool_contract: self.bound_mode_tool_contract.clone(),
             max_output_size: self.max_output_size,
             session_storage_root: self.session_storage_root.clone(),
             tool_output_sender: self.tool_output_sender.clone(),
@@ -360,6 +378,7 @@ impl fmt::Debug for ToolContext {
             .field("turn_id", &self.turn_id)
             .field("agent", self.agent.as_ref())
             .field("current_mode_id", &self.current_mode_id)
+            .field("bound_mode_tool_contract", &self.bound_mode_tool_contract)
             .field("max_output_size", &self.max_output_size)
             .field("session_storage_root", &self.session_storage_root)
             .field(
@@ -653,4 +672,37 @@ pub trait Tool: Send + Sync {
         input: Value,
         ctx: &ToolContext,
     ) -> Result<ToolExecutionResult>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::{BoundModeToolContractSnapshot, CancelToken, ToolContext};
+
+    #[test]
+    fn tool_context_preserves_bound_mode_tool_contract_snapshot() {
+        let ctx = ToolContext::new(
+            "session-1".into(),
+            PathBuf::from("/repo"),
+            CancelToken::new(),
+        )
+        .with_bound_mode_tool_contract(BoundModeToolContractSnapshot {
+            mode_id: "plan".into(),
+            artifact: None,
+            exit_gate: None,
+        });
+
+        assert_eq!(
+            ctx.bound_mode_tool_contract()
+                .map(|snapshot| snapshot.mode_id.as_str()),
+            Some("plan")
+        );
+        assert_eq!(
+            ctx.clone()
+                .bound_mode_tool_contract()
+                .map(|snapshot| snapshot.mode_id.as_str()),
+            Some("plan")
+        );
+    }
 }

@@ -38,9 +38,6 @@ fn explore_profile() -> AgentProfile {
         description: "只读探索".to_string(),
         mode: AgentMode::SubAgent,
         system_prompt: None,
-        allowed_tools: vec!["readFile".to_string()],
-        disallowed_tools: Vec::new(),
-        // TODO: 未来可能需要添加更多执行限制字段（如 max_steps）
         model_preference: Some("fast".to_string()),
     }
 }

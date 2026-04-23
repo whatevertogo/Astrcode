@@ -15,6 +15,7 @@
 
 use std::{
     collections::VecDeque,
+    ffi::OsStr,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -741,12 +742,14 @@ fn collect_candidate_files(
     // 递归：使用 ignore crate 遍历，自动尊重 .gitignore / .ignore
     let mut files = Vec::new();
     let mut builder = ignore::WalkBuilder::new(path);
+    let search_root = path.to_path_buf();
     builder
         .hidden(false)      // agent 需要看到 .env.example 等隐藏文件
         .git_ignore(true)   // 尊重 .gitignore
         .git_global(true)   // 尊重全局 gitignore
         .git_exclude(true)  // 尊重 .git/info/exclude
         .ignore(true); // 尊重 .ignore
+    builder.filter_entry(move |entry| should_descend_into_search_entry(&search_root, entry.path()));
 
     for result in builder.build() {
         check_cancel(cancel)?;
@@ -765,6 +768,23 @@ fn collect_candidate_files(
     }
 
     Ok(files)
+}
+
+/// 递归搜索时显式跳过 `.git` 内部目录，避免在放开隐藏文件后误扫 git object store。
+///
+/// 这里不屏蔽普通隐藏文件，只裁掉仓库内部实现细节；如果用户显式把搜索根设为 `.git`
+/// 目录本身，则允许继续遍历该根下面的内容。
+fn should_descend_into_search_entry(search_root: &Path, candidate: &Path) -> bool {
+    let Ok(relative) = candidate.strip_prefix(search_root) else {
+        return true;
+    };
+
+    !relative.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::Normal(name) if name == OsStr::new(".git")
+        )
+    })
 }
 
 /// 检查文件路径是否通过 glob 和文件类型过滤器。
@@ -1445,6 +1465,55 @@ mod tests {
         // .log 文件应被 .gitignore 排除
         assert_eq!(matches.len(), 1);
         assert!(matches[0].file.ends_with("main.rs"));
+    }
+
+    #[tokio::test]
+    async fn grep_skips_git_internal_objects_when_hidden_files_are_enabled() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        tokio::fs::create_dir_all(temp.path().join(".git").join("objects").join("91"))
+            .await
+            .expect("create git objects dir");
+        tokio::fs::write(
+            temp.path()
+                .join(".git")
+                .join("objects")
+                .join("91")
+                .join("bad-object"),
+            vec![0xff, 0xfe, 0xfd, 0xfc],
+        )
+        .await
+        .expect("write invalid git object");
+        let rs_file = temp.path().join("main.rs");
+        tokio::fs::write(&rs_file, "// TARGET\n")
+            .await
+            .expect("write rs");
+
+        let tool = GrepTool;
+        let result = tool
+            .execute(
+                "tc-grep-skip-git-objects".to_string(),
+                json!({
+                    "pattern": "TARGET",
+                    "path": temp.path().to_string_lossy(),
+                    "recursive": true
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].file.ends_with("main.rs"));
+
+        let metadata = result.metadata.expect("grep should return metadata");
+        assert_eq!(
+            metadata
+                .get("skipped_files")
+                .and_then(|value| value.as_u64()),
+            Some(0),
+        );
     }
 
     #[tokio::test]

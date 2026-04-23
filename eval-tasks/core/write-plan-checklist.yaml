@@ -1,0 +1,17 @@
+task_id: write-plan-checklist
+description: 读取规格说明后补齐计划检查清单，覆盖 plan mode 相关文件编辑质量。
+prompt: |
+  请读取 docs/spec.md，并把 plan.md 补成包含 Verification 和 Rollback 的检查清单。
+workspace:
+  setup: ../fixtures/write-plan-checklist
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Edit
+  max_tool_calls: 3
+  max_turns: 1
+  file_changes:
+    - path: plan.md
+      contains: "- [ ] Verification"
+    - path: plan.md
+      contains: "- [ ] Rollback"

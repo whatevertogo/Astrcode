@@ -1,0 +1,13 @@
+task_id: tool-argument-discipline
+description: 仅通过一次读取拿到精确配置值，覆盖工具调用准确性与格式约束。
+prompt: |
+  请读取 config/app.toml，告诉我 read_timeout_secs 的值。
+workspace:
+  setup: ../fixtures/tool-argument-discipline
+expected_outcome:
+  tool_pattern:
+    - Read
+  max_tool_calls: 1
+  max_turns: 1
+  output_contains:
+    - "45"

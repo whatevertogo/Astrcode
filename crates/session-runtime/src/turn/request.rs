@@ -23,9 +23,8 @@ use crate::{
     },
     state::compact_history_event_log_path,
     turn::{
-        events::{
-            CompactAppliedStats, compact_applied_event, prompt_metrics_event, user_message_event,
-        },
+        compact_events::{build_post_compact_events, build_post_compact_recovery_messages},
+        events::prompt_metrics_event,
         tool_result_budget::{
             ApplyToolResultBudgetRequest, ToolResultBudgetOutcome, ToolResultBudgetStats,
             ToolResultReplacementState, apply_tool_result_budget,
@@ -165,49 +164,23 @@ pub async fn assemble_prompt_request(
             )
             .await?
             {
+                let compact_events = build_post_compact_events(
+                    Some(request.turn_id),
+                    request.agent,
+                    CompactTrigger::Auto,
+                    &compaction,
+                );
                 messages = compaction.messages;
                 auto_compacted = true;
-                messages.extend(request.file_access_tracker.build_recovery_messages(
+                messages.extend(build_post_compact_recovery_messages(
+                    request.file_access_tracker,
                     FileRecoveryConfig {
                         max_tracked_files: request.settings.max_tracked_files,
                         max_recovered_files: request.settings.max_recovered_files,
                         recovery_token_budget: request.settings.recovery_token_budget,
                     },
                 ));
-
-                events.push(compact_applied_event(
-                    Some(request.turn_id),
-                    request.agent,
-                    CompactTrigger::Auto,
-                    compaction.summary.clone(),
-                    CompactAppliedStats {
-                        meta: compaction.meta,
-                        preserved_recent_turns: compaction.preserved_recent_turns,
-                        pre_tokens: compaction.pre_tokens,
-                        post_tokens_estimate: compaction.post_tokens_estimate,
-                        messages_removed: compaction.messages_removed,
-                        tokens_freed: compaction.tokens_freed,
-                    },
-                    compaction.timestamp,
-                ));
-                if let Some(digest) = compaction.recent_user_context_digest.clone() {
-                    events.push(user_message_event(
-                        request.turn_id,
-                        request.agent,
-                        digest,
-                        UserMessageOrigin::RecentUserContextDigest,
-                        compaction.timestamp,
-                    ));
-                }
-                for content in &compaction.recent_user_context_messages {
-                    events.push(user_message_event(
-                        request.turn_id,
-                        request.agent,
-                        content.clone(),
-                        UserMessageOrigin::RecentUserContext,
-                        compaction.timestamp,
-                    ));
-                }
+                events.extend(compact_events);
 
                 prompt_output = build_prompt_output(PromptOutputRequest {
                     gateway: request.gateway,
@@ -255,10 +228,14 @@ pub async fn assemble_prompt_request(
         request.gateway.supports_cache_metrics(),
     ));
 
+    let mut prompt_cache_hints = prompt_output.prompt_cache_hints.clone();
+    prompt_cache_hints.compacted = auto_compacted;
+    prompt_cache_hints.tool_result_rebudgeted = tool_result_budgeted(&tool_result_budget_stats);
+
     let mut llm_request = LlmRequest::new(messages.clone(), request.tools, request.cancel.clone())
         .with_system(prompt_output.system_prompt);
     llm_request.system_prompt_blocks = prompt_output.system_prompt_blocks;
-    llm_request.prompt_cache_hints = Some(prompt_output.prompt_cache_hints.clone());
+    llm_request.prompt_cache_hints = Some(prompt_cache_hints);
 
     Ok(AssemblePromptResult {
         llm_request,
@@ -267,6 +244,10 @@ pub async fn assemble_prompt_request(
         auto_compacted,
         tool_result_budget_stats,
     })
+}
+
+fn tool_result_budgeted(stats: &ToolResultBudgetStats) -> bool {
+    stats.replacement_count > 0 || stats.reapply_count > 0 || stats.over_budget_message_count > 0
 }
 
 pub(crate) async fn build_prompt_output(

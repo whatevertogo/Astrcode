@@ -7,7 +7,7 @@ use astrcode_core::{
     FailedSubRunOutcome, ObserveParams, ParentDelivery, ParentDeliveryOrigin,
     ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ParentExecutionRef,
     ProgressParentDeliveryPayload, SendAgentParams, SendToChildParams, SendToParentParams,
-    SpawnAgentParams, SpawnCapabilityGrant, SubRunFailure, SubRunFailureCode, SubRunHandoff,
+    SpawnAgentParams, SubAgentExecutor, SubRunFailure, SubRunFailureCode, SubRunHandoff,
     SubRunResult, Tool, ToolContext,
 };
 use async_trait::async_trait;
@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::agent_tools::{
     CloseAgentTool, CollaborationExecutor, ObserveAgentTool, SendAgentTool, SpawnAgentTool,
-    SubAgentExecutor, collab_result_mapping::map_collaboration_result,
+    collab_result_mapping::map_collaboration_result,
 };
 
 struct RecordingExecutor {
@@ -87,10 +87,7 @@ async fn spawn_agent_tool_parses_params_and_returns_summary() {
                 "type": "explore",
                 "description": "inspect changes",
                 "prompt": "inspect changes",
-                "context": "focus on tests",
-                "capabilityGrant": {
-                    "allowedTools": ["grep", "readFile"]
-                }
+                "context": "focus on tests"
             }),
             &tool_context(),
         )
@@ -102,12 +99,7 @@ async fn spawn_agent_tool_parses_params_and_returns_summary() {
     let calls = executor.calls.lock().expect("calls lock");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].r#type, Some("explore".to_string()));
-    assert_eq!(
-        calls[0].capability_grant,
-        Some(SpawnCapabilityGrant {
-            allowed_tools: vec!["grep".to_string(), "readFile".to_string()],
-        })
-    );
+    assert_eq!(calls[0].context.as_deref(), Some("focus on tests"));
     assert_eq!(
         result
             .metadata
@@ -176,7 +168,12 @@ fn spawn_tool_exposes_prompt_metadata_for_tool_summary_indexing() {
     assert!(prompt.summary.contains("isolated context"));
     assert!(prompt.guide.contains("Start with one child"));
     assert!(prompt.guide.contains("`agentId`"));
-    assert!(prompt.guide.contains("`capabilityGrant`"));
+    assert!(
+        prompt
+            .caveats
+            .iter()
+            .any(|caveat| { caveat.contains("`type` selects a behavior template") })
+    );
 }
 
 #[test]
@@ -295,8 +292,7 @@ async fn spawn_agent_tool_surfaces_failure_display_and_technical_messages_separa
                 failure: SubRunFailure {
                     code: SubRunFailureCode::Transport,
                     display_message: "子 Agent 调用模型时网络连接中断，未完成任务。".to_string(),
-                    technical_message: "HTTP request error: failed to read anthropic response \
-                                        stream"
+                    technical_message: "HTTP request error: failed to read openai response stream"
                         .to_string(),
                     retryable: true,
                 },
@@ -324,7 +320,7 @@ async fn spawn_agent_tool_surfaces_failure_display_and_technical_messages_separa
     );
     assert_eq!(
         result.error.as_deref(),
-        Some("HTTP request error: failed to read anthropic response stream")
+        Some("HTTP request error: failed to read openai response stream")
     );
 }
 
@@ -595,17 +591,14 @@ fn sample_delegation(restricted: bool) -> DelegationMetadata {
     DelegationMetadata {
         responsibility_summary: "检查缓存层".to_string(),
         reuse_scope_summary: if restricted {
-            "只有当下一步仍属于同一责任分支，且所需操作仍落在当前收缩后的 capability surface \
-             内时，才应继续复用这个 child。"
+            "只有当下一步仍属于同一责任分支，且所需操作仍落在当前复用边界内时，才应继续复用这个 \
+             child。"
                 .to_string()
         } else {
             "只有当下一步仍属于同一责任分支时，才应继续复用这个 child；若责任边界已经改变，应 \
              close 当前分支并重新选择更合适的执行主体。"
                 .to_string()
         },
-        restricted,
-        capability_limit_summary: restricted
-            .then(|| "本分支当前只允许使用这些工具：readFile, grep。".to_string()),
     }
 }
 
@@ -1004,17 +997,7 @@ fn collaboration_result_metadata_projects_restricted_child_broader_tool_hint() {
             .and_then(|value| value.get("branch"))
             .and_then(|value| value.get("broaderToolsAction"))
             .and_then(|value| value.as_str()),
-        Some("respawn_or_handle_here")
-    );
-    assert_eq!(
-        mapped
-            .metadata
-            .as_ref()
-            .and_then(|value| value.get("advisory"))
-            .and_then(|value| value.get("branch"))
-            .and_then(|value| value.get("capabilityLimitSummary"))
-            .and_then(|value| value.as_str()),
-        Some("本分支当前只允许使用这些工具：readFile, grep。")
+        Some("close_or_respawn")
     );
 }
 

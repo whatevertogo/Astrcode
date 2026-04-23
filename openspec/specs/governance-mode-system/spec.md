@@ -20,9 +20,9 @@
 - **THEN** 该 mode SHALL 出现在统一的 mode catalog 中
 - **AND** 系统 SHALL 继续用与 builtin mode 相同的解析与编译流程消费它
 
-### Requirement: governance mode SHALL compile to a turn-scoped execution envelope
+### Requirement: governance mode SHALL compile to a turn-scoped governance artifact before bind
 
-系统 SHALL 在 turn 边界把当前 mode 编译为 `ResolvedTurnEnvelope`。该 envelope MUST 至少包含当前 turn 的 capability surface、prompt declarations、execution limits、action policies 与 child policy。
+系统 SHALL 在 turn 边界把当前 mode 先编译为 turn-scoped 治理产物。当前实现中的载体类型是 `ResolvedTurnEnvelope`，其语义 MUST 视为 compile 阶段结果，而不是最终 bind 后的运行时治理快照。该产物 MUST 至少包含当前 turn 的 capability surface、prompt declarations、execution limits、action policies 与 child policy。
 
 #### Scenario: plan mode compiles a restricted capability surface
 
@@ -137,11 +137,11 @@ builtin mode catalog MUST 在 server bootstrap 阶段通过 `GovernanceBuildInpu
 - **THEN** mode catalog 替换 SHALL 与 capability surface 替换在同一原子操作中完成
 - **AND** reload 失败时 SHALL 继续使用旧的 mode catalog（与当前能力面回滚策略一致）
 
-#### Scenario: running sessions are unaffected by catalog reload
+#### Scenario: reload is rejected while sessions are running
 
 - **WHEN** reload 发生时有 session 正在执行
-- **THEN** 已在执行的 turn SHALL 使用 reload 前的 envelope
-- **AND** 仅在下一 turn 开始时使用新的 catalog 编译 envelope
+- **THEN** 系统 SHALL 拒绝本次 reload
+- **AND** SHALL NOT 引入同一时刻新旧治理快照并存执行的 mixed-snapshot 语义
 
 ### Requirement: mode change SHALL be recorded as a durable event in session event log
 

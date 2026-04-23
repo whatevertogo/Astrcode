@@ -19,7 +19,7 @@ use crate::{
     DeleteProjectResult, InputQueueProjection, LlmMessage, McpApprovalData, Phase,
     ReasoningContent, Result, SessionId, SessionMeta, SessionTurnAcquireResult, SkillSpec,
     StorageEvent, StoredEvent, SystemPromptBlock, SystemPromptLayer, TaskSnapshot, ToolCallRequest,
-    ToolDefinition, TurnId,
+    ToolDefinition, TurnId, TurnTerminalKind,
 };
 
 /// MCP 配置文件作用域。
@@ -65,11 +65,18 @@ pub trait EventStore: Send + Sync {
 }
 
 /// durable 恢复基线。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionRecoveryCheckpoint {
-    pub agent_state: AgentState,
-    pub phase: Phase,
+pub struct TurnProjectionSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_kind: Option<TurnTerminalKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectionRegistrySnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_mode_changed_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -78,7 +85,87 @@ pub struct SessionRecoveryCheckpoint {
     pub active_tasks: HashMap<String, TaskSnapshot>,
     #[serde(default)]
     pub input_queue_projection_index: HashMap<String, InputQueueProjection>,
+    #[serde(default)]
+    pub turn_projections: HashMap<String, TurnProjectionSnapshot>,
+}
+
+impl ProjectionRegistrySnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.last_mode_changed_at.is_none()
+            && self.child_nodes.is_empty()
+            && self.active_tasks.is_empty()
+            && self.input_queue_projection_index.is_empty()
+            && self.turn_projections.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LegacySessionRecoveryProjection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phase: Option<Phase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_mode_changed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    child_nodes: HashMap<String, ChildSessionNode>,
+    #[serde(default)]
+    active_tasks: HashMap<String, TaskSnapshot>,
+    #[serde(default)]
+    input_queue_projection_index: HashMap<String, InputQueueProjection>,
+}
+
+impl LegacySessionRecoveryProjection {
+    fn is_empty(&self) -> bool {
+        self.phase.is_none()
+            && self.last_mode_changed_at.is_none()
+            && self.child_nodes.is_empty()
+            && self.active_tasks.is_empty()
+            && self.input_queue_projection_index.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRecoveryCheckpoint {
+    pub agent_state: AgentState,
+    #[serde(default, skip_serializing_if = "ProjectionRegistrySnapshot::is_empty")]
+    pub projection_registry: ProjectionRegistrySnapshot,
     pub checkpoint_storage_seq: u64,
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "LegacySessionRecoveryProjection::is_empty"
+    )]
+    legacy: LegacySessionRecoveryProjection,
+}
+
+impl SessionRecoveryCheckpoint {
+    pub fn new(
+        agent_state: AgentState,
+        projection_registry: ProjectionRegistrySnapshot,
+        checkpoint_storage_seq: u64,
+    ) -> Self {
+        Self {
+            agent_state,
+            projection_registry,
+            checkpoint_storage_seq,
+            legacy: LegacySessionRecoveryProjection::default(),
+        }
+    }
+
+    pub fn projection_registry_snapshot(&self) -> ProjectionRegistrySnapshot {
+        if !self.projection_registry.is_empty() {
+            return self.projection_registry.clone();
+        }
+
+        ProjectionRegistrySnapshot {
+            last_mode_changed_at: self.legacy.last_mode_changed_at,
+            child_nodes: self.legacy.child_nodes.clone(),
+            active_tasks: self.legacy.active_tasks.clone(),
+            input_queue_projection_index: self.legacy.input_queue_projection_index.clone(),
+            turn_projections: HashMap::new(),
+        }
+    }
 }
 
 /// 会话恢复结果：最近 checkpoint + checkpoint 之后的 tail events。
@@ -129,12 +216,12 @@ impl LlmFinishReason {
         matches!(self, Self::MaxTokens)
     }
 
-    /// 从 OpenAI / Anthropic 返回的 finish reason 字符串解析统一枚举。
+    /// 从 OpenAI 家族接口返回的 finish reason 字符串解析统一枚举。
     pub fn from_api_value(value: &str) -> Self {
         match value {
-            "stop" | "end_turn" | "stop_sequence" => Self::Stop,
+            "stop" => Self::Stop,
             "max_tokens" | "length" => Self::MaxTokens,
-            "tool_calls" | "tool_use" => Self::ToolCalls,
+            "tool_calls" => Self::ToolCalls,
             other => Self::Other(other.to_string()),
         }
     }
@@ -175,8 +262,48 @@ pub struct PromptLayerFingerprints {
 pub struct PromptCacheHints {
     #[serde(default)]
     pub layer_fingerprints: PromptLayerFingerprints,
+    #[serde(default)]
+    pub global_cache_strategy: PromptCacheGlobalStrategy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unchanged_layers: Vec<SystemPromptLayer>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub compacted: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tool_result_rebudgeted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptCacheGlobalStrategy {
+    #[default]
+    SystemPrompt,
+    ToolBased,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptCacheBreakReason {
+    SystemPromptChanged,
+    ToolSchemasChanged,
+    ModelChanged,
+    GlobalCacheStrategyChanged,
+    CompactedPrompt,
+    ToolResultRebudgeted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCacheDiagnostics {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<PromptCacheBreakReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_cache_read_input_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_cache_read_input_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub expected_drop: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cache_break_detected: bool,
 }
 
 /// 模型调用请求。
@@ -189,6 +316,7 @@ pub struct LlmRequest {
     pub system_prompt_blocks: Vec<SystemPromptBlock>,
     pub prompt_cache_hints: Option<PromptCacheHints>,
     pub max_output_tokens_override: Option<usize>,
+    pub skip_cache_write: bool,
 }
 
 impl LlmRequest {
@@ -205,6 +333,7 @@ impl LlmRequest {
             system_prompt_blocks: Vec::new(),
             prompt_cache_hints: None,
             max_output_tokens_override: None,
+            skip_cache_write: false,
         }
     }
 
@@ -218,6 +347,11 @@ impl LlmRequest {
         self
     }
 
+    pub fn with_skip_cache_write(mut self, skip_cache_write: bool) -> Self {
+        self.skip_cache_write = skip_cache_write;
+        self
+    }
+
     pub fn from_model_request(request: crate::ModelRequest, cancel: CancelToken) -> Self {
         Self {
             messages: request.messages,
@@ -227,6 +361,7 @@ impl LlmRequest {
             system_prompt_blocks: request.system_prompt_blocks,
             prompt_cache_hints: None,
             max_output_tokens_override: None,
+            skip_cache_write: false,
         }
     }
 }
@@ -239,6 +374,7 @@ pub struct LlmOutput {
     pub reasoning: Option<ReasoningContent>,
     pub usage: Option<LlmUsage>,
     pub finish_reason: LlmFinishReason,
+    pub prompt_cache_diagnostics: Option<PromptCacheDiagnostics>,
 }
 
 /// LLM provider 端口。
@@ -458,6 +594,10 @@ pub struct PromptBuildOutput {
 #[async_trait]
 pub trait PromptProvider: Send + Sync {
     async fn build_prompt(&self, request: PromptBuildRequest) -> Result<PromptBuildOutput>;
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// 资源读取请求上下文。

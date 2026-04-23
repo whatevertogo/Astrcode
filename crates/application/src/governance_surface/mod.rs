@@ -1,9 +1,9 @@
 //! # 治理面子域（Governance Surface）
 //!
-//! 统一管理每次 turn 的治理决策：工具白名单、审批策略、子代理委派策略、协作指导 prompt。
+//! 统一管理每次 turn 的治理决策：审批策略、子代理委派策略、协作指导 prompt。
 //!
-//! 核心流程：`*GovernanceInput` → `GovernanceSurfaceAssembler` → `ResolvedGovernanceSurface` →
-//! `AppAgentPromptSubmission`
+//! 核心流程：`*GovernanceInput` → compile mode surface → bind runtime/session facts →
+//! `ResolvedGovernanceSurface` → `AppAgentPromptSubmission`
 //!
 //! 入口场景：
 //! - **Session turn**：`session_surface()` — 用户直接发起的 turn
@@ -20,9 +20,9 @@ mod tests;
 
 pub use assembler::GovernanceSurfaceAssembler;
 use astrcode_core::{
-    AgentCollaborationPolicyContext, CapabilityCall, LlmMessage, ModeId, PolicyContext,
-    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
-    SpawnCapabilityGrant,
+    AgentCollaborationPolicyContext, BoundModeToolContractSnapshot, CapabilityCall, LlmMessage,
+    ModeId, PolicyContext, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
+    ResolvedSubagentContextOverrides,
 };
 use astrcode_kernel::CapabilityRouter;
 pub(crate) use inherited::resolve_inherited_parent_messages;
@@ -31,7 +31,7 @@ pub(crate) use inherited::{build_inherited_messages, select_inherited_recent_tai
 pub use policy::{
     GOVERNANCE_APPROVAL_MODE_INHERIT, GOVERNANCE_POLICY_REVISION,
     ToolCollaborationGovernanceContext, ToolCollaborationGovernanceContextInput,
-    collaboration_policy_context, effective_allowed_tools_for_limits,
+    collaboration_policy_context,
 };
 pub use prompt::{
     build_delegation_metadata, build_fresh_child_contract, build_resumed_child_contract,
@@ -60,9 +60,9 @@ pub struct GovernanceApprovalPipeline {
     pub pending: Option<astrcode_core::ApprovalPending<CapabilityCall>>,
 }
 
-/// 编译完成的治理面，一次性消费的 turn 级上下文快照。
+/// bind 完成的治理面，一次性消费的 turn 级上下文快照。
 ///
-/// 包含工具白名单、审批管线、prompt declarations、注入消息、协作策略等全部治理决策。
+/// 包含审批管线、prompt declarations、注入消息、协作策略等全部治理决策。
 /// 通过 `into_submission()` 转换为应用层提交载荷，再交给 session 端口适配到底层 runtime。
 #[derive(Clone)]
 pub struct ResolvedGovernanceSurface {
@@ -70,6 +70,7 @@ pub struct ResolvedGovernanceSurface {
     pub runtime: ResolvedRuntimeConfig,
     pub capability_router: Option<CapabilityRouter>,
     pub prompt_declarations: Vec<astrcode_core::PromptDeclaration>,
+    pub bound_mode_tool_contract: BoundModeToolContractSnapshot,
     pub resolved_limits: ResolvedExecutionLimitsSnapshot,
     pub resolved_overrides: Option<ResolvedSubagentContextOverrides>,
     pub injected_messages: Vec<LlmMessage>,
@@ -96,13 +97,9 @@ impl ResolvedGovernanceSurface {
         Ok(())
     }
 
-    pub fn allowed_capability_names(&self) -> Vec<String> {
-        self.resolved_limits.allowed_tools.clone()
-    }
-
     pub fn prompt_facts_context(&self) -> astrcode_core::PromptGovernanceContext {
         astrcode_core::PromptGovernanceContext {
-            allowed_capability_names: self.allowed_capability_names(),
+            allowed_capability_names: Vec::new(),
             mode_id: Some(self.mode_id.clone()),
             approval_mode: if self.approval.pending.is_some() {
                 "required".to_string()
@@ -124,7 +121,9 @@ impl ResolvedGovernanceSurface {
         AppAgentPromptSubmission {
             agent,
             capability_router: self.capability_router,
+            current_mode_id: self.mode_id,
             prompt_declarations: self.prompt_declarations,
+            bound_mode_tool_contract: Some(self.bound_mode_tool_contract),
             resolved_limits: Some(self.resolved_limits),
             resolved_overrides: self.resolved_overrides,
             injected_messages: self.injected_messages,
@@ -201,8 +200,6 @@ pub struct FreshChildGovernanceInput {
     pub working_dir: String,
     pub mode_id: ModeId,
     pub runtime: ResolvedRuntimeConfig,
-    pub parent_allowed_tools: Vec<String>,
-    pub capability_grant: Option<SpawnCapabilityGrant>,
     pub description: String,
     pub task: String,
     pub busy_policy: GovernanceBusyPolicy,
@@ -215,7 +212,6 @@ pub struct ResumedChildGovernanceInput {
     pub working_dir: String,
     pub mode_id: ModeId,
     pub runtime: ResolvedRuntimeConfig,
-    pub allowed_tools: Vec<String>,
     pub resolved_limits: ResolvedExecutionLimitsSnapshot,
     pub delegation: Option<astrcode_core::DelegationMetadata>,
     pub message: String,

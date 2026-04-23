@@ -8,6 +8,8 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub const SESSION_PLAN_DRAFT_APPROVAL_GUARD_MARKER: &str = "[session-plan:draft-approval-guard]";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionPlanStatus {

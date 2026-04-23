@@ -16,7 +16,10 @@ use super::{
     AgentOrchestrationError, AgentOrchestrationService, IMPLICIT_ROOT_PROFILE_ID,
     root_execution_event_context, subrun_event_context,
 };
-use crate::governance_surface::{GOVERNANCE_POLICY_REVISION, collaboration_policy_context};
+use crate::{
+    governance_surface::{GOVERNANCE_POLICY_REVISION, collaboration_policy_context},
+    session_identity::normalize_external_session_id,
+};
 
 pub(crate) struct CollaborationFactRecord<'a> {
     pub(crate) action: AgentCollaborationActionKind,
@@ -199,40 +202,32 @@ impl ToolCollaborationContext {
 }
 
 pub(crate) fn implicit_session_root_agent_id(session_id: &str) -> String {
-    format!(
-        "root-agent:{}",
-        astrcode_session_runtime::normalize_session_id(session_id)
-    )
+    format!("root-agent:{}", normalize_external_session_id(session_id))
 }
 
 fn default_resolved_limits_for_gateway(
-    gateway: &astrcode_kernel::KernelGateway,
-    max_steps: Option<u32>,
+    _gateway: &astrcode_kernel::KernelGateway,
 ) -> ResolvedExecutionLimitsSnapshot {
-    ResolvedExecutionLimitsSnapshot {
-        allowed_tools: gateway.capabilities().tool_names(),
-        max_steps,
-    }
+    ResolvedExecutionLimitsSnapshot
 }
 
 /// 为 handle 补填 resolved_limits。
 ///
 /// 某些老路径注册的 root agent（如隐式注册）可能没有在注册时就写入 limits，
-/// 此函数检测到空 allowed_tools 时从 gateway 全量 capability 补填。
+/// 此函数统一补上空快照，避免旧事件缺口影响后续状态投影。
 async fn ensure_handle_has_resolved_limits(
     kernel: &dyn crate::AgentKernelPort,
     gateway: &astrcode_kernel::KernelGateway,
     handle: SubRunHandle,
-    max_steps: Option<u32>,
 ) -> std::result::Result<SubRunHandle, String> {
-    if !handle.resolved_limits.allowed_tools.is_empty() {
+    if handle.resolved_limits == ResolvedExecutionLimitsSnapshot {
         return Ok(handle);
     }
 
     super::persist_resolved_limits_for_handle(
         kernel,
         handle,
-        default_resolved_limits_for_gateway(gateway, max_steps),
+        default_resolved_limits_for_gateway(gateway),
     )
     .await
 }
@@ -452,12 +447,11 @@ impl AgentOrchestrationService {
 
         if let Some(agent_id) = explicit_agent_id {
             if let Some(handle) = self.kernel.get_handle(&agent_id).await {
-                if handle.depth == 0 && handle.resolved_limits.allowed_tools.is_empty() {
+                if handle.depth == 0 && handle.resolved_limits != ResolvedExecutionLimitsSnapshot {
                     return ensure_handle_has_resolved_limits(
                         self.kernel.as_ref(),
                         &self.kernel.gateway(),
                         handle,
-                        None,
                     )
                     .await
                     .map_err(AgentOrchestrationError::Internal);
@@ -489,7 +483,6 @@ impl AgentOrchestrationService {
                     self.kernel.as_ref(),
                     &self.kernel.gateway(),
                     handle,
-                    None,
                 )
                 .await
                 .map_err(AgentOrchestrationError::Internal);
@@ -506,7 +499,6 @@ impl AgentOrchestrationService {
                 self.kernel.as_ref(),
                 &self.kernel.gateway(),
                 handle,
-                None,
             )
             .await
             .map_err(AgentOrchestrationError::Internal);
@@ -525,14 +517,9 @@ impl AgentOrchestrationService {
                     "failed to register implicit root agent for session parent context: {error}"
                 ))
             })?;
-        ensure_handle_has_resolved_limits(
-            self.kernel.as_ref(),
-            &self.kernel.gateway(),
-            handle,
-            None,
-        )
-        .await
-        .map_err(AgentOrchestrationError::Internal)
+        ensure_handle_has_resolved_limits(self.kernel.as_ref(), &self.kernel.gateway(), handle)
+            .await
+            .map_err(AgentOrchestrationError::Internal)
     }
 
     /// 校验当前 turn 的 spawn 预算是否耗尽。

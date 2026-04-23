@@ -13,7 +13,8 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use astrcode_core::{CapabilitySpec, default_shell_label};
+use astrcode_core::CapabilitySpec;
+use astrcode_support::shell::default_shell_label;
 use serde::{Deserialize, Serialize};
 
 use crate::PromptDeclaration;

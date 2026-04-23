@@ -1,0 +1,18 @@
+task_id: prompt-multi-request-chinese
+description: 在一条中文消息中同时完成读取与写入两个独立请求。
+prompt: |
+  请先告诉我项目名称，再把“补 30+ 个复杂场景用例”写到 answer.md。
+workspace:
+  setup: ../fixtures/prompt-multi-request-chinese
+expected_outcome:
+  tool_pattern:
+    - Read
+    - Write
+  max_tool_calls: 2
+  max_turns: 1
+  file_changes:
+    - path: answer.md
+      contains: 补 30+ 个复杂场景用例
+  output_contains:
+    - Astrcode Eval
+

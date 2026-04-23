@@ -1,7 +1,7 @@
-//! 会话真相状态：事件投影、child-session 节点跟踪、input queue 投影、turn 生命周期。
+//! 会话真相状态：事件投影、child-session 节点跟踪、input queue 投影、writer 与广播基础设施。
 //!
-//! 从 `runtime-session/session_state.rs` 迁入，去掉了 `anyhow` 依赖，
-//! 所有 `Result` 统一使用 `astrcode_core::Result`。
+//! `SessionState` 只拥有 durable truth 与 projection/cache/broadcast 基础设施，
+//! 不再承担 turn runtime control；运行时锁、CancelToken 与 compact 控制统一归 `turn/runtime.rs`。
 
 mod cache;
 mod child_sessions;
@@ -10,6 +10,7 @@ mod compaction;
 mod execution;
 mod input_queue;
 mod paths;
+mod projection_registry;
 mod tasks;
 #[cfg(test)]
 mod test_support;
@@ -17,81 +18,39 @@ mod test_support;
 pub(crate) use test_support::sample_spawn_child_ref;
 mod writer;
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex as StdMutex, atomic::AtomicBool},
-};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use astrcode_core::{
-    AgentEvent, AgentState, AgentStateProjector, CancelToken, ChildSessionNode, EventTranslator,
-    InputQueueProjection, ModeId, Phase, ResolvedRuntimeConfig, Result, SessionEventRecord,
-    SessionRecoveryCheckpoint, SessionTurnLease, StorageEventPayload, StoredEvent, TaskSnapshot,
+    AgentEvent, AgentState, AgentStateProjector, EventTranslator, LlmMessage, ModeId, Phase,
+    Result, SessionEventRecord, SessionRecoveryCheckpoint, StoredEvent, TurnProjectionSnapshot,
     normalize_recovered_phase,
     support::{self},
 };
-use cache::{RecentSessionEvents, RecentStoredEvents};
-use child_sessions::{child_node_from_stored_event, rebuild_child_nodes};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
+#[cfg(test)]
 pub(crate) use execution::SessionStateEventSink;
-pub use execution::{
-    append_and_broadcast, checkpoint_if_compacted, complete_session_execution,
-    prepare_session_execution,
-};
-pub(crate) use input_queue::{
-    InputQueueEventAppend, append_input_queue_event, apply_input_queue_event_to_index,
-};
+pub(crate) use execution::append_and_broadcast;
+pub use execution::checkpoint_if_compacted;
+pub(crate) use input_queue::replay_input_queue_projection_index;
 pub(crate) use paths::compact_history_event_log_path;
 pub use paths::{display_name_from_working_dir, normalize_session_id, normalize_working_dir};
-use tasks::{apply_snapshot_to_map, rebuild_active_tasks, task_snapshot_from_stored_event};
+use projection_registry::ProjectionRegistry;
 use tokio::sync::broadcast;
 pub(crate) use writer::SessionWriter;
 
 const SESSION_BROADCAST_CAPACITY: usize = 2048;
 const SESSION_LIVE_BROADCAST_CAPACITY: usize = 2048;
 
-// ── SessionState ──────────────────────────────────────────
-
-// ── SessionState ──────────────────────────────────────────
-
-/// 会话 live 真相：事件投影、child-session 节点跟踪、input queue 投影、turn 生命周期。
-///
-/// 使用 per-field `StdMutex` 而非外层 `RwLock`，
-/// 允许不同字段的并发读写互不阻塞（如 broadcaster 广播不阻塞 projector 读取）。
 pub struct SessionState {
-    pub phase: StdMutex<Phase>,
-    pub running: AtomicBool,
-    pub compacting: AtomicBool,
-    pub cancel: StdMutex<CancelToken>,
-    pub active_turn_id: StdMutex<Option<String>>,
-    pub turn_lease: StdMutex<Option<Box<dyn SessionTurnLease>>>,
-    pub pending_manual_compact: StdMutex<bool>,
-    pub pending_manual_compact_request: StdMutex<Option<PendingManualCompactRequest>>,
-    pub compact_failure_count: StdMutex<u32>,
-    pub current_mode: StdMutex<ModeId>,
-    pub last_mode_changed_at: StdMutex<Option<DateTime<Utc>>>,
+    projection_registry: StdMutex<ProjectionRegistry>,
     pub broadcaster: broadcast::Sender<SessionEventRecord>,
     live_broadcaster: broadcast::Sender<AgentEvent>,
     pub writer: Arc<SessionWriter>,
-    projector: StdMutex<AgentStateProjector>,
-    recent_records: StdMutex<RecentSessionEvents>,
-    recent_stored: StdMutex<RecentStoredEvents>,
-    child_nodes: StdMutex<HashMap<String, ChildSessionNode>>,
-    active_tasks: StdMutex<HashMap<String, TaskSnapshot>>,
-    input_queue_projection_index: StdMutex<HashMap<String, InputQueueProjection>>,
-}
-
-struct SessionDerivedState {
-    child_nodes: HashMap<String, ChildSessionNode>,
-    active_tasks: HashMap<String, TaskSnapshot>,
-    input_queue_projection_index: HashMap<String, InputQueueProjection>,
-    last_mode_changed_at: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Debug for SessionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionState")
-            .field("running", &self.running)
-            .finish_non_exhaustive()
+        f.debug_struct("SessionState").finish_non_exhaustive()
     }
 }
 
@@ -105,12 +64,6 @@ pub struct SessionSnapshot {
     pub turn_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingManualCompactRequest {
-    pub runtime: ResolvedRuntimeConfig,
-    pub instructions: Option<String>,
-}
-
 impl SessionState {
     pub fn new(
         phase: Phase,
@@ -119,25 +72,7 @@ impl SessionState {
         recent_records: Vec<SessionEventRecord>,
         recent_stored: Vec<StoredEvent>,
     ) -> Self {
-        let derived = SessionDerivedState {
-            child_nodes: rebuild_child_nodes(&recent_stored),
-            active_tasks: rebuild_active_tasks(&recent_stored),
-            input_queue_projection_index: InputQueueProjection::replay_index(&recent_stored),
-            last_mode_changed_at: recent_stored.iter().rev().find_map(|stored| {
-                match &stored.event.payload {
-                    StorageEventPayload::ModeChanged { timestamp, .. } => Some(*timestamp),
-                    _ => None,
-                }
-            }),
-        };
-        Self::from_parts(
-            phase,
-            writer,
-            projector,
-            recent_records,
-            recent_stored,
-            derived,
-        )
+        Self::from_parts(phase, writer, projector, recent_records, recent_stored)
     }
 
     pub fn from_recovery(
@@ -145,12 +80,14 @@ impl SessionState {
         checkpoint: &SessionRecoveryCheckpoint,
         tail_events: Vec<StoredEvent>,
     ) -> Result<Self> {
-        let mut projector = AgentStateProjector::from_snapshot(checkpoint.agent_state.clone());
-        let mut child_nodes = checkpoint.child_nodes.clone();
-        let mut active_tasks = checkpoint.active_tasks.clone();
-        let mut input_queue_projection_index = checkpoint.input_queue_projection_index.clone();
-        let mut last_mode_changed_at = checkpoint.last_mode_changed_at;
-
+        let phase = normalize_recovered_phase(checkpoint.agent_state.phase);
+        let mut projection_registry = ProjectionRegistry::from_recovery(
+            phase,
+            &checkpoint.agent_state,
+            checkpoint.projection_registry_snapshot(),
+            Vec::new(),
+            Vec::new(),
+        );
         for stored in &tail_events {
             stored.event.validate().map_err(|error| {
                 astrcode_core::AstrError::Validation(format!(
@@ -158,32 +95,18 @@ impl SessionState {
                     checkpoint.agent_state.session_id, stored.storage_seq, error
                 ))
             })?;
-            projector.apply(&stored.event);
-            if let Some(node) = child_node_from_stored_event(stored) {
-                child_nodes.insert(node.sub_run_id().to_string(), node);
-            }
-            if let Some(snapshot) = task_snapshot_from_stored_event(stored) {
-                apply_snapshot_to_map(&mut active_tasks, snapshot);
-            }
-            apply_input_queue_event_to_index(&mut input_queue_projection_index, stored);
-            if let StorageEventPayload::ModeChanged { timestamp, .. } = &stored.event.payload {
-                last_mode_changed_at = Some(*timestamp);
-            }
+            projection_registry.apply(stored)?;
         }
+        projection_registry.cache_records(&astrcode_core::replay_records(&tail_events, None));
+        let (broadcaster, _) = broadcast::channel(SESSION_BROADCAST_CAPACITY);
+        let (live_broadcaster, _) = broadcast::channel(SESSION_LIVE_BROADCAST_CAPACITY);
 
-        Ok(Self::from_parts(
-            normalize_recovered_phase(projector.snapshot().phase),
+        Ok(Self {
+            projection_registry: StdMutex::new(projection_registry),
+            broadcaster,
+            live_broadcaster,
             writer,
-            projector,
-            astrcode_core::replay_records(&tail_events, None),
-            tail_events,
-            SessionDerivedState {
-                child_nodes,
-                active_tasks,
-                input_queue_projection_index,
-                last_mode_changed_at,
-            },
-        ))
+        })
     }
 
     fn from_parts(
@@ -192,41 +115,19 @@ impl SessionState {
         projector: AgentStateProjector,
         recent_records: Vec<SessionEventRecord>,
         recent_stored: Vec<StoredEvent>,
-        derived: SessionDerivedState,
     ) -> Self {
-        let SessionDerivedState {
-            child_nodes,
-            active_tasks,
-            input_queue_projection_index,
-            last_mode_changed_at,
-        } = derived;
         let (broadcaster, _) = broadcast::channel(SESSION_BROADCAST_CAPACITY);
         let (live_broadcaster, _) = broadcast::channel(SESSION_LIVE_BROADCAST_CAPACITY);
-        let mut cached_records = RecentSessionEvents::default();
-        cached_records.replace(recent_records);
-        let mut cached_stored = RecentStoredEvents::default();
-        cached_stored.replace(recent_stored.clone());
         Self {
-            phase: StdMutex::new(phase),
-            running: AtomicBool::new(false),
-            compacting: AtomicBool::new(false),
-            cancel: StdMutex::new(CancelToken::new()),
-            active_turn_id: StdMutex::new(None),
-            turn_lease: StdMutex::new(None),
-            pending_manual_compact: StdMutex::new(false),
-            pending_manual_compact_request: StdMutex::new(None),
-            compact_failure_count: StdMutex::new(0),
-            current_mode: StdMutex::new(projector.snapshot().mode_id.clone()),
-            last_mode_changed_at: StdMutex::new(last_mode_changed_at),
+            projection_registry: StdMutex::new(ProjectionRegistry::new(
+                phase,
+                projector,
+                recent_records,
+                recent_stored,
+            )),
             broadcaster,
             live_broadcaster,
             writer,
-            projector: StdMutex::new(projector),
-            recent_records: StdMutex::new(cached_records),
-            recent_stored: StdMutex::new(cached_stored),
-            child_nodes: StdMutex::new(child_nodes),
-            active_tasks: StdMutex::new(active_tasks),
-            input_queue_projection_index: StdMutex::new(input_queue_projection_index),
         }
     }
 
@@ -234,23 +135,24 @@ impl SessionState {
         &self,
         checkpoint_storage_seq: u64,
     ) -> Result<SessionRecoveryCheckpoint> {
-        Ok(SessionRecoveryCheckpoint {
-            agent_state: self.snapshot_projected_state()?,
-            phase: self.current_phase()?,
-            last_mode_changed_at: self.last_mode_changed_at()?,
-            child_nodes: support::lock_anyhow(&self.child_nodes, "session child nodes")?.clone(),
-            active_tasks: support::lock_anyhow(&self.active_tasks, "session active tasks")?.clone(),
-            input_queue_projection_index: support::lock_anyhow(
-                &self.input_queue_projection_index,
-                "input queue projection index",
-            )?
-            .clone(),
+        let projection_registry =
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?;
+        Ok(SessionRecoveryCheckpoint::new(
+            projection_registry.snapshot_projected_state(),
+            projection_registry.projection_snapshot(),
             checkpoint_storage_seq,
-        })
+        ))
     }
 
     pub fn snapshot_projected_state(&self) -> Result<AgentState> {
-        Ok(support::lock_anyhow(&self.projector, "session projector")?.snapshot())
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .snapshot_projected_state(),
+        )
+    }
+
+    pub fn current_turn_messages(&self) -> Result<Vec<LlmMessage>> {
+        Ok(self.snapshot_projected_state()?.messages)
     }
 
     /// 订阅 live-only 事件流（token 级 delta 等瞬时事件，不参与 durable replay）。
@@ -264,90 +166,24 @@ impl SessionState {
     }
 
     pub fn current_phase(&self) -> Result<Phase> {
-        Ok(*support::lock_anyhow(&self.phase, "session phase")?)
-    }
-
-    pub fn active_turn_id_snapshot(&self) -> Result<Option<String>> {
-        Ok(support::lock_anyhow(&self.active_turn_id, "session active turn")?.clone())
-    }
-
-    pub fn manual_compact_pending(&self) -> Result<bool> {
-        Ok(*support::lock_anyhow(
-            &self.pending_manual_compact,
-            "session pending manual compact",
-        )?)
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .current_phase(),
+        )
     }
 
     pub fn current_mode_id(&self) -> Result<ModeId> {
-        Ok(support::lock_anyhow(&self.current_mode, "session current mode")?.clone())
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .current_mode_id(),
+        )
     }
 
-    pub fn last_mode_changed_at(&self) -> Result<Option<DateTime<Utc>>> {
-        Ok(*support::lock_anyhow(
-            &self.last_mode_changed_at,
-            "session last mode changed at",
-        )?)
-    }
-
-    pub fn complete_execution_state(&self, phase: Phase) {
-        // Why: 先清除 running 标志再设置 phase，避免外部观察者看到 phase=Idle
-        // 但 running 仍为 true 的竞态窗口（如 compact 在 turn 完成后立即被调用）。
-        self.running
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        support::with_lock_recovery(&self.phase, "session phase", |phase_guard| {
-            *phase_guard = phase;
-        });
-        support::with_lock_recovery(
-            &self.active_turn_id,
-            "session active turn",
-            |active_turn_guard| {
-                *active_turn_guard = None;
-            },
-        );
-        support::with_lock_recovery(&self.turn_lease, "session turn lease", |lease_guard| {
-            *lease_guard = None;
-        });
-        support::with_lock_recovery(&self.cancel, "session cancel", |cancel_guard| {
-            *cancel_guard = CancelToken::new();
-        });
-    }
-
-    pub fn compacting(&self) -> bool {
-        self.compacting.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    pub fn set_compacting(&self, compacting: bool) {
-        self.compacting
-            .store(compacting, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    pub fn request_manual_compact(&self, request: PendingManualCompactRequest) -> Result<bool> {
-        let mut guard = support::lock_anyhow(
-            &self.pending_manual_compact,
-            "session pending manual compact",
-        )?;
-        let mut request_guard = support::lock_anyhow(
-            &self.pending_manual_compact_request,
-            "session pending manual compact request",
-        )?;
-        let already_pending = *guard;
-        *guard = true;
-        *request_guard = Some(request);
-        Ok(!already_pending)
-    }
-
-    pub fn take_pending_manual_compact(&self) -> Result<Option<PendingManualCompactRequest>> {
-        let mut guard = support::lock_anyhow(
-            &self.pending_manual_compact,
-            "session pending manual compact",
-        )?;
-        let mut request_guard = support::lock_anyhow(
-            &self.pending_manual_compact_request,
-            "session pending manual compact request",
-        )?;
-        let pending = if *guard { request_guard.take() } else { None };
-        *guard = false;
-        Ok(pending)
+    pub fn last_mode_changed_at(&self) -> Result<Option<chrono::DateTime<Utc>>> {
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .last_mode_changed_at(),
+        )
     }
 
     pub fn translate_store_and_cache(
@@ -356,25 +192,11 @@ impl SessionState {
         translator: &mut EventTranslator,
     ) -> Result<Vec<SessionEventRecord>> {
         stored.event.validate()?;
-        {
-            let mut projector = support::lock_anyhow(&self.projector, "session projector")?;
-            projector.apply(&stored.event);
-            *support::lock_anyhow(&self.current_mode, "session current mode")? =
-                projector.snapshot().mode_id.clone();
-        }
-        if let StorageEventPayload::ModeChanged { timestamp, .. } = &stored.event.payload {
-            *support::lock_anyhow(&self.last_mode_changed_at, "session last mode changed at")? =
-                Some(*timestamp);
-        }
+        let mut projection_registry =
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?;
+        projection_registry.apply(stored)?;
         let records = translator.translate(stored);
-        support::lock_anyhow(&self.recent_records, "session recent records")?.push_batch(&records);
-        support::lock_anyhow(&self.recent_stored, "session recent stored events")?
-            .push(stored.clone());
-        if let Some(node) = child_node_from_stored_event(stored) {
-            self.upsert_child_session_node(node)?;
-        }
-        self.apply_task_snapshot_event(stored)?;
-        self.apply_input_queue_event(stored);
+        projection_registry.cache_records(&records);
         Ok(records)
     }
 
@@ -383,13 +205,36 @@ impl SessionState {
         last_event_id: Option<&str>,
     ) -> Result<Option<Vec<SessionEventRecord>>> {
         Ok(
-            support::lock_anyhow(&self.recent_records, "session recent records")?
-                .records_after(last_event_id),
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .recent_records_after(last_event_id),
         )
     }
 
     pub fn snapshot_recent_stored_events(&self) -> Result<Vec<StoredEvent>> {
-        Ok(support::lock_anyhow(&self.recent_stored, "session recent stored events")?.snapshot())
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .snapshot_recent_stored_events(),
+        )
+    }
+
+    pub fn turn_projection(&self, turn_id: &str) -> Result<Option<TurnProjectionSnapshot>> {
+        Ok(
+            support::lock_anyhow(&self.projection_registry, "session projection registry")?
+                .turn_projection(turn_id),
+        )
+    }
+
+    pub async fn append_and_broadcast(
+        &self,
+        event: &astrcode_core::StorageEvent,
+        translator: &mut EventTranslator,
+    ) -> Result<StoredEvent> {
+        let stored = self.writer.clone().append(event.clone()).await?;
+        let records = self.translate_store_and_cache(&stored, translator)?;
+        for record in records {
+            let _ = self.broadcaster.send(record);
+        }
+        Ok(stored)
     }
 }
 
@@ -397,13 +242,20 @@ impl SessionState {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{
-        AgentEventContext, InvocationKind, Phase, StorageEventPayload, SubRunStorageMode,
-        UserMessageOrigin,
-    };
+    use std::sync::Arc;
 
-    use super::test_support::{
-        event, independent_session_sub_run_agent, root_agent, stored, test_session_state,
+    use astrcode_core::{
+        AgentEventContext, ExecutionTaskItem, ExecutionTaskStatus, InvocationKind, ModeId, Phase,
+        SessionRecoveryCheckpoint, StorageEventPayload, SubRunStorageMode, UserMessageOrigin,
+    };
+    use chrono::Utc;
+
+    use super::{
+        SessionState, SessionWriter,
+        test_support::{
+            NoopEventLogWriter, event, independent_session_sub_run_agent, root_agent, stored,
+            test_session_state,
+        },
     };
 
     #[test]
@@ -447,6 +299,7 @@ mod tests {
                         content: "root answer".into(),
                         reasoning_content: None,
                         reasoning_signature: None,
+                        step_index: None,
                         timestamp: None,
                     },
                 ),
@@ -458,6 +311,7 @@ mod tests {
                     root_agent(),
                     StorageEventPayload::TurnDone {
                         timestamp: chrono::Utc::now(),
+                        terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
                         reason: Some("completed".into()),
                     },
                 ),
@@ -483,6 +337,7 @@ mod tests {
                         content: "child answer".into(),
                         reasoning_content: None,
                         reasoning_signature: None,
+                        step_index: None,
                         timestamp: None,
                     },
                 ),
@@ -494,6 +349,7 @@ mod tests {
                     independent_session_sub_run_agent(),
                     StorageEventPayload::TurnDone {
                         timestamp: chrono::Utc::now(),
+                        terminal_kind: Some(astrcode_core::TurnTerminalKind::Completed),
                         reason: Some("completed".into()),
                     },
                 ),
@@ -553,5 +409,74 @@ mod tests {
             .expect_err("invalid stored event should be rejected");
 
         assert!(error.to_string().contains("child_session_id"));
+    }
+
+    #[test]
+    fn legacy_checkpoint_fields_migrate_into_projection_registry_snapshot() {
+        let checkpoint_json = serde_json::json!({
+            "agentState": {
+                "session_id": "session-legacy",
+                "working_dir": "/tmp",
+                "messages": [],
+                "phase": "idle",
+                "mode_id": ModeId::default(),
+                "turn_count": 0,
+                "last_assistant_at": serde_json::Value::Null,
+            },
+            "phase": "idle",
+            "lastModeChangedAt": "2026-04-21T00:00:00Z",
+            "childNodes": {},
+            "activeTasks": {
+                "owner-a": {
+                    "owner": "owner-a",
+                    "items": [{
+                        "content": "迁移旧 checkpoint",
+                        "status": "in_progress",
+                        "activeForm": "正在迁移旧 checkpoint"
+                    }]
+                }
+            },
+            "inputQueueProjectionIndex": {},
+            "checkpointStorageSeq": 9
+        });
+        let checkpoint: SessionRecoveryCheckpoint =
+            serde_json::from_value(checkpoint_json).expect("legacy checkpoint should deserialize");
+
+        let projection_snapshot = checkpoint.projection_registry_snapshot();
+        assert_eq!(
+            projection_snapshot.last_mode_changed_at,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-04-21T00:00:00Z")
+                    .expect("timestamp should parse")
+                    .with_timezone(&Utc)
+            )
+        );
+        assert!(projection_snapshot.active_tasks.contains_key("owner-a"));
+
+        let recovered = SessionState::from_recovery(
+            Arc::new(SessionWriter::new(Box::new(NoopEventLogWriter))),
+            &checkpoint,
+            Vec::new(),
+        )
+        .expect("legacy checkpoint should recover");
+
+        let recovered_task = recovered
+            .active_tasks_for("owner-a")
+            .expect("task lookup should succeed")
+            .expect("legacy task should survive migration");
+        assert_eq!(
+            recovered_task.items,
+            vec![ExecutionTaskItem {
+                content: "迁移旧 checkpoint".to_string(),
+                status: ExecutionTaskStatus::InProgress,
+                active_form: Some("正在迁移旧 checkpoint".to_string()),
+            }]
+        );
+        assert_eq!(
+            recovered
+                .last_mode_changed_at()
+                .expect("mode timestamp should exist"),
+            projection_snapshot.last_mode_changed_at
+        );
     }
 }

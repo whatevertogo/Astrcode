@@ -375,7 +375,7 @@ impl SessionManager for FileSystemSessionRepository {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, time::Instant};
+    use std::time::Instant;
 
     use astrcode_core::{
         AgentEventContext, AgentState, EventStore, LlmMessage, ModeId, Phase,
@@ -458,8 +458,8 @@ mod tests {
 
         repo.checkpoint_session(
             &session_id,
-            &SessionRecoveryCheckpoint {
-                agent_state: AgentState {
+            &SessionRecoveryCheckpoint::new(
+                AgentState {
                     session_id: session_id.to_string(),
                     working_dir: working_dir.clone(),
                     messages: vec![LlmMessage::User {
@@ -471,13 +471,9 @@ mod tests {
                     turn_count: 2,
                     last_assistant_at: None,
                 },
-                phase: Phase::Idle,
-                last_mode_changed_at: None,
-                child_nodes: HashMap::new(),
-                active_tasks: HashMap::new(),
-                input_queue_projection_index: HashMap::new(),
-                checkpoint_storage_seq: 2,
-            },
+                astrcode_core::ProjectionRegistrySnapshot::default(),
+                2,
+            ),
         )
         .await
         .expect("checkpoint should succeed");
@@ -522,8 +518,8 @@ mod tests {
             .expect("append should succeed");
         repo.checkpoint_session(
             &session_id,
-            &SessionRecoveryCheckpoint {
-                agent_state: AgentState {
+            &SessionRecoveryCheckpoint::new(
+                AgentState {
                     session_id: session_id.to_string(),
                     working_dir: working_dir.clone(),
                     messages: vec![LlmMessage::User {
@@ -535,13 +531,9 @@ mod tests {
                     turn_count: 1,
                     last_assistant_at: None,
                 },
-                phase: Phase::Idle,
-                last_mode_changed_at: None,
-                child_nodes: HashMap::new(),
-                active_tasks: HashMap::new(),
-                input_queue_projection_index: HashMap::new(),
-                checkpoint_storage_seq: 1,
-            },
+                astrcode_core::ProjectionRegistrySnapshot::default(),
+                1,
+            ),
         )
         .await
         .expect("checkpoint should succeed");

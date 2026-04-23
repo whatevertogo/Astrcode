@@ -5,11 +5,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use astrcode_core::{InputQueueProjection, StorageEventPayload, StoredEvent};
+use astrcode_core::{StorageEventPayload, StoredEvent};
 use astrcode_kernel::PendingParentDelivery;
 
+use crate::state::replay_input_queue_projection_index;
+
 pub fn recoverable_parent_deliveries(events: &[StoredEvent]) -> Vec<PendingParentDelivery> {
-    let projection_index = InputQueueProjection::replay_index(events);
+    let projection_index = replay_input_queue_projection_index(events);
     let mut recoverable_by_agent = HashMap::<String, HashSet<String>>::new();
     for (agent_id, projection) in projection_index {
         let active_ids = projection

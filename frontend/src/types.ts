@@ -6,6 +6,14 @@ export type Phase = 'idle' | 'thinking' | 'callingTool' | 'streaming' | 'interru
 export type ToolOutputStream = 'stdout' | 'stderr';
 export type CompactTrigger = 'auto' | 'manual' | 'deferred';
 export type CompactMode = 'full' | 'incremental' | 'retry_salvage';
+export type SystemPromptLayer = 'stable' | 'semi_stable' | 'inherited' | 'dynamic';
+export type PromptCacheBreakReason =
+  | 'system_prompt_changed'
+  | 'tool_schemas_changed'
+  | 'model_changed'
+  | 'global_cache_strategy_changed'
+  | 'compacted_prompt'
+  | 'tool_result_rebudgeted';
 export type InvocationKind = 'subRun' | 'rootExecution';
 // Why: 当前写路径只允许 `independentSession`，前端读侧保持同样约束，
 // 避免把已经移除的历史模式继续编码成正式类型。
@@ -16,7 +24,7 @@ export type ForkMode = 'fullHistory' | { lastNTurns: number };
 export type SubRunStatusSource = 'live' | 'durable';
 export type SessionEventScope = 'self' | 'subtree' | 'directChildren';
 export type AgentLifecycle = 'pending' | 'running' | 'idle' | 'terminated';
-export type AgentTurnOutcome = 'completed' | 'failed' | 'cancelled' | 'token_exceeded';
+export type AgentTurnOutcome = 'completed' | 'failed' | 'cancelled';
 // Why: `waiting` 仍保留给 durable child 通知读侧，避免旧事件样本在前端反序列化失败。
 export type ChildSessionNotificationKind =
   | 'started'
@@ -26,7 +34,7 @@ export type ChildSessionNotificationKind =
   | 'resumed'
   | 'closed'
   | 'failed';
-export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'cancelled' | 'token_exceeded';
+export type SubRunOutcome = 'running' | 'completed' | 'failed' | 'cancelled';
 export type SubRunFailureCode =
   | 'transport'
   | 'provider_http'
@@ -101,6 +109,24 @@ export interface PromptMetricsSnapshot {
   promptCacheReuseMisses?: number;
 }
 
+export interface PromptCacheDiagnostics {
+  reasons: PromptCacheBreakReason[];
+  previousCacheReadInputTokens?: number;
+  currentCacheReadInputTokens?: number;
+  expectedDrop?: boolean;
+  cacheBreakDetected?: boolean;
+}
+
+export interface ConversationStepCursor {
+  turnId: string;
+  stepIndex: number;
+}
+
+export interface ConversationStepProgress {
+  durable: ConversationStepCursor | null;
+  live: ConversationStepCursor | null;
+}
+
 export interface ArtifactRef {
   kind: string;
   id: string;
@@ -124,13 +150,9 @@ export interface ResolvedSubagentContextOverrides {
   forkMode?: ForkMode;
 }
 
-export interface ResolvedExecutionLimits {
-  allowedTools: string[];
-  maxSteps?: number;
-}
+export interface ResolvedExecutionLimits {}
 
 export interface ExecutionControl {
-  maxSteps?: number;
   manualCompact?: boolean;
 }
 
@@ -178,7 +200,7 @@ export interface ConversationControlState {
 
 export type SubRunResult =
   | {
-      status: 'running' | 'completed' | 'token_exceeded';
+      status: 'running' | 'completed';
       handoff: {
         findings: string[];
         artifacts: ArtifactRef[];
@@ -260,6 +282,7 @@ export interface AssistantMessage {
   invocationKind?: InvocationKind;
   storageMode?: SubRunStorageMode;
   childSessionId?: string;
+  stepIndex?: number;
   text: string;
   reasoningText?: string;
   streaming: boolean;
@@ -398,6 +421,8 @@ export interface PromptMetricsMessage {
   providerCacheMetricsSupported?: boolean;
   promptCacheReuseHits?: number;
   promptCacheReuseMisses?: number;
+  promptCacheUnchangedLayers?: SystemPromptLayer[];
+  promptCacheDiagnostics?: PromptCacheDiagnostics;
   timestamp: number;
 }
 
