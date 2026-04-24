@@ -445,11 +445,7 @@ function normalizeSnapshotState(payload: unknown): ConversationSnapshotState {
 }
 
 function isApprovalLikeTurnText(text: string): boolean {
-  const normalizedEnglish = text
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .join(' ');
+  const normalizedEnglish = text.toLowerCase().split(/\s+/).filter(Boolean).join(' ');
   for (const phrase of ['approved', 'go ahead', 'implement it']) {
     if (
       normalizedEnglish === phrase ||
@@ -475,7 +471,9 @@ function isApprovalLikeTurnText(text: string): boolean {
   return false;
 }
 
-function buildTurnProjectionFlags(state: ConversationSnapshotState): Map<string, { hideAssistant: boolean }> {
+function buildTurnProjectionFlags(
+  state: ConversationSnapshotState
+): Map<string, { hideAssistant: boolean }> {
   const flags = new Map<string, { hideAssistant: boolean }>();
   const turnFacts = new Map<
     string,

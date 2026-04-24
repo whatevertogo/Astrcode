@@ -1536,4 +1536,3 @@ describe('buildSubRunView', () => {
     expect(patchSubRunThreadTreeMessages(tree, nextMessages)).toBeNull();
   });
 });
-

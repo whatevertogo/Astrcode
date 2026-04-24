@@ -21,8 +21,7 @@ const contextValueWithTasks: ChatScreenContextValue = {
     currentModeId: 'plan',
     activePlan: {
       slug: 'cleanup-crates',
-      path:
-        'D:/GitObjectsOwn/Astrcode/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md',
+      path: 'D:/GitObjectsOwn/Astrcode/.astrcode/projects/demo/sessions/session-1/plan/cleanup-crates.md',
       status: 'draft',
       title: 'Cleanup crates',
     },

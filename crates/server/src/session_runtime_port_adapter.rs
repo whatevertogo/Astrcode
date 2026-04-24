@@ -1517,6 +1517,156 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn router_tool_dispatcher_updates_mode_context_after_exit_plan_mode() {
+        let capability_router = CapabilityRouter::builder()
+            .register_invoker(Arc::new(
+                ToolCapabilityInvoker::new(Arc::new(EnterPlanModeTool))
+                    .expect("enterPlanMode should register"),
+            ) as Arc<dyn CapabilityInvoker>)
+            .register_invoker(Arc::new(
+                ToolCapabilityInvoker::new(Arc::new(UpsertSessionPlanTool))
+                    .expect("upsertSessionPlan should register"),
+            ) as Arc<dyn CapabilityInvoker>)
+            .register_invoker(Arc::new(
+                ToolCapabilityInvoker::new(Arc::new(ExitPlanModeTool))
+                    .expect("exitPlanMode should register"),
+            ) as Arc<dyn CapabilityInvoker>)
+            .build()
+            .expect("capability router should build");
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let runtime_event_sink: Arc<dyn RuntimeEventSink> =
+            Arc::new(move |event: RuntimeTurnEvent| {
+                let _ = event_tx.send(event);
+            });
+        let mode_catalog = builtin_server_mode_catalog();
+        let plan_contract = mode_catalog
+            .bound_tool_contract_snapshot(&ModeId::plan())
+            .expect("plan mode contract should exist");
+        let mode_tool_state = RuntimeModeToolState::new(ModeId::plan(), Some(plan_contract));
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let dispatcher = RouterToolDispatcher {
+            capability_router,
+            working_dir: temp.path().to_path_buf(),
+            cancel: CancelToken::new(),
+            agent: AgentEventContext::root_execution("agent-root", "default"),
+            mode_tool_state: mode_tool_state.clone(),
+            event_sink: Arc::new(RuntimeToolEventSink {
+                runtime_event_sink,
+                mode_catalog,
+                mode_tool_state,
+            }),
+        };
+
+        dispatcher
+            .dispatch_tool(ToolDispatchRequest {
+                session_id: "session-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                agent_id: "agent-root".to_string(),
+                tool_call: ToolCallRequest {
+                    id: "call-upsert".to_string(),
+                    name: "upsertSessionPlan".to_string(),
+                    args: serde_json::json!({
+                        "title": "Cleanup crates",
+                        "content": "# Plan: Cleanup crates\n\n## Context\n- current crates are inconsistent\n\n## Goal\n- align crate boundaries\n\n## Scope\n- runtime and adapter cleanup\n\n## Non-Goals\n- change transport protocol\n\n## Existing Code To Reuse\n- reuse current capability routing\n\n## Implementation Steps\n- audit crate dependencies\n- update the dispatcher context\n\n## Verification\n- run targeted Rust checks\n\n## Open Questions\n- none",
+                        "status": "draft"
+                    }),
+                },
+                tool_output_sender: None,
+            })
+            .await
+            .expect("upsertSessionPlan dispatch should succeed");
+
+        let review_result = dispatcher
+            .dispatch_tool(ToolDispatchRequest {
+                session_id: "session-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                agent_id: "agent-root".to_string(),
+                tool_call: ToolCallRequest {
+                    id: "call-exit-review".to_string(),
+                    name: "exitPlanMode".to_string(),
+                    args: serde_json::json!({}),
+                },
+                tool_output_sender: None,
+            })
+            .await
+            .expect("first exitPlanMode dispatch should succeed");
+        assert_eq!(
+            review_result
+                .metadata
+                .as_ref()
+                .expect("review metadata should exist")["schema"],
+            serde_json::json!("sessionPlanExitReviewPending")
+        );
+
+        let exit_result = dispatcher
+            .dispatch_tool(ToolDispatchRequest {
+                session_id: "session-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                agent_id: "agent-root".to_string(),
+                tool_call: ToolCallRequest {
+                    id: "call-exit-final".to_string(),
+                    name: "exitPlanMode".to_string(),
+                    args: serde_json::json!({}),
+                },
+                tool_output_sender: None,
+            })
+            .await
+            .expect("second exitPlanMode dispatch should succeed");
+        assert_eq!(
+            exit_result
+                .metadata
+                .as_ref()
+                .expect("exit metadata should exist")["schema"],
+            serde_json::json!("sessionPlanExit")
+        );
+        let exit_event = event_rx.recv().await.expect("exit mode event should emit");
+        assert!(matches!(
+            exit_event,
+            RuntimeTurnEvent::StorageEvent { event }
+                if matches!(
+                    &event.payload,
+                    StorageEventPayload::ModeChanged { from, to, .. }
+                        if *from == ModeId::plan() && *to == ModeId::code()
+                )
+        ));
+
+        let reenter_result = dispatcher
+            .dispatch_tool(ToolDispatchRequest {
+                session_id: "session-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                agent_id: "agent-root".to_string(),
+                tool_call: ToolCallRequest {
+                    id: "call-reenter".to_string(),
+                    name: "enterPlanMode".to_string(),
+                    args: serde_json::json!({ "reason": "revise again" }),
+                },
+                tool_output_sender: None,
+            })
+            .await
+            .expect("enterPlanMode dispatch should succeed after exit");
+        assert_eq!(
+            reenter_result
+                .metadata
+                .as_ref()
+                .expect("reenter metadata should exist")["modeChanged"],
+            serde_json::json!(true)
+        );
+        let reenter_event = event_rx
+            .recv()
+            .await
+            .expect("reenter mode event should emit");
+        assert!(matches!(
+            reenter_event,
+            RuntimeTurnEvent::StorageEvent { event }
+                if matches!(
+                    &event.payload,
+                    StorageEventPayload::ModeChanged { from, to, .. }
+                        if *from == ModeId::code() && *to == ModeId::plan()
+                )
+        ));
+    }
+
     fn builtin_server_mode_catalog() -> Arc<ServerModeCatalog> {
         let builtin_catalog = builtin_mode_catalog().expect("builtin catalog should build");
         let builtin_mode_specs = builtin_catalog
