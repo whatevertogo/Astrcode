@@ -257,7 +257,7 @@ pub(crate) async fn switch_mode(
         .session_mode_state(&session_id)
         .await
         .map_err(ApiError::from)?;
-    let current_mode_id = ModeId::from(current_mode.current_mode_id.clone());
+    let current_mode_id = current_mode.current_mode_id.clone();
     let target_mode_id = ModeId::from(request.mode_id.clone());
     state
         .mode_catalog

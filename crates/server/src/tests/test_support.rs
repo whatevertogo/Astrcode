@@ -369,7 +369,7 @@ impl AppSessionPort for StubSessionPort {
                 to: to.clone(),
             });
         *self.mode_state.lock().expect("mode state lock should work") = Some(SessionModeState {
-            current_mode_id: to.clone().into(),
+            current_mode_id: to.clone(),
             last_mode_changed_at: None,
         });
         Ok(StoredEvent {
@@ -378,8 +378,8 @@ impl AppSessionPort for StubSessionPort {
                 turn_id: None,
                 agent: AgentEventContext::default(),
                 payload: StorageEventPayload::ModeChanged {
-                    from: from.into(),
-                    to: to.into(),
+                    from,
+                    to,
                     timestamp: chrono::Utc::now(),
                 },
             },

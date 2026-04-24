@@ -466,7 +466,7 @@ impl SubAgentExecutor for AgentOrchestrationService {
             parent_agent_id: parent_agent_id.clone(),
             parent_turn_id: parent_turn_id.clone(),
             working_dir: ctx.working_dir().display().to_string(),
-            mode_id: collaboration.mode_id().clone().into(),
+            mode_id: collaboration.mode_id().clone(),
             profile,
             description: spawn_description.clone(),
             task: params.prompt,

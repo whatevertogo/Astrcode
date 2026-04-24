@@ -1302,7 +1302,7 @@ args = ["{script_path}"]
                     cancel: astrcode_core::CancelToken::new(),
                     turn_id: None,
                     agent: astrcode_core::AgentEventContext::root_execution("agent-1", "coding"),
-                    current_mode_id: ModeId::from("coding").into(),
+                    current_mode_id: ModeId::from("coding"),
                     bound_mode_tool_contract: None,
                     execution_owner: None,
                     profile: "coding".to_string(),

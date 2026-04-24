@@ -134,7 +134,7 @@ impl AgentOrchestrationService {
             session_id: child_session_id.to_string(),
             turn_id: resumed_turn_id.clone(),
             working_dir,
-            mode_id: collaboration.mode_id().clone().into(),
+            mode_id: collaboration.mode_id().clone(),
             runtime: runtime.clone(),
             resolved_limits: reused_handle.resolved_limits.clone(),
             delegation: Some(resume_delegation.clone()),

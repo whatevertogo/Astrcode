@@ -486,8 +486,8 @@ impl SessionRuntimePort for SessionRuntimeCompatPort {
                     turn_id: None,
                     agent: astrcode_core::AgentEventContext::default(),
                     payload: astrcode_core::StorageEventPayload::ModeChanged {
-                        from: from.into(),
-                        to: to.into(),
+                        from,
+                        to,
                         timestamp: Utc::now(),
                     },
                 },
@@ -812,8 +812,8 @@ struct RuntimeToolEventSink {
 impl ToolEventSink for RuntimeToolEventSink {
     async fn emit(&self, event: StorageEvent) -> astrcode_core::Result<()> {
         if let StorageEventPayload::ModeChanged { from, to, .. } = &event.payload {
-            let from_mode_id = ModeId::from(from.clone());
-            let to_mode_id = ModeId::from(to.clone());
+            let from_mode_id = from.clone();
+            let to_mode_id = to.clone();
             self.mode_catalog
                 .validate_transition(&from_mode_id, &to_mode_id)?;
             let current_mode_id = self.mode_tool_state.current_mode_id();
