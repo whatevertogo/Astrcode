@@ -12,12 +12,13 @@
 
 ```bash
 # 开发
-cargo tauri dev             # Tauri 桌面端开发
+npm run dev:tauri             # Tauri 桌面端开发
 cargo run -p astrcode-server  # 只启动后端
 cd frontend && npm run dev    # 只启动前端
+cargo run -p astrcode-cli     # 终端 TUI
 
 # 构建与检查
-cargo tauri build            # Tauri 桌面端构建
+npm run build                # Tauri 桌面端构建
 cargo check --workspace      # 快速编译检查
 cargo test --workspace --exclude astrcode --lib  # push 前快速测试
 
@@ -29,8 +30,11 @@ node scripts/check-crate-boundaries.mjs
 cd frontend && npm run typecheck && npm run lint && npm run format:check
 
 # 架构守卫
-node scripts/check-crate-boundaries.mjs          # 检查 crate 依赖边界
 node scripts/check-crate-boundaries.mjs --strict  # 严格模式
+node scripts/generate-crate-deps-graph.mjs --check # 依赖图同步检查
+
+# 真实 API eval
+npm run eval:api -- --task-set eval-tasks/task-set.yaml --concurrency 1
 ```
 
 ## 架构约束
@@ -38,8 +42,9 @@ node scripts/check-crate-boundaries.mjs --strict  # 严格模式
 详见 `PROJECT_ARCHITECTURE.md`，以下为摘要：
 
 - `server` 是唯一组合根，通过 `bootstrap_server_runtime()` 组装所有组件
-- `application` 不依赖任何 `adapter-*`，只依赖 `core` + `kernel` + `session-runtime`
-- 治理层使用 `AppGovernance`（`astrcode-application`）
+- `host-session` 持有 session durable truth；`agent-runtime` 只负责单 turn 执行；`context-window` 负责 compact 和请求整形
+- `plugin-host` 持有 plugin/MCP/builtin 贡献的 active snapshot
+- adapter 之间禁止横向依赖；共享边界必须进入 contract crate 或 owner port
 - 能力语义统一使用 `CapabilitySpec`（`astrcode-core`），传输层使用 `CapabilityWireDescriptor`（`astrcode-protocol`）
 
 ## Rust 命名与设计要求
@@ -82,3 +87,4 @@ node scripts/check-crate-boundaries.mjs --strict  # 严格模式
 - 使用 `node scripts/check-crate-boundaries.mjs` 验证 crate 依赖规则没有被违反
 - `src-tauri` 是 Tauri 薄壳，不含业务逻辑
 - `server` 组合根在 `crates/server/src/bootstrap/runtime.rs`
+- CI 只跑 eval smoke；真实模型评测走 `npm run eval:api`
