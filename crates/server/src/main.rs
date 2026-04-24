@@ -101,8 +101,6 @@ mod session_identity;
 mod session_runtime_owner_bridge;
 #[path = "session_runtime_port.rs"]
 mod session_runtime_port;
-#[path = "session_use_cases.rs"]
-mod session_use_cases;
 #[path = "http/terminal_projection.rs"]
 mod terminal_projection;
 #[cfg(test)]
@@ -120,7 +118,9 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 pub(crate) use agent::AgentOrchestrationService;
 use anyhow::{Result as AnyhowResult, anyhow};
 use astrcode_core::{AstrError, SkillCatalog};
-use astrcode_host_session::{SessionCatalog, SubAgentExecutor};
+use astrcode_host_session::SessionCatalog;
+#[cfg(test)]
+use astrcode_host_session::SubAgentExecutor;
 use astrcode_plugin_host::ResourceCatalog;
 use axum::{
     Json, Router,
@@ -153,6 +153,8 @@ pub(crate) use ports::{
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+#[cfg(test)]
+use crate::profile_service::ServerProfileService;
 use crate::{
     agent_api::ServerAgentApi,
     application_error_bridge::ServerRouteError,
@@ -165,7 +167,6 @@ use crate::{
     governance_service::ServerGovernanceService,
     mcp_service::ServerMcpService,
     mode_catalog_service::ServerModeCatalog,
-    profile_service::ServerProfileService,
     routes::build_api_router,
 };
 
@@ -181,19 +182,21 @@ pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";
 /// 包含运行时入口、server 侧 owner bridge、治理模型、认证管理器和前端构建产物。
 /// 所有字段均为 `Arc` 或可 `Clone` 类型，支持多线程共享。
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(crate) struct AppState {
     /// server-owned agent route bridge；agent routes 不再经由 `application::agent` 用例入口。
     agent_api: Arc<ServerAgentApi>,
     /// server-owned agent control bridge；测试和路由不直接暴露底层 kernel。
+    #[cfg(test)]
     agent_control: Arc<dyn agent_control_bridge::ServerAgentControlPort>,
     /// server-owned 配置服务桥接；配置/模型 API 不再经由 App 访问配置。
     config: Arc<ServerConfigService>,
     /// server-owned 会话目录桥接；catalog API 不再经由 App 访问 session catalog。
     session_catalog: Arc<SessionCatalog>,
     /// server-owned profile resolver；watch/profile 测试不再经由 `App::profiles()`.
+    #[cfg(test)]
     profiles: Arc<ServerProfileService>,
     /// subagent 启动桥接；测试直接消费 host-session 合同。
+    #[cfg(test)]
     subagent_executor: Arc<dyn SubAgentExecutor>,
     /// server-owned MCP service；MCP API 不再经由 App facade。
     mcp_service: Arc<ServerMcpService>,
@@ -377,10 +380,13 @@ async fn main() -> AnyhowResult<()> {
 
     let state = AppState {
         agent_api: Arc::clone(&runtime.agent_api),
+        #[cfg(test)]
         agent_control: Arc::clone(&runtime.agent_control),
         config: Arc::clone(&runtime.config),
         session_catalog: Arc::clone(&runtime.session_catalog),
+        #[cfg(test)]
         profiles: Arc::clone(&runtime.profiles),
+        #[cfg(test)]
         subagent_executor: Arc::clone(&runtime.subagent_executor),
         mcp_service: Arc::clone(&runtime.mcp_service),
         skill_catalog: Arc::clone(&runtime.skill_catalog),

@@ -12,8 +12,7 @@ use astrcode_core::{
 };
 use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{
-    ForkPoint, InputQueueProjection, ProjectedTurnOutcome, SessionCatalog, SubRunHandle,
-    replay_records,
+    InputQueueProjection, ProjectedTurnOutcome, SessionCatalog, SubRunHandle, replay_records,
 };
 use astrcode_runtime_contract::ExecutionAccepted;
 use async_trait::async_trait;
@@ -31,7 +30,6 @@ use crate::{
     },
     session_identity::normalize_external_session_id,
     session_runtime_port::SessionRuntimePort,
-    session_use_cases::SessionForkSelector,
 };
 
 pub(crate) fn build_server_session_bridge(
@@ -54,7 +52,6 @@ impl ServerSessionBridge {
         SessionId::from(normalize_external_session_id(session_id))
     }
 
-    #[allow(dead_code)]
     async fn replay_history(
         &self,
         session_id: &SessionId,
@@ -69,7 +66,6 @@ impl ServerSessionBridge {
         Ok(replay_records(&stored, last_event_id))
     }
 
-    #[allow(dead_code)]
     async fn session_phase(
         &self,
         session_id: &SessionId,
@@ -140,23 +136,6 @@ impl AppSessionPort for ServerSessionBridge {
 
     async fn create_session(&self, working_dir: String) -> astrcode_core::Result<SessionMeta> {
         self.session_catalog.create_session(working_dir).await
-    }
-
-    async fn fork_session(
-        &self,
-        session_id: &str,
-        selector: SessionForkSelector,
-    ) -> astrcode_core::Result<SessionMeta> {
-        let fork_point = match selector {
-            SessionForkSelector::Latest => ForkPoint::Latest,
-            SessionForkSelector::TurnEnd { turn_id } => ForkPoint::TurnEnd(turn_id),
-            SessionForkSelector::StorageSeq { storage_seq } => ForkPoint::StorageSeq(storage_seq),
-        };
-        let result = self
-            .session_catalog
-            .fork_session(&Self::session_id(session_id), fork_point)
-            .await?;
-        self.session_meta(result.new_session_id.as_str()).await
     }
 
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()> {

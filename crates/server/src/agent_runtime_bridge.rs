@@ -24,6 +24,7 @@ use crate::{
 
 pub(crate) struct ServerAgentRuntimeBundle {
     pub agent_api: Arc<ServerAgentApi>,
+    #[cfg(test)]
     pub agent_control: Arc<dyn ServerAgentControlPort>,
     pub subagent_executor: Arc<dyn SubAgentExecutor>,
     pub collaboration_executor: Arc<dyn CollaborationExecutor>,
@@ -85,6 +86,7 @@ pub(crate) fn build_server_agent_runtime_bundle(
 
     ServerAgentRuntimeBundle {
         agent_api,
+        #[cfg(test)]
         agent_control,
         subagent_executor,
         collaboration_executor,

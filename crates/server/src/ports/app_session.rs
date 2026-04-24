@@ -15,12 +15,9 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use super::{AppAgentPromptSubmission, DurableSubRunStatusSummary};
-use crate::{
-    conversation_read_model::{
-        ConversationSnapshotFacts, ConversationStreamReplayFacts, SessionReplay,
-        SessionTranscriptSnapshot,
-    },
-    session_use_cases::SessionForkSelector,
+use crate::conversation_read_model::{
+    ConversationSnapshotFacts, ConversationStreamReplayFacts, SessionReplay,
+    SessionTranscriptSnapshot,
 };
 
 /// `App` 依赖的 session 稳定端口。
@@ -33,11 +30,6 @@ pub trait AppSessionPort: Send + Sync {
 
     async fn list_session_metas(&self) -> astrcode_core::Result<Vec<SessionMeta>>;
     async fn create_session(&self, working_dir: String) -> astrcode_core::Result<SessionMeta>;
-    async fn fork_session(
-        &self,
-        session_id: &str,
-        selector: SessionForkSelector,
-    ) -> astrcode_core::Result<SessionMeta>;
     async fn delete_session(&self, session_id: &str) -> astrcode_core::Result<()>;
     async fn delete_project(&self, working_dir: &str)
     -> astrcode_core::Result<DeleteProjectResult>;

@@ -935,7 +935,8 @@ impl MockStep {
 }
 
 fn read_workspace_file(working_dir: &Path, relative_path: &str) -> String {
-    fs::read_to_string(working_dir.join(relative_path)).expect("workspace file should read")
+    fs::read_to_string(working_dir.join(relative_path))
+        .unwrap_or_else(|_| format!("[mock: file not found: {relative_path}]"))
 }
 
 fn write_workspace_file(working_dir: &Path, relative_path: &str, content: &str) {

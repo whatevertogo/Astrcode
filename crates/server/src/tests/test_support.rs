@@ -33,7 +33,6 @@ use crate::{
         AppSessionPort, DurableSubRunStatusSummary, SessionObserveSnapshot,
         SessionTurnTerminalState,
     },
-    session_use_cases::SessionForkSelector,
     watch_service::{WatchEvent, WatchPort, WatchService, WatchSource},
 };
 
@@ -233,14 +232,6 @@ impl AppSessionPort for StubSessionPort {
     }
 
     async fn create_session(&self, _working_dir: String) -> astrcode_core::Result<SessionMeta> {
-        unimplemented_for_test("server test stub")
-    }
-
-    async fn fork_session(
-        &self,
-        _session_id: &str,
-        _selector: SessionForkSelector,
-    ) -> astrcode_core::Result<SessionMeta> {
         unimplemented_for_test("server test stub")
     }
 

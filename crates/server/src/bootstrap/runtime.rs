@@ -13,7 +13,9 @@ use astrcode_adapter_storage::session::FileSystemSessionRepository;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
 use astrcode_core::SkillCatalog;
 use astrcode_governance_contract::GovernanceModeSpec;
-use astrcode_host_session::{EventStore, SessionCatalog, SubAgentExecutor};
+#[cfg(test)]
+use astrcode_host_session::SubAgentExecutor;
+use astrcode_host_session::{EventStore, SessionCatalog};
 use astrcode_plugin_host::{
     CommandDescriptor, PluginActiveSnapshot, PluginDescriptor, PluginRegistry,
     ProviderContributionCatalog, ResourceCatalog, builtin_collaboration_tools_descriptor,
@@ -42,13 +44,13 @@ use super::{
     runtime_coordinator::RuntimeCoordinator,
     watch::{bootstrap_profile_watch_runtime, build_watch_service},
 };
+#[cfg(test)]
+use crate::{agent_control_bridge::ServerAgentControlPort, profile_service::ServerProfileService};
 use crate::{
-    agent_control_bridge::ServerAgentControlPort,
     config_service_bridge::ServerConfigService,
     governance_service::ServerGovernanceService,
     mcp_service::ServerMcpService,
     mode_catalog_service::ServerModeCatalog,
-    profile_service::ServerProfileService,
     runtime_owner_bridge::{
         ServerRuntimeObservability, ServerTaskRegistry, builtin_server_mode_specs,
     },
@@ -64,10 +66,13 @@ const EXTERNAL_PLUGIN_MODES_PLUGIN_ID: &str = "external-plugin-modes";
 /// 服务器运行时：组合根输出。
 pub struct ServerRuntime {
     pub agent_api: Arc<ServerAgentApi>,
+    #[cfg(test)]
     pub agent_control: Arc<dyn ServerAgentControlPort>,
     pub config: Arc<ServerConfigService>,
     pub session_catalog: Arc<SessionCatalog>,
+    #[cfg(test)]
     pub profiles: Arc<ServerProfileService>,
+    #[cfg(test)]
     pub subagent_executor: Arc<dyn SubAgentExecutor>,
     pub mcp_service: Arc<ServerMcpService>,
     pub skill_catalog: Arc<dyn SkillCatalog>,
@@ -347,10 +352,13 @@ pub async fn bootstrap_server_runtime_with_options(
 
     Ok(ServerRuntime {
         agent_api: agent_runtime.agent_api,
+        #[cfg(test)]
         agent_control: agent_runtime.agent_control,
         config: config_service,
         session_catalog,
+        #[cfg(test)]
         profiles,
+        #[cfg(test)]
         subagent_executor: agent_runtime.subagent_executor,
         mcp_service,
         skill_catalog: skill_catalog_bridge,
