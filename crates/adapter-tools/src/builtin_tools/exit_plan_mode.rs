@@ -57,21 +57,20 @@ impl Tool for ExitPlanModeTool {
             .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Present the current session plan to the user and leave plan mode.",
+                    "Exit plan mode after the plan is complete and executable. Requires the plan \
+                     artifact to cover all required sections with concrete actionable items.",
                     "Only use `exitPlanMode` after you have inspected the code, persisted the \
                      current canonical plan artifact, and refined it until it is executable. If \
                      the plan is still vague, missing risks, or lacking verification steps, keep \
                      updating `upsertSessionPlan` instead of exiting.",
                 )
                 .caveat(
-                    "`exitPlanMode` first checks whether the current plan is executable, then \
-                     enforces one internal final-review checkpoint before it actually exits. Keep \
-                     that review out of the plan artifact itself unless the user explicitly asks \
-                     for it.",
+                    "Enforces a two-gate check: plan readiness (all sections filled, actionable \
+                     items present) then a final-review checkpoint. Call again after the review \
+                     to complete the exit.",
                 )
                 .example("{}")
-                .prompt_tag("plan")
-                .always_include(true),
+                .prompt_tag("plan"),
             )
     }
 

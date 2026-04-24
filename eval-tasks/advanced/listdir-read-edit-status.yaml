@@ -1,12 +1,12 @@
 task_id: listdir-read-edit-status
-description: 通过 ListDir 和 Read 获取上下文后更新状态文件。
+description: 通过 Shell 查看目录并用 Read 获取上下文后更新状态文件。
 prompt: |
   先列出 docs 目录，再读 docs/todo.md，然后把 status.md 改成 ready-for-review。
 workspace:
   setup: ../fixtures/listdir-read-edit-status
 expected_outcome:
   tool_pattern:
-    - ListDir
+    - Shell
     - Read
     - Edit
   max_tool_calls: 3
@@ -14,4 +14,3 @@ expected_outcome:
   file_changes:
     - path: status.md
       exact: "status: ready-for-review\n"
-

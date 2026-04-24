@@ -7,7 +7,7 @@
 //! - 使用 `ignore` crate（ripgrep 同源）进行 .gitignore 感知的文件遍历
 //! - 支持 glob 模式匹配，包括 `**` 递归
 //! - 路径沙箱检查：glob 模式不能逃逸工作目录
-//! - 默认最多返回 200 条结果，按修改时间排序（最新优先）
+//! - 默认最多返回 500 条结果，按修改时间排序（最新优先）
 //! - 返回结构化 JSON 数组，便于前端渲染
 
 use std::{
@@ -61,16 +61,16 @@ impl Tool for FindFilesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "findFiles".to_string(),
-            description: "Find files matching a glob pattern. Respects .gitignore by default. Use \
-                          ** for recursive search. Prefer this over `grep` when you only know \
-                          file names or globs."
+            description: "Find candidate file paths matching a glob pattern. This is a Glob-style \
+                          file path search, not a content search. Respects .gitignore by default \
+                          and supports ** for recursive search."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern to match files, e.g. '*.rs', '**/*.ts', '*.{json,toml}'"
+                        "description": "Glob pattern to match file paths, e.g. '*.rs', '**/*.ts', '*.{json,toml}'. Does not search file contents."
                     },
                     "root": {
                         "type": "string",
@@ -79,7 +79,7 @@ impl Tool for FindFilesTool {
                     "maxResults": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Maximum number of results to return (default 200)"
+                        "description": "Maximum number of results to return (default 500)"
                     },
                     "respectGitignore": {
                         "type": "boolean",
@@ -105,25 +105,15 @@ impl Tool for FindFilesTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Find candidate files by glob when you know the filename pattern but not the \
-                     exact path.",
-                    "Find files by glob pattern under a known search root. Use this before `grep` \
-                     when you only know a filename, extension, or glob. Supported common glob \
-                     forms include `**/*.rs` (recursive), `*.toml` (current dir), and \
-                     `*.{json,toml}` (alternation). When using `root`, the glob pattern is \
-                     relative to that root. Results are sorted by modification time.",
+                    "Find candidate file paths by Glob-style pattern. Does not search file \
+                     contents.",
+                    "Use `findFiles` when you know a file name, extension, or path glob but not \
+                     the exact path. Results are sorted by modification time, newest first. Use \
+                     `grep` after this when the next step is content search.",
                 )
                 .caveat(
-                    "Pattern must stay relative to the search root. Truncated at 200 results — \
-                     narrow with `root` or a more specific glob.",
-                )
-                .example(
-                    "Find all Cargo.toml: { pattern: \"**/Cargo.toml\" }. Limit to ./crates/: { \
-                     pattern: \"**/*.rs\", root: \"crates\" }",
-                )
-                .example(
-                    "If the next step is content search, first `findFiles { pattern: \"**/*.rs\", \
-                     root: \"crates\" }`, then call `grep` with both `pattern` and `path`.",
+                    "Pattern matches paths only and is relative to `root` when provided. Narrow \
+                     with `root` or a more specific glob if results are truncated.",
                 )
                 .prompt_tag("search")
                 .always_include(true),
@@ -633,12 +623,8 @@ mod tests {
             .prompt
             .expect("findFiles should expose prompt metadata");
 
-        assert!(prompt.guide.contains("before `grep`"));
-        assert!(
-            prompt
-                .examples
-                .iter()
-                .any(|example| example.contains("then call `grep`"))
-        );
+        assert!(prompt.summary.contains("Glob-style"));
+        assert!(prompt.summary.contains("Does not search file contents"));
+        assert!(prompt.guide.contains("Use `grep` after this"));
     }
 }

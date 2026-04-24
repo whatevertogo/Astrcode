@@ -87,7 +87,7 @@ fn bundled_skill_allowed_tools(skill_id: &str) -> &'static [&'static str] {
     match skill_id {
         // The skill contract stays Claude-compatible in markdown, while runtime
         // records the actual tool boundary here for the Skill capability output.
-        "git-commit" => &["shell", "readFile", "grep", "findFiles", "listDir"],
+        "git-commit" => &["shell", "readFile", "grep", "findFiles"],
         _ => &[],
     }
 }

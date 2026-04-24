@@ -2,7 +2,7 @@
 //!
 //! 本库实现 Astrcode 编码代理（agent）的本地工具集：
 //! - **core builtin tools**（`builtin_tools`）：readFile、writeFile、editFile、apply_patch、
-//!   listDir、findFiles、grep、shell、tool_search、Skill
+//!   findFiles、grep、shell、tool_search、Skill
 //! - **agent tools**（`agent_tools`）：spawn、send、observe、close
 //!
 //! 所有工具均实现 `astrcode_tool_contract::Tool` trait。

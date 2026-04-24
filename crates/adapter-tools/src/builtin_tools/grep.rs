@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use log::warn;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::builtin_tools::fs_common::{
     check_cancel, maybe_persist_large_tool_result, merge_persisted_tool_output_metadata,
@@ -56,6 +56,9 @@ pub struct GrepTool;
 struct GrepArgs {
     /// Rust 正则表达式模式，必填。
     pattern: String,
+    /// 按字面量搜索 pattern，等价于 ripgrep 的 -F。
+    #[serde(default)]
+    literal: bool,
     /// 搜索路径，可选。未提供时使用当前工作目录。
     #[serde(default)]
     path: Option<PathBuf>,
@@ -92,10 +95,10 @@ struct GrepArgs {
 #[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum GrepOutputMode {
-    /// 返回匹配行内容（默认）。
-    #[default]
+    /// 返回匹配行内容。
     Content,
-    /// 仅返回包含匹配的文件路径列表。
+    /// 仅返回包含匹配的文件路径列表（默认）。
+    #[default]
     FilesWithMatches,
     /// 返回每个文件的匹配计数。
     Count,
@@ -132,21 +135,104 @@ struct GrepFileCount {
     count: usize,
 }
 
+fn normalize_grep_args(mut args: Value) -> Value {
+    let Some(object) = args.as_object_mut() else {
+        return args;
+    };
+
+    move_alias(object, "output_mode", "outputMode");
+    move_alias(object, "type", "fileType");
+    move_alias(object, "file_type", "fileType");
+    move_alias(object, "head_limit", "maxMatches");
+    move_alias(object, "max_matches", "maxMatches");
+    move_alias(object, "-A", "afterContext");
+    move_alias(object, "-B", "beforeContext");
+    move_alias(object, "-i", "caseInsensitive");
+    move_alias(object, "case_insensitive", "caseInsensitive");
+    move_alias(object, "before_context", "beforeContext");
+    move_alias(object, "after_context", "afterContext");
+
+    if let Some(context) = object.remove("-C").or_else(|| object.remove("context")) {
+        object
+            .entry("beforeContext".to_string())
+            .or_insert_with(|| context.clone());
+        object.entry("afterContext".to_string()).or_insert(context);
+    }
+
+    normalize_bool_field(object, "literal");
+    normalize_bool_field(object, "recursive");
+    normalize_bool_field(object, "caseInsensitive");
+    normalize_usize_field(object, "maxMatches");
+    normalize_usize_field(object, "offset");
+    normalize_usize_field(object, "beforeContext");
+    normalize_usize_field(object, "afterContext");
+
+    args
+}
+
+fn move_alias(object: &mut serde_json::Map<String, Value>, from: &str, to: &str) {
+    if object.contains_key(to) {
+        object.remove(from);
+        return;
+    }
+    if let Some(value) = object.remove(from) {
+        object.insert(to.to_string(), value);
+    }
+}
+
+fn normalize_bool_field(object: &mut serde_json::Map<String, Value>, key: &str) {
+    let Some(value) = object.get_mut(key) else {
+        return;
+    };
+    let Some(text) = value.as_str() else {
+        return;
+    };
+    match text.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => *value = Value::Bool(true),
+        "false" | "0" | "no" | "off" => *value = Value::Bool(false),
+        _ => {},
+    }
+}
+
+fn normalize_usize_field(object: &mut serde_json::Map<String, Value>, key: &str) {
+    let Some(value) = object.get_mut(key) else {
+        return;
+    };
+    if value.as_u64() == Some(0) && key == "maxMatches" {
+        *value = json!(DEFAULT_MAX_MATCHES);
+        return;
+    }
+    let Some(text) = value.as_str() else {
+        return;
+    };
+    let Ok(parsed) = text.trim().parse::<usize>() else {
+        return;
+    };
+    if key == "maxMatches" && parsed == 0 {
+        *value = json!(DEFAULT_MAX_MATCHES);
+    } else {
+        *value = json!(parsed);
+    }
+}
+
 #[async_trait]
 impl Tool for GrepTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "grep".to_string(),
-            description: "Search for a regex pattern in files, returning matching lines with file \
-                          path and line number. `path` defaults to the current working directory \
-                          when omitted."
+            description: "Search file contents with regex or literal text. Defaults to returning \
+                          matching file paths; request content mode for matching lines."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Rust regex pattern to search for inside file contents"
+                        "description": "Pattern to search for inside file contents. Interpreted as regex unless `literal` is true."
+                    },
+                    "literal": {
+                        "type": "boolean",
+                        "description": "Treat `pattern` as exact text instead of regex, equivalent to ripgrep -F. Use this for punctuation-heavy code such as brackets, parentheses, quotes, or operators."
                     },
                     "path": {
                         "type": "string",
@@ -188,7 +274,7 @@ impl Tool for GrepTool {
                     "outputMode": {
                         "type": "string",
                         "enum": ["content", "files_with_matches", "count"],
-                        "description": "Output mode (default: content)"
+                        "description": "Output mode (default: files_with_matches). Use content when you need matching lines."
                     }
                 },
                 "required": ["pattern"],
@@ -206,33 +292,17 @@ impl Tool for GrepTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Search file contents by regex when you already know the search root. Always \
-                     provide both `pattern` and `path`.",
-                    "Use `grep` only for content search inside a known file or directory. Always \
-                     provide both `pattern` and `path`. `glob` and `fileType` only narrow which \
-                     files are searched inside that path; they never replace `path`. Directory \
-                     paths recurse by default; set `recursive: false` only when you intentionally \
-                     want the current directory level only. If you only know a filename pattern \
-                     or need to discover candidate paths first, use `findFiles`.",
+                    "Search file contents. Defaults to `files_with_matches`; use `outputMode: \
+                     \"content\"` for matching lines.",
+                    "Use `grep` for content search inside a known file or directory. Use \
+                     `outputMode: \"content\"` when matching lines are needed. `glob` and \
+                     `fileType` only narrow files inside `path`; they do not replace `path`. Use \
+                     `literal: true` for exact punctuation-heavy text. Use regex when you need \
+                     regex behavior. If you only know a file path glob, use `findFiles` first.",
                 )
                 .caveat(
-                    "Pattern uses Rust regex syntax. Narrow scope with `glob`/`fileType`. If \
-                     `truncated`, use `offset` to paginate. For quick file discovery, prefer \
-                     `outputMode: \"files_with_matches\"` or use `findFiles` first.",
-                )
-                .caveat(
-                    "Each result's `match_text` is the first regex match fragment on that line \
-                     (or first capture group if the pattern contains groups). The full line is in \
-                     the `line` field.",
-                )
-                .example(
-                    "Find usages in Rust files: { pattern: \"fn foo\\\\(\", path: \"src\", glob: \
-                     \"**/*.rs\", outputMode: \"files_with_matches\" }",
-                )
-                .example(
-                    "If you only know the glob first, do not call `grep` yet: first `findFiles { \
-                     pattern: \"**/*.rs\", root: \"crates\" }`, then `grep { pattern: \
-                     \"AgentLoop\", path: \"crates\", glob: \"**/*.rs\" }`.",
+                    "Pattern uses Rust regex syntax unless `literal: true`. If regex parsing \
+                     fails and you meant exact text, retry with `literal: true`.",
                 )
                 .prompt_tag("search")
                 .always_include(true),
@@ -248,19 +318,24 @@ impl Tool for GrepTool {
     ) -> Result<ToolExecutionResult> {
         check_cancel(ctx.cancel())?;
 
-        let args: GrepArgs = serde_json::from_value(args)
+        let args: GrepArgs = serde_json::from_value(normalize_grep_args(args))
             .map_err(|e| AstrError::parse(explain_grep_args_error(&e), e))?;
         let path = match &args.path {
             Some(p) => resolve_path(ctx, p)?,
             None => ctx.working_dir().to_path_buf(),
         };
         let started_at = Instant::now();
-        let regex = RegexBuilder::new(&args.pattern)
+        let pattern = if args.literal {
+            regex::escape(&args.pattern)
+        } else {
+            args.pattern.clone()
+        };
+        let regex = RegexBuilder::new(&pattern)
             .case_insensitive(args.case_insensitive)
             .build()
             .map_err(|error| AstrError::ToolError {
                 name: "grep".to_string(),
-                reason: format!("invalid regex: {}", error),
+                reason: explain_regex_error(&error),
             })?;
 
         let recursive = args.recursive.unwrap_or(path.is_dir());
@@ -313,6 +388,7 @@ impl Tool for GrepTool {
                 let is_persisted = final_output.persisted.is_some();
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("pattern".to_string(), json!(args.pattern));
+                metadata.insert("literal".to_string(), json!(args.literal));
                 metadata.insert("returned".to_string(), json!(result.matched_files.len()));
                 metadata.insert("has_more".to_string(), json!(result.has_more));
                 metadata.insert(
@@ -351,6 +427,7 @@ impl Tool for GrepTool {
                 let is_persisted = final_output.persisted.is_some();
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("pattern".to_string(), json!(args.pattern));
+                metadata.insert("literal".to_string(), json!(args.literal));
                 metadata.insert("total_files".to_string(), json!(result.counts.len()));
                 metadata.insert("truncated".to_string(), json!(is_persisted));
                 metadata.insert("skipped_files".to_string(), json!(result.skipped_files));
@@ -662,6 +739,7 @@ fn build_content_result(
     let is_persisted = final_output.persisted.is_some();
     let mut metadata = serde_json::Map::new();
     metadata.insert("pattern".to_string(), json!(args.pattern));
+    metadata.insert("literal".to_string(), json!(args.literal));
     metadata.insert("returned".to_string(), json!(matches.len()));
     metadata.insert("has_more".to_string(), json!(has_more));
     metadata.insert("truncated".to_string(), json!(has_more || is_persisted));
@@ -696,6 +774,13 @@ fn grep_empty_message(offset: usize, is_empty: bool) -> Option<&'static str> {
     } else {
         Some("No matches found for the given pattern.")
     }
+}
+
+fn explain_regex_error(error: &regex::Error) -> String {
+    format!(
+        "invalid regex: {error}. If you meant to search exact text, retry with `literal: true`. \
+         Use regex only for alternation, wildcards, anchors, or captures."
+    )
 }
 
 /// 收集候选文件列表。
@@ -932,7 +1017,8 @@ mod tests {
                 "tc-grep-found".to_string(),
                 json!({
                     "pattern": "pub fn",
-                    "path": file.to_string_lossy()
+                    "path": file.to_string_lossy(),
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -971,7 +1057,8 @@ mod tests {
                 "tc-grep-recursive-default".to_string(),
                 json!({
                     "pattern": "nested",
-                    "path": temp.path().to_string_lossy()
+                    "path": temp.path().to_string_lossy(),
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1006,7 +1093,8 @@ mod tests {
                 json!({
                     "pattern": "nested",
                     "path": temp.path().to_string_lossy(),
-                    "recursive": false
+                    "recursive": false,
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1032,7 +1120,8 @@ mod tests {
                 "tc-grep-empty".to_string(),
                 json!({
                     "pattern": "pub fn",
-                    "path": file.to_string_lossy()
+                    "path": file.to_string_lossy(),
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1069,7 +1158,8 @@ mod tests {
                 json!({
                     "pattern": "pub fn",
                     "path": file.to_string_lossy(),
-                    "maxMatches": 2
+                    "maxMatches": 2,
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1091,7 +1181,8 @@ mod tests {
                     "pattern": "pub fn",
                     "path": file.to_string_lossy(),
                     "maxMatches": 10,
-                    "offset": 2
+                    "offset": 2,
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1129,6 +1220,39 @@ mod tests {
 
         let msg = format!("{err}");
         assert!(msg.contains("invalid regex"));
+        assert!(msg.contains("literal: true"));
+    }
+
+    #[tokio::test]
+    async fn grep_literal_mode_searches_punctuation_heavy_text() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("lib.rs");
+        tokio::fs::write(&file, "#[cfg(test)]\nmod tests {}\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-literal".to_string(),
+                json!({
+                    "pattern": "#[cfg(test)]",
+                    "literal": true,
+                    "path": file.to_string_lossy(),
+                    "outputMode": "content"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should search exact text");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_no, 1);
+        assert_eq!(matches[0].match_text, Some("#[cfg(test)]".to_string()));
+        let meta = result.metadata.expect("metadata should exist");
+        assert_eq!(meta["literal"], json!(true));
     }
 
     #[tokio::test]
@@ -1167,7 +1291,8 @@ mod tests {
                 json!({
                     "pattern": "pub fn",
                     "path": file.to_string_lossy(),
-                    "offset": 5
+                    "offset": 5,
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1220,6 +1345,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grep_defaults_to_files_with_matches_for_exploration() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("main.rs");
+        tokio::fs::write(&file, "fn main() {}\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-default-files".to_string(),
+                json!({
+                    "pattern": "main",
+                    "path": temp.path().to_string_lossy()
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should succeed");
+
+        assert!(result.ok);
+        let files: Vec<String> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("main.rs"));
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(metadata["output_mode"], json!("files_with_matches"));
+    }
+
+    #[tokio::test]
     async fn grep_count_mode_returns_match_counts() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let file = temp.path().join("lib.rs");
@@ -1249,6 +1404,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grep_accepts_ripgrep_style_aliases_and_string_scalars() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let file = temp.path().join("lib.rs");
+        tokio::fs::write(&file, "before\nTARGET\nmatch target\n")
+            .await
+            .expect("seed write should work");
+        let tool = GrepTool;
+
+        let result = tool
+            .execute(
+                "tc-grep-aliases".to_string(),
+                json!({
+                    "pattern": "target",
+                    "path": temp.path().to_string_lossy(),
+                    "output_mode": "content",
+                    "-i": "true",
+                    "-B": "1",
+                    "head_limit": "1"
+                }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("grep should accept aliases");
+
+        let matches: Vec<GrepMatch> =
+            serde_json::from_str(&result.output).expect("output should be valid json");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0]
+                .before
+                .as_ref()
+                .expect("before context should exist")[0],
+            "before"
+        );
+        assert!(result.truncated);
+    }
+
+    #[tokio::test]
     async fn grep_glob_filter_excludes_non_matching_files() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let rs_file = temp.path().join("code.rs");
@@ -1267,7 +1460,8 @@ mod tests {
                 json!({
                     "pattern": "main",
                     "path": temp.path().to_string_lossy(),
-                    "glob": "*.rs"
+                    "glob": "*.rs",
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1287,9 +1481,17 @@ mod tests {
             .prompt
             .expect("grep should expose prompt metadata");
 
-        assert!(prompt.summary.contains("provide both `pattern` and `path`"));
+        assert!(prompt.summary.contains("Defaults to"));
+        assert!(prompt.guide.contains("`outputMode: \"content\"`"));
         assert!(prompt.guide.contains("glob"));
         assert!(prompt.guide.contains("findFiles"));
+        assert!(prompt.guide.contains("literal: true"));
+        assert!(
+            prompt
+                .caveats
+                .iter()
+                .any(|caveat| caveat.contains("literal: true"))
+        );
     }
 
     #[tokio::test]
@@ -1311,7 +1513,8 @@ mod tests {
                 json!({
                     "pattern": "hello",
                     "path": temp.path().to_string_lossy(),
-                    "fileType": "rust"
+                    "fileType": "rust",
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1340,7 +1543,8 @@ mod tests {
                     "pattern": "TARGET",
                     "path": file.to_string_lossy(),
                     "beforeContext": 2,
-                    "afterContext": 2
+                    "afterContext": 2,
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1412,7 +1616,8 @@ mod tests {
                 json!({
                     "pattern": "x",
                     "path": file.to_string_lossy(),
-                    "maxMatches": 1
+                    "maxMatches": 1,
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1454,7 +1659,8 @@ mod tests {
                 json!({
                     "pattern": "TARGET",
                     "path": temp.path().to_string_lossy(),
-                    "recursive": true
+                    "recursive": true,
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1496,7 +1702,8 @@ mod tests {
                 json!({
                     "pattern": "TARGET",
                     "path": temp.path().to_string_lossy(),
-                    "recursive": true
+                    "recursive": true,
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1535,7 +1742,8 @@ mod tests {
                 "tc-grep-outside".to_string(),
                 json!({
                     "pattern": "needle",
-                    "path": "../outside.txt"
+                    "path": "../outside.txt",
+                    "outputMode": "content"
                 }),
                 &test_tool_context_for(&workspace),
             )
@@ -1569,7 +1777,8 @@ mod tests {
                 json!({
                     "pattern": "target_",
                     "path": file.to_string_lossy(),
-                    "maxMatches": 700
+                    "maxMatches": 700,
+                    "outputMode": "content"
                 }),
                 &ctx,
             )

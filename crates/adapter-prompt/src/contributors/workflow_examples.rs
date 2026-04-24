@@ -27,7 +27,8 @@ impl PromptContributor for WorkflowExamplesContributor {
                 "Few Shot User",
                 "Before changing code, inspect the relevant files and gather context first. If \
                  you only know a filename pattern or glob, use `findFiles`. Use `grep` only when \
-                 you have both a content pattern and a search path.",
+                 you have both a content pattern and a search path. Use `shell` for directory \
+                 inspection commands.",
                 RenderTarget::PrependUser,
             )
             .with_condition(BlockCondition::FirstStepOnly)
@@ -39,7 +40,7 @@ impl PromptContributor for WorkflowExamplesContributor {
                 "I will inspect the relevant files and gather context before making changes. I \
                  will use `findFiles` to discover candidate paths, then use `grep` with both \
                  `pattern` and `path` when I need content search inside those files or \
-                 directories.",
+                 directories. I will use `shell` for directory inspection when needed.",
                 RenderTarget::PrependAssistant,
             )
             .with_condition(BlockCondition::FirstStepOnly)

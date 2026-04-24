@@ -21,8 +21,6 @@ pub mod find_files;
 pub mod fs_common;
 /// 内容搜索工具：正则匹配
 pub mod grep;
-/// 目录列表工具：浅层条目枚举
-pub mod list_dir;
 /// mode 切换共享辅助
 pub mod mode_transition;
 /// 文件读取工具：UTF-8 文本读取

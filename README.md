@@ -46,10 +46,9 @@
 | `writeFile` | 写入或创建文件，并返回结构化 diff metadata |
 | `editFile` | 精确替换文件内容（唯一匹配验证），并返回结构化 diff metadata |
 | `apply_patch` | 应用 unified diff 格式的多文件批量变更 |
-| `listDir` | 列出目录内容 |
 | `findFiles` | Glob 模式文件搜索 |
 | `grep` | 正则表达式内容搜索 |
-| `shell` | 执行 Shell 命令，stdout/stderr 以流式事件增量展示 |
+| `shell` | 查看目录或执行 Shell 命令，stdout/stderr 以流式事件增量展示 |
 | `tool_search` | 搜索可用工具 |
 | `spawn` | 创建子 Agent |
 | `send` | 向 Agent 发送消息 |

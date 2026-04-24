@@ -659,11 +659,40 @@ fn build_prompt_cache_key(
 fn order_tools_for_cache(tools: &[ToolDefinition]) -> Vec<&ToolDefinition> {
     let mut ordered: Vec<&ToolDefinition> = tools.iter().collect();
     ordered.sort_by(|left, right| {
-        let left_key = (left.name.starts_with("mcp__"), left.name.as_str());
-        let right_key = (right.name.starts_with("mcp__"), right.name.as_str());
+        let left_key = (
+            builtin_tool_rank(left.name.as_str()).unwrap_or(u8::MAX),
+            left.name.as_str(),
+        );
+        let right_key = (
+            builtin_tool_rank(right.name.as_str()).unwrap_or(u8::MAX),
+            right.name.as_str(),
+        );
         left_key.cmp(&right_key)
     });
     ordered
+}
+
+fn builtin_tool_rank(name: &str) -> Option<u8> {
+    match name {
+        "readFile" => Some(0),
+        "findFiles" => Some(1),
+        "grep" => Some(2),
+        "shell" => Some(3),
+        "editFile" => Some(4),
+        "writeFile" => Some(5),
+        "apply_patch" => Some(6),
+        "enterPlanMode" => Some(7),
+        "exitPlanMode" => Some(8),
+        "upsertSessionPlan" => Some(9),
+        "taskWrite" => Some(10),
+        "tool_search" => Some(11),
+        "Skill" => Some(12),
+        "spawn" => Some(13),
+        "send" => Some(14),
+        "observe" => Some(15),
+        "close" => Some(16),
+        _ => None,
+    }
 }
 
 #[async_trait]
@@ -1598,25 +1627,35 @@ mod tests {
         }];
         let first_tools = vec![
             ToolDefinition {
-                name: "mcp__search".to_string(),
-                description: "Search".to_string(),
+                name: "zzz_plugin_search".to_string(),
+                description: "Plugin Search".to_string(),
                 parameters: json!({"type":"object"}),
             },
             ToolDefinition {
-                name: "read_file".to_string(),
+                name: "readFile".to_string(),
                 description: "Read".to_string(),
+                parameters: json!({"type":"object"}),
+            },
+            ToolDefinition {
+                name: "mcp__search".to_string(),
+                description: "MCP Search".to_string(),
                 parameters: json!({"type":"object"}),
             },
         ];
         let second_tools = vec![
             ToolDefinition {
-                name: "read_file".to_string(),
-                description: "Read".to_string(),
+                name: "mcp__search".to_string(),
+                description: "MCP Search".to_string(),
                 parameters: json!({"type":"object"}),
             },
             ToolDefinition {
-                name: "mcp__search".to_string(),
-                description: "Search".to_string(),
+                name: "zzz_plugin_search".to_string(),
+                description: "Plugin Search".to_string(),
+                parameters: json!({"type":"object"}),
+            },
+            ToolDefinition {
+                name: "readFile".to_string(),
+                description: "Read".to_string(),
                 parameters: json!({"type":"object"}),
             },
         ];
@@ -1655,8 +1694,14 @@ mod tests {
             .map(|tool| tool.function.name.as_str())
             .collect();
 
-        assert_eq!(first_names, vec!["read_file", "mcp__search"]);
-        assert_eq!(second_names, vec!["read_file", "mcp__search"]);
+        assert_eq!(
+            first_names,
+            vec!["readFile", "mcp__search", "zzz_plugin_search"]
+        );
+        assert_eq!(
+            second_names,
+            vec!["readFile", "mcp__search", "zzz_plugin_search"]
+        );
         assert_eq!(first.prompt_cache_key, second.prompt_cache_key);
     }
 

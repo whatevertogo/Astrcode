@@ -76,22 +76,21 @@ impl Tool for UpsertSessionPlanTool {
             .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Create or update the canonical session plan artifact.",
+                    "Create or update the session plan artifact — the single source of truth for \
+                     the current task plan.",
                     "Use `upsertSessionPlan` when plan mode needs to persist the canonical \
                      session plan markdown and its `state.json`. This tool is the only supported \
                      writer for `sessions/<id>/plan/**`.",
                 )
                 .caveat(
-                    "A session has exactly one canonical plan. Revise that plan for the same \
-                     task; if the task changes, overwrite the current canonical plan instead of \
-                     creating another one.",
+                    "One plan per session. Overwrite the existing plan when the task evolves \
+                     rather than creating a new one.",
                 )
                 .example(
                     "{ title: \"Cleanup crates\", content: \"# Plan: Cleanup crates\\n...\", \
                      status: \"draft\" }",
                 )
-                .prompt_tag("plan")
-                .always_include(true),
+                .prompt_tag("plan"),
             )
     }
 

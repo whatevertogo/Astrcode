@@ -6,9 +6,8 @@ workspace:
   setup: ../fixtures/empty-dir-safe-response
 expected_outcome:
   tool_pattern:
-    - ListDir
+    - Shell
   max_tool_calls: 1
   max_turns: 1
   output_contains:
     - 没有文件
-

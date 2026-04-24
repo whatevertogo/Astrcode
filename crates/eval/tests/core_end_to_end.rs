@@ -65,10 +65,6 @@ enum MockStep {
         pattern: &'static str,
         output: &'static str,
     },
-    ListDir {
-        path: &'static str,
-        output: &'static str,
-    },
     FindFiles {
         query: &'static str,
         output: &'static str,
@@ -399,9 +395,11 @@ fn scenario_for(task_id: &str) -> Option<MockScenario> {
         ),
         "listdir-read-edit-status" => scenario(
             vec![
-                MockStep::ListDir {
-                    path: "docs",
+                MockStep::Shell {
+                    command: "ls docs",
                     output: "docs/todo.md\n",
+                    success: true,
+                    error: None,
                 },
                 MockStep::Read {
                     path: "docs/todo.md",
@@ -720,9 +718,11 @@ fn scenario_for(task_id: &str) -> Option<MockScenario> {
             "大文件里标记的关键值是 retention_window=96。",
         ),
         "empty-dir-safe-response" => scenario(
-            vec![MockStep::ListDir {
-                path: "empty",
+            vec![MockStep::Shell {
+                command: "ls empty",
                 output: "",
+                success: true,
+                error: None,
             }],
             "empty 目录当前没有文件。",
         ),
@@ -843,7 +843,6 @@ impl MockStep {
             MockStep::ApplyPatch { .. } => "ApplyPatch",
             MockStep::Grep { .. } => "Grep",
             MockStep::Glob { .. } => "Glob",
-            MockStep::ListDir { .. } => "ListDir",
             MockStep::FindFiles { .. } => "FindFiles",
             MockStep::Shell { .. } => "Shell",
             MockStep::ToolSearch { .. } => "ToolSearch",
@@ -869,7 +868,6 @@ impl MockStep {
                 serde_json::json!({ "path": path, "pattern": pattern })
             },
             MockStep::Glob { pattern, .. } => serde_json::json!({ "pattern": pattern }),
-            MockStep::ListDir { path, .. } => serde_json::json!({ "path": path }),
             MockStep::FindFiles { query, .. } => serde_json::json!({ "query": query }),
             MockStep::Shell { command, .. } => serde_json::json!({ "command": command }),
             MockStep::ToolSearch { query, .. } => serde_json::json!({ "query": query }),
@@ -907,7 +905,6 @@ impl MockStep {
             },
             MockStep::Grep { output, .. }
             | MockStep::Glob { output, .. }
-            | MockStep::ListDir { output, .. }
             | MockStep::FindFiles { output, .. }
             | MockStep::ToolSearch { output, .. }
             | MockStep::Skill { output, .. }

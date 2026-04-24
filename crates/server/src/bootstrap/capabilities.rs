@@ -22,7 +22,6 @@ use astrcode_adapter_tools::{
         exit_plan_mode::ExitPlanModeTool,
         find_files::FindFilesTool,
         grep::GrepTool,
-        list_dir::ListDirTool,
         read_file::ReadFileTool,
         shell::ShellTool,
         skill_tool::SkillTool,
@@ -57,7 +56,6 @@ pub(crate) fn build_core_tool_invokers(
         Arc::new(WriteFileTool),
         Arc::new(EditFileTool),
         Arc::new(ApplyPatchTool),
-        Arc::new(ListDirTool),
         Arc::new(FindFilesTool),
         Arc::new(GrepTool),
         Arc::new(ShellTool),
@@ -446,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn build_core_tool_invokers_registers_task_write() {
+    fn build_core_tool_invokers_registers_expected_tool_surface() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let tool_search_index = Arc::new(ToolSearchIndex::new());
         let skill_catalog =
@@ -460,5 +458,10 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(names.iter().any(|name| name == "taskWrite"));
+        assert!(!names.iter().any(|name| name == "listDir"));
+        assert!(names.iter().any(|name| name == "readFile"));
+        assert!(names.iter().any(|name| name == "findFiles"));
+        assert!(names.iter().any(|name| name == "grep"));
+        assert!(names.iter().any(|name| name == "shell"));
     }
 }
