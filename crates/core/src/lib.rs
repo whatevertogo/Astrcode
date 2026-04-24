@@ -1,12 +1,9 @@
 //! Astrcode 共享语义层。
 //!
 //! 承载跨 crate 共享的稳定值对象、事件数据模型和最小基础设施。
-//! 工具 trait、LLM 契约、runtime 边界、prompt 契约、治理策略分别由
-//! `*-contract` crate 持有；此处只保留事件存储、配置数据、hook 事件键、
-//! agent 协作模型等真正跨 owner 共享的语义。
-//!
-//! 以下模块仍有 `#[doc(hidden)]` 标注，表示已迁移到对应 contract crate，
-//! 仅作为过渡桥保留：`prompt`、`tool`。
+//! 工具 trait、LLM 契约、runtime 边界、治理策略分别由 `*-contract` crate 持有；
+//! TODO:prompt cache 诊断类型因被 durable storage 事件引用，暂留于此直到
+//! storage 事件迁移到独立薄类型。
 
 pub mod action;
 pub mod agent;
@@ -29,7 +26,6 @@ pub mod observability;
 pub mod policy;
 pub mod ports;
 pub mod project;
-#[doc(hidden)]
 pub mod prompt;
 pub mod registry;
 pub mod runtime;
@@ -41,7 +37,6 @@ pub mod support;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod time;
-#[doc(hidden)]
 pub mod tool;
 pub mod tool_result_persist;
 
