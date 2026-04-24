@@ -166,24 +166,6 @@ impl ConfigService {
             )),
         })
     }
-
-    /// 解析指定 profile 的 API key。
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub fn resolve_api_key_for_profile(
-        &self,
-        profile_name: &str,
-    ) -> Result<String, ApplicationError> {
-        let config = self.config.blocking_read();
-        let profile = config
-            .profiles
-            .iter()
-            .find(|p| p.name == profile_name)
-            .ok_or_else(|| {
-                ApplicationError::NotFound(format!("profile '{}' not found", profile_name))
-            })?;
-        api_key::resolve_api_key(profile).map_err(|e| ApplicationError::Internal(e.to_string()))
-    }
 }
 
 /// 生成配置摘要输入，供协议层投影复用。

@@ -51,6 +51,7 @@ impl ServerSessionBridge {
         SessionId::from(normalize_external_session_id(session_id))
     }
 
+    #[allow(dead_code)]
     async fn replay_history(
         &self,
         session_id: &SessionId,
@@ -65,6 +66,7 @@ impl ServerSessionBridge {
         Ok(replay_records(&stored, last_event_id))
     }
 
+    #[allow(dead_code)]
     async fn session_phase(
         &self,
         session_id: &SessionId,

@@ -103,7 +103,7 @@ impl McpReconnectManager {
     }
 
     /// 指定服务器是否有活跃的重连任务。
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_reconnecting(&self, server_name: &str) -> bool {
         let tasks = self.tasks_guard();
         tasks
@@ -113,7 +113,7 @@ impl McpReconnectManager {
     }
 
     /// 清理已完成的重连任务。
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn cleanup_finished(&self) {
         let mut tasks = self.tasks_guard();
         tasks.retain(|_, h| !h.is_finished());

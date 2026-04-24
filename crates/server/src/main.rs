@@ -181,21 +181,19 @@ pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";
 /// 包含运行时入口、server 侧 owner bridge、治理模型、认证管理器和前端构建产物。
 /// 所有字段均为 `Arc` 或可 `Clone` 类型，支持多线程共享。
 #[derive(Clone)]
+#[allow(dead_code)]
 pub(crate) struct AppState {
     /// server-owned agent route bridge；agent routes 不再经由 `application::agent` 用例入口。
     agent_api: Arc<ServerAgentApi>,
     /// server-owned agent control bridge；测试和路由不直接暴露底层 kernel。
-    #[allow(dead_code)]
     agent_control: Arc<dyn agent_control_bridge::ServerAgentControlPort>,
     /// server-owned 配置服务桥接；配置/模型 API 不再经由 App 访问配置。
     config: Arc<ServerConfigService>,
     /// server-owned 会话目录桥接；catalog API 不再经由 App 访问 session catalog。
     session_catalog: Arc<SessionCatalog>,
     /// server-owned profile resolver；watch/profile 测试不再经由 `App::profiles()`.
-    #[allow(dead_code)]
     profiles: Arc<ServerProfileService>,
     /// subagent 启动桥接；测试直接消费 host-session 合同。
-    #[allow(dead_code)]
     subagent_executor: Arc<dyn SubAgentExecutor>,
     /// server-owned MCP service；MCP API 不再经由 App facade。
     mcp_service: Arc<ServerMcpService>,

@@ -12,7 +12,7 @@ use std::{
 use astrcode_adapter_storage::session::FileSystemSessionRepository;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
 use astrcode_core::SkillCatalog;
-use astrcode_host_session::{CollaborationExecutor, EventStore, SessionCatalog, SubAgentExecutor};
+use astrcode_host_session::{EventStore, SessionCatalog, SubAgentExecutor};
 use astrcode_plugin_host::{
     CommandDescriptor, PluginActiveSnapshot, PluginDescriptor, PluginRegistry,
     ProviderContributionCatalog, ResourceCatalog, builtin_collaboration_tools_descriptor,
@@ -68,8 +68,6 @@ pub struct ServerRuntime {
     pub session_catalog: Arc<SessionCatalog>,
     pub profiles: Arc<ServerProfileService>,
     pub subagent_executor: Arc<dyn SubAgentExecutor>,
-    #[allow(dead_code)]
-    pub collaboration_executor: Arc<dyn CollaborationExecutor>,
     pub mcp_service: Arc<ServerMcpService>,
     pub skill_catalog: Arc<dyn SkillCatalog>,
     pub resource_catalog: Arc<std::sync::RwLock<ResourceCatalog>>,
@@ -81,8 +79,7 @@ pub struct ServerRuntime {
 pub struct ServerRuntimeHandles {
     // Why: server 集成测试需要直接操纵底层 session-runtime，避免把原始状态访问重新暴露给
     // application 端口；生产路径只把它当作资源守卫持有。
-    #[allow(dead_code)]
-    pub(crate) session_runtime_guard: Arc<dyn std::any::Any + Send + Sync>,
+    pub(crate) _session_runtime_guard: Arc<dyn std::any::Any + Send + Sync>,
     #[cfg(test)]
     pub(crate) session_runtime_test_support:
         Arc<dyn crate::session_runtime_owner_bridge::ServerRuntimeTestSupport>,
@@ -354,14 +351,13 @@ pub async fn bootstrap_server_runtime_with_options(
         session_catalog,
         profiles,
         subagent_executor: agent_runtime.subagent_executor,
-        collaboration_executor: agent_runtime.collaboration_executor,
         mcp_service,
         skill_catalog: skill_catalog_bridge,
         resource_catalog: Arc::clone(&plugin_resource_catalog_state),
         mode_catalog,
         governance,
         handles: Arc::new(ServerRuntimeHandles {
-            session_runtime_guard: session_runtime.keepalive,
+            _session_runtime_guard: session_runtime.keepalive,
             #[cfg(test)]
             session_runtime_test_support: session_runtime.test_support,
             _profile_watch_runtime: profile_watch_runtime,

@@ -114,7 +114,7 @@ impl ProfileResolutionService {
     }
 
     /// 按 profile ID 查找全局 profile。
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn find_global_profile(&self, profile_id: &str) -> Result<AgentProfile, ApplicationError> {
         let profiles = self.resolve_global()?;
         profiles

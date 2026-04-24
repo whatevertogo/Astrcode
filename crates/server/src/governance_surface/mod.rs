@@ -29,9 +29,7 @@ pub(crate) use inherited::resolve_inherited_parent_messages;
 #[cfg(test)]
 pub(crate) use inherited::{build_inherited_messages, select_inherited_recent_tail};
 pub use policy::{
-    GOVERNANCE_APPROVAL_MODE_INHERIT, GOVERNANCE_POLICY_REVISION,
-    ToolCollaborationGovernanceContext, ToolCollaborationGovernanceContextInput,
-    collaboration_policy_context,
+    GOVERNANCE_APPROVAL_MODE_INHERIT, GOVERNANCE_POLICY_REVISION, collaboration_policy_context,
 };
 pub use prompt::{
     build_delegation_metadata, build_fresh_child_contract, build_resumed_child_contract,
@@ -77,10 +75,6 @@ pub struct ResolvedGovernanceSurface {
     pub collaboration_policy: AgentCollaborationPolicyContext,
     pub approval: GovernanceApprovalPipeline,
     pub governance_revision: String,
-    #[allow(dead_code)]
-    pub busy_policy: GovernanceBusyPolicy,
-    #[allow(dead_code)]
-    pub diagnostics: Vec<String>,
 }
 
 impl ResolvedGovernanceSurface {
@@ -133,28 +127,6 @@ impl ResolvedGovernanceSurface {
             approval: self.approval.pending,
             prompt_governance: Some(prompt_governance),
         }
-    }
-
-    #[allow(dead_code)]
-    pub async fn check_model_request(
-        &self,
-        engine: &dyn astrcode_core::PolicyEngine,
-        request: astrcode_core::ModelRequest,
-    ) -> astrcode_core::Result<astrcode_core::ModelRequest> {
-        engine
-            .check_model_request(request, &self.policy_context)
-            .await
-    }
-
-    #[allow(dead_code)]
-    pub async fn check_capability_call(
-        &self,
-        engine: &dyn astrcode_core::PolicyEngine,
-        call: CapabilityCall,
-    ) -> astrcode_core::Result<astrcode_core::PolicyVerdict<CapabilityCall>> {
-        engine
-            .check_capability_call(call, &self.policy_context)
-            .await
     }
 }
 

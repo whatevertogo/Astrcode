@@ -124,15 +124,6 @@ impl AppGovernance {
         }
     }
 
-    /// 获取当前纯 observability 快照。
-    ///
-    /// 为什么单独暴露：debug-only 治理读取面只关心指标本身，
-    /// 不需要重新拼完整 runtime status，也不应强依赖 plugin search path 等外围信息。
-    #[allow(dead_code)]
-    pub fn observability_snapshot(&self) -> RuntimeObservabilitySnapshot {
-        self.observability.snapshot()
-    }
-
     /// 重载运行时能力面。
     ///
     /// 需要在构造时通过 `with_reloader` 设置重载策略，
@@ -173,11 +164,6 @@ impl AppGovernance {
 
     pub fn runtime(&self) -> &Arc<dyn RuntimeGovernancePort> {
         &self.runtime
-    }
-
-    #[allow(dead_code)]
-    pub fn task_registry(&self) -> &Arc<TaskRegistry> {
-        &self.task_registry
     }
 }
 

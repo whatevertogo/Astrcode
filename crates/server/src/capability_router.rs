@@ -68,7 +68,7 @@ impl CapabilityRouterBuilder {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn register_invoker(mut self, invoker: Arc<dyn CapabilityInvoker>) -> Self {
         self.invokers.push(invoker);
         self

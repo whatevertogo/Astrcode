@@ -7,9 +7,8 @@
 //! - 各种 capability selector（all / subset / none / union / difference）的编译结果
 
 use astrcode_core::{
-    AllowAllPolicyEngine, ApprovalDefault, BoundModeToolContractSnapshot, CapabilityKind,
-    CapabilitySpec, LlmMessage, ModeId, ModelRequest, ResolvedExecutionLimitsSnapshot,
-    ResolvedRuntimeConfig, UserMessageOrigin,
+    ApprovalDefault, BoundModeToolContractSnapshot, CapabilityKind, CapabilitySpec, LlmMessage,
+    ModeId, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, UserMessageOrigin,
 };
 use serde_json::{Value, json};
 
@@ -102,23 +101,7 @@ async fn surface_policy_pipeline_defaults_to_allow_all() {
             }),
         },
         governance_revision: GOVERNANCE_POLICY_REVISION.to_string(),
-        busy_policy: GovernanceBusyPolicy::BranchOnBusy,
-        diagnostics: Vec::new(),
     };
-    let request = ModelRequest {
-        messages: vec![LlmMessage::User {
-            content: "hello".to_string(),
-            origin: UserMessageOrigin::User,
-        }],
-        tools: Vec::new(),
-        system_prompt: Some("system".to_string()),
-        system_prompt_blocks: Vec::new(),
-    };
-    let checked = surface
-        .check_model_request(&AllowAllPolicyEngine, request)
-        .await
-        .expect("request should pass");
-    assert_eq!(checked.system_prompt.as_deref(), Some("system"));
     assert!(surface.approval.pending.is_some());
 }
 
@@ -157,7 +140,7 @@ fn inherited_messages_follow_compact_and_tail_policy() {
 #[test]
 fn root_surface_applies_execution_control_without_special_case_logic() {
     let assembler = GovernanceSurfaceAssembler::default();
-    let surface = assembler
+    let _surface = assembler
         .root_surface(RootGovernanceInput {
             session_id: "session-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -170,8 +153,6 @@ fn root_surface_applies_execution_control_without_special_case_logic() {
             }),
         })
         .expect("surface should build");
-
-    assert_eq!(surface.busy_policy, GovernanceBusyPolicy::BranchOnBusy);
 }
 
 #[tokio::test]
@@ -223,7 +204,6 @@ fn resumed_child_surface_reuses_existing_limits_and_contract_source() {
         })
         .expect("surface should build");
     assert_eq!(surface.resolved_limits, limits);
-    assert_eq!(surface.busy_policy, GovernanceBusyPolicy::RejectOnBusy);
     assert!(
         surface
             .prompt_declarations

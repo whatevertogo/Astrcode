@@ -8,7 +8,7 @@
 
 use astrcode_core::{ActiveSelection, Profile};
 #[cfg(test)]
-use astrcode_core::{Config, CurrentModelSelection, ModelConfig, ModelOption, ModelSelection};
+use astrcode_core::{Config, CurrentModelSelection, ModelOption, ModelSelection};
 
 use crate::ApplicationError;
 
@@ -85,27 +85,6 @@ pub fn resolve_current_model(config: &Config) -> Result<CurrentModelSelection, A
         selected.active_model,
         profile.provider_kind.clone(),
     ))
-}
-
-/// 解析指定 profile 中匹配的 model，找不到时回退到第一个 model。
-#[cfg(test)]
-#[allow(dead_code)]
-pub fn resolve_model_for_profile<'a>(
-    profile: &'a Profile,
-    active_model: &str,
-) -> Result<Option<&'a ModelConfig>, ApplicationError> {
-    if profile.models.is_empty() {
-        return Err(ApplicationError::InvalidArgument(format!(
-            "profile '{}' has no models",
-            profile.name
-        )));
-    }
-
-    Ok(profile
-        .models
-        .iter()
-        .find(|m| m.id == active_model)
-        .or_else(|| profile.models.first()))
 }
 
 fn first_model_id(profile: &Profile) -> Result<&str, ApplicationError> {

@@ -74,12 +74,6 @@ pub fn resolve_env_value(raw: &str) -> Result<String> {
     }
 }
 
-/// 构建序列化的 `env:<NAME>` 引用字符串。
-#[allow(dead_code)]
-pub fn env_reference(env_name: &str) -> String {
-    format!("{ENV_REFERENCE_PREFIX}{env_name}")
-}
-
 /// 判断值是否看起来像环境变量名（大写字母+数字+下划线，至少含一个下划线）。
 pub fn is_env_var_name(value: &str) -> bool {
     value

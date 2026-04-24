@@ -43,7 +43,7 @@ impl RuntimeCoordinator {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn with_managed_components(
         self,
         managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
@@ -69,15 +69,6 @@ impl RuntimeCoordinator {
             &self.capabilities,
             "runtime coordinator capabilities",
             |capabilities| capabilities.iter().cloned().collect(),
-        )
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn managed_components(&self) -> Vec<Arc<dyn ManagedRuntimeComponent>> {
-        support::with_read_lock_recovery(
-            &self.managed_components,
-            "runtime coordinator managed components",
-            Clone::clone,
         )
     }
 

@@ -95,7 +95,7 @@ impl GovernanceSurfaceAssembler {
             runtime.agent.max_subrun_depth,
             runtime.agent.max_spawn_per_turn,
         ));
-        let busy_policy = super::policy::resolve_busy_policy(
+        let _busy_policy = super::policy::resolve_busy_policy(
             compiled.envelope.submit_busy_policy,
             requested_busy_policy,
         );
@@ -121,8 +121,6 @@ impl GovernanceSurfaceAssembler {
                 &compiled.envelope,
             ),
             governance_revision: super::GOVERNANCE_POLICY_REVISION.to_string(),
-            busy_policy,
-            diagnostics: compiled.envelope.diagnostics.clone(),
         };
         surface.validate()?;
         Ok(surface)
@@ -232,35 +230,6 @@ impl GovernanceSurfaceAssembler {
                 input.context.as_deref(),
             )),
         })
-    }
-
-    #[allow(dead_code)]
-    pub fn tool_collaboration_context(
-        &self,
-        runtime: ResolvedRuntimeConfig,
-        session_id: String,
-        turn_id: String,
-        parent_agent_id: Option<String>,
-        source_tool_call_id: Option<String>,
-        mode_id: astrcode_core::ModeId,
-    ) -> super::ToolCollaborationGovernanceContext {
-        super::ToolCollaborationGovernanceContext::new(
-            super::ToolCollaborationGovernanceContextInput {
-                runtime: runtime.clone(),
-                session_id,
-                turn_id,
-                parent_agent_id,
-                source_tool_call_id,
-                policy: super::collaboration_policy_context(&runtime),
-                governance_revision: super::GOVERNANCE_POLICY_REVISION.to_string(),
-                mode_id,
-            },
-        )
-    }
-
-    #[allow(dead_code)]
-    pub fn mode_catalog(&self) -> &ModeCatalog {
-        &self.mode_catalog
     }
 }
 

@@ -47,7 +47,6 @@ pub struct McpReloadSnapshot {
 }
 
 /// 单个服务器的完整管理信息。
-#[allow(dead_code)]
 pub(crate) struct McpManagedConnection {
     /// 连接状态机。
     pub(crate) connection: McpConnection,

@@ -192,7 +192,6 @@ pub(crate) struct RecordedModeSwitch {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct StubSessionPort {
     pub(crate) stored_events: Vec<StoredEvent>,
     pub(crate) working_dir: Option<String>,

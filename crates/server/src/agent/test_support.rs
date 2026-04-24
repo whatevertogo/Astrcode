@@ -9,14 +9,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use astrcode_agent_runtime::{
-    LlmEvent, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
-};
+use astrcode_agent_runtime::{LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_core::{
     AgentLifecycleStatus, AgentMode, AgentProfile, AstrError, Config, ConfigOverlay,
-    DeleteProjectResult, Phase, ReasoningContent, Result, SessionId, SessionMeta,
-    SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease, StorageEvent, StoredEvent,
-    SubRunStorageMode,
+    DeleteProjectResult, Phase, Result, SessionId, SessionMeta, SessionTurnAcquireResult,
+    SessionTurnBusy, SessionTurnLease, StorageEvent, StoredEvent, SubRunStorageMode,
     ports::{ConfigStore, McpConfigFileScope},
 };
 use astrcode_host_session::{
@@ -396,19 +393,8 @@ impl Drop for AgentTestEnvGuard {
 
 #[derive(Debug, Clone)]
 pub(crate) enum TestLlmBehavior {
-    Succeed {
-        content: String,
-    },
-    #[allow(dead_code)]
-    Stream {
-        reasoning_chunks: Vec<String>,
-        text_chunks: Vec<String>,
-        final_content: String,
-        final_reasoning: Option<String>,
-    },
-    Fail {
-        message: String,
-    },
+    Succeed { content: String },
+    Fail { message: String },
 }
 
 #[derive(Debug)]
@@ -427,7 +413,7 @@ impl LlmProvider for TestLlmProvider {
     async fn generate(
         &self,
         _request: LlmRequest,
-        sink: Option<astrcode_agent_runtime::LlmEventSink>,
+        _sink: Option<astrcode_agent_runtime::LlmEventSink>,
     ) -> Result<LlmOutput> {
         match &self.behavior {
             TestLlmBehavior::Succeed { content } => Ok(LlmOutput {
@@ -438,32 +424,6 @@ impl LlmProvider for TestLlmProvider {
                 finish_reason: LlmFinishReason::Stop,
                 prompt_cache_diagnostics: None,
             }),
-            TestLlmBehavior::Stream {
-                reasoning_chunks,
-                text_chunks,
-                final_content,
-                final_reasoning,
-            } => {
-                if let Some(sink) = sink {
-                    for chunk in reasoning_chunks {
-                        sink(LlmEvent::ThinkingDelta(chunk.clone()));
-                    }
-                    for chunk in text_chunks {
-                        sink(LlmEvent::TextDelta(chunk.clone()));
-                    }
-                }
-                Ok(LlmOutput {
-                    content: final_content.clone(),
-                    tool_calls: Vec::new(),
-                    reasoning: final_reasoning.clone().map(|content| ReasoningContent {
-                        content,
-                        signature: None,
-                    }),
-                    usage: None,
-                    finish_reason: LlmFinishReason::Stop,
-                    prompt_cache_diagnostics: None,
-                })
-            },
             TestLlmBehavior::Fail { message } => {
                 Err(AstrError::Internal(format!("test llm failure: {message}")))
             },
