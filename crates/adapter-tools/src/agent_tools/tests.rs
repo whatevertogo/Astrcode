@@ -7,10 +7,10 @@ use astrcode_core::{
     FailedSubRunOutcome, ObserveParams, ParentDelivery, ParentDeliveryOrigin,
     ParentDeliveryPayload, ParentDeliveryTerminalSemantics, ParentExecutionRef,
     ProgressParentDeliveryPayload, SendAgentParams, SendToChildParams, SendToParentParams,
-    SpawnAgentParams, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult, Tool,
-    ToolContext,
+    SpawnAgentParams, SubRunFailure, SubRunFailureCode, SubRunHandoff, SubRunResult,
 };
 use astrcode_host_session::SubAgentExecutor;
+use astrcode_tool_contract::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::json;
 

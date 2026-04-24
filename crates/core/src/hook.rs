@@ -23,7 +23,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{CompactTrigger, LlmMessage, ToolDefinition, ToolExecutionResult};
+use crate::{
+    CompactTrigger, LlmMessage,
+    action::{ToolDefinition, ToolExecutionResult},
+};
 
 /// 可被外部扩展拦截的生命周期事件。
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]

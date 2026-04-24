@@ -33,7 +33,7 @@ impl AgentOrchestrationService {
         &self,
         child: &SubRunHandle,
         params: &SendToChildParams,
-        ctx: &astrcode_core::ToolContext,
+        ctx: &astrcode_tool_contract::ToolContext,
         collaboration: &ToolCollaborationContext,
         lifecycle: Option<AgentLifecycleStatus>,
     ) -> Result<Option<CollaborationResult>, AgentOrchestrationError> {
@@ -134,7 +134,7 @@ impl AgentOrchestrationService {
             session_id: child_session_id.to_string(),
             turn_id: resumed_turn_id.clone(),
             working_dir,
-            mode_id: collaboration.mode_id().clone(),
+            mode_id: collaboration.mode_id().clone().into(),
             runtime: runtime.clone(),
             resolved_limits: reused_handle.resolved_limits.clone(),
             delegation: Some(resume_delegation.clone()),
@@ -221,7 +221,7 @@ impl AgentOrchestrationService {
         &self,
         child: &SubRunHandle,
         params: &SendToChildParams,
-        ctx: &astrcode_core::ToolContext,
+        ctx: &astrcode_tool_contract::ToolContext,
         collaboration: &ToolCollaborationContext,
     ) -> Result<CollaborationResult, AgentOrchestrationError> {
         let delivery_id = format!(

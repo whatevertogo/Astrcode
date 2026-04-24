@@ -5,11 +5,13 @@
 
 use std::{fs, time::Instant};
 
-use astrcode_core::{
-    AstrError, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
-};
+use astrcode_core::{AstrError, Result, SideEffect};
+use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{SessionPlanState, SessionPlanStatus};
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
@@ -198,7 +200,7 @@ impl Tool for UpsertSessionPlanTool {
             archived_at: existing.as_ref().and_then(|state| state.archived_at),
         };
         persist_session_plan_state(&paths.state_path, &state)?;
-        if ctx.current_mode_id() == &astrcode_core::ModeId::plan() {
+        if ctx.current_mode_id() == &ModeId::plan() {
             persist_planning_workflow_state(ctx, Some(&state))?;
         }
 
@@ -252,7 +254,9 @@ fn slugify(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId};
+    use astrcode_governance_contract::{
+        BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId,
+    };
     use serde_json::json;
 
     use super::*;

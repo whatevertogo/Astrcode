@@ -1,4 +1,5 @@
-use astrcode_core::{CapabilitySpec, GovernanceModeSpec};
+use astrcode_core::CapabilitySpec;
+use astrcode_governance_contract::GovernanceModeSpec;
 
 use crate::descriptor::{
     CommandDescriptor, HookDescriptor, PluginDescriptor, PromptDescriptor, ProviderDescriptor,

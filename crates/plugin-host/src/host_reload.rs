@@ -375,6 +375,7 @@ impl PluginHostReload {
                 .map(|tool| PluginCapabilityBinding {
                     plugin_id: descriptor.plugin_id.clone(),
                     display_name: descriptor.display_name.clone(),
+                    source_ref: descriptor.source_ref.clone(),
                     backend_kind: descriptor.source_kind.to_backend_kind(),
                     capability: tool.clone(),
                     runtime_handle: self.runtime_handle_snapshot(&descriptor.plugin_id),
@@ -389,6 +390,7 @@ impl PluginHostReload {
                 descriptor.tools.iter().map(|tool| PluginCapabilityBinding {
                     plugin_id: descriptor.plugin_id.clone(),
                     display_name: descriptor.display_name.clone(),
+                    source_ref: descriptor.source_ref.clone(),
                     backend_kind: descriptor.source_kind.to_backend_kind(),
                     capability: tool.clone(),
                     runtime_handle: self.runtime_handle_snapshot(&descriptor.plugin_id),

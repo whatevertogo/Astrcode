@@ -1,6 +1,12 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/prompt-contract",
+    "crates/governance-contract",
+    "crates/tool-contract",
+    "crates/llm-contract",
+    "crates/runtime-contract",
+    "crates/context-window",
     "crates/support",
     "crates/agent-runtime",
     "crates/host-session",

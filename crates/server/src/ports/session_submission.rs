@@ -4,11 +4,14 @@
 //! 但不应该直接依赖 session-runtime 的具体提交结构。
 
 use astrcode_core::{
-    AgentEventContext, BoundModeToolContractSnapshot, CapabilityCall, LlmMessage, ModeId,
-    PolicyContext, PromptDeclaration, ResolvedExecutionLimitsSnapshot,
+    AgentEventContext, LlmMessage, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides,
 };
+use astrcode_governance_contract::{
+    ApprovalPending, BoundModeToolContractSnapshot, CapabilityCall, ModeId, PolicyContext,
+};
 use astrcode_host_session::PromptGovernanceContext;
+use astrcode_prompt_contract::PromptDeclaration;
 
 /// 应用层提交给 session 端口的稳定载荷。
 #[allow(dead_code)]
@@ -24,6 +27,6 @@ pub struct AppAgentPromptSubmission {
     pub source_tool_call_id: Option<String>,
     pub policy_context: Option<PolicyContext>,
     pub governance_revision: Option<String>,
-    pub approval: Option<astrcode_core::ApprovalPending<CapabilityCall>>,
+    pub approval: Option<ApprovalPending<CapabilityCall>>,
     pub prompt_governance: Option<PromptGovernanceContext>,
 }

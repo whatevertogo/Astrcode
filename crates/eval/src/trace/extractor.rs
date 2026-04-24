@@ -798,7 +798,8 @@ mod tests {
         AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
         AgentCollaborationPolicyContext, AgentEventContext, ChildExecutionIdentity, InvocationKind,
         PersistedToolOutput, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-        StorageEvent, StorageEventPayload, StoredEvent, SubRunStorageMode, ToolOutputStream,
+        StorageEvent, StorageEventPayload, StoredEvent, SubRunStorageMode,
+        action::ToolOutputStream,
     };
     use chrono::{TimeZone, Utc};
     use serde_json::json;

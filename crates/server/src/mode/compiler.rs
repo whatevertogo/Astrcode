@@ -8,10 +8,14 @@
 
 use std::collections::BTreeSet;
 
-use astrcode_core::{
-    CapabilitySelector, CapabilitySpec, CompiledModeContracts, GovernanceModeSpec,
+use astrcode_core::{CapabilitySpec, Result};
+use astrcode_governance_contract::{
+    CapabilitySelector, CompiledModeContracts, GovernanceModeSpec, ResolvedChildPolicy,
+    ResolvedTurnEnvelope, SubmitBusyPolicy,
+};
+use astrcode_prompt_contract::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, ResolvedTurnEnvelope, Result, SystemPromptLayer,
+    PromptDeclarationSource, SystemPromptLayer,
 };
 
 #[derive(Clone)]
@@ -38,7 +42,7 @@ pub fn compile_mode_envelope(
         prompt_declarations: prompt_declarations.clone(),
         mode_contracts: compiled_mode_contracts(spec),
         action_policies: spec.action_policies.clone(),
-        child_policy: astrcode_core::ResolvedChildPolicy {
+        child_policy: ResolvedChildPolicy {
             mode_id: spec
                 .child_policy
                 .default_mode_id
@@ -58,7 +62,7 @@ pub fn compile_mode_envelope(
         submit_busy_policy: spec
             .execution_policy
             .submit_busy_policy
-            .unwrap_or(astrcode_core::SubmitBusyPolicy::BranchOnBusy),
+            .unwrap_or(SubmitBusyPolicy::BranchOnBusy),
         fork_mode: spec.execution_policy.fork_mode.clone(),
         diagnostics: Vec::new(),
     };
@@ -75,7 +79,7 @@ pub fn compile_mode_envelope_for_child(spec: &GovernanceModeSpec) -> Result<Comp
         prompt_declarations: prompt_declarations.clone(),
         mode_contracts: compiled_mode_contracts(spec),
         action_policies: spec.action_policies.clone(),
-        child_policy: astrcode_core::ResolvedChildPolicy {
+        child_policy: ResolvedChildPolicy {
             mode_id: spec
                 .child_policy
                 .default_mode_id
@@ -95,7 +99,7 @@ pub fn compile_mode_envelope_for_child(spec: &GovernanceModeSpec) -> Result<Comp
         submit_busy_policy: spec
             .execution_policy
             .submit_busy_policy
-            .unwrap_or(astrcode_core::SubmitBusyPolicy::BranchOnBusy),
+            .unwrap_or(SubmitBusyPolicy::BranchOnBusy),
         fork_mode: spec
             .execution_policy
             .fork_mode
@@ -205,6 +209,7 @@ fn mode_prompt_declarations(
 #[cfg(test)]
 mod tests {
     use astrcode_core::{CapabilityKind, CapabilitySpec, ForkMode, SideEffect};
+    use astrcode_governance_contract::ModeId;
 
     use super::{compile_capability_selector, compile_mode_envelope_for_child};
     use crate::mode::builtin_mode_catalog;
@@ -259,9 +264,9 @@ mod tests {
         let capability_specs = capability_specs();
         let catalog = builtin_mode_catalog().expect("builtin catalog should build");
 
-        let code = catalog.get(&astrcode_core::ModeId::code()).unwrap();
-        let plan = catalog.get(&astrcode_core::ModeId::plan()).unwrap();
-        let review = catalog.get(&astrcode_core::ModeId::review()).unwrap();
+        let code = catalog.get(&ModeId::code()).unwrap();
+        let plan = catalog.get(&ModeId::plan()).unwrap();
+        let review = catalog.get(&ModeId::review()).unwrap();
 
         assert_eq!(
             compile_capability_selector(&capability_specs, &code.capability_selector)
@@ -288,7 +293,7 @@ mod tests {
     #[test]
     fn compile_mode_envelope_projects_mode_contracts_into_compile_artifact() {
         let catalog = builtin_mode_catalog().expect("builtin catalog should build");
-        let plan = catalog.get(&astrcode_core::ModeId::plan()).unwrap();
+        let plan = catalog.get(&ModeId::plan()).unwrap();
 
         let compiled =
             super::compile_mode_envelope(&plan, Vec::new()).expect("plan should compile");
@@ -320,7 +325,7 @@ mod tests {
     #[test]
     fn child_mode_compile_uses_child_fork_mode_for_child_execution_fallback() {
         let catalog = builtin_mode_catalog().expect("builtin catalog should build");
-        let mut mode = catalog.get(&astrcode_core::ModeId::code()).unwrap();
+        let mut mode = catalog.get(&ModeId::code()).unwrap();
         mode.execution_policy.fork_mode = None;
         mode.child_policy.fork_mode = Some(ForkMode::LastNTurns(4));
 

@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
-use astrcode_core::{AstrError, CapabilitySpec, GovernanceModeSpec, Result};
+use astrcode_core::{AstrError, CapabilitySpec, Result};
+use astrcode_governance_contract::GovernanceModeSpec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PluginSourceKind {

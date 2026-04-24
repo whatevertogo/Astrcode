@@ -2,8 +2,9 @@
 
 use astrcode_core::{
     ChildAgentRef, CompactAppliedMeta, CompactTrigger, Phase, PromptCacheDiagnostics,
-    SystemPromptLayer, ToolOutputStream,
+    policy::SystemPromptLayer,
 };
+use astrcode_tool_contract::ToolOutputStream;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

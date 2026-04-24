@@ -31,6 +31,7 @@ pub struct PluginRuntimeHandleSnapshot {
 pub struct PluginCapabilityBinding {
     pub plugin_id: String,
     pub display_name: String,
+    pub source_ref: String,
     pub backend_kind: PluginBackendKind,
     pub capability: CapabilityWireDescriptor,
     pub runtime_handle: Option<PluginRuntimeHandleSnapshot>,

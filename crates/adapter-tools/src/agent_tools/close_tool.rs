@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use astrcode_core::{
-    CloseAgentParams, Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+use astrcode_core::{CloseAgentParams, Result};
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};

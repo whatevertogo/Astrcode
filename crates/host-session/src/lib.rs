@@ -11,6 +11,7 @@ pub mod compaction;
 pub mod composer;
 mod event_cache;
 pub mod event_log;
+mod event_translate;
 pub mod execution_surface;
 pub mod fork;
 pub mod input_queue;
@@ -37,6 +38,7 @@ pub use collaboration::{
 pub use compaction::CompactPersistResult;
 pub use composer::{ComposerOption, ComposerOptionActionKind, ComposerOptionKind};
 pub use event_log::SessionWriter;
+pub use event_translate::{EventTranslator, replay_records};
 pub use execution_surface::HostSessionSnapshot;
 pub use fork::{ForkPoint, ForkResult};
 pub use input_queue::{InputKind, InputQueueProjection};

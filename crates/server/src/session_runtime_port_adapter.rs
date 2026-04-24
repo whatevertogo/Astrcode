@@ -4,23 +4,28 @@ use std::{
 };
 
 use astrcode_agent_runtime::{
-    AgentRuntime, AgentRuntimeExecutionSurface, LlmEvent, LlmProvider, RuntimeEventSink,
-    RuntimeTurnEvent, ToolDispatchRequest, ToolDispatcher, ToolResultReplacementRecord, TurnInput,
-    TurnOutput, TurnStopCause,
+    AgentRuntime, AgentRuntimeExecutionSurface, ToolDispatchRequest, ToolDispatcher, TurnInput,
+    TurnOutput,
 };
+use astrcode_context_window::tool_result_budget::ToolResultReplacementRecord;
 use astrcode_core::{
-    AgentEvent, AgentInboxEnvelope, AgentLifecycleStatus, AgentTurnOutcome, AstrError,
-    BoundModeToolContractSnapshot, CancelToken, ChildSessionNotification, CompletedSubRunOutcome,
-    DelegationMetadata, EventTranslator, ExecutionAccepted, ExecutionControl, FailedSubRunOutcome,
-    LlmMessage, ModeId, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, SessionId,
-    StorageEvent, StorageEventPayload, StoredEvent, SubRunFailure, SubRunFailureCode,
-    SubRunHandoff, SubRunResult, ToolEventSink, ToolExecutionResult, TurnId, UserMessageOrigin,
+    AgentEvent, AgentInboxEnvelope, AgentLifecycleStatus, AgentTurnOutcome, AstrError, CancelToken,
+    ChildSessionNotification, CompletedSubRunOutcome, DelegationMetadata, ExecutionControl,
+    FailedSubRunOutcome, LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
+    SessionId, StorageEvent, StorageEventPayload, StoredEvent, SubRunFailure, SubRunFailureCode,
+    SubRunHandoff, SubRunResult, TurnId, UserMessageOrigin,
 };
+use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId};
 use astrcode_host_session::{
-    CompactSessionMutationInput, InputQueueProjection, InterruptSessionMutationInput,
-    SessionCatalog, SubRunFinishStats, SubmitPromptMutationInput, SubmitTurnBusyPolicy,
-    TurnMutationPreparation,
+    CompactSessionMutationInput, EventTranslator, InputQueueProjection,
+    InterruptSessionMutationInput, SessionCatalog, SubRunFinishStats, SubmitPromptMutationInput,
+    SubmitTurnBusyPolicy, TurnMutationPreparation,
 };
+use astrcode_llm_contract::{LlmEvent, LlmProvider};
+use astrcode_runtime_contract::{
+    ExecutionAccepted, RuntimeEventSink, RuntimeTurnEvent, TurnStopCause,
+};
+use astrcode_tool_contract::{ToolContext, ToolEventSink, ToolExecutionResult};
 use async_trait::async_trait;
 use chrono::Utc;
 
@@ -155,8 +160,8 @@ impl ToolDispatcher for RouterToolDispatcher {
     async fn dispatch_tool(
         &self,
         request: ToolDispatchRequest,
-    ) -> astrcode_core::Result<astrcode_core::ToolExecutionResult> {
-        let mut tool_ctx = astrcode_core::ToolContext::new(
+    ) -> astrcode_core::Result<ToolExecutionResult> {
+        let mut tool_ctx = ToolContext::new(
             request.session_id.clone().into(),
             self.working_dir.clone(),
             self.cancel.clone(),
@@ -481,8 +486,8 @@ impl SessionRuntimePort for SessionRuntimeCompatPort {
                     turn_id: None,
                     agent: astrcode_core::AgentEventContext::default(),
                     payload: astrcode_core::StorageEventPayload::ModeChanged {
-                        from,
-                        to,
+                        from: from.into(),
+                        to: to.into(),
                         timestamp: Utc::now(),
                     },
                 },
@@ -807,17 +812,22 @@ struct RuntimeToolEventSink {
 impl ToolEventSink for RuntimeToolEventSink {
     async fn emit(&self, event: StorageEvent) -> astrcode_core::Result<()> {
         if let StorageEventPayload::ModeChanged { from, to, .. } = &event.payload {
-            self.mode_catalog.validate_transition(from, to)?;
+            let from_mode_id = ModeId::from(from.clone());
+            let to_mode_id = ModeId::from(to.clone());
+            self.mode_catalog
+                .validate_transition(&from_mode_id, &to_mode_id)?;
             let current_mode_id = self.mode_tool_state.current_mode_id();
-            if &current_mode_id != from {
+            if current_mode_id != from_mode_id {
                 return Err(AstrError::Validation(format!(
                     "mode transition from '{}' does not match current runtime mode '{}'",
                     from, current_mode_id
                 )));
             }
-            let bound_mode_tool_contract = self.mode_catalog.bound_tool_contract_snapshot(to)?;
+            let bound_mode_tool_contract = self
+                .mode_catalog
+                .bound_tool_contract_snapshot(&to_mode_id)?;
             self.mode_tool_state
-                .replace(to.clone(), Some(bound_mode_tool_contract));
+                .replace(to_mode_id, Some(bound_mode_tool_contract));
         }
         self.runtime_event_sink
             .emit_event(RuntimeTurnEvent::StorageEvent {
@@ -1292,9 +1302,11 @@ mod tests {
     };
     use astrcode_agent_runtime::{RuntimeEventSink, ToolDispatchRequest, ToolDispatcher};
     use astrcode_core::{
-        AgentEvent, AgentEventContext, CancelToken, CapabilityInvoker, ModeId, StorageEvent,
-        StorageEventPayload, ToolCallRequest, ToolOutputStream,
+        AgentEvent, AgentEventContext, CancelToken, CapabilityInvoker, StorageEvent,
+        StorageEventPayload, ToolCallRequest, mode::ModeId as StoredModeId,
     };
+    use astrcode_governance_contract::ModeId;
+    use astrcode_tool_contract::ToolOutputStream;
 
     use super::{
         RouterToolDispatcher, RuntimeModeToolState, RuntimeToolEventSink, RuntimeTurnEvent,
@@ -1396,7 +1408,7 @@ mod tests {
                 if matches!(
                     &event.payload,
                     StorageEventPayload::ModeChanged { from, to, .. }
-                        if *from == ModeId::code() && *to == ModeId::plan()
+                        if *from == StoredModeId::code() && *to == StoredModeId::plan()
                 )
         ));
     }
@@ -1460,7 +1472,7 @@ mod tests {
                 if matches!(
                     &event.payload,
                     StorageEventPayload::ModeChanged { from, to, .. }
-                        if *from == ModeId::code() && *to == ModeId::plan()
+                        if *from == StoredModeId::code() && *to == StoredModeId::plan()
                 )
         ));
 
@@ -1627,7 +1639,7 @@ mod tests {
                 if matches!(
                     &event.payload,
                     StorageEventPayload::ModeChanged { from, to, .. }
-                        if *from == ModeId::plan() && *to == ModeId::code()
+                        if *from == StoredModeId::plan() && *to == StoredModeId::code()
                 )
         ));
 
@@ -1662,7 +1674,7 @@ mod tests {
                 if matches!(
                     &event.payload,
                     StorageEventPayload::ModeChanged { from, to, .. }
-                        if *from == ModeId::code() && *to == ModeId::plan()
+                        if *from == StoredModeId::code() && *to == StoredModeId::plan()
                 )
         ));
     }

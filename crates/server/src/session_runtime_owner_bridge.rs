@@ -4,13 +4,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use astrcode_agent_runtime::LlmProvider;
 #[cfg(test)]
 use astrcode_core::{AgentLifecycleStatus, AgentProfile};
 use astrcode_core::{CapabilityInvoker, Result};
 use astrcode_host_session::SessionCatalog;
 #[cfg(test)]
 use astrcode_host_session::SubRunHandle;
+use astrcode_llm_contract::LlmProvider;
 
 #[cfg(test)]
 use crate::agent_control_bridge::ServerLiveSubRunStatus;

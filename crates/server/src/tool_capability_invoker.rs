@@ -5,9 +5,13 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentEventContext, AstrError, BoundModeToolContractSnapshot, CancelToken, CapabilityContext,
-    CapabilityExecutionResult, CapabilityInvoker, CapabilitySpec, ExecutionOwner, Result,
-    SessionId, Tool, ToolContext, ToolEventSink, ToolOutputDelta,
+    AgentEventContext, AstrError, CancelToken, CapabilityContext, CapabilityExecutionResult,
+    CapabilityInvoker, CapabilitySpec, ExecutionOwner as CoreExecutionOwner, Result, SessionId,
+    ToolEventSink as CoreToolEventSink, mode::BoundModeToolContractSnapshot,
+};
+use astrcode_tool_contract::{
+    ExecutionOwner as ContractExecutionOwner, Tool, ToolContext,
+    ToolEventSink as ContractToolEventSink, ToolOutputDelta,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -95,11 +99,33 @@ struct ToolBridgeContext {
     turn_id: Option<String>,
     request_id: Option<String>,
     agent: AgentEventContext,
-    current_mode_id: astrcode_core::ModeId,
+    current_mode_id: astrcode_core::mode::ModeId,
     bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
-    execution_owner: Option<ExecutionOwner>,
+    execution_owner: Option<CoreExecutionOwner>,
     tool_output_sender: Option<UnboundedSender<ToolOutputDelta>>,
-    event_sink: Option<Arc<dyn ToolEventSink>>,
+    event_sink: Option<Arc<dyn CoreToolEventSink>>,
+}
+
+struct CoreToolEventSinkAdapter {
+    inner: Arc<dyn ContractToolEventSink>,
+}
+
+#[async_trait]
+impl CoreToolEventSink for CoreToolEventSinkAdapter {
+    async fn emit(&self, event: astrcode_core::StorageEvent) -> Result<()> {
+        self.inner.emit(event).await
+    }
+}
+
+struct ContractToolEventSinkAdapter {
+    inner: Arc<dyn CoreToolEventSink>,
+}
+
+#[async_trait]
+impl ContractToolEventSink for ContractToolEventSinkAdapter {
+    async fn emit(&self, event: astrcode_core::StorageEvent) -> Result<()> {
+        self.inner.emit(event).await
+    }
 }
 
 impl ToolBridgeContext {
@@ -111,11 +137,13 @@ impl ToolBridgeContext {
             turn_id: ctx.turn_id().map(ToString::to_string),
             request_id: None,
             agent: ctx.agent_context().clone(),
-            current_mode_id: ctx.current_mode_id().clone(),
-            bound_mode_tool_contract: ctx.bound_mode_tool_contract().cloned(),
-            execution_owner: ctx.execution_owner().cloned(),
+            current_mode_id: ctx.current_mode_id().clone().into(),
+            bound_mode_tool_contract: ctx.bound_mode_tool_contract().cloned().map(Into::into),
+            execution_owner: ctx.execution_owner().cloned().map(contract_owner_to_core),
             tool_output_sender: ctx.tool_output_sender(),
-            event_sink: ctx.event_sink(),
+            event_sink: ctx.event_sink().map(|sink| {
+                Arc::new(CoreToolEventSinkAdapter { inner: sink }) as Arc<dyn CoreToolEventSink>
+            }),
         }
     }
 
@@ -164,20 +192,39 @@ impl ToolBridgeContext {
             tool_ctx = tool_ctx.with_tool_call_id(tool_call_id);
         }
         tool_ctx = tool_ctx.with_agent_context(self.agent);
-        tool_ctx = tool_ctx.with_current_mode_id(self.current_mode_id);
+        tool_ctx = tool_ctx.with_current_mode_id(self.current_mode_id.into());
         if let Some(snapshot) = self.bound_mode_tool_contract {
-            tool_ctx = tool_ctx.with_bound_mode_tool_contract(snapshot);
+            tool_ctx = tool_ctx.with_bound_mode_tool_contract(snapshot.into());
         }
         if let Some(sender) = self.tool_output_sender {
             tool_ctx = tool_ctx.with_tool_output_sender(sender);
         }
         if let Some(event_sink) = self.event_sink {
-            tool_ctx = tool_ctx.with_event_sink(event_sink);
+            tool_ctx = tool_ctx
+                .with_event_sink(Arc::new(ContractToolEventSinkAdapter { inner: event_sink }));
         }
         if let Some(owner) = self.execution_owner {
-            tool_ctx = tool_ctx.with_execution_owner(owner);
+            tool_ctx = tool_ctx.with_execution_owner(core_owner_to_contract(owner));
         }
         tool_ctx
+    }
+}
+
+fn contract_owner_to_core(owner: ContractExecutionOwner) -> CoreExecutionOwner {
+    CoreExecutionOwner {
+        root_session_id: owner.root_session_id,
+        root_turn_id: owner.root_turn_id,
+        sub_run_id: owner.sub_run_id,
+        invocation_kind: owner.invocation_kind,
+    }
+}
+
+fn core_owner_to_contract(owner: CoreExecutionOwner) -> ContractExecutionOwner {
+    ContractExecutionOwner {
+        root_session_id: owner.root_session_id,
+        root_turn_id: owner.root_turn_id,
+        sub_run_id: owner.sub_run_id,
+        invocation_kind: owner.invocation_kind,
     }
 }
 

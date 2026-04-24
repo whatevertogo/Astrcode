@@ -16,10 +16,11 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, BoundModeToolContractSnapshot, CancelToken, CapabilityKind, CapabilitySpec,
-    CapabilitySpecBuildError, InvocationKind, InvocationMode, ModeId, PermissionSpec, Result,
-    SessionId, SideEffect, Stability, StorageEvent, ToolDefinition, ToolExecutionResult,
-    ToolOutputDelta, ToolOutputStream, TurnId,
+    AgentEventContext, CancelToken, CapabilityKind, CapabilitySpec, CapabilitySpecBuildError,
+    InvocationKind, InvocationMode, PermissionSpec, Result, SessionId, SideEffect, Stability,
+    StorageEvent, TurnId,
+    action::{ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream},
+    mode::{BoundModeToolContractSnapshot, ModeId},
     tool_result_persist::DEFAULT_TOOL_RESULT_INLINE_LIMIT,
 };
 
@@ -678,7 +679,8 @@ pub trait Tool: Send + Sync {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::{BoundModeToolContractSnapshot, CancelToken, ToolContext};
+    use super::ToolContext;
+    use crate::{CancelToken, mode::BoundModeToolContractSnapshot};
 
     #[test]
     fn tool_context_preserves_bound_mode_tool_contract_snapshot() {

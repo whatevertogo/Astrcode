@@ -378,8 +378,8 @@ mod tests {
     use std::time::Instant;
 
     use astrcode_core::{
-        AgentEventContext, LlmMessage, ModeId, Phase, StorageEvent, StorageEventPayload,
-        UserMessageOrigin,
+        AgentEventContext, LlmMessage, Phase, StorageEvent, StorageEventPayload, UserMessageOrigin,
+        mode::ModeId,
     };
     use astrcode_host_session::{
         AgentState, EventStore, ProjectionRegistrySnapshot, SessionRecoveryCheckpoint,

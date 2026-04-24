@@ -4,10 +4,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(test)]
 use astrcode_core::{
-    AgentLifecycleStatus, AgentProfile, EventTranslator, SessionId, SessionTurnAcquireResult,
-    SessionTurnLease, StorageEvent, StoredEvent,
+    AgentLifecycleStatus, AgentProfile, SessionId, SessionTurnAcquireResult, SessionTurnLease,
+    StorageEvent, StoredEvent,
 };
 use astrcode_core::{CapabilityInvoker, Result};
+#[cfg(test)]
+use astrcode_host_session::EventTranslator;
 use astrcode_host_session::SessionCatalog;
 
 #[cfg(test)]

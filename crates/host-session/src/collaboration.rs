@@ -1,14 +1,15 @@
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, ChildSessionNotification, CloseAgentParams,
-    CollaborationResult, EventTranslator, InputBatchAckedPayload, InputBatchStartedPayload,
-    InputDiscardedPayload, InputQueuedPayload, ObserveParams, ResolvedExecutionLimitsSnapshot,
+    CollaborationResult, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,
+    InputQueuedPayload, ObserveParams, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides, Result, SendAgentParams, SpawnAgentParams, StorageEvent,
-    StorageEventPayload, StoredEvent, SubRunResult, ToolContext,
+    StorageEventPayload, StoredEvent, SubRunResult,
 };
+use astrcode_tool_contract::ToolContext;
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::{SessionCatalog, state};
+use crate::{EventTranslator, SessionCatalog, state};
 
 /// `host-session` 对外暴露的 sub-run owner bridge。
 ///

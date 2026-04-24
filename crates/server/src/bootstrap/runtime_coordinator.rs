@@ -5,10 +5,9 @@
 use std::sync::{Arc, RwLock};
 
 use astrcode_plugin_host::{PluginEntry, PluginRegistry};
+use astrcode_runtime_contract::{ManagedRuntimeComponent, RuntimeHandle};
 
-use super::deps::core::{
-    AstrError, CapabilitySpec, ManagedRuntimeComponent, Result, RuntimeHandle, support,
-};
+use super::deps::core::{AstrError, CapabilitySpec, Result, support};
 
 /// 运行时协调器。
 ///
@@ -142,13 +141,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use astrcode_plugin_host::{PluginEntry, PluginHealth, PluginRegistry, PluginState};
+    use astrcode_runtime_contract::{ManagedRuntimeComponent, RuntimeHandle};
     use async_trait::async_trait;
     use serde_json::json;
 
     use super::RuntimeCoordinator;
     use crate::bootstrap::deps::core::{
-        AstrError, CapabilityKind, CapabilitySpec, InvocationMode, ManagedRuntimeComponent, Result,
-        RuntimeHandle, SideEffect, Stability,
+        AstrError, CapabilityKind, CapabilitySpec, InvocationMode, Result, SideEffect, Stability,
     };
 
     struct FakeRuntimeHandle {

@@ -1,6 +1,7 @@
 use std::{fs, path::Path as FsPath};
 
 use astrcode_core::{ExecutionControl, SessionId};
+use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{
     CompactSessionMutationInput, ForkPoint, InterruptSessionMutationInput, TurnMutationPreparation,
 };
@@ -256,12 +257,11 @@ pub(crate) async fn switch_mode(
         .session_mode_state(&session_id)
         .await
         .map_err(ApiError::from)?;
+    let current_mode_id = ModeId::from(current_mode.current_mode_id.clone());
+    let target_mode_id = ModeId::from(request.mode_id.clone());
     state
         .mode_catalog
-        .validate_transition(
-            &current_mode.current_mode_id,
-            &request.mode_id.clone().into(),
-        )
+        .validate_transition(&current_mode_id, &target_mode_id)
         .map_err(ApiError::from)?;
     let mode = state
         .session_catalog

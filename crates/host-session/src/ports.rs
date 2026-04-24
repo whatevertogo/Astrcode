@@ -3,11 +3,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_agent_runtime::provider::{PromptCacheGlobalStrategy, PromptCacheHints};
 use astrcode_core::{
-    CapabilitySpec, ChildSessionNode, DeleteProjectResult, PromptDeclaration, Result, SessionId,
-    SessionMeta, SessionTurnAcquireResult, StorageEvent, StoredEvent, SystemPromptBlock,
-    SystemPromptLayer, TaskSnapshot, TurnId, TurnTerminalKind, mode::ModeId,
+    CapabilitySpec, ChildSessionNode, DeleteProjectResult, Result, SessionId, SessionMeta,
+    SessionTurnAcquireResult, StorageEvent, StoredEvent, TaskSnapshot, TurnId, TurnTerminalKind,
+};
+use astrcode_governance_contract::{ModeId, SystemPromptBlock};
+use astrcode_prompt_contract::{
+    PromptCacheGlobalStrategy, PromptCacheHints, PromptDeclaration, SystemPromptLayer,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

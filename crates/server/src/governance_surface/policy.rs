@@ -5,9 +5,10 @@
 //! - 构建审批管线（`default_approval_pipeline`），当 mode 要求审批时安装占位骨架
 #![allow(dead_code)]
 
-use astrcode_core::{
-    AgentCollaborationPolicyContext, ApprovalPending, ApprovalRequest, CapabilityCall, ModeId,
-    PolicyContext, ResolvedRuntimeConfig, ResolvedTurnEnvelope,
+use astrcode_core::{AgentCollaborationPolicyContext, ResolvedRuntimeConfig};
+use astrcode_governance_contract::{
+    ApprovalDefault, ApprovalPending, ApprovalRequest, CapabilityCall, ModeId, PolicyContext,
+    ResolvedTurnEnvelope, SubmitBusyPolicy,
 };
 use serde_json::{Value, json};
 
@@ -146,7 +147,7 @@ pub(super) fn default_approval_pipeline(
                 }),
                 prompt: "Governance approval skeleton is installed but disabled by default."
                     .to_string(),
-                default: astrcode_core::ApprovalDefault::Allow,
+                default: ApprovalDefault::Allow,
                 metadata: json!({
                     "disabled": true,
                     "governanceRevision": GOVERNANCE_POLICY_REVISION,
@@ -175,11 +176,11 @@ pub(super) fn default_approval_pipeline(
 
 /// 解析 busy policy：mode 级别 RejectOnBusy 强制覆盖，否则使用请求方指定的策略。
 pub(super) fn resolve_busy_policy(
-    submit_busy_policy: astrcode_core::SubmitBusyPolicy,
+    submit_busy_policy: SubmitBusyPolicy,
     requested_busy_policy: GovernanceBusyPolicy,
 ) -> GovernanceBusyPolicy {
     match submit_busy_policy {
-        astrcode_core::SubmitBusyPolicy::BranchOnBusy => requested_busy_policy,
-        astrcode_core::SubmitBusyPolicy::RejectOnBusy => GovernanceBusyPolicy::RejectOnBusy,
+        SubmitBusyPolicy::BranchOnBusy => requested_busy_policy,
+        SubmitBusyPolicy::RejectOnBusy => GovernanceBusyPolicy::RejectOnBusy,
     }
 }

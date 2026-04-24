@@ -1,42 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::SystemPromptLayer;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptLayerFingerprints {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stable: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub semi_stable: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherited: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dynamic: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptCacheHints {
-    #[serde(default)]
-    pub layer_fingerprints: PromptLayerFingerprints,
-    #[serde(default)]
-    pub global_cache_strategy: PromptCacheGlobalStrategy,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unchanged_layers: Vec<SystemPromptLayer>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub compacted: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub tool_result_rebudgeted: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptCacheGlobalStrategy {
-    #[default]
-    SystemPrompt,
-    ToolBased,
-}
+use crate::policy::SystemPromptLayer;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

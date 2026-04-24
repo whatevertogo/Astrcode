@@ -12,6 +12,7 @@ use astrcode_core::{
     SendToChildParams, SendToParentParams,
 };
 use astrcode_host_session::SubRunHandle;
+use astrcode_tool_contract::ToolContext;
 use collaboration_flow::parent_delivery_label;
 
 use super::{
@@ -26,7 +27,7 @@ impl AgentOrchestrationService {
     /// 验证调用者是否为目标子 agent 的直接父级。
     pub(super) fn verify_caller_owns_child(
         &self,
-        ctx: &astrcode_core::ToolContext,
+        ctx: &ToolContext,
         child_handle: &SubRunHandle,
     ) -> Result<(), super::AgentOrchestrationError> {
         let caller_agent_id = ctx.agent_context().agent_id.as_deref();
@@ -49,7 +50,7 @@ impl AgentOrchestrationService {
         &self,
         agent_id: &str,
         action: AgentCollaborationActionKind,
-        ctx: &astrcode_core::ToolContext,
+        ctx: &ToolContext,
         collaboration: &super::ToolCollaborationContext,
     ) -> Result<SubRunHandle, super::AgentOrchestrationError> {
         let child = match self.kernel.get_handle(agent_id).await {
@@ -113,7 +114,7 @@ impl AgentOrchestrationService {
     pub async fn route_send(
         &self,
         params: SendAgentParams,
-        ctx: &astrcode_core::ToolContext,
+        ctx: &ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
         params
             .validate()
@@ -129,7 +130,7 @@ impl AgentOrchestrationService {
     async fn send_to_child(
         &self,
         params: SendToChildParams,
-        ctx: &astrcode_core::ToolContext,
+        ctx: &ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
         let collaboration = self.tool_collaboration_context(ctx).await?;
 
@@ -183,7 +184,7 @@ impl AgentOrchestrationService {
     async fn send_to_parent(
         &self,
         params: SendToParentParams,
-        ctx: &astrcode_core::ToolContext,
+        ctx: &ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
         let fallback_collaboration = self.tool_collaboration_context(ctx).await?;
         let Some(child_agent_id) = ctx.agent_context().agent_id.as_deref() else {
@@ -414,7 +415,7 @@ impl AgentOrchestrationService {
     async fn upstream_collaboration_context(
         &self,
         child: &SubRunHandle,
-        ctx: &astrcode_core::ToolContext,
+        ctx: &ToolContext,
     ) -> Result<super::ToolCollaborationContext, super::AgentOrchestrationError> {
         let parent_turn_id = match ctx.agent_context().parent_turn_id.clone() {
             Some(id) => id,

@@ -7,9 +7,10 @@
 //! - 各种 capability selector（all / subset / none / union / difference）的编译结果
 
 use astrcode_core::{
-    ApprovalDefault, BoundModeToolContractSnapshot, CapabilityKind, CapabilitySpec, LlmMessage,
-    ModeId, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, UserMessageOrigin,
+    CapabilityKind, CapabilitySpec, LlmMessage, ResolvedExecutionLimitsSnapshot,
+    ResolvedRuntimeConfig, UserMessageOrigin,
 };
+use astrcode_governance_contract::{ApprovalDefault, BoundModeToolContractSnapshot, ModeId};
 use serde_json::{Value, json};
 
 use super::{
@@ -63,7 +64,7 @@ async fn surface_policy_pipeline_defaults_to_allow_all() {
         resolved_limits: ResolvedExecutionLimitsSnapshot,
         resolved_overrides: None,
         injected_messages: Vec::new(),
-        policy_context: astrcode_core::PolicyContext {
+        policy_context: astrcode_governance_contract::PolicyContext {
             session_id: "session-1".to_string(),
             turn_id: "turn-1".to_string(),
             step_index: 0,
@@ -73,8 +74,8 @@ async fn surface_policy_pipeline_defaults_to_allow_all() {
         },
         collaboration_policy: collaboration_policy_context(&ResolvedRuntimeConfig::default()),
         approval: GovernanceApprovalPipeline {
-            pending: Some(astrcode_core::ApprovalPending {
-                request: astrcode_core::ApprovalRequest {
+            pending: Some(astrcode_governance_contract::ApprovalPending {
+                request: astrcode_governance_contract::ApprovalRequest {
                     request_id: "approval".to_string(),
                     session_id: "session-1".to_string(),
                     turn_id: "turn-1".to_string(),
@@ -88,7 +89,7 @@ async fn surface_policy_pipeline_defaults_to_allow_all() {
                     default: ApprovalDefault::Allow,
                     metadata: json!({}),
                 },
-                action: astrcode_core::CapabilityCall {
+                action: astrcode_governance_contract::CapabilityCall {
                     request_id: "approval-call".to_string(),
                     capability: CapabilitySpec::builder("placeholder", CapabilityKind::Tool)
                         .description("placeholder")

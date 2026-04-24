@@ -31,9 +31,10 @@ use astrcode_core::{
     DelegationMetadata, ObserveParams, ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload,
     ParentDeliveryTerminalSemantics, ProgressParentDeliveryPayload, QueuedInputEnvelope,
     ResolvedExecutionLimitsSnapshot, Result, RuntimeMetricsRecorder, SendAgentParams,
-    SpawnAgentParams, SubRunHandoff, SubRunResult, ToolContext,
+    SpawnAgentParams, SubRunHandoff, SubRunResult,
 };
 use astrcode_host_session::{CollaborationExecutor, SubAgentExecutor, SubRunHandle};
+use astrcode_tool_contract::ToolContext;
 use async_trait::async_trait;
 pub(crate) use context::{
     CollaborationFactRecord, ToolCollaborationContext, ToolCollaborationContextInput,
@@ -465,7 +466,7 @@ impl SubAgentExecutor for AgentOrchestrationService {
             parent_agent_id: parent_agent_id.clone(),
             parent_turn_id: parent_turn_id.clone(),
             working_dir: ctx.working_dir().display().to_string(),
-            mode_id: collaboration.mode_id().clone(),
+            mode_id: collaboration.mode_id().clone().into(),
             profile,
             description: spawn_description.clone(),
             task: params.prompt,
@@ -599,9 +600,9 @@ mod tests {
         CancelToken, ChildAgentRef, ChildExecutionIdentity, ChildSessionLineageKind,
         ChildSessionNotification, ChildSessionNotificationKind, ParentExecutionRef,
         ResolvedExecutionLimitsSnapshot, SessionId, SpawnAgentParams, StorageEventPayload,
-        ToolContext,
     };
     use astrcode_host_session::SubAgentExecutor;
+    use astrcode_tool_contract::ToolContext;
 
     use super::{
         IMPLICIT_ROOT_PROFILE_ID, build_delegation_metadata, child_delivery_input_queue_envelope,

@@ -13,6 +13,8 @@
 use astrcode_core::{
     ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
 };
+use astrcode_governance_contract::ModeId;
+use astrcode_prompt_contract::PromptDeclaration;
 
 use super::{
     BuildSurfaceInput, FreshChildGovernanceInput, GovernanceBusyPolicy, ResolvedGovernanceSurface,
@@ -52,8 +54,8 @@ impl GovernanceSurfaceAssembler {
 
     fn compile_mode_surface(
         &self,
-        mode_id: &astrcode_core::ModeId,
-        extra_prompt_declarations: Vec<astrcode_core::PromptDeclaration>,
+        mode_id: &ModeId,
+        extra_prompt_declarations: Vec<PromptDeclaration>,
     ) -> Result<CompiledModeEnvelope, ApplicationError> {
         let spec = self.mode_catalog.get(mode_id).ok_or_else(|| {
             ApplicationError::InvalidArgument(format!("unknown mode '{}'", mode_id))
@@ -63,7 +65,7 @@ impl GovernanceSurfaceAssembler {
 
     fn compile_child_mode_surface(
         &self,
-        mode_id: &astrcode_core::ModeId,
+        mode_id: &ModeId,
     ) -> Result<CompiledModeEnvelope, ApplicationError> {
         let spec = self.mode_catalog.get(mode_id).ok_or_else(|| {
             ApplicationError::InvalidArgument(format!("unknown mode '{}'", mode_id))
@@ -87,7 +89,8 @@ impl GovernanceSurfaceAssembler {
             injected_messages,
             leading_prompt_declaration,
         } = input;
-        let mut prompt_declarations = compiled.envelope.prompt_declarations.clone();
+        let mut prompt_declarations: Vec<PromptDeclaration> =
+            compiled.envelope.prompt_declarations.clone();
         if let Some(leading) = leading_prompt_declaration {
             prompt_declarations.insert(0, leading);
         }

@@ -1,4 +1,5 @@
-use astrcode_core::{AgentEventContext, CancelToken, SpawnAgentParams, ToolContext};
+use astrcode_core::{AgentEventContext, CancelToken, SpawnAgentParams};
+use astrcode_tool_contract::ToolContext;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, Response, StatusCode},

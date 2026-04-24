@@ -20,11 +20,14 @@ mod tests;
 
 pub use assembler::GovernanceSurfaceAssembler;
 use astrcode_core::{
-    AgentCollaborationPolicyContext, BoundModeToolContractSnapshot, CapabilityCall, LlmMessage,
-    ModeId, PolicyContext, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
-    ResolvedSubagentContextOverrides,
+    AgentCollaborationPolicyContext, LlmMessage, ResolvedExecutionLimitsSnapshot,
+    ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
+};
+use astrcode_governance_contract::{
+    ApprovalPending, BoundModeToolContractSnapshot, CapabilityCall, ModeId, PolicyContext,
 };
 use astrcode_host_session::PromptGovernanceContext;
+use astrcode_prompt_contract::PromptDeclaration;
 pub(crate) use inherited::resolve_inherited_parent_messages;
 #[cfg(test)]
 pub(crate) use inherited::{build_inherited_messages, select_inherited_recent_tail};
@@ -55,7 +58,7 @@ pub enum GovernanceBusyPolicy {
 /// 在实际执行前需要用户确认。
 #[derive(Clone, PartialEq, Default)]
 pub struct GovernanceApprovalPipeline {
-    pub pending: Option<astrcode_core::ApprovalPending<CapabilityCall>>,
+    pub pending: Option<ApprovalPending<CapabilityCall>>,
 }
 
 /// bind 完成的治理面，一次性消费的 turn 级上下文快照。
@@ -66,7 +69,7 @@ pub struct GovernanceApprovalPipeline {
 pub struct ResolvedGovernanceSurface {
     pub mode_id: ModeId,
     pub runtime: ResolvedRuntimeConfig,
-    pub prompt_declarations: Vec<astrcode_core::PromptDeclaration>,
+    pub prompt_declarations: Vec<PromptDeclaration>,
     pub bound_mode_tool_contract: BoundModeToolContractSnapshot,
     pub resolved_limits: ResolvedExecutionLimitsSnapshot,
     pub resolved_overrides: Option<ResolvedSubagentContextOverrides>,
@@ -140,7 +143,7 @@ struct BuildSurfaceInput {
     requested_busy_policy: GovernanceBusyPolicy,
     resolved_overrides: Option<ResolvedSubagentContextOverrides>,
     injected_messages: Vec<LlmMessage>,
-    leading_prompt_declaration: Option<astrcode_core::PromptDeclaration>,
+    leading_prompt_declaration: Option<PromptDeclaration>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,7 +155,7 @@ pub struct SessionGovernanceInput {
     pub mode_id: ModeId,
     pub runtime: ResolvedRuntimeConfig,
     pub control: Option<ExecutionControl>,
-    pub extra_prompt_declarations: Vec<astrcode_core::PromptDeclaration>,
+    pub extra_prompt_declarations: Vec<PromptDeclaration>,
     pub busy_policy: GovernanceBusyPolicy,
 }
 

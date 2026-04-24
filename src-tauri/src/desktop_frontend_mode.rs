@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), allow(dead_code))]
+
 #[allow(dead_code)]
 pub const FRONTEND_MODE_ENV: &str = "ASTRCODE_DESKTOP_FRONTEND_MODE";
 pub const TAURI_CLI_VERBOSITY_ENV: &str = "TAURI_CLI_VERBOSITY";

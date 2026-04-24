@@ -13,9 +13,10 @@
 
 use std::{fs, path::PathBuf, time::Instant};
 
-use astrcode_core::{
-    AstrError, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+use astrcode_core::{AstrError, Result, SideEffect};
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

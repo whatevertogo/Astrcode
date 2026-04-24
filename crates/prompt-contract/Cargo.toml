@@ -1,0 +1,10 @@
+[package]
+name = "astrcode-prompt-contract"
+version = "0.1.0"
+edition.workspace = true
+license-file.workspace = true
+authors.workspace = true
+
+[dependencies]
+astrcode-core = { path = "../core" }
+serde.workspace = true

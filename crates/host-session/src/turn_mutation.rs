@@ -6,16 +6,16 @@
 
 use std::sync::{Arc, Mutex as StdMutex};
 
-use astrcode_agent_runtime::RuntimeTurnEvent;
 use astrcode_core::{
-    AgentEventContext, AstrError, CancelToken, EventTranslator, ExecutionAccepted,
-    ExecutionControl, Result, SessionId, StorageEvent, StorageEventPayload, StoredEvent, TurnId,
-    TurnTerminalKind, UserMessageOrigin, generate_turn_id,
+    AgentEventContext, AstrError, CancelToken, ExecutionControl, Result, SessionId, StorageEvent,
+    StorageEventPayload, StoredEvent, TurnId, TurnTerminalKind, UserMessageOrigin,
+    generate_turn_id,
 };
+use astrcode_runtime_contract::{ExecutionAccepted, RuntimeTurnEvent};
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::{SessionCatalog, SubmitTarget, state::checkpoint_if_compacted};
+use crate::{EventTranslator, SessionCatalog, SubmitTarget, state::checkpoint_if_compacted};
 
 /// turn mutation 预处理来源。
 ///
@@ -710,10 +710,11 @@ mod tests {
 
     use astrcode_agent_runtime::TurnIdentity;
     use astrcode_core::{
-        AgentId, DeleteProjectResult, ExecutionAccepted, Phase, SessionMeta,
-        SessionTurnAcquireResult, SessionTurnBusy, SessionTurnLease, StorageEvent,
-        StorageEventPayload, StoredEvent, TurnTerminalKind,
+        AgentId, DeleteProjectResult, Phase, SessionMeta, SessionTurnAcquireResult,
+        SessionTurnBusy, SessionTurnLease, StorageEvent, StorageEventPayload, StoredEvent,
+        TurnTerminalKind,
     };
+    use astrcode_runtime_contract::ExecutionAccepted;
     use async_trait::async_trait;
     use chrono::Utc;
 

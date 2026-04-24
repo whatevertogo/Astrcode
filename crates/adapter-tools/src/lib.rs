@@ -5,7 +5,7 @@
 //!   listDir、findFiles、grep、shell、tool_search、Skill
 //! - **agent tools**（`agent_tools`）：spawn、send、observe、close
 //!
-//! 所有工具均实现 `astrcode_core::Tool` trait。
+//! 所有工具均实现 `astrcode_tool_contract::Tool` trait。
 //!
 //! ## 架构约束
 //!

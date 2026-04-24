@@ -12,6 +12,7 @@ use std::{
 use astrcode_adapter_storage::session::FileSystemSessionRepository;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
 use astrcode_core::SkillCatalog;
+use astrcode_governance_contract::GovernanceModeSpec;
 use astrcode_host_session::{EventStore, SessionCatalog, SubAgentExecutor};
 use astrcode_plugin_host::{
     CommandDescriptor, PluginActiveSnapshot, PluginDescriptor, PluginRegistry,
@@ -369,8 +370,8 @@ pub async fn bootstrap_server_runtime_with_options(
 fn build_server_plugin_contribution_descriptors(
     core_tool_invokers: &[Arc<dyn CapabilityInvoker>],
     mcp_invokers: &[Arc<dyn CapabilityInvoker>],
-    builtin_modes: Vec<core::GovernanceModeSpec>,
-    plugin_modes: Vec<core::GovernanceModeSpec>,
+    builtin_modes: Vec<GovernanceModeSpec>,
+    plugin_modes: Vec<GovernanceModeSpec>,
     mut external_descriptors: Vec<PluginDescriptor>,
 ) -> Vec<PluginDescriptor> {
     let mut descriptors = vec![
@@ -423,8 +424,8 @@ struct ServerPluginHostReload {
     snapshot: PluginActiveSnapshot,
     resources: ResourceCatalog,
     provider_catalog: ProviderContributionCatalog,
-    builtin_modes: Vec<core::GovernanceModeSpec>,
-    plugin_modes: Vec<core::GovernanceModeSpec>,
+    builtin_modes: Vec<GovernanceModeSpec>,
+    plugin_modes: Vec<GovernanceModeSpec>,
 }
 
 fn reload_server_plugin_host_snapshot(
@@ -449,10 +450,7 @@ fn reload_server_plugin_host_snapshot(
     })
 }
 
-fn descriptor_modes(
-    descriptors: &[PluginDescriptor],
-    plugin_id: &str,
-) -> Vec<core::GovernanceModeSpec> {
+fn descriptor_modes(descriptors: &[PluginDescriptor], plugin_id: &str) -> Vec<GovernanceModeSpec> {
     descriptors
         .iter()
         .find(|descriptor| descriptor.plugin_id == plugin_id)

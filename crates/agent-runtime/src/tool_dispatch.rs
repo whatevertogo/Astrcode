@@ -1,4 +1,5 @@
-use astrcode_core::{Result, ToolCallRequest, ToolExecutionResult, ToolOutputDelta};
+use astrcode_core::{Result, ToolCallRequest};
+use astrcode_tool_contract::{ToolExecutionResult, ToolOutputDelta};
 use async_trait::async_trait;
 use tokio::sync::mpsc::UnboundedSender;
 

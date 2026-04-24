@@ -3,18 +3,19 @@
 //! `core::ports::PromptProvider` 是 kernel 消费的简化端口接口，
 //! 本模块将其适配到 `LayeredPromptBuilder` 的完整 prompt 构建能力上。
 
-use astrcode_agent_runtime::{PromptCacheGlobalStrategy, PromptCacheHints};
-use astrcode_core::{Result, SystemPromptBlock, SystemPromptLayer};
+use astrcode_core::Result;
+use astrcode_governance_contract::SystemPromptBlock;
 use astrcode_host_session::{
     PromptAgentProfileSummary as HostPromptAgentProfileSummary, PromptBuildCacheMetrics,
     PromptBuildOutput, PromptBuildRequest, PromptProvider,
     PromptSkillSummary as HostPromptSkillSummary,
 };
+use astrcode_prompt_contract::{PromptCacheGlobalStrategy, PromptCacheHints, SystemPromptLayer};
 use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
-    PromptAgentProfileSummary, PromptContext, PromptDeclaration, PromptSkillSummary,
+    PromptAgentProfileSummary, PromptContext, PromptSkillSummary,
     diagnostics::DiagnosticReason,
     layered_builder::{LayeredPromptBuilder, default_layered_prompt_builder},
 };
@@ -59,11 +60,7 @@ impl PromptProvider for ComposerPromptProvider {
                 .map(|capability| capability.name.to_string())
                 .collect(),
             capability_specs: request.capabilities,
-            prompt_declarations: request
-                .prompt_declarations
-                .into_iter()
-                .map(PromptDeclaration::from)
-                .collect(),
+            prompt_declarations: request.prompt_declarations,
             agent_profiles: request
                 .agent_profiles
                 .into_iter()
@@ -250,9 +247,9 @@ fn insert_json_string(
 mod tests {
     use std::path::PathBuf;
 
-    use astrcode_agent_runtime::PromptCacheGlobalStrategy;
     use astrcode_core::{CapabilityKind, CapabilitySpec};
     use astrcode_host_session::PromptBuildRequest;
+    use astrcode_prompt_contract::PromptCacheGlobalStrategy;
 
     use super::{build_output_metadata, build_prompt_vars, select_global_cache_strategy};
     use crate::{BlockKind, PromptBlock, PromptDiagnostics, PromptPlan, block::BlockMetadata};

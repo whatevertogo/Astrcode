@@ -9,7 +9,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use astrcode_agent_runtime::{LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_core::{
     AgentLifecycleStatus, AgentMode, AgentProfile, AstrError, Config, ConfigOverlay,
     DeleteProjectResult, Phase, Result, SessionId, SessionMeta, SessionTurnAcquireResult,
@@ -18,6 +17,9 @@ use astrcode_core::{
 };
 use astrcode_host_session::{
     EventStore, SessionCatalog, SubRunHandle, catalog::display_name_from_working_dir,
+};
+use astrcode_llm_contract::{
+    LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -413,7 +415,7 @@ impl LlmProvider for TestLlmProvider {
     async fn generate(
         &self,
         _request: LlmRequest,
-        _sink: Option<astrcode_agent_runtime::LlmEventSink>,
+        _sink: Option<LlmEventSink>,
     ) -> Result<LlmOutput> {
         match &self.behavior {
             TestLlmBehavior::Succeed { content } => Ok(LlmOutput {

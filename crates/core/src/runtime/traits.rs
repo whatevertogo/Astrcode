@@ -11,7 +11,7 @@ use async_trait::async_trait;
 
 use crate::{
     AgentId, AgentProfile, AstrError, SessionEventRecord, SessionId, SessionMeta, SubRunResult,
-    SubagentContextOverrides, TurnId, agent::lineage::SubRunHandle,
+    SubagentContextOverrides, TurnId, agent::lineage::SubRunHandle, tool::ToolContext,
 };
 
 /// 运行时主句柄。
@@ -133,7 +133,7 @@ pub trait LiveSubRunControlBoundary: Send + Sync {
     async fn launch_subagent(
         &self,
         params: crate::SpawnAgentParams,
-        ctx: &crate::ToolContext,
+        ctx: &ToolContext,
     ) -> std::result::Result<SubRunResult, AstrError>;
 
     async fn list_profiles(&self) -> std::result::Result<Vec<AgentProfile>, AstrError>;

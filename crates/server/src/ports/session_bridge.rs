@@ -4,15 +4,18 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, AstrError, ExecutionAccepted,
+    AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, AstrError,
     InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload,
     InvocationKind, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
     ResolvedSubagentContextOverrides, SessionEventRecord, SessionId, SessionMeta,
-    StorageEventPayload, StoredEvent, SubRunResult, SubRunStorageMode, TurnId, replay_records,
+    StorageEventPayload, StoredEvent, SubRunResult, SubRunStorageMode, TurnId,
 };
+use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{
     ForkPoint, InputQueueProjection, ProjectedTurnOutcome, SessionCatalog, SubRunHandle,
+    replay_records,
 };
+use astrcode_runtime_contract::ExecutionAccepted;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
@@ -255,8 +258,8 @@ impl AppSessionPort for ServerSessionBridge {
     async fn switch_mode(
         &self,
         session_id: &str,
-        from: astrcode_core::ModeId,
-        to: astrcode_core::ModeId,
+        from: ModeId,
+        to: ModeId,
     ) -> astrcode_core::Result<StoredEvent> {
         self.session_runtime.switch_mode(session_id, from, to).await
     }

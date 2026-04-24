@@ -1,16 +1,19 @@
 use std::sync::{Arc, Mutex as StdMutex};
 
 use astrcode_core::{
-    AgentEvent, ChildSessionNode, EventTranslator, LlmMessage, ModeId, Phase, Result,
-    SessionEventRecord, StoredEvent, TaskSnapshot, normalize_recovered_phase,
+    AgentEvent, ChildSessionNode, LlmMessage, Phase, Result, SessionEventRecord, StoredEvent,
+    TaskSnapshot,
+    mode::ModeId,
+    normalize_recovered_phase,
     support::{self},
 };
 use chrono::Utc;
 use tokio::sync::broadcast;
 
 use crate::{
-    AgentState, AgentStateProjector, EventStore, InputQueueProjection, SessionRecoveryCheckpoint,
-    TurnProjectionSnapshot, event_log::SessionWriter, projection_registry::ProjectionRegistry,
+    AgentState, AgentStateProjector, EventStore, EventTranslator, InputQueueProjection,
+    SessionRecoveryCheckpoint, TurnProjectionSnapshot, event_log::SessionWriter,
+    projection_registry::ProjectionRegistry, replay_records,
 };
 
 pub const SESSION_BROADCAST_CAPACITY: usize = 2048;
@@ -71,7 +74,7 @@ impl SessionState {
             })?;
             projection_registry.apply(stored)?;
         }
-        projection_registry.cache_records(&astrcode_core::replay_records(&tail_events, None));
+        projection_registry.cache_records(&replay_records(&tail_events, None));
         let (broadcaster, _) = broadcast::channel(SESSION_BROADCAST_CAPACITY);
         let (live_broadcaster, _) = broadcast::channel(SESSION_LIVE_BROADCAST_CAPACITY);
 
@@ -314,13 +317,13 @@ mod tests {
 
     use astrcode_core::{
         AgentEventContext, AgentLifecycleStatus, ChildSessionLineageKind, ChildSessionNotification,
-        ChildSessionNotificationKind, ChildSessionStatusSource, EventLogWriter, EventTranslator,
-        InputQueuedPayload, Phase, QueuedInputEnvelope, StorageEvent, StorageEventPayload,
-        StoreResult, StoredEvent, SubRunStorageMode, UserMessageOrigin,
+        ChildSessionNotificationKind, ChildSessionStatusSource, EventLogWriter, InputQueuedPayload,
+        Phase, QueuedInputEnvelope, StorageEvent, StorageEventPayload, StoreResult, StoredEvent,
+        SubRunStorageMode, UserMessageOrigin,
     };
 
     use super::{SessionState, SessionWriter};
-    use crate::{AgentStateProjector, SubRunHandle};
+    use crate::{AgentStateProjector, EventTranslator, SubRunHandle};
 
     #[derive(Default)]
     struct NoopEventLogWriter {

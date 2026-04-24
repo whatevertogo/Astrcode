@@ -17,13 +17,12 @@
 
 use std::collections::HashMap;
 
-use serde_json::json;
-
-use super::phase::PhaseTracker;
-use crate::{
-    AgentEvent, AgentEventContext, Phase, StorageEvent, StorageEventPayload, StoredEvent,
-    ToolExecutionResult, UserMessageOrigin, session::SessionEventRecord, split_assistant_content,
+use astrcode_core::{
+    AgentEvent, AgentEventContext, Phase, SessionEventRecord, StorageEvent, StorageEventPayload,
+    StoredEvent, UserMessageOrigin, action::ToolExecutionResult, event::PhaseTracker,
+    phase_of_storage_event, split_assistant_content,
 };
+use serde_json::json;
 
 /// 批量回放存储事件为会话事件记录。
 ///
@@ -427,7 +426,7 @@ impl EventTranslator {
                     warn_missing_turn_id(stored.storage_seq, "turnDone");
                 }
                 self.phase_tracker.force_to(
-                    super::phase::target_phase(&stored.event),
+                    phase_of_storage_event(&stored.event),
                     None,
                     AgentEventContext::default(),
                 );
@@ -497,14 +496,14 @@ impl EventTranslator {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::{
+        AgentEvent, AgentEventContext, CompactAppliedMeta, CompactMode, CompactTrigger,
+        PromptMetricsPayload, StoredEvent, UserMessageOrigin, action::ToolOutputStream,
+        format_compact_summary, phase_of_storage_event,
+    };
     use serde_json::json;
 
     use super::*;
-    use crate::{
-        AgentEvent, AgentEventContext, CompactAppliedMeta, CompactMode, PromptMetricsPayload,
-        StoredEvent, ToolOutputStream, UserMessageOrigin, format_compact_summary,
-        phase_of_storage_event,
-    };
 
     #[test]
     fn user_message_replays_before_phase_change() {
@@ -722,7 +721,7 @@ mod tests {
                     turn_id: None,
                     agent: AgentEventContext::default(),
                     payload: StorageEventPayload::CompactApplied {
-                        trigger: crate::CompactTrigger::Manual,
+                        trigger: CompactTrigger::Manual,
                         summary: "保留最近上下文".to_string(),
                         meta: CompactAppliedMeta {
                             mode: CompactMode::Incremental,
@@ -750,7 +749,7 @@ mod tests {
             &records[0].event,
             AgentEvent::CompactApplied {
                 turn_id: None,
-                trigger: crate::CompactTrigger::Manual,
+                trigger: CompactTrigger::Manual,
                 summary,
                 meta,
                 preserved_recent_turns,

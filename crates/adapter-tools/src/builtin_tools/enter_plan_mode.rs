@@ -5,9 +5,11 @@
 
 use std::time::Instant;
 
-use astrcode_core::{
-    AstrError, ModeId, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
+use astrcode_core::{AstrError, Result, SideEffect};
+use astrcode_governance_contract::ModeId;
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -146,7 +148,7 @@ fn mode_metadata(
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use astrcode_core::{StorageEvent, StorageEventPayload};
+    use astrcode_core::{StorageEvent, StorageEventPayload, mode::ModeId as StoredModeId};
 
     use super::*;
     use crate::test_support::test_tool_context_for;
@@ -156,7 +158,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl astrcode_core::ToolEventSink for RecordingSink {
+    impl astrcode_tool_contract::ToolEventSink for RecordingSink {
         async fn emit(&self, event: StorageEvent) -> Result<()> {
             self.events
                 .lock()
@@ -192,7 +194,7 @@ mod tests {
             [StorageEvent {
                 payload: StorageEventPayload::ModeChanged { from, to, .. },
                 ..
-            }] if *from == ModeId::code() && *to == ModeId::plan()
+            }] if *from == StoredModeId::code() && *to == StoredModeId::plan()
         ));
     }
 }

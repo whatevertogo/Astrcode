@@ -1,6 +1,6 @@
-use astrcode_core::{EventTranslator, Result, StorageEvent, StorageEventPayload, StoredEvent};
+use astrcode_core::{Result, StorageEvent, StorageEventPayload, StoredEvent};
 
-use crate::{SessionCatalog, state};
+use crate::{EventTranslator, SessionCatalog, state};
 
 #[derive(Debug, Clone)]
 pub struct CompactPersistResult {

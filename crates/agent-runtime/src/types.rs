@@ -1,17 +1,14 @@
 use std::{fmt, path::PathBuf, sync::Arc};
 
+use astrcode_context_window::tool_result_budget::ToolResultReplacementRecord;
 use astrcode_core::{
-    AgentEventContext, AstrError, CancelToken, CapabilitySpec, LlmMessage, ReasoningContent,
-    ResolvedRuntimeConfig, StorageEvent, TurnTerminalKind,
+    AgentEventContext, CapabilitySpec, LlmMessage, ResolvedRuntimeConfig, TurnTerminalKind,
 };
+use astrcode_llm_contract::LlmProvider;
+use astrcode_runtime_contract::{RuntimeEventSink, RuntimeTurnEvent, TurnIdentity, TurnStopCause};
 use chrono::{DateTime, Utc};
 
-use crate::{
-    context_window::tool_result_budget::ToolResultReplacementRecord,
-    hook_dispatch::HookDispatcher,
-    provider::{LlmEvent, LlmProvider},
-    tool_dispatch::ToolDispatcher,
-};
+use crate::{hook_dispatch::HookDispatcher, tool_dispatch::ToolDispatcher};
 
 /// `host-session -> agent-runtime` 的最小执行面骨架。
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -23,23 +20,6 @@ pub struct AgentRuntimeExecutionSurface {
     pub provider_ref: String,
     pub tool_specs: Vec<CapabilitySpec>,
     pub hook_snapshot_id: String,
-}
-
-/// runtime 事件发射回调。
-///
-/// `agent-runtime` 只通过这个回调把 turn 生命周期事件交还给宿主，不持有
-/// EventStore、SessionState 或 plugin registry。
-pub trait RuntimeEventSink: Send + Sync {
-    fn emit_event(&self, event: RuntimeTurnEvent);
-}
-
-impl<F> RuntimeEventSink for F
-where
-    F: Fn(RuntimeTurnEvent) + Send + Sync,
-{
-    fn emit_event(&self, event: RuntimeTurnEvent) {
-        self(event);
-    }
 }
 
 #[derive(Clone, Default)]
@@ -55,7 +35,7 @@ pub struct TurnInput {
     pub provider: Option<Arc<dyn LlmProvider>>,
     pub tool_dispatcher: Option<Arc<dyn ToolDispatcher>>,
     pub hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
-    pub cancel: CancelToken,
+    pub cancel: astrcode_core::CancelToken,
     pub event_sink: Option<Arc<dyn RuntimeEventSink>>,
     pub max_output_continuations: usize,
     pub working_dir: PathBuf,
@@ -114,7 +94,7 @@ impl TurnInput {
             provider: None,
             tool_dispatcher: None,
             hook_dispatcher: None,
-            cancel: CancelToken::new(),
+            cancel: astrcode_core::CancelToken::new(),
             event_sink: None,
             max_output_continuations: 0,
             working_dir: PathBuf::new(),
@@ -150,7 +130,7 @@ impl TurnInput {
         self
     }
 
-    pub fn with_cancel(mut self, cancel: CancelToken) -> Self {
+    pub fn with_cancel(mut self, cancel: astrcode_core::CancelToken) -> Self {
         self.cancel = cancel;
         self
     }
@@ -194,152 +174,6 @@ impl TurnInput {
     }
 }
 
-/// 内部 loop 的“继续下一轮”原因。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnLoopTransition {
-    ToolCycleCompleted,
-    ReactiveCompactRecovered,
-    OutputContinuationRequested,
-}
-
-/// turn 停止的细粒度原因。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnStopCause {
-    Completed,
-    Cancelled,
-    Error,
-}
-
-impl TurnStopCause {
-    pub fn terminal_kind(self, error_message: Option<&str>) -> TurnTerminalKind {
-        match self {
-            Self::Completed => TurnTerminalKind::Completed,
-            Self::Cancelled => TurnTerminalKind::Cancelled,
-            Self::Error => TurnTerminalKind::Error {
-                message: error_message.unwrap_or("turn failed").to_string(),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct TurnIdentity {
-    pub session_id: String,
-    pub turn_id: String,
-    pub agent_id: String,
-}
-
-impl TurnIdentity {
-    pub fn new(session_id: String, turn_id: String, agent_id: String) -> Self {
-        Self {
-            session_id,
-            turn_id,
-            agent_id,
-        }
-    }
-}
-
-/// 单步执行中产生的错误，保留可重试/致命区分。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StepError {
-    pub message: String,
-    pub kind: StepErrorKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StepErrorKind {
-    Fatal,
-    Retryable,
-}
-
-impl StepError {
-    pub fn fatal(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: StepErrorKind::Fatal,
-        }
-    }
-
-    pub fn retryable(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: StepErrorKind::Retryable,
-        }
-    }
-}
-
-impl From<&AstrError> for StepError {
-    fn from(error: &AstrError) -> Self {
-        Self {
-            message: error.to_string(),
-            kind: if error.is_retryable() {
-                StepErrorKind::Retryable
-            } else {
-                StepErrorKind::Fatal
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum RuntimeTurnEvent {
-    TurnStarted {
-        identity: TurnIdentity,
-    },
-    ProviderStream {
-        identity: TurnIdentity,
-        event: LlmEvent,
-    },
-    AssistantFinal {
-        identity: TurnIdentity,
-        content: String,
-        reasoning: Option<ReasoningContent>,
-        tool_call_count: usize,
-    },
-    ToolUseRequested {
-        identity: TurnIdentity,
-        tool_call_count: usize,
-    },
-    ToolCallStarted {
-        identity: TurnIdentity,
-        tool_call_id: String,
-        tool_name: String,
-    },
-    ToolResultReady {
-        identity: TurnIdentity,
-        tool_call_id: String,
-        tool_name: String,
-        ok: bool,
-    },
-    HookDispatched {
-        identity: TurnIdentity,
-        event: astrcode_core::HookEventKey,
-        effect_count: usize,
-    },
-    HookPromptAugmented {
-        identity: TurnIdentity,
-        event: astrcode_core::HookEventKey,
-        content: String,
-    },
-    StorageEvent {
-        event: Box<StorageEvent>,
-    },
-    StepContinued {
-        identity: TurnIdentity,
-        step_index: usize,
-        transition: TurnLoopTransition,
-    },
-    TurnCompleted {
-        identity: TurnIdentity,
-        stop_cause: TurnStopCause,
-        terminal_kind: TurnTerminalKind,
-    },
-    TurnErrored {
-        identity: TurnIdentity,
-        message: String,
-    },
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct TurnOutput {
     pub identity: TurnIdentity,
@@ -371,8 +205,9 @@ impl TurnOutput {
 #[cfg(test)]
 mod tests {
     use astrcode_core::{AgentEventContext, SubRunStorageMode, TurnTerminalKind};
+    use astrcode_runtime_contract::TurnStopCause;
 
-    use super::{AgentRuntimeExecutionSurface, TurnInput, TurnOutput, TurnStopCause};
+    use super::{AgentRuntimeExecutionSurface, TurnInput, TurnOutput};
 
     #[test]
     fn empty_output_keeps_turn_identity() {

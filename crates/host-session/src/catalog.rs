@@ -4,16 +4,16 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, EventTranslator, ModeId, Phase, Result, SessionId, SessionMeta,
-    SessionTurnAcquireResult, StorageEvent, StorageEventPayload, StoredEvent,
-    event::generate_session_id,
+    AstrError, Phase, Result, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
+    StorageEventPayload, StoredEvent, event::generate_session_id, mode::ModeId,
 };
 use chrono::Utc;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 
 use crate::{
-    AgentStateProjector, EventStore, SessionCatalogEvent, SessionState, SessionWriter,
+    AgentStateProjector, EventStore, EventTranslator, SessionCatalogEvent, SessionState,
+    SessionWriter, replay_records,
     state::{SESSION_BROADCAST_CAPACITY, append_and_broadcast},
     turn_mutation::TurnMutationState,
 };
@@ -199,7 +199,7 @@ impl SessionCatalog {
                     normalize_recovered_phase_from_events(&recovered.tail_events),
                     writer,
                     AgentStateProjector::from_events(&events),
-                    astrcode_core::replay_records(&recovered.tail_events, None),
+                    replay_records(&recovered.tail_events, None),
                     recovered.tail_events,
                 )
             },
@@ -378,8 +378,8 @@ mod tests {
     };
 
     use astrcode_core::{
-        DeleteProjectResult, ModeId, SessionMeta, SessionTurnAcquireResult, SessionTurnLease,
-        StoredEvent,
+        DeleteProjectResult, SessionMeta, SessionTurnAcquireResult, SessionTurnLease, StoredEvent,
+        mode::ModeId,
     };
     use async_trait::async_trait;
 

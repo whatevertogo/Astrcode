@@ -3,7 +3,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use astrcode_core::{AstrError, BoundModeToolContractSnapshot, GovernanceModeSpec, ModeId, Result};
+use astrcode_core::{AstrError, Result};
+use astrcode_governance_contract::{BoundModeToolContractSnapshot, GovernanceModeSpec, ModeId};
 
 use crate::mode::{ModeCatalog, validate_mode_transition};
 

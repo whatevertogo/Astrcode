@@ -9,9 +9,10 @@ use std::path::Path;
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationFact, AgentCollaborationOutcomeKind,
     AgentCollaborationPolicyContext, AgentEventContext, ChildExecutionIdentity, InvocationKind,
-    ModeId, ResolvedExecutionLimitsSnapshot, Result, ToolContext,
+    ResolvedExecutionLimitsSnapshot, Result, mode::ModeId,
 };
 use astrcode_host_session::SubRunHandle;
+use astrcode_tool_contract::ToolContext;
 
 use super::{
     AgentOrchestrationError, AgentOrchestrationService, IMPLICIT_ROOT_PROFILE_ID,

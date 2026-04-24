@@ -17,10 +17,11 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use astrcode_core::{
+use astrcode_core::Result;
+use astrcode_governance_contract::{
     ActionPolicies, ActionPolicyEffect, ActionPolicyRule, CapabilitySelector, ChildPolicySpec,
     GovernanceModeSpec, ModeArtifactDef, ModeExecutionPolicySpec, ModeExitGateDef, ModeId,
-    ModePromptHooks, PromptProgramEntry, Result, SubmitBusyPolicy, TransitionPolicySpec,
+    ModePromptHooks, PromptProgramEntry, SubmitBusyPolicy, TransitionPolicySpec,
 };
 
 use super::builtin_prompts::{
@@ -345,7 +346,8 @@ fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{CapabilitySelector, GovernanceModeSpec, ModeId, Result};
+    use astrcode_core::Result;
+    use astrcode_governance_contract::{CapabilitySelector, GovernanceModeSpec, ModeId};
 
     use super::{ModeCatalog, builtin_mode_catalog, builtin_mode_specs};
 

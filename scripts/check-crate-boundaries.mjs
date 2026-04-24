@@ -50,47 +50,27 @@ function buildRules() {
     },
     {
       id: 'R002',
-      description: 'protocol 必须保持纯 DTO，仅允许依赖 core',
+      description: 'protocol 必须保持纯 DTO，仅允许依赖 core 与对外传输所需的 contract crate',
       source: 'astrcode-protocol',
-      allowedExact: new Set(['astrcode-core']),
+      allowedExact: new Set(['astrcode-core', 'astrcode-governance-contract']),
     },
     {
       id: 'R003',
-      description: 'kernel 是迁移源，只允许依赖 core 与新 owner 边界',
-      source: 'astrcode-kernel',
-      allowedExact: new Set([
-        'astrcode-core',
-        'astrcode-agent-runtime',
-        'astrcode-host-session',
-        'astrcode-plugin-host',
-      ]),
+      description: 'prompt-contract 只承载 prompt 契约，仅允许依赖 core',
+      source: 'astrcode-prompt-contract',
+      allowedExact: new Set(['astrcode-core']),
     },
     {
       id: 'R004',
-      description: 'session-runtime 是迁移源，只允许依赖 core、support、kernel 与新 owner 边界',
-      source: 'astrcode-session-runtime',
-      allowedExact: new Set([
-        'astrcode-core',
-        'astrcode-support',
-        'astrcode-kernel',
-        'astrcode-agent-runtime',
-        'astrcode-host-session',
-        'astrcode-plugin-host',
-      ]),
+      description: 'governance-contract 只承载治理契约，仅允许依赖 core、prompt-contract',
+      source: 'astrcode-governance-contract',
+      allowedExact: new Set(['astrcode-core', 'astrcode-prompt-contract']),
     },
     {
       id: 'R005',
-      description: 'application 是迁移源，只允许依赖 core、support、旧迁移源与新 owner 边界',
-      source: 'astrcode-application',
-      allowedExact: new Set([
-        'astrcode-core',
-        'astrcode-support',
-        'astrcode-kernel',
-        'astrcode-session-runtime',
-        'astrcode-agent-runtime',
-        'astrcode-host-session',
-        'astrcode-plugin-host',
-      ]),
+      description: 'tool-contract 只承载工具契约，仅允许依赖 core、governance-contract',
+      source: 'astrcode-tool-contract',
+      allowedExact: new Set(['astrcode-core', 'astrcode-governance-contract']),
     },
     {
       id: 'R006',
@@ -100,25 +80,73 @@ function buildRules() {
     },
     {
       id: 'R007',
-      description: 'agent-runtime 是最小执行内核，只允许依赖 core',
-      source: 'astrcode-agent-runtime',
-      allowedExact: new Set(['astrcode-core']),
+      description: 'llm-contract 只承载 LLM 契约，仅允许依赖 core、governance-contract、prompt-contract',
+      source: 'astrcode-llm-contract',
+      allowedExact: new Set([
+        'astrcode-core',
+        'astrcode-governance-contract',
+        'astrcode-prompt-contract',
+      ]),
     },
     {
       id: 'R008',
-      description: 'plugin-host 只承载统一插件宿主，只允许依赖 core、protocol、support',
-      source: 'astrcode-plugin-host',
-      allowedExact: new Set(['astrcode-core', 'astrcode-protocol', 'astrcode-support']),
+      description: 'runtime-contract 只承载 runtime 边界，仅允许依赖 core、llm-contract、tool-contract',
+      source: 'astrcode-runtime-contract',
+      allowedExact: new Set([
+        'astrcode-core',
+        'astrcode-llm-contract',
+        'astrcode-tool-contract',
+      ]),
     },
     {
       id: 'R009',
-      description: 'host-session 只承载 session owner 逻辑，只允许依赖 core、support、agent-runtime、plugin-host',
+      description: 'context-window 只负责上下文窗口，允许依赖 core、llm-contract、runtime-contract、tool-contract、support',
+      source: 'astrcode-context-window',
+      allowedExact: new Set([
+        'astrcode-core',
+        'astrcode-llm-contract',
+        'astrcode-runtime-contract',
+        'astrcode-tool-contract',
+        'astrcode-support',
+      ]),
+    },
+    {
+      id: 'R010',
+      description: 'agent-runtime 是最小执行内核，仅允许依赖 core、context-window、llm-contract、runtime-contract、tool-contract',
+      source: 'astrcode-agent-runtime',
+      allowedExact: new Set([
+        'astrcode-core',
+        'astrcode-context-window',
+        'astrcode-llm-contract',
+        'astrcode-prompt-contract',
+        'astrcode-runtime-contract',
+        'astrcode-tool-contract',
+      ]),
+    },
+    {
+      id: 'R011',
+      description: 'plugin-host 只承载统一插件宿主，只允许依赖 core、protocol、governance-contract、support',
+      source: 'astrcode-plugin-host',
+      allowedExact: new Set([
+        'astrcode-core',
+        'astrcode-governance-contract',
+        'astrcode-protocol',
+        'astrcode-support',
+      ]),
+    },
+    {
+      id: 'R012',
+      description: 'host-session 只承载 session owner 逻辑，只允许依赖 core、support、agent-runtime、plugin-host、governance-contract、prompt-contract、runtime-contract、tool-contract',
       source: 'astrcode-host-session',
       allowedExact: new Set([
         'astrcode-core',
         'astrcode-support',
         'astrcode-agent-runtime',
         'astrcode-plugin-host',
+        'astrcode-governance-contract',
+        'astrcode-prompt-contract',
+        'astrcode-runtime-contract',
+        'astrcode-tool-contract',
       ]),
     },
   ];
@@ -152,12 +180,29 @@ function main() {
   const findings = [];
 
   for (const rule of rules) {
-    if (!packageNames.has(rule.source)) {
-      continue;
-    }
     const violations = checkRule(rule, edges, packageNames);
     if (violations.length > 0) {
       findings.push({ rule, violations: violations.sort() });
+    }
+  }
+
+  for (const source of packageNames) {
+    if (!source.startsWith('astrcode-adapter-')) {
+      continue;
+    }
+    const deps = [...(edges.get(source) ?? [])].filter((name) => isWorkspaceInternal(name, packageNames));
+    const violations = deps.filter((target) =>
+      target.startsWith('astrcode-adapter-') && target !== 'astrcode-adapter-storage',
+    );
+    if (violations.length > 0) {
+      findings.push({
+        rule: {
+          id: 'R013',
+          description: 'adapter-* 之间禁止横向依赖',
+          source,
+        },
+        violations: violations.sort(),
+      });
     }
   }
 

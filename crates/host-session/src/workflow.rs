@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use astrcode_core::ModeId;
+use astrcode_governance_contract::ModeId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -130,7 +130,7 @@ pub struct WorkflowInstanceState {
 mod tests {
     use std::collections::BTreeMap;
 
-    use astrcode_core::ModeId;
+    use astrcode_governance_contract::ModeId;
     use serde_json::json;
 
     use super::{

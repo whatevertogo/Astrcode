@@ -19,9 +19,9 @@ use std::{
 use astrcode_adapter_skills::collect_asset_files;
 use astrcode_core::{
     AstrError, CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilitySpec,
-    GovernanceModeSpec, InvocationMode, ManagedRuntimeComponent, Result, SkillSource, SkillSpec,
-    is_valid_skill_name,
+    InvocationMode, Result, SkillSource, SkillSpec, is_valid_skill_name,
 };
+use astrcode_governance_contract::GovernanceModeSpec;
 use astrcode_plugin_host::{
     PluginDescriptor, PluginLoader, PluginManifest, PluginRegistry, PluginSourceKind, PluginType,
     ResourceCatalog,
@@ -30,10 +30,12 @@ use astrcode_plugin_host::{
     resources_discover,
 };
 use astrcode_protocol::plugin::{EventPhase, InvocationContext, SkillDescriptor, WorkspaceRef};
+use astrcode_runtime_contract::ManagedRuntimeComponent;
 #[cfg(test)]
 use astrcode_support::hostpaths::resolve_home_dir;
 use async_trait::async_trait;
 use log::warn;
+use reqwest::Client;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
@@ -115,7 +117,18 @@ pub(crate) async fn bootstrap_plugins_with_skill_root(
         log::info!("loading plugin '{name}'...");
         registry.record_discovered(manifest.clone());
 
-        match bootstrap_external_plugin_runtime(descriptor, init_message.clone()).await {
+        let bootstrap_result = match descriptor.source_kind {
+            PluginSourceKind::Process | PluginSourceKind::Command => {
+                bootstrap_external_plugin_runtime(descriptor, init_message.clone()).await
+            },
+            PluginSourceKind::Http => bootstrap_http_plugin_runtime(descriptor).await,
+            PluginSourceKind::Builtin => Err(AstrError::Validation(format!(
+                "plugin '{}' 不是 external plugin source，无法走 plugin-host 装配路径",
+                descriptor.plugin_id
+            ))),
+        };
+
+        match bootstrap_result {
             Ok(initialized) => {
                 let (skills, mut warnings) = materialize_plugin_skills(
                     plugin_skill_root.as_path(),
@@ -188,6 +201,13 @@ struct HostedExternalPluginRuntime {
     handle: Mutex<ExternalPluginRuntimeHandle>,
 }
 
+struct HostedHttpPluginRuntime {
+    plugin_id: String,
+    display_name: String,
+    endpoint: String,
+    client: Client,
+}
+
 impl HostedExternalPluginRuntime {
     fn new(plugin_id: String, display_name: String, handle: ExternalPluginRuntimeHandle) -> Self {
         Self {
@@ -254,6 +274,88 @@ impl HostedExternalPluginRuntime {
     }
 }
 
+impl HostedHttpPluginRuntime {
+    fn new(plugin_id: String, display_name: String, endpoint: String) -> Self {
+        Self {
+            plugin_id,
+            display_name,
+            endpoint,
+            client: Client::new(),
+        }
+    }
+
+    async fn invoke(
+        &self,
+        capability_name: &str,
+        payload: Value,
+        ctx: &CapabilityContext,
+        invocation_mode: InvocationMode,
+    ) -> Result<CapabilityExecutionResult> {
+        if matches!(invocation_mode, InvocationMode::Streaming) {
+            return Err(AstrError::Validation(format!(
+                "plugin '{}' 的 HTTP backend 暂不支持流式 capability '{}'",
+                self.plugin_id, capability_name
+            )));
+        }
+
+        let started_at = Instant::now();
+        let invocation = to_invocation_context(ctx, capability_name);
+        let request = astrcode_protocol::plugin::InvokeMessage {
+            id: invocation.request_id.clone(),
+            capability: capability_name.to_string(),
+            input: payload,
+            context: invocation,
+            stream: false,
+        };
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|error| {
+                AstrError::http_with_source(
+                    format!(
+                        "failed to invoke HTTP plugin '{}' at '{}'",
+                        self.plugin_id, self.endpoint
+                    ),
+                    is_retryable_http_error(&error),
+                    error,
+                )
+            })?
+            .error_for_status()
+            .map_err(|error| {
+                AstrError::http_with_source(
+                    format!(
+                        "HTTP plugin '{}' returned an error status from '{}'",
+                        self.plugin_id, self.endpoint
+                    ),
+                    is_retryable_http_error(&error),
+                    error,
+                )
+            })?;
+        let result = response
+            .json::<astrcode_protocol::plugin::ResultMessage>()
+            .await
+            .map_err(|error| {
+                AstrError::http_with_source(
+                    format!(
+                        "failed to decode HTTP plugin response for '{}' from '{}'",
+                        self.plugin_id, self.endpoint
+                    ),
+                    is_retryable_http_error(&error),
+                    error,
+                )
+            })?;
+
+        Ok(capability_execution_from_result_message(
+            capability_name.to_string(),
+            result,
+            started_at,
+        ))
+    }
+}
+
 #[async_trait]
 impl ManagedRuntimeComponent for HostedExternalPluginRuntime {
     fn component_name(&self) -> String {
@@ -266,6 +368,17 @@ impl ManagedRuntimeComponent for HostedExternalPluginRuntime {
     }
 }
 
+#[async_trait]
+impl ManagedRuntimeComponent for HostedHttpPluginRuntime {
+    fn component_name(&self) -> String {
+        format!("plugin-http '{}' ({})", self.plugin_id, self.display_name)
+    }
+
+    async fn shutdown_component(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct HostedPluginCapabilityInvoker {
     runtime: Arc<HostedExternalPluginRuntime>,
@@ -273,8 +386,37 @@ struct HostedPluginCapabilityInvoker {
     remote_name: String,
 }
 
+#[derive(Clone)]
+struct HostedHttpPluginCapabilityInvoker {
+    runtime: Arc<HostedHttpPluginRuntime>,
+    capability_spec: CapabilitySpec,
+    remote_name: String,
+}
+
 #[async_trait]
 impl CapabilityInvoker for HostedPluginCapabilityInvoker {
+    fn capability_spec(&self) -> CapabilitySpec {
+        self.capability_spec.clone()
+    }
+
+    async fn invoke(
+        &self,
+        payload: Value,
+        ctx: &CapabilityContext,
+    ) -> Result<CapabilityExecutionResult> {
+        self.runtime
+            .invoke(
+                self.remote_name.as_str(),
+                payload,
+                ctx,
+                self.capability_spec.invocation_mode,
+            )
+            .await
+    }
+}
+
+#[async_trait]
+impl CapabilityInvoker for HostedHttpPluginCapabilityInvoker {
     fn capability_spec(&self) -> CapabilitySpec {
         self.capability_spec.clone()
     }
@@ -346,6 +488,50 @@ async fn bootstrap_external_plugin_runtime(
         capabilities,
         declared_skills: remote_initialize.skills,
         modes: remote_initialize.modes,
+        warnings: Vec::new(),
+    })
+}
+
+async fn bootstrap_http_plugin_runtime(
+    descriptor: &PluginDescriptor,
+) -> Result<BootstrappedPluginRuntime> {
+    if descriptor.source_ref.trim().is_empty() {
+        return Err(AstrError::Validation(format!(
+            "plugin '{}' 缺少 HTTP endpoint，无法走 HTTP 宿主路径",
+            descriptor.plugin_id
+        )));
+    }
+
+    let runtime = Arc::new(HostedHttpPluginRuntime::new(
+        descriptor.plugin_id.clone(),
+        descriptor.display_name.clone(),
+        descriptor.source_ref.clone(),
+    ));
+    let invokers = descriptor
+        .tools
+        .iter()
+        .cloned()
+        .map(|capability| {
+            capability.validate().map_err(|error| {
+                AstrError::Validation(format!(
+                    "invalid HTTP plugin capability '{}': {}",
+                    capability.name, error
+                ))
+            })?;
+            Ok(Arc::new(HostedHttpPluginCapabilityInvoker {
+                runtime: Arc::clone(&runtime),
+                remote_name: capability.name.to_string(),
+                capability_spec: capability,
+            }) as Arc<dyn CapabilityInvoker>)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(BootstrappedPluginRuntime {
+        runtime: runtime as Arc<dyn ManagedRuntimeComponent>,
+        invokers,
+        capabilities: descriptor.tools.clone(),
+        declared_skills: Vec::new(),
+        modes: descriptor.modes.clone(),
         warnings: Vec::new(),
     })
 }
@@ -522,6 +708,39 @@ fn finish_stream_invocation(
     Err(AstrError::Internal(
         "plugin stream ended without terminal event".to_string(),
     ))
+}
+
+fn capability_execution_from_result_message(
+    capability_name: String,
+    result: astrcode_protocol::plugin::ResultMessage,
+    started_at: Instant,
+) -> CapabilityExecutionResult {
+    let (success, error) = if result.success {
+        (true, None)
+    } else {
+        let message = result
+            .error
+            .map(|value| value.message)
+            .unwrap_or_else(|| "plugin invocation failed".to_string());
+        (false, Some(message))
+    };
+
+    CapabilityExecutionResult::from_common(
+        capability_name,
+        success,
+        result.output,
+        None,
+        astrcode_core::ExecutionResultCommon {
+            error,
+            metadata: Some(result.metadata),
+            duration_ms: started_at.elapsed().as_millis() as u64,
+            truncated: false,
+        },
+    )
+}
+
+fn is_retryable_http_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect() || error.is_body()
 }
 
 fn to_invocation_context(ctx: &CapabilityContext, capability_name: &str) -> InvocationContext {
@@ -754,9 +973,12 @@ fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{CapabilitySelector, ModeId, SkillSource};
+    use astrcode_core::SkillSource;
+    use astrcode_governance_contract::{CapabilitySelector, ModeId};
     use astrcode_plugin_host::{PluginHealth, PluginState};
     use astrcode_protocol::plugin::{SkillAssetDescriptor, SkillDescriptor};
+    use axum::{Json, Router, routing::post};
+    use tokio::net::TcpListener;
 
     use super::*;
 
@@ -1011,6 +1233,96 @@ args = ["{script_path}"]
             .expect("plugin registry entry should exist");
         assert!(matches!(entry.state, PluginState::Initialized));
         assert_eq!(entry.health, PluginHealth::Healthy);
+    }
+
+    #[tokio::test]
+    async fn http_plugin_bootstrap_materializes_invoker_and_executes_unary_calls() {
+        async fn invoke(
+            Json(request): Json<astrcode_protocol::plugin::InvokeMessage>,
+        ) -> Json<astrcode_protocol::plugin::ResultMessage> {
+            Json(astrcode_protocol::plugin::ResultMessage {
+                id: request.id,
+                kind: Some("tool_result".to_string()),
+                success: true,
+                output: serde_json::json!({
+                    "echoed": request.input,
+                    "capability": request.capability,
+                }),
+                error: None,
+                metadata: serde_json::json!({ "transport": "http" }),
+            })
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("listener should expose address");
+        tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/invoke", post(invoke)))
+                .await
+                .expect("server should run");
+        });
+
+        let mut descriptor = PluginDescriptor::builtin("remote-fetch", "Remote Fetch");
+        descriptor.source_kind = PluginSourceKind::Http;
+        descriptor.source_ref = format!("http://{address}/invoke");
+        descriptor.tools.push(CapabilitySpec {
+            name: "tool.fetch".into(),
+            kind: astrcode_core::CapabilityKind::Tool,
+            description: "fetch remote data".to_string(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            output_schema: serde_json::json!({ "type": "object" }),
+            invocation_mode: InvocationMode::Unary,
+            concurrency_safe: false,
+            compact_clearable: false,
+            profiles: vec!["coding".to_string()],
+            tags: Vec::new(),
+            permissions: Vec::new(),
+            side_effect: astrcode_core::SideEffect::External,
+            stability: astrcode_core::Stability::Stable,
+            metadata: serde_json::Value::Null,
+            max_result_inline_size: None,
+        });
+
+        let bootstrapped = bootstrap_http_plugin_runtime(&descriptor)
+            .await
+            .expect("http plugin should bootstrap");
+
+        assert_eq!(bootstrapped.invokers.len(), 1);
+        let result = bootstrapped.invokers[0]
+            .invoke(
+                serde_json::json!({ "url": "https://example.com" }),
+                &CapabilityContext {
+                    request_id: Some("req-http-1".to_string()),
+                    trace_id: None,
+                    session_id: astrcode_core::SessionId::from("session-http"),
+                    working_dir: PathBuf::from("."),
+                    cancel: astrcode_core::CancelToken::new(),
+                    turn_id: None,
+                    agent: astrcode_core::AgentEventContext::root_execution("agent-1", "coding"),
+                    current_mode_id: ModeId::from("coding").into(),
+                    bound_mode_tool_contract: None,
+                    execution_owner: None,
+                    profile: "coding".to_string(),
+                    profile_context: serde_json::Value::Null,
+                    metadata: serde_json::Value::Null,
+                    tool_output_sender: None,
+                    event_sink: None,
+                },
+            )
+            .await
+            .expect("http plugin invoke should succeed");
+
+        assert!(result.success);
+        assert_eq!(
+            result.output,
+            serde_json::json!({
+                "echoed": { "url": "https://example.com" },
+                "capability": "tool.fetch",
+            })
+        );
     }
 
     #[test]

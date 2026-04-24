@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use astrcode_core::ToolDefinition;
+use astrcode_tool_contract::ToolDefinition;
 
 use super::BlockSpec;
 

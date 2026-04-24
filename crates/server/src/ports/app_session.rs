@@ -5,10 +5,12 @@
 //! 不直接耦合具体 owner 的 catalog/fork/query helper。
 
 use astrcode_core::{
-    ChildSessionNode, DeleteProjectResult, ExecutionAccepted, ResolvedRuntimeConfig, SessionMeta,
-    StoredEvent, TaskSnapshot,
+    ChildSessionNode, DeleteProjectResult, ResolvedRuntimeConfig, SessionMeta, StoredEvent,
+    TaskSnapshot,
 };
+use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState};
+use astrcode_runtime_contract::ExecutionAccepted;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
@@ -76,8 +78,8 @@ pub trait AppSessionPort: Send + Sync {
     async fn switch_mode(
         &self,
         session_id: &str,
-        from: astrcode_core::ModeId,
-        to: astrcode_core::ModeId,
+        from: ModeId,
+        to: ModeId,
     ) -> astrcode_core::Result<StoredEvent>;
     async fn session_child_nodes(
         &self,

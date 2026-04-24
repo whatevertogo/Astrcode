@@ -7,7 +7,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::env::{ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, DEEPSEEK_API_KEY_ENV, OPENAI_API_KEY_ENV};
+use crate::env::{DEEPSEEK_API_KEY_ENV, OPENAI_API_KEY_ENV};
 
 const CURRENT_CONFIG_VERSION: &str = "1";
 const PROVIDER_KIND_OPENAI: &str = "openai";
@@ -264,7 +264,7 @@ impl Default for ResolvedAgentConfig {
 impl Default for ResolvedRuntimeConfig {
     fn default() -> Self {
         Self {
-            max_tool_concurrency: max_tool_concurrency(),
+            max_tool_concurrency: DEFAULT_MAX_TOOL_CONCURRENCY,
             auto_compact_enabled: DEFAULT_AUTO_COMPACT_ENABLED,
             compact_threshold_percent: DEFAULT_COMPACT_THRESHOLD_PERCENT,
             tool_result_max_bytes: DEFAULT_TOOL_RESULT_MAX_BYTES,
@@ -629,13 +629,9 @@ fn env_reference(name: &str) -> String {
     format!("{ENV_REFERENCE_PREFIX}{name}")
 }
 
-/// 从进程环境变量/默认值获取最大安全工具并发数。
+/// 返回默认最大安全工具并发数。
 pub fn max_tool_concurrency() -> usize {
-    std::env::var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_MAX_TOOL_CONCURRENCY)
-        .max(1)
+    DEFAULT_MAX_TOOL_CONCURRENCY
 }
 
 /// 从 `Option<AgentConfig>` 解析出完整的 `ResolvedAgentConfig`。

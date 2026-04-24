@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    AgentEvent, ChildSessionNode, CompactAppliedMeta, CompactTrigger, ModeId, Phase, Result,
-    SessionEventRecord, SessionId, StoredEvent, TaskSnapshot, TurnTerminalKind,
+    AgentEvent, ChildSessionNode, CompactAppliedMeta, CompactTrigger, Phase, Result,
+    SessionEventRecord, SessionId, StoredEvent, TaskSnapshot, TurnTerminalKind, mode::ModeId,
 };
 use chrono::{DateTime, Utc};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     InputQueueProjection, SessionCatalog, SessionSnapshot, SessionState, TurnProjectionSnapshot,
-    turn_projection::project_turn_projection,
+    replay_records, turn_projection::project_turn_projection,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,7 +184,7 @@ impl SessionCatalog {
         last_event_id: Option<&str>,
     ) -> Result<SessionReadModelReplay> {
         self.ensure_session_exists(session_id).await?;
-        let full = astrcode_core::replay_records(&self.event_store.replay(session_id).await?, None);
+        let full = replay_records(&self.event_store.replay(session_id).await?, None);
         let (seed_records, history) = split_records_at_cursor(full, last_event_id);
         Ok(SessionReadModelReplay {
             cursor: history.last().map(|record| record.event_id.clone()),

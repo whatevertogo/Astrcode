@@ -2,7 +2,7 @@
 //!
 //! 所有内置工具的具体实现，每个工具对应一个独立模块。
 //!
-//! 工具通过实现 `astrcode_core::Tool` trait 提供：
+//! 工具通过实现 `astrcode_tool_contract::Tool` trait 提供：
 //! - `definition()`: 工具名称、描述、JSON Schema 参数定义
 //! - `capability_metadata()`: 权限、副作用级别、Prompt 元数据
 //! - `execute()`: 实际执行逻辑

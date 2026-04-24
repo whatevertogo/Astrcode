@@ -4,9 +4,9 @@ use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken, CloseAgentParams,
     CompletedParentDeliveryPayload, ObserveParams, ParentDeliveryPayload, SendAgentParams,
     SendToChildParams, SendToParentParams, SessionId, SpawnAgentParams, StorageEventPayload,
-    ToolContext,
 };
 use astrcode_host_session::{CollaborationExecutor, SubAgentExecutor};
+use astrcode_tool_contract::ToolContext;
 use tokio::time::sleep;
 
 use super::super::{root_execution_event_context, subrun_event_context};

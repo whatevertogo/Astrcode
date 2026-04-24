@@ -11,8 +11,9 @@ use std::{
     },
 };
 
-use astrcode_adapter_prompt::PromptDeclaration;
-use astrcode_core::{AstrError, CapabilityInvoker, ManagedRuntimeComponent, Result};
+use astrcode_core::{AstrError, CapabilityInvoker, Result};
+use astrcode_prompt_contract::PromptDeclaration;
+use astrcode_runtime_contract::ManagedRuntimeComponent;
 use async_trait::async_trait;
 use connection::McpConnection;
 use futures_util::stream::{self, StreamExt};
@@ -77,7 +78,7 @@ pub struct McpConnectionResults {
     /// 所有注册的能力调用器。
     pub invokers: Vec<Arc<dyn CapabilityInvoker>>,
     /// MCP 服务器的 prompt 声明。
-    pub prompt_declarations: Vec<astrcode_adapter_prompt::prompt_declaration::PromptDeclaration>,
+    pub prompt_declarations: Vec<PromptDeclaration>,
 }
 
 /// 批量连接中单个服务器的结果。

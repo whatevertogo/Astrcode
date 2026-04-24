@@ -16,8 +16,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AstrError, CapabilityKind, ForkMode, PromptDeclaration, Result, SideEffect,
-    normalize_non_empty_unique_string_list,
+    AstrError, CapabilityKind, ForkMode, Result, SideEffect,
+    normalize_non_empty_unique_string_list, prompt::PromptDeclaration,
 };
 
 pub const BUILTIN_MODE_CODE_ID: &str = "code";
@@ -516,11 +516,19 @@ const fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionPolicies, BUILTIN_MODE_CODE_ID, BoundModeToolContractSnapshot, CapabilitySelector,
-        CompiledModeContracts, GovernanceModeSpec, ModeArtifactDef, ModeExitGateDef, ModeId,
-        ModePromptHooks, PromptProgramEntry, ResolvedTurnEnvelope, SubmitBusyPolicy,
+        ActionPolicies, ActionPolicyEffect, BUILTIN_MODE_CODE_ID, BoundModeToolContractSnapshot,
+        CapabilitySelector, CompiledModeContracts, GovernanceModeSpec, ModeArtifactDef,
+        ModeExitGateDef, ModeId, ModePromptHooks, PromptProgramEntry, ResolvedTurnEnvelope,
+        SubmitBusyPolicy,
     };
-    use crate::{CapabilityKind, PromptDeclaration, SideEffect, SystemPromptLayer};
+    use crate::{
+        CapabilityKind, SideEffect,
+        policy::SystemPromptLayer,
+        prompt::{
+            PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+            PromptDeclarationSource,
+        },
+    };
 
     #[test]
     fn mode_id_defaults_to_builtin_code() {
@@ -622,18 +630,18 @@ mod tests {
                 block_id: "mode.review".to_string(),
                 title: "Review".to_string(),
                 content: "review only".to_string(),
-                render_target: crate::PromptDeclarationRenderTarget::System,
+                render_target: PromptDeclarationRenderTarget::System,
                 layer: SystemPromptLayer::Dynamic,
-                kind: crate::PromptDeclarationKind::ExtensionInstruction,
+                kind: PromptDeclarationKind::ExtensionInstruction,
                 priority_hint: Some(600),
                 always_include: true,
-                source: crate::PromptDeclarationSource::Builtin,
+                source: PromptDeclarationSource::Builtin,
                 capability_name: None,
                 origin: None,
             }],
             mode_contracts: CompiledModeContracts::default(),
             action_policies: ActionPolicies {
-                default_effect: crate::ActionPolicyEffect::Ask,
+                default_effect: ActionPolicyEffect::Ask,
                 rules: Vec::new(),
             },
             child_policy: Default::default(),

@@ -8,6 +8,7 @@ use astrcode_core::{
     CollaborationResult, ObserveParams, ObserveSnapshot,
 };
 use astrcode_host_session::SubRunHandle;
+use astrcode_tool_contract::ToolContext;
 
 use super::{AgentOrchestrationService, ObserveSnapshotSignature};
 
@@ -20,7 +21,7 @@ impl AgentOrchestrationService {
     pub async fn observe_child(
         &self,
         params: ObserveParams,
-        ctx: &astrcode_core::ToolContext,
+        ctx: &ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
         let collaboration = self.tool_collaboration_context(ctx).await?;
         params
@@ -211,9 +212,10 @@ mod tests {
 
     use astrcode_core::{
         AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken, ObserveParams,
-        SessionId, StorageEventPayload, ToolContext,
+        SessionId, StorageEventPayload,
     };
     use astrcode_host_session::{CollaborationExecutor, SubAgentExecutor};
+    use astrcode_tool_contract::ToolContext;
     use tokio::time::sleep;
 
     use super::format_observe_summary;

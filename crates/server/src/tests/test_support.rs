@@ -7,12 +7,15 @@ use std::{
 
 use astrcode_core::{
     AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, AstrError,
-    DeleteProjectResult, ExecutionAccepted, InputBatchAckedPayload, InputBatchStartedPayload,
-    InputDiscardedPayload, InputQueuedPayload, LlmMessage, ModeId, PromptDeclaration,
-    ResolvedRuntimeConfig, SessionId, SessionMeta, SkillCatalog, StorageEvent, StorageEventPayload,
-    StoredEvent, TaskSnapshot, TurnId, TurnTerminalKind, UserMessageOrigin,
+    DeleteProjectResult, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,
+    InputQueuedPayload, LlmMessage, ResolvedRuntimeConfig, SessionId, SessionMeta, SkillCatalog,
+    StorageEvent, StorageEventPayload, StoredEvent, TaskSnapshot, TurnId, TurnTerminalKind,
+    UserMessageOrigin, mode::ModeId as StoredModeId,
 };
+use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState};
+use astrcode_prompt_contract::PromptDeclaration;
+use astrcode_runtime_contract::ExecutionAccepted;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
@@ -320,7 +323,7 @@ impl AppSessionPort for StubSessionPort {
                 manual_compact_pending: false,
                 compacting: false,
                 last_compact_meta: None,
-                current_mode_id: ModeId::code(),
+                current_mode_id: StoredModeId::code(),
                 last_mode_changed_at: None,
             }))
     }
@@ -347,7 +350,7 @@ impl AppSessionPort for StubSessionPort {
             .expect("mode state lock should work")
             .clone()
             .unwrap_or(SessionModeState {
-                current_mode_id: ModeId::code(),
+                current_mode_id: StoredModeId::code(),
                 last_mode_changed_at: None,
             }))
     }
@@ -375,7 +378,7 @@ impl AppSessionPort for StubSessionPort {
                 to: to.clone(),
             });
         *self.mode_state.lock().expect("mode state lock should work") = Some(SessionModeState {
-            current_mode_id: to.clone(),
+            current_mode_id: to.clone().into(),
             last_mode_changed_at: None,
         });
         Ok(StoredEvent {
@@ -384,8 +387,8 @@ impl AppSessionPort for StubSessionPort {
                 turn_id: None,
                 agent: AgentEventContext::default(),
                 payload: StorageEventPayload::ModeChanged {
-                    from,
-                    to,
+                    from: from.into(),
+                    to: to.into(),
                     timestamp: chrono::Utc::now(),
                 },
             },

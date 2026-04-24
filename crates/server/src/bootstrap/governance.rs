@@ -19,14 +19,12 @@ use astrcode_plugin_host::{
     PluginEntry, ProviderContributionCatalog, ResourceCatalog, build_skill_catalog_base,
     builtin_openai_provider_descriptor,
 };
+use astrcode_runtime_contract::{ManagedRuntimeComponent, RuntimeHandle};
 use async_trait::async_trait;
 
 use super::{
-    capabilities::CapabilitySurfaceSync,
-    deps::core::{AstrError, ManagedRuntimeComponent, RuntimeHandle},
-    mcp::load_declared_configs,
-    plugins::bootstrap_plugins_with_skill_root,
-    runtime_coordinator::RuntimeCoordinator,
+    capabilities::CapabilitySurfaceSync, deps::core::AstrError, mcp::load_declared_configs,
+    plugins::bootstrap_plugins_with_skill_root, runtime_coordinator::RuntimeCoordinator,
 };
 use crate::{
     AppGovernance, ApplicationError, GovernanceSnapshot, RuntimeGovernancePort,
@@ -444,6 +442,7 @@ mod tests {
     };
 
     use astrcode_plugin_host::PluginRegistry;
+    use astrcode_tool_contract::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
@@ -451,7 +450,7 @@ mod tests {
     use crate::{
         bootstrap::deps::core::{
             AstrError, CapabilityInvoker, CapabilityKind, CapabilitySpec, CapabilitySpecBuildError,
-            Result, Tool, ToolContext, ToolDefinition, ToolExecutionResult,
+            Result,
         },
         tool_capability_invoker::ToolCapabilityInvoker,
     };

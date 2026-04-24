@@ -11,12 +11,12 @@ use std::{
 
 use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_llm::{
-    LlmClientConfig, ModelLimits,
+    LlmClientConfig,
     openai::{OpenAiProvider, OpenAiProviderCapabilities},
 };
 use astrcode_adapter_storage::config_store::FileConfigStore;
-use astrcode_agent_runtime::{LlmEventSink, LlmOutput, LlmProvider, LlmRequest};
 use astrcode_core::config::{OpenAiApiMode, OpenAiProfileCapabilities};
+use astrcode_llm_contract::{LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_plugin_host::{OPENAI_API_KIND, ProviderContributionCatalog};
 
 use super::deps::core::{

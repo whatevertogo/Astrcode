@@ -7,9 +7,13 @@ use std::{
 
 use astrcode_core::{
     AgentEventContext, AstrError, CapabilitySpec, HookEventKey, LlmMessage, ResolvedRuntimeConfig,
-    StorageEvent, StorageEventPayload, ToolCallRequest, ToolDefinition, ToolExecutionResult,
-    ToolOutputDelta, UserMessageOrigin,
+    StorageEvent, StorageEventPayload, ToolCallRequest, UserMessageOrigin,
 };
+use astrcode_llm_contract::{LlmEventSink, LlmOutput, LlmProvider};
+use astrcode_runtime_contract::{
+    RuntimeEventSink, RuntimeTurnEvent, StepError, TurnIdentity, TurnLoopTransition, TurnStopCause,
+};
+use astrcode_tool_contract::{ToolDefinition, ToolExecutionResult, ToolOutputDelta};
 use async_trait::async_trait;
 use chrono::Utc;
 
@@ -26,12 +30,8 @@ use crate::{
         tool_result_budget::{ToolResultBudgetStats, ToolResultReplacementState},
     },
     hook_dispatch::{HookDispatchRequest, HookDispatcher, HookEffectKind},
-    provider::{LlmEventSink, LlmOutput, LlmProvider},
     tool_dispatch::{ToolDispatchRequest, ToolDispatcher},
-    types::{
-        RuntimeEventSink, RuntimeTurnEvent, StepError, TurnInput, TurnLoopTransition, TurnOutput,
-        TurnStopCause,
-    },
+    types::{TurnInput, TurnOutput},
 };
 
 const OUTPUT_CONTINUATION_PROMPT: &str = "Continue from the exact point where the previous \
@@ -110,8 +110,8 @@ impl std::fmt::Debug for TurnExecutionResources {
 }
 
 impl TurnExecutionResources {
-    fn turn_identity(&self) -> crate::types::TurnIdentity {
-        crate::types::TurnIdentity::new(
+    fn turn_identity(&self) -> TurnIdentity {
+        TurnIdentity::new(
             self.session_id.clone(),
             self.turn_id.clone(),
             self.agent_id.clone(),
@@ -754,7 +754,7 @@ fn tool_definitions_from_specs(specs: &[CapabilitySpec]) -> Arc<[ToolDefinition]
 }
 
 fn flush_pending_events(
-    event_sink: &dyn crate::types::RuntimeEventSink,
+    event_sink: &dyn RuntimeEventSink,
     execution: &mut TurnExecutionContext,
     emitted_events: &mut Vec<RuntimeTurnEvent>,
 ) {
@@ -786,8 +786,8 @@ fn is_immediate_tool_storage_event(event: &RuntimeTurnEvent) -> bool {
 }
 
 fn finalize_turn(
-    event_sink: &dyn crate::types::RuntimeEventSink,
-    identity: &crate::types::TurnIdentity,
+    event_sink: &dyn RuntimeEventSink,
+    identity: &TurnIdentity,
     execution: &mut TurnExecutionContext,
     emitted_events: &mut Vec<RuntimeTurnEvent>,
     stop_cause: TurnStopCause,
@@ -826,8 +826,15 @@ mod tests {
 
     use astrcode_core::{
         AgentEventContext, AstrError, CancelToken, HookEventKey, Result, SubRunStorageMode,
-        ToolExecutionResult, TurnTerminalKind,
+        TurnTerminalKind,
     };
+    use astrcode_llm_contract::{
+        LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
+    };
+    use astrcode_runtime_contract::{
+        RuntimeTurnEvent, StepError, TurnLoopTransition, TurnStopCause,
+    };
+    use astrcode_tool_contract::{ToolExecutionResult, ToolOutputDelta, ToolOutputStream};
     use async_trait::async_trait;
 
     use super::{
@@ -835,14 +842,8 @@ mod tests {
     };
     use crate::{
         hook_dispatch::{HookDispatchOutcome, HookDispatchRequest, HookDispatcher, HookEffect},
-        provider::{
-            LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
-        },
         tool_dispatch::{ToolDispatchRequest, ToolDispatcher},
-        types::{
-            AgentRuntimeExecutionSurface, RuntimeTurnEvent, StepError, TurnInput,
-            TurnLoopTransition, TurnStopCause,
-        },
+        types::{AgentRuntimeExecutionSurface, TurnInput},
     };
 
     fn input() -> TurnInput {
@@ -1013,7 +1014,7 @@ mod tests {
             sink: Option<LlmEventSink>,
         ) -> Result<LlmOutput> {
             if let Some(sink) = sink {
-                sink(crate::provider::LlmEvent::TextDelta("delta".to_string()));
+                sink(LlmEvent::TextDelta("delta".to_string()));
             }
             Ok(self
                 .outputs
@@ -1038,7 +1039,7 @@ mod tests {
             sink: Option<LlmEventSink>,
         ) -> Result<LlmOutput> {
             if let Some(sink) = sink {
-                sink(crate::provider::LlmEvent::TextDelta("live".to_string()));
+                sink(LlmEvent::TextDelta("live".to_string()));
             }
             if let Some(sender) = self
                 .delta_sent
@@ -1145,10 +1146,10 @@ mod tests {
     impl ToolDispatcher for BlockingStreamingToolDispatcher {
         async fn dispatch_tool(&self, request: ToolDispatchRequest) -> Result<ToolExecutionResult> {
             if let Some(sender) = request.tool_output_sender {
-                let _ = sender.send(astrcode_core::ToolOutputDelta {
+                let _ = sender.send(ToolOutputDelta {
                     tool_call_id: request.tool_call.id.clone(),
                     tool_name: request.tool_call.name.clone(),
-                    stream: astrcode_core::ToolOutputStream::Stdout,
+                    stream: ToolOutputStream::Stdout,
                     delta: "tool-live\n".to_string(),
                 });
             }

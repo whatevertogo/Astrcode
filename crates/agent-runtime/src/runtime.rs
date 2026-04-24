@@ -20,9 +20,10 @@ impl AgentRuntime {
 #[cfg(test)]
 mod tests {
     use astrcode_core::TurnTerminalKind;
+    use astrcode_runtime_contract::TurnStopCause;
 
     use super::AgentRuntime;
-    use crate::types::{AgentRuntimeExecutionSurface, TurnInput, TurnStopCause};
+    use crate::types::{AgentRuntimeExecutionSurface, TurnInput};
 
     #[tokio::test]
     async fn execute_turn_drives_empty_lifecycle() {

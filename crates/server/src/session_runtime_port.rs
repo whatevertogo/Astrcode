@@ -1,9 +1,11 @@
 use astrcode_core::{
     AgentInboxEnvelope, AgentLifecycleStatus, AgentTurnOutcome, ChildSessionNotification,
-    DelegationMetadata, ExecutionAccepted, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
-    StoredEvent, TurnId,
+    DelegationMetadata, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, StoredEvent,
+    TurnId,
 };
+use astrcode_governance_contract::ModeId;
 use astrcode_host_session::SubRunHandle;
+use astrcode_runtime_contract::ExecutionAccepted;
 use async_trait::async_trait;
 
 use crate::{
@@ -38,8 +40,8 @@ pub(crate) trait SessionRuntimePort: Send + Sync {
     async fn switch_mode(
         &self,
         session_id: &str,
-        from: astrcode_core::ModeId,
-        to: astrcode_core::ModeId,
+        from: ModeId,
+        to: ModeId,
     ) -> astrcode_core::Result<StoredEvent>;
     async fn submit_prompt_for_agent_with_submission(
         &self,

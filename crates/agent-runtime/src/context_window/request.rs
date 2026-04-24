@@ -1,25 +1,23 @@
 use std::{sync::Arc, time::Instant};
 
+use astrcode_context_window::{
+    compaction::{
+        auto_compact, build_post_compact_events, build_post_compact_recovery_messages,
+        compact_config_from_settings,
+    },
+    prune_pass::apply_prune_pass,
+    token_usage::{PromptTokenSnapshot, build_prompt_snapshot, should_compact},
+    tool_result_budget::{
+        ApplyToolResultBudgetRequest, ToolResultBudgetStats, apply_tool_result_budget,
+    },
+};
 use astrcode_core::{
     AgentEventContext, CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload,
 };
+use astrcode_llm_contract::{LlmProvider, LlmRequest, LlmUsage, PromptCacheDiagnostics};
+use astrcode_runtime_contract::RuntimeTurnEvent;
 
-use crate::{
-    context_window::{
-        compaction::{
-            auto_compact, build_post_compact_events, build_post_compact_recovery_messages,
-            compact_config_from_settings,
-        },
-        prune_pass::apply_prune_pass,
-        token_usage::{PromptTokenSnapshot, build_prompt_snapshot, should_compact},
-        tool_result_budget::{
-            ApplyToolResultBudgetRequest, ToolResultBudgetStats, apply_tool_result_budget,
-        },
-    },
-    r#loop::{TurnExecutionContext, TurnExecutionResources},
-    provider::{LlmProvider, LlmRequest},
-    types::RuntimeTurnEvent,
-};
+use crate::r#loop::{TurnExecutionContext, TurnExecutionResources};
 
 pub(crate) async fn assemble_runtime_request(
     execution: &mut TurnExecutionContext,
@@ -191,8 +189,8 @@ pub(crate) async fn recover_from_prompt_too_long(
 pub(crate) fn apply_prompt_metrics_usage(
     events: &mut [RuntimeTurnEvent],
     step_index: usize,
-    usage: Option<crate::provider::LlmUsage>,
-    diagnostics: Option<crate::provider::PromptCacheDiagnostics>,
+    usage: Option<LlmUsage>,
+    diagnostics: Option<PromptCacheDiagnostics>,
 ) {
     if usage.is_none() && diagnostics.is_none() {
         return;
@@ -219,7 +217,42 @@ pub(crate) fn apply_prompt_metrics_usage(
         metrics.cache_read_input_tokens = Some(saturating_u32(usage.cache_read_input_tokens));
     }
     if let Some(diagnostics) = diagnostics {
-        metrics.prompt_cache_diagnostics = Some(diagnostics);
+        metrics.prompt_cache_diagnostics = Some(core_prompt_cache_diagnostics(diagnostics));
+    }
+}
+
+fn core_prompt_cache_diagnostics(
+    diagnostics: PromptCacheDiagnostics,
+) -> astrcode_core::PromptCacheDiagnostics {
+    astrcode_core::PromptCacheDiagnostics {
+        reasons: diagnostics
+            .reasons
+            .into_iter()
+            .map(|reason| match reason {
+                astrcode_llm_contract::PromptCacheBreakReason::SystemPromptChanged => {
+                    astrcode_core::PromptCacheBreakReason::SystemPromptChanged
+                },
+                astrcode_llm_contract::PromptCacheBreakReason::ToolSchemasChanged => {
+                    astrcode_core::PromptCacheBreakReason::ToolSchemasChanged
+                },
+                astrcode_llm_contract::PromptCacheBreakReason::ModelChanged => {
+                    astrcode_core::PromptCacheBreakReason::ModelChanged
+                },
+                astrcode_llm_contract::PromptCacheBreakReason::GlobalCacheStrategyChanged => {
+                    astrcode_core::PromptCacheBreakReason::GlobalCacheStrategyChanged
+                },
+                astrcode_llm_contract::PromptCacheBreakReason::CompactedPrompt => {
+                    astrcode_core::PromptCacheBreakReason::CompactedPrompt
+                },
+                astrcode_llm_contract::PromptCacheBreakReason::ToolResultRebudgeted => {
+                    astrcode_core::PromptCacheBreakReason::ToolResultRebudgeted
+                },
+            })
+            .collect(),
+        previous_cache_read_input_tokens: diagnostics.previous_cache_read_input_tokens,
+        current_cache_read_input_tokens: diagnostics.current_cache_read_input_tokens,
+        expected_drop: diagnostics.expected_drop,
+        cache_break_detected: diagnostics.cache_break_detected,
     }
 }
 

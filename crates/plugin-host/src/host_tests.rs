@@ -6,9 +6,9 @@ use std::{
 };
 
 use astrcode_core::{
-    AgentEventContext, AstrError, BoundModeToolContractSnapshot, CancelToken, CapabilityContext,
-    CapabilityExecutionResult, ExecutionOwner, InvocationKind, InvocationMode, ModeId, Result,
-    SessionId, TurnId,
+    AgentEventContext, AstrError, CancelToken, CapabilityContext, CapabilityExecutionResult,
+    ExecutionOwner, InvocationKind, InvocationMode, Result, SessionId, TurnId,
+    mode::{BoundModeToolContractSnapshot, ModeId},
 };
 use astrcode_protocol::plugin::{
     CapabilityWireDescriptor, ErrorPayload, EventMessage, EventPhase, InitializeResultData,
@@ -2624,6 +2624,7 @@ fn http_dispatch_outcome_executes_via_http_dispatcher() {
     let binding = PluginCapabilityBinding {
         plugin_id: "http-plugin".to_string(),
         display_name: "HTTP Plugin".to_string(),
+        source_ref: "https://plugins.example.com/http-plugin".to_string(),
         backend_kind: PluginBackendKind::Http,
         capability: CapabilityWireDescriptor::builder(
             "tool.fetch",
