@@ -10,7 +10,7 @@
 //!
 //! 握手完成后，双方进入正常的调用/事件流阶段。
 
-use astrcode_core::GovernanceModeSpec;
+use astrcode_governance_contract::GovernanceModeSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

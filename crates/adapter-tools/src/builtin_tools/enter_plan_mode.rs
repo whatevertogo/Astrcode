@@ -5,9 +5,11 @@
 
 use std::time::Instant;
 
-use astrcode_core::{
-    AstrError, ModeId, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
+use astrcode_core::{AstrError, Result, SideEffect};
+use astrcode_governance_contract::ModeId;
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -52,12 +54,18 @@ impl Tool for EnterPlanModeTool {
             .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Switch the current session into plan mode.",
+                    "Enter plan mode for complex or ambiguous tasks. Proactively use when a task \
+                     spans multiple files, involves significant refactoring, requires analysis \
+                     before code changes, or when the user asks for a structured plan.",
                     "Use `enterPlanMode` when the task needs an explicit planning phase before \
                      execution, or when the user directly asks for a plan. After entering, \
                      inspect the relevant code and tests, keep updating the session plan artifact \
                      until it is executable, then use `exitPlanMode` to present the finalized \
                      plan.",
+                )
+                .caveat(
+                    "Plan mode restricts you to read-only operations — no file writes, shell \
+                     commands, or agent delegation. Exit plan mode to resume execution.",
                 )
                 .example(
                     "{ reason: \"Need to inspect the codebase and propose a safe refactor plan\" }",
@@ -146,7 +154,7 @@ fn mode_metadata(
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use astrcode_core::{StorageEvent, StorageEventPayload};
+    use astrcode_core::{StorageEvent, StorageEventPayload, mode::ModeId as StoredModeId};
 
     use super::*;
     use crate::test_support::test_tool_context_for;
@@ -156,7 +164,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl astrcode_core::ToolEventSink for RecordingSink {
+    impl astrcode_tool_contract::ToolEventSink for RecordingSink {
         async fn emit(&self, event: StorageEvent) -> Result<()> {
             self.events
                 .lock()
@@ -192,7 +200,7 @@ mod tests {
             [StorageEvent {
                 payload: StorageEventPayload::ModeChanged { from, to, .. },
                 ..
-            }] if *from == ModeId::code() && *to == ModeId::plan()
+            }] if *from == StoredModeId::code() && *to == StoredModeId::plan()
         ));
     }
 }

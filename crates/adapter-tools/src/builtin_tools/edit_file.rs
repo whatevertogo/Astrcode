@@ -8,11 +8,6 @@
 //! - 支持重叠匹配检测（如在 `"ababa"` 中搜索 `"aba"` 会找到两个位置）
 //! - 编辑前/后均检查取消标记，避免长文件操作无法中断
 //!
-//! ## 批量编辑
-//!
-//! 支持通过 `edits` 数组一次执行多个替换操作，按顺序应用。
-//! 每个 edit 必须满足唯一匹配要求。
-//!
 //! ## 与 writeFile 的区别
 //!
 //! `writeFile` 用于完全覆盖，`editFile` 用于窄范围修改。
@@ -23,9 +18,10 @@ use std::{
     time::Instant,
 };
 
-use astrcode_core::{
-    AstrError, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+use astrcode_core::{AstrError, Result, SideEffect};
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -53,30 +49,17 @@ const MAX_EDIT_FILE_SIZE: u64 = 1024 * 1024 * 1024; // 1 GiB
 #[derive(Default)]
 pub struct EditFileTool;
 
-/// 单个编辑操作。
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct EditOperation {
-    old_text: String,
-    new_text: String,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EditFileArgs {
     path: PathBuf,
-    /// 旧字符串（单个编辑时使用）。
-    #[serde(default)]
-    old_str: Option<String>,
-    /// 新字符串（单个编辑时使用）。
-    #[serde(default)]
-    new_str: Option<String>,
+    /// 旧字符串。
+    old_str: String,
+    /// 新字符串。
+    new_str: String,
     /// 设为 true 时替换所有匹配（而非要求唯一匹配），0 次匹配仍报错。
     #[serde(default)]
     replace_all: bool,
-    /// 批量编辑：多个 oldText/newText 对，按顺序应用。
-    #[serde(default)]
-    edits: Option<Vec<EditOperation>>,
 }
 
 /// 将智能引号规范化为 ASCII 引号。
@@ -160,21 +143,9 @@ impl Tool for EditFileTool {
                         "type": "boolean",
                         "description": "If true, replaces all occurrences. If false (default), \
                                         requires an exact single match."
-                    },
-                    "edits": {
-                        "type": "array",
-                        "description": "Batch edits: array of {oldText, newText} pairs, applied in order",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "oldText": { "type": "string" },
-                                "newText": { "type": "string" }
-                            },
-                            "required": ["oldText", "newText"]
-                        }
                     }
                 },
-                "required": ["path"],
+                "required": ["path", "oldStr", "newStr"],
                 "additionalProperties": false
             }),
         }
@@ -187,27 +158,13 @@ impl Tool for EditFileTool {
             .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Apply a narrow, safety-checked string replacement inside an existing file.",
-                    "Use `editFile` when you know the exact old text and want a minimal change. \
-                     It rejects ambiguous replacements, which makes it safer than rewriting a \
-                     whole file for small edits. Prefer `apply_patch` instead when you need \
-                     multi-file edits, multiple distant changes, or file creation/deletion. If \
-                     the file was changed after the last `readFile`, `editFile` will stop and ask \
-                     for a fresh reread first.",
+                    "Apply a narrow exact string replacement inside an existing file.",
+                    "Use `editFile` for small edits when you know the exact old text. Prefer \
+                     `apply_patch` for multi-file changes, distant hunks, or create/delete work.",
                 )
                 .caveat(
                     "`oldStr` must match exactly once — including whitespace, newlines, trailing \
-                     spaces, tabs, and line endings (`\\r\\n` vs `\\n`). If rejected, `readFile` \
-                     the region first.",
-                )
-                .caveat(
-                    "When this session has already observed the file, `editFile` also checks that \
-                     the file has not changed on disk since that observation. If it did, call \
-                     `readFile` again before editing.",
-                )
-                .example(
-                    "Change one function body: { path: \"src/lib.rs\", oldStr: \"fn a() { old \
-                     }\", newStr: \"fn a() { new }\" }",
+                     spaces, tabs, and line endings. If rejected, `readFile` the region first.",
                 )
                 .prompt_tag("filesystem")
                 .always_include(true),
@@ -225,54 +182,13 @@ impl Tool for EditFileTool {
         let args: EditFileArgs = serde_json::from_value(args)
             .map_err(|e| AstrError::parse("invalid args for editFile", e))?;
 
-        // 验证参数：要么提供 oldStr/newStr，要么提供 edits
-        let edits = match (&args.old_str, &args.new_str, &args.edits) {
-            (Some(old_str), Some(new_str), None) => {
-                if old_str.is_empty() {
-                    return Err(AstrError::Validation("oldStr cannot be empty".to_string()));
-                }
-                vec![EditOperation {
-                    old_text: old_str.clone(),
-                    new_text: new_str.clone(),
-                }]
-            },
-            (None, None, Some(edits)) => {
-                if edits.is_empty() {
-                    return Err(AstrError::Validation(
-                        "edits array cannot be empty".to_string(),
-                    ));
-                }
-                for (i, edit) in edits.iter().enumerate() {
-                    if edit.old_text.is_empty() {
-                        return Err(AstrError::Validation(format!(
-                            "edits[{}].oldText cannot be empty",
-                            i
-                        )));
-                    }
-                }
-                edits.clone()
-            },
-            (Some(_), Some(_), Some(_)) => {
-                return Err(AstrError::Validation(
-                    "cannot specify both oldStr/newStr and edits - use one or the other"
-                        .to_string(),
-                ));
-            },
-            _ => {
-                return Err(AstrError::Validation(
-                    "must specify either oldStr/newStr or edits array".to_string(),
-                ));
-            },
-        };
+        if args.old_str.is_empty() {
+            return Err(AstrError::Validation("oldStr cannot be empty".to_string()));
+        }
 
         // 引号规范化：将智能引号转换为 ASCII 引号
-        let edits: Vec<EditOperation> = edits
-            .into_iter()
-            .map(|edit| EditOperation {
-                old_text: normalize_quotes(&edit.old_text),
-                new_text: normalize_quotes(&edit.new_text),
-            })
-            .collect();
+        let old_text = normalize_quotes(&args.old_str);
+        let new_text = normalize_quotes(&args.new_str);
 
         let started_at = Instant::now();
         let path = resolve_path(ctx, &args.path)?;
@@ -361,61 +277,48 @@ impl Tool for EditFileTool {
         let original_content = read_utf8_file(&path).await?;
         check_cancel(ctx.cancel())?;
 
-        let mut content = original_content.clone();
-        let mut total_edits = 0usize;
-
-        for edit in &edits {
-            check_cancel(ctx.cancel())?;
-
-            content = if args.replace_all {
-                // replace_all 模式：替换所有出现
-                if !content.contains(&edit.old_text) {
+        let content = if args.replace_all {
+            if !original_content.contains(&old_text) {
+                return make_edit_error_result(
+                    &tool_call_id,
+                    &format!("oldStr '{old_text}' not found in file"),
+                    &path,
+                    started_at,
+                );
+            }
+            original_content.replace(&old_text, &new_text)
+        } else {
+            let match_start = match find_unique_occurrence(&original_content, &old_text) {
+                Some(Ok(pos)) => pos,
+                Some(Err(_)) => {
                     return make_edit_error_result(
                         &tool_call_id,
-                        &format!("oldText '{}' not found in file", edit.old_text),
+                        &format!(
+                            "oldStr '{old_text}' appears multiple times, must be unique to edit \
+                             safely"
+                        ),
                         &path,
                         started_at,
                     );
-                }
-                total_edits += content.matches(&edit.old_text).count();
-                content.replace(&edit.old_text, &edit.new_text)
-            } else {
-                // 唯一匹配模式：必须恰好出现一次
-                let match_start = match find_unique_occurrence(&content, &edit.old_text) {
-                    Some(Ok(pos)) => pos,
-                    Some(Err(_)) => {
-                        return make_edit_error_result(
-                            &tool_call_id,
-                            &format!(
-                                "oldText '{}' appears multiple times, must be unique to edit \
-                                 safely",
-                                edit.old_text
-                            ),
-                            &path,
-                            started_at,
-                        );
-                    },
-                    None => {
-                        return make_edit_error_result(
-                            &tool_call_id,
-                            &format!("oldText '{}' not found in file", edit.old_text),
-                            &path,
-                            started_at,
-                        );
-                    },
-                };
-
-                let match_end = match_start + edit.old_text.len();
-                let mut replaced = String::with_capacity(
-                    content.len() - edit.old_text.len() + edit.new_text.len(),
-                );
-                replaced.push_str(&content[..match_start]);
-                replaced.push_str(&edit.new_text);
-                replaced.push_str(&content[match_end..]);
-                total_edits += 1;
-                replaced
+                },
+                None => {
+                    return make_edit_error_result(
+                        &tool_call_id,
+                        &format!("oldStr '{old_text}' not found in file"),
+                        &path,
+                        started_at,
+                    );
+                },
             };
-        }
+
+            let match_end = match_start + old_text.len();
+            let mut replaced =
+                String::with_capacity(original_content.len() - old_text.len() + new_text.len());
+            replaced.push_str(&original_content[..match_start]);
+            replaced.push_str(&new_text);
+            replaced.push_str(&original_content[match_end..]);
+            replaced
+        };
 
         let report = build_text_change_report(&path, "updated", Some(&original_content), &content);
         check_cancel(ctx.cancel())?;
@@ -423,39 +326,23 @@ impl Tool for EditFileTool {
         // 编辑成功后刷新观察快照，允许同一 session 在未发生外部改动时继续连续 edit。
         let observation = remember_file_observation(ctx, &path)?;
 
-        let metadata = if edits.len() > 1 {
-            json!({
-                "path": path.to_string_lossy(),
-                "editsApplied": edits.len(),
-                "totalReplacements": total_edits,
-                "contentFingerprint": observation.content_fingerprint,
-                "modifiedUnixNanos": observation.modified_unix_nanos,
-                "diff": report.metadata.get("diff").cloned().unwrap_or(json!(null)),
-            })
-        } else {
-            let mut metadata = report.metadata;
-            if let Some(object) = metadata.as_object_mut() {
-                object.insert(
-                    "contentFingerprint".to_string(),
-                    json!(observation.content_fingerprint),
-                );
-                object.insert(
-                    "modifiedUnixNanos".to_string(),
-                    json!(observation.modified_unix_nanos),
-                );
-            }
-            metadata
-        };
+        let mut metadata = report.metadata;
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert(
+                "contentFingerprint".to_string(),
+                json!(observation.content_fingerprint),
+            );
+            object.insert(
+                "modifiedUnixNanos".to_string(),
+                json!(observation.modified_unix_nanos),
+            );
+        }
 
         Ok(ToolExecutionResult {
             tool_call_id,
             tool_name: "editFile".to_string(),
             ok: true,
-            output: if edits.len() > 1 {
-                format!("{} ({} edits applied)", report.summary, edits.len())
-            } else {
-                report.summary
-            },
+            output: report.summary,
             error: None,
             metadata: Some(metadata),
             continuation: None,
@@ -876,40 +763,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_file_batch_edits_applied_in_order() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let file = temp.path().join("code.rs");
-        tokio::fs::write(&file, "fn old_name() { old_body }")
-            .await
-            .expect("seed write should work");
-        let tool = EditFileTool;
-
-        let result = tool
-            .execute(
-                "tc-edit-batch".to_string(),
-                json!({
-                    "path": file.to_string_lossy(),
-                    "edits": [
-                        {"oldText": "old_name", "newText": "new_name"},
-                        {"oldText": "old_body", "newText": "new_body"}
-                    ]
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await
-            .expect("editFile should execute");
-
-        assert!(result.ok);
-        let content = tokio::fs::read_to_string(&file)
-            .await
-            .expect("file should be readable");
-        assert_eq!(content, "fn new_name() { new_body }");
-        // 验证 metadata 包含编辑数量
-        let meta = result.metadata.expect("metadata should exist");
-        assert_eq!(meta["editsApplied"], json!(2));
-    }
-
-    #[tokio::test]
     async fn edit_file_allows_relative_path_outside_working_dir() {
         let parent = tempfile::tempdir().expect("tempdir should be created");
         let workspace = parent.path().join("workspace");
@@ -940,30 +793,6 @@ mod tests {
             .await
             .expect("outside file should be readable");
         assert_eq!(content, "omega beta");
-    }
-
-    #[tokio::test]
-    async fn edit_file_batch_edits_rejects_empty_array() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let file = temp.path().join("hello.txt");
-        tokio::fs::write(&file, "hello")
-            .await
-            .expect("seed write should work");
-        let tool = EditFileTool;
-
-        let result = tool
-            .execute(
-                "tc-edit-empty-batch".to_string(),
-                json!({
-                    "path": file.to_string_lossy(),
-                    "edits": []
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await;
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
     }
 
     #[tokio::test]
@@ -1002,37 +831,6 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("upsertSessionPlan")
-        );
-    }
-
-    #[tokio::test]
-    async fn edit_file_cannot_mix_single_and_batch() {
-        let temp = tempfile::tempdir().expect("tempdir should be created");
-        let file = temp.path().join("hello.txt");
-        tokio::fs::write(&file, "hello")
-            .await
-            .expect("seed write should work");
-        let tool = EditFileTool;
-
-        let result = tool
-            .execute(
-                "tc-edit-mixed".to_string(),
-                json!({
-                    "path": file.to_string_lossy(),
-                    "oldStr": "hello",
-                    "newStr": "world",
-                    "edits": [{"oldText": "a", "newText": "b"}]
-                }),
-                &test_tool_context_for(temp.path()),
-            )
-            .await;
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("cannot specify both")
         );
     }
 }

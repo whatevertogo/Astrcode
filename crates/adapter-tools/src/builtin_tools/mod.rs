@@ -2,7 +2,7 @@
 //!
 //! 所有内置工具的具体实现，每个工具对应一个独立模块。
 //!
-//! 工具通过实现 `astrcode_core::Tool` trait 提供：
+//! 工具通过实现 `astrcode_tool_contract::Tool` trait 提供：
 //! - `definition()`: 工具名称、描述、JSON Schema 参数定义
 //! - `capability_metadata()`: 权限、副作用级别、Prompt 元数据
 //! - `execute()`: 实际执行逻辑
@@ -21,8 +21,6 @@ pub mod find_files;
 pub mod fs_common;
 /// 内容搜索工具：正则匹配
 pub mod grep;
-/// 目录列表工具：浅层条目枚举
-pub mod list_dir;
 /// mode 切换共享辅助
 pub mod mode_transition;
 /// 文件读取工具：UTF-8 文本读取

@@ -77,7 +77,7 @@ export function processConversationStreamEnvelope(
   | {
       kind: 'rehydrate_required';
     } {
-  const envelope = JSON.parse(payload);
+  const envelope: unknown = JSON.parse(payload);
   if (isRehydrateRequiredEnvelope(envelope)) {
     return { kind: 'rehydrate_required' };
   }
@@ -322,10 +322,7 @@ export function useAgent() {
                   messageTreeRef.current ?? undefined
                 );
                 if (result.kind === 'rehydrate_required') {
-                  void recoverConversationProjection(
-                    sessionId,
-                    connectedSessionFilterRef.current
-                  );
+                  void recoverConversationProjection(sessionId, connectedSessionFilterRef.current);
                   return;
                 }
                 const projection = result.projection;

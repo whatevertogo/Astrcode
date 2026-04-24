@@ -1,13 +1,43 @@
 //! 输入候选（composer options）相关 DTO。
 //!
-//! 单个候选项已经是跨层共享的 canonical 读模型，协议层直接复用 `core`；
-//! 外层响应壳仍由 protocol 拥有。
+//! 单个候选项由 host-session 拥有；协议层保留同构 wire DTO，
+//! 避免 protocol 反向依赖 runtime owner crate。
 
-pub use astrcode_core::{
-    ComposerOption as ComposerOptionDto, ComposerOptionActionKind as ComposerOptionActionKindDto,
-    ComposerOptionKind as ComposerOptionKindDto,
-};
 use serde::{Deserialize, Serialize};
+
+/// 输入候选项的来源类别。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposerOptionKindDto {
+    Command,
+    Skill,
+    Capability,
+}
+
+/// 输入候选项被选择后的动作类型。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposerOptionActionKindDto {
+    InsertText,
+    ExecuteCommand,
+}
+
+/// 单个输入候选项的 wire DTO。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerOptionDto {
+    pub kind: ComposerOptionKindDto,
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub insert_text: String,
+    pub action_kind: ComposerOptionActionKindDto,
+    pub action_value: String,
+    #[serde(default)]
+    pub badges: Vec<String>,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+}
 
 /// 输入候选列表响应。
 ///

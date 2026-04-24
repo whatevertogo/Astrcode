@@ -46,10 +46,9 @@
 | `writeFile` | 写入或创建文件，并返回结构化 diff metadata |
 | `editFile` | 精确替换文件内容（唯一匹配验证），并返回结构化 diff metadata |
 | `apply_patch` | 应用 unified diff 格式的多文件批量变更 |
-| `listDir` | 列出目录内容 |
 | `findFiles` | Glob 模式文件搜索 |
 | `grep` | 正则表达式内容搜索 |
-| `shell` | 执行 Shell 命令，stdout/stderr 以流式事件增量展示 |
+| `shell` | 查看目录或执行 Shell 命令，stdout/stderr 以流式事件增量展示 |
 | `tool_search` | 搜索可用工具 |
 | `spawn` | 创建子 Agent |
 | `send` | 向 Agent 发送消息 |
@@ -236,7 +235,8 @@ cd frontend && npm run build
     "maxToolConcurrency": 10,
     "compactKeepRecentTurns": 4,
     "compactKeepRecentUserMessages": 8,
-    "compactMaxOutputTokens": 20000
+    "compactMaxOutputTokens": 20000,
+    "maxOutputContinuationAttempts": 3
   }
 }
 ```
@@ -247,6 +247,7 @@ cd frontend && npm run build
 | `compactKeepRecentTurns` | 4 | 压缩时保留最近的 turn 数 |
 | `compactKeepRecentUserMessages` | 8 | 压缩时额外保留最近真实用户消息的数量（原文重新注入） |
 | `compactMaxOutputTokens` | 20000 | 压缩请求的最大输出 token 上限（自动取模型限制的较小值） |
+| `maxOutputContinuationAttempts` | 3 | 单轮 LLM 输出因 max tokens 截断后的最大续写次数 |
 
 ### 内建环境变量
 
@@ -371,7 +372,7 @@ AstrCode/
 - 健康状态独立维护：`Unknown / Healthy / Degraded / Unavailable`
 - 能力路由与权限检查
 - 流式执行支持
-- 提供 Rust SDK（`crates/sdk`），包含 `ToolHandler`、`HookRegistry`、`PluginContext`、`StreamWriter`
+- 旧 Rust SDK（`crates/sdk`）与 `crates/plugin` 已归档，不再参与 workspace 编译；当前正式宿主边界为 `plugin-host`
 - 插件握手交换的是 `CapabilityWireDescriptor`；宿主内部消费和决策始终基于 `CapabilitySpec`
 
 ### 会话持久化与上下文压缩

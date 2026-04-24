@@ -1,10 +1,8 @@
-use astrcode_core::{
-    AgentEventContext, CancelToken, SpawnAgentParams, ToolContext,
-    agent::executor::SubAgentExecutor,
-};
+use astrcode_core::{AgentEventContext, CancelToken, SpawnAgentParams};
+use astrcode_tool_contract::ToolContext;
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode},
+    http::{Request, Response, StatusCode},
 };
 use tower::ServiceExt;
 
@@ -17,14 +15,35 @@ use crate::{
 // Why: 这些契约测试是 API 接口稳定性的核心保障，
 // 防止 server 在重构后回退到隐式容错或启发式行为。
 
+async fn submit_prompt_request(
+    state: &crate::AppState,
+    session_id: &str,
+    request: serde_json::Value,
+) -> Response<Body> {
+    build_api_router()
+        .with_state(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{session_id}/prompts"))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&request).expect("request should serialize"),
+                ))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned")
+}
+
 async fn spawn_test_child_agent(
     state: &crate::AppState,
     session_id: &str,
     working_dir: &std::path::Path,
 ) -> String {
     state
-        .app
-        .kernel()
+        .agent_control
         .register_root_agent(
             "root-agent".to_string(),
             session_id.to_string(),
@@ -45,8 +64,7 @@ async fn spawn_test_child_agent(
     ));
 
     state
-        .app
-        .agent()
+        .subagent_executor
         .launch(
             SpawnAgentParams {
                 r#type: Some("explore".to_string()),
@@ -76,7 +94,7 @@ async fn submit_prompt_contract_returns_accepted_shape() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -114,15 +132,17 @@ async fn fork_session_contract_returns_new_session_meta() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
-    state
-        .app
-        .submit_prompt(&created.session_id, "hello".to_string())
-        .await
-        .expect("prompt should be accepted");
+    let submit_response = submit_prompt_request(
+        &state,
+        &created.session_id,
+        serde_json::json!({ "text": "hello" }),
+    )
+    .await;
+    assert_eq!(submit_response.status(), StatusCode::ACCEPTED);
     let app = build_api_router().with_state(state);
 
     let response = app
@@ -154,7 +174,7 @@ async fn fork_session_contract_accepts_completed_turn_id() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -191,7 +211,7 @@ async fn fork_session_contract_rejects_unfinished_turn_id() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -232,7 +252,7 @@ async fn fork_session_contract_rejects_mutually_exclusive_request() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -302,7 +322,7 @@ async fn delete_project_contract_deletes_sessions_for_canonical_working_dir() {
     let alias = project.path().join(".");
     let working_dir_query = alias.display().to_string().replace('\\', "/");
     let created = state
-        .app
+        .session_catalog
         .create_session(alias.display().to_string())
         .await
         .expect("session should be created");
@@ -322,8 +342,8 @@ async fn delete_project_contract_deletes_sessions_for_canonical_working_dir() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let list = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list");
     assert!(
@@ -342,7 +362,7 @@ async fn subrun_status_contract_returns_default_for_missing_subrun() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -392,7 +412,7 @@ async fn subrun_cancel_contract_returns_not_found_for_missing_subrun() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -442,7 +462,7 @@ async fn conversation_snapshot_contract_rejects_invalid_focus() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -489,7 +509,7 @@ async fn subrun_cancel_route_returns_not_found_after_removal() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -510,7 +530,7 @@ async fn subrun_cancel_route_returns_not_found_after_removal() {
         .await
         .expect("response should be returned");
 
-    // 旧 cancel route 已删除，统一走 close
+    // cancel route 已删除，统一走 close。
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
@@ -521,7 +541,7 @@ async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -566,7 +586,7 @@ async fn close_agent_route_accepts_empty_json_body() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");
@@ -601,7 +621,7 @@ async fn close_agent_route_returns_not_found_for_unknown_agent() {
     let (state, _guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
-        .app
+        .session_catalog
         .create_session(temp_dir.path().display().to_string())
         .await
         .expect("session should be created");

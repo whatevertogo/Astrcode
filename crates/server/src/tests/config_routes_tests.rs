@@ -1,4 +1,4 @@
-use astrcode_core::StorageEventPayload;
+use astrcode_core::{Phase, SessionId, StorageEventPayload, UserMessageOrigin};
 use astrcode_protocol::http::{
     CompactSessionResponse, ConfigReloadResponse, PromptAcceptedResponse,
 };
@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use crate::{
     AUTH_HEADER_NAME,
     routes::build_api_router,
-    test_support::{mark_session_running, stored_events_for_session, test_state},
+    test_support::{mark_session_running, test_state},
 };
 
 async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Response<Body>) -> T {
@@ -19,6 +19,26 @@ async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Respons
         .await
         .expect("response body should be readable");
     serde_json::from_slice(&bytes).expect("response should deserialize")
+}
+
+async fn submit_prompt_request(
+    state: &crate::AppState,
+    session_id: &str,
+    request: serde_json::Value,
+) -> axum::http::Response<Body> {
+    build_api_router()
+        .with_state(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/sessions/{session_id}/prompts"))
+                .header(AUTH_HEADER_NAME, "browser-token")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .expect("request should be valid"),
+        )
+        .await
+        .expect("response should be returned")
 }
 
 #[tokio::test]
@@ -41,14 +61,14 @@ async fn config_reload_returns_runtime_status_when_idle() {
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let payload: ConfigReloadResponse = json_body(response).await;
     assert!(!payload.reloaded_at.is_empty());
-    assert_eq!(payload.status.runtime_name, "astrcode-application");
+    assert_eq!(payload.status.runtime_name, "astrcode-server");
 }
 
 #[tokio::test]
 async fn config_reload_rejects_when_session_is_running() {
     let (state, _guard) = test_state(None).await;
     let session = state
-        .app
+        .session_catalog
         .create_session(
             tempfile::tempdir()
                 .expect("tempdir")
@@ -61,9 +81,9 @@ async fn config_reload_rejects_when_session_is_running() {
     assert!(
         !state
             ._runtime_handles
-            .session_runtime
-            .list_running_sessions()
-            .contains(&session.session_id.clone().into())
+            .session_runtime_test_support
+            .list_running_session_ids()
+            .contains(&session.session_id)
     );
     mark_session_running(&state, &session.session_id).await;
     let app = build_api_router().with_state(state);
@@ -84,10 +104,10 @@ async fn config_reload_rejects_when_session_is_running() {
 }
 
 #[tokio::test]
-async fn compact_route_defers_when_session_is_busy() {
+async fn compact_route_accepts_immediately_when_only_previous_busy_flag_is_set() {
     let (state, _guard) = test_state(None).await;
     let session = state
-        .app
+        .session_catalog
         .create_session(
             tempfile::tempdir()
                 .expect("tempdir")
@@ -100,9 +120,9 @@ async fn compact_route_defers_when_session_is_busy() {
     assert!(
         !state
             ._runtime_handles
-            .session_runtime
-            .list_running_sessions()
-            .contains(&session.session_id.clone().into())
+            .session_runtime_test_support
+            .list_running_session_ids()
+            .contains(&session.session_id)
     );
     mark_session_running(&state, &session.session_id).await;
     let app = build_api_router().with_state(state.clone());
@@ -130,19 +150,9 @@ async fn compact_route_defers_when_session_is_busy() {
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let payload: CompactSessionResponse = json_body(response).await;
     assert!(payload.accepted);
-    assert!(payload.deferred);
-    let terminal_facts = state
-        .app
-        .terminal_snapshot_facts(&session.session_id)
-        .await
-        .expect("terminal facts should reflect pending compact");
-    assert!(terminal_facts.control.manual_compact_pending);
     assert!(
-        terminal_facts
-            .slash_candidates
-            .iter()
-            .all(|candidate| candidate.id != "compact"),
-        "pending compact should be observed through terminal discovery facts"
+        !payload.deferred,
+        "session runtime busy state alone should not defer host-session compaction"
     );
 }
 
@@ -150,7 +160,7 @@ async fn compact_route_defers_when_session_is_busy() {
 async fn prompt_route_roundtrips_accepted_execution_control() {
     let (state, _guard) = test_state(None).await;
     let session = state
-        .app
+        .session_catalog
         .create_session(
             tempfile::tempdir()
                 .expect("tempdir")
@@ -193,7 +203,7 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
 async fn prompt_route_accepts_structured_skill_invocation() {
     let (state, _guard) = test_state(None).await;
     let session = state
-        .app
+        .session_catalog
         .create_session(
             tempfile::tempdir()
                 .expect("tempdir")
@@ -236,7 +246,7 @@ async fn prompt_route_accepts_structured_skill_invocation() {
 async fn prompt_route_rejects_unknown_skill_invocation() {
     let (state, _guard) = test_state(None).await;
     let session = state
-        .app
+        .session_catalog
         .create_session(
             tempfile::tempdir()
                 .expect("tempdir")
@@ -273,10 +283,10 @@ async fn prompt_route_rejects_unknown_skill_invocation() {
 }
 
 #[tokio::test]
-async fn prompt_submission_registers_session_root_agent_context() {
+async fn prompt_submission_starts_root_runtime() {
     let (state, _guard) = test_state(None).await;
     let session = state
-        .app
+        .session_catalog
         .create_session(
             tempfile::tempdir()
                 .expect("tempdir")
@@ -287,50 +297,52 @@ async fn prompt_submission_registers_session_root_agent_context() {
         .await
         .expect("session should be created");
 
-    state
-        .app
-        .submit_prompt(&session.session_id, "hello".to_string())
-        .await
-        .expect("prompt should be accepted");
+    let response = submit_prompt_request(
+        &state,
+        &session.session_id,
+        serde_json::json!({ "text": "hello" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 
     let root_status = state
-        .app
-        .get_root_agent_status(&session.session_id)
-        .await
-        .expect("root status query should succeed")
-        .expect("ordinary prompt session should register an implicit root agent");
+        .agent_control
+        .query_root_status(&session.session_id)
+        .await;
     assert!(
-        root_status.agent_id.starts_with("root-agent:"),
-        "implicit root agent id should be session-scoped: {}",
-        root_status.agent_id
+        root_status.is_some(),
+        "prompt route should materialize the root agent and start the runtime path"
     );
-    assert_eq!(root_status.agent_profile, "default");
-
-    let events = stored_events_for_session(&state, &session.session_id).await;
-    let user_message = events
-        .into_iter()
-        .find(|stored| {
-            matches!(
-                stored.event.payload,
-                StorageEventPayload::UserMessage { .. }
-            )
-        })
-        .expect("user message event should exist");
-    assert_eq!(
-        user_message.event.agent.agent_id.as_deref(),
-        Some(root_status.agent_id.as_str())
+    let stored = state
+        .session_catalog
+        .replay_stored_events(&SessionId::from(session.session_id.clone()))
+        .await
+        .expect("stored events should replay");
+    assert!(
+        stored.iter().any(|stored| matches!(
+            &stored.event.payload,
+            StorageEventPayload::UserMessage { content, origin, .. }
+                if content == "hello" && *origin == UserMessageOrigin::User
+        )),
+        "prompt route should persist user input before the runtime finishes"
     );
-    assert_eq!(
-        user_message.event.agent.agent_profile.as_deref(),
-        Some("default")
+    let control = state
+        .session_catalog
+        .session_control_state(&SessionId::from(session.session_id.clone()))
+        .await
+        .expect("control state should read");
+    assert_eq!(control.phase, Phase::Thinking);
+    assert!(
+        control.active_turn_id.is_some(),
+        "accepted prompt should keep input locked while the turn is active"
     );
 }
 
 #[tokio::test]
-async fn prompt_route_rejects_invalid_execution_control() {
+async fn prompt_route_ignores_unknown_execution_control_fields() {
     let (state, _guard) = test_state(None).await;
     let session = state
-        .app
+        .session_catalog
         .create_session(
             tempfile::tempdir()
                 .expect("tempdir")
@@ -363,14 +375,22 @@ async fn prompt_route_rejects_invalid_execution_control() {
         .await
         .expect("response should be returned");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let payload: PromptAcceptedResponse = json_body(response).await;
+    assert_eq!(
+        payload
+            .accepted_control
+            .expect("empty control object should round-trip")
+            .manual_compact,
+        None
+    );
 }
 
 #[tokio::test]
 async fn compact_route_rejects_manual_compact_false() {
     let (state, _guard) = test_state(None).await;
     let session = state
-        .app
+        .session_catalog
         .create_session(
             tempfile::tempdir()
                 .expect("tempdir")

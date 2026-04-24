@@ -5,10 +5,14 @@
 
 use std::{fs, path::Path, time::Instant};
 
-use astrcode_core::{
-    AstrError, BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId, Result,
-    SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolPromptMetadata, session_plan_content_digest,
+use astrcode_core::{AstrError, Result, SideEffect};
+use astrcode_governance_contract::{
+    BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId,
+};
+use astrcode_host_session::session_plan_content_digest;
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -53,21 +57,20 @@ impl Tool for ExitPlanModeTool {
             .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Present the current session plan to the user and leave plan mode.",
+                    "Exit plan mode after the plan is complete and executable. Requires the plan \
+                     artifact to cover all required sections with concrete actionable items.",
                     "Only use `exitPlanMode` after you have inspected the code, persisted the \
                      current canonical plan artifact, and refined it until it is executable. If \
                      the plan is still vague, missing risks, or lacking verification steps, keep \
                      updating `upsertSessionPlan` instead of exiting.",
                 )
                 .caveat(
-                    "`exitPlanMode` first checks whether the current plan is executable, then \
-                     enforces one internal final-review checkpoint before it actually exits. Keep \
-                     that review out of the plan artifact itself unless the user explicitly asks \
-                     for it.",
+                    "Enforces a two-gate check: plan readiness (all sections filled, actionable \
+                     items present) then a final-review checkpoint. Call again after the review \
+                     to complete the exit.",
                 )
                 .example("{}")
-                .prompt_tag("plan")
-                .always_include(true),
+                .prompt_tag("plan"),
             )
     }
 
@@ -317,10 +320,7 @@ fn require_plan_mode_contract(ctx: &ToolContext) -> Result<&BoundModeToolContrac
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use astrcode_core::{
-        BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, StorageEvent,
-        StorageEventPayload,
-    };
+    use astrcode_core::{StorageEvent, StorageEventPayload, mode::ModeId as StoredModeId};
 
     use super::*;
     use crate::{
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl astrcode_core::ToolEventSink for RecordingSink {
+    impl astrcode_tool_contract::ToolEventSink for RecordingSink {
         async fn emit(&self, event: StorageEvent) -> Result<()> {
             self.events
                 .lock()
@@ -461,7 +461,7 @@ mod tests {
             [StorageEvent {
                 payload: StorageEventPayload::ModeChanged { from, to, .. },
                 ..
-            }] if *from == ModeId::plan() && *to == ModeId::code()
+            }] if *from == StoredModeId::plan() && *to == StoredModeId::code()
         ));
     }
 

@@ -165,12 +165,12 @@ pub(super) fn flush_sse_buffer(
 
 fn build_instructions(
     system_prompt: Option<&str>,
-    system_prompt_blocks: &[astrcode_core::SystemPromptBlock],
+    system_prompt_blocks: &[astrcode_governance_contract::SystemPromptBlock],
 ) -> Option<String> {
     if !system_prompt_blocks.is_empty() {
         let rendered = system_prompt_blocks
             .iter()
-            .map(astrcode_core::SystemPromptBlock::render)
+            .map(astrcode_governance_contract::SystemPromptBlock::render)
             .collect::<Vec<_>>()
             .join("\n\n");
         return (!rendered.is_empty()).then_some(rendered);

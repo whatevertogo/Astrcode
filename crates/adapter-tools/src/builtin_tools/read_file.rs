@@ -13,16 +13,17 @@
 
 use std::{
     fs,
-    io::{BufRead, BufReader, Read as _},
+    io::{BufRead, BufReader, ErrorKind, Read as _},
     path::{Path, PathBuf},
     time::Instant,
 };
 
-use astrcode_core::{
-    AstrError, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
-};
+use astrcode_core::{AstrError, Result, SideEffect};
 use astrcode_support::tool_results::maybe_persist_tool_result;
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
+};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
@@ -97,9 +98,6 @@ struct ReadFileArgs {
     /// 最多返回的行数，与 offset 配合使用。
     #[serde(default)]
     limit: Option<usize>,
-    /// 是否在每行前显示行号（默认 true），对 LLM 定位代码效率更高。
-    #[serde(default = "default_true")]
-    line_numbers: bool,
 }
 
 /// 根据文件扩展名获取图片的 MIME 类型。
@@ -179,10 +177,6 @@ fn read_image_file(
     Ok((base64_data, mime_type.to_string(), file_size))
 }
 
-fn default_true() -> bool {
-    true
-}
-
 /// 检测文件是否为二进制文件。
 ///
 /// 读取文件前 `BINARY_DETECT_SAMPLE_SIZE` 字节，检测是否包含 NUL 字节。
@@ -243,10 +237,6 @@ impl Tool for ReadFileTool {
                         "minimum": 1,
                         "description": "Maximum number of lines to read from the offset."
                     },
-                    "lineNumbers": {
-                        "type": "boolean",
-                        "description": "Prepend line numbers to each line (default true)"
-                    }
                 },
                 "required": ["path"],
                 "additionalProperties": false
@@ -263,23 +253,16 @@ impl Tool for ReadFileTool {
             .compact_clearable(true)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Read file contents — supports text, images (base64), persisted tool-result \
-                     chunks, and targeted line-range reads.",
-                    "Use after `grep`/`findFiles` gives you a path. For normal source files, use \
-                     `offset` (**0-based** line) + `limit` to read a specific range; set \
-                     `lineNumbers: false` to skip line-number prefixes. For persisted large tool \
-                     results, prefer chunked reads with `charOffset` + `maxChars` instead of \
-                     trying to inline the whole file again.",
+                    "Read known files. Use `offset`/`limit` for line ranges and `charOffset` for \
+                     persisted tool-result chunks.",
+                    "`readFile` reads files, not directories. Use it after `findFiles`, `grep`, \
+                     or user-provided paths identify a file. Use `offset` + `limit` for normal \
+                     source files and `charOffset` + `maxChars` for persisted large tool \
+                     results.",
                 )
                 .caveat(
-                    "If output is truncated, continue from the next chunk. For normal files, use \
-                     `offset` + `limit`; for persisted tool results, use `charOffset` + \
-                     `maxChars`. Do not retry by requesting the whole large result again.",
-                )
-                .example("Read lines 50–100: { path: \"src/main.rs\", offset: 50, limit: 50 }")
-                .example(
-                    "Read the first chunk of a persisted tool result: { path: \
-                     \"C:/.../tool-results/call-1.txt\", charOffset: 0, maxChars: 20000 }",
+                    "If output is truncated, continue from the next range or chunk instead of \
+                     rereading the whole file.",
                 )
                 .prompt_tag("filesystem")
                 .always_include(true),
@@ -327,6 +310,63 @@ impl Tool for ReadFileTool {
         let target = resolve_read_target(ctx, &args.path)?;
         let path = target.path;
         let is_persisted_tool_result = target.persisted_relative_path.is_some();
+
+        if !is_persisted_tool_result {
+            match fs::metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => {
+                    let command = directory_inspection_command(&path);
+                    return Ok(ToolExecutionResult {
+                        tool_call_id,
+                        tool_name: "readFile".to_string(),
+                        ok: false,
+                        output: String::new(),
+                        error: Some(format!(
+                            "path is a directory, not a file: '{}'. Use `shell` to inspect it, \
+                             for example: {command}",
+                            path.display()
+                        )),
+                        metadata: Some(json!({
+                            "path": path.to_string_lossy(),
+                            "directory": true,
+                            "suggestedTool": "shell",
+                            "suggestedCommand": command,
+                        })),
+                        continuation: None,
+                        duration_ms: started_at.elapsed().as_millis() as u64,
+                        truncated: false,
+                    });
+                },
+                Ok(_) => {},
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    let mut message = format!("file does not exist: '{}'.", path.display());
+                    let similar_file = find_same_stem_file(&path);
+                    if let Some(suggestion) = &similar_file {
+                        message.push_str(&format!(" Did you mean {}?", suggestion.display()));
+                    }
+                    return Ok(ToolExecutionResult {
+                        tool_call_id,
+                        tool_name: "readFile".to_string(),
+                        ok: false,
+                        output: String::new(),
+                        error: Some(message),
+                        metadata: Some(json!({
+                            "path": path.to_string_lossy(),
+                            "notFound": true,
+                            "suggestedPath": similar_file.map(|path| path.to_string_lossy().to_string()),
+                        })),
+                        continuation: None,
+                        duration_ms: started_at.elapsed().as_millis() as u64,
+                        truncated: false,
+                    });
+                },
+                Err(error) => {
+                    return Err(AstrError::io(
+                        format!("failed reading metadata for '{}'", path.display()),
+                        error,
+                    ));
+                },
+            }
+        }
 
         // 图片文件处理：返回 base64 编码
         if is_image_file(&path) {
@@ -467,14 +507,13 @@ impl Tool for ReadFileTool {
                 args.offset.unwrap_or(0),
                 args.limit,
                 max_chars,
-                args.line_numbers,
                 ctx.cancel(),
             )?;
             total_line_count = Some(counted_total_lines);
             (text, truncated)
         } else {
             let (text, _returned_lines, truncated) =
-                read_file_full(reader, max_chars, args.line_numbers, ctx.cancel())?;
+                read_file_full(reader, max_chars, ctx.cancel())?;
             (text, truncated)
         };
 
@@ -548,6 +587,38 @@ fn total_utf8_bytes(text: &str) -> usize {
     text.len()
 }
 
+fn directory_inspection_command(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('"', "\\\"");
+    if cfg!(windows) {
+        format!("Get-ChildItem -Force -LiteralPath \"{path}\"")
+    } else {
+        format!("ls -la \"{path}\"")
+    }
+}
+
+fn find_same_stem_file(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    let requested_stem = path.file_stem()?;
+    let requested_name = path.file_name()?;
+    let entries = fs::read_dir(parent).ok()?;
+
+    for entry in entries.flatten() {
+        let candidate_path = entry.path();
+        if !candidate_path.is_file() {
+            continue;
+        }
+        let candidate_name = candidate_path.file_name()?;
+        if candidate_name == requested_name {
+            continue;
+        }
+        if candidate_path.file_stem() == Some(requested_stem) {
+            return Some(candidate_path);
+        }
+    }
+
+    None
+}
+
 fn read_persisted_tool_result_chunk(
     text: &str,
     char_offset: usize,
@@ -590,7 +661,6 @@ fn format_line(number: usize, content: &str, width: usize) -> String {
 fn read_file_full(
     reader: BufReader<fs::File>,
     max_chars: usize,
-    line_numbers: bool,
     cancel: &astrcode_core::CancelToken,
 ) -> Result<(String, usize, bool)> {
     let mut output = String::new();
@@ -602,16 +672,12 @@ fn read_file_full(
         let line = line_result.map_err(|e| AstrError::io("failed reading file line", e))?;
         line_no += 1;
 
-        let formatted = if line_numbers {
-            // 缓存行号宽度，避免每行都重新计算（避免频繁字符串分配）
-            let width = line_number_width(line_no);
-            if width > cached_width {
-                cached_width = width;
-            }
-            format_line(line_no, &line, cached_width)
-        } else {
-            line.clone()
-        };
+        // 缓存行号宽度，避免每行都重新计算（避免频繁字符串分配）
+        let width = line_number_width(line_no);
+        if width > cached_width {
+            cached_width = width;
+        }
+        let formatted = format_line(line_no, &line, cached_width);
 
         let remaining = max_chars.saturating_sub(output.chars().count());
         // 已超出字符预算，后续内容全部截断
@@ -656,7 +722,6 @@ fn read_lines_range(
     offset: usize,
     limit: Option<usize>,
     max_chars: usize,
-    line_numbers: bool,
     cancel: &astrcode_core::CancelToken,
 ) -> Result<(String, usize, bool)> {
     let mut output = String::new();
@@ -684,12 +749,7 @@ fn read_lines_range(
         }
 
         // line_count 是 1-based 行号（用于显示）
-        let formatted = if line_numbers {
-            // 按当前行号动态计算宽度，避免额外的全文件预扫描。
-            format_line(line_count, &line, line_number_width(line_count))
-        } else {
-            line
-        };
+        let formatted = format_line(line_count, &line, line_number_width(line_count));
 
         let remaining = max_chars.saturating_sub(output.chars().count());
         if remaining == 0 {
@@ -702,7 +762,7 @@ fn read_lines_range(
         }
 
         let take = remaining.min(formatted.chars().count());
-        if take == 0 && line_numbers {
+        if take == 0 {
             // 行号本身就超出预算
             // 同样继续扫描到 EOF，保证 total_lines 准确。
             truncated = true;
@@ -742,16 +802,77 @@ mod tests {
         let result = tool
             .execute(
                 "tc3".to_string(),
-                json!({ "path": file.to_string_lossy(), "maxChars": 3, "lineNumbers": false }),
+                json!({ "path": file.to_string_lossy(), "maxChars": 6 }),
                 &test_tool_context_for(temp.path()),
             )
             .await
             .expect("readFile should succeed");
 
-        assert_eq!(result.output, "abc");
+        assert_eq!(result.output, "   1\ta");
         let metadata = result.metadata.expect("metadata should exist");
         assert_eq!(metadata["bytes"], json!(6));
         assert_eq!(metadata["truncated"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn read_file_directory_returns_shell_recovery_hint() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let directory = temp.path().join("src");
+        tokio::fs::create_dir(&directory)
+            .await
+            .expect("directory should be created");
+        let tool = ReadFileTool;
+
+        let result = tool
+            .execute(
+                "tc-read-dir".to_string(),
+                json!({ "path": directory.to_string_lossy() }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should return a recoverable tool result");
+
+        assert!(!result.ok);
+        let error = result.error.expect("error should be present");
+        assert!(error.contains("path is a directory"));
+        assert!(error.contains("shell"));
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(metadata["directory"], json!(true));
+        assert_eq!(metadata["suggestedTool"], json!("shell"));
+    }
+
+    #[tokio::test]
+    async fn read_file_missing_file_suggests_same_stem_different_extension() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let actual = temp.path().join("TaskOutputTool.tsx");
+        tokio::fs::write(&actual, "export const x = 1;\n")
+            .await
+            .expect("write should work");
+        let requested = temp.path().join("TaskOutputTool.ts");
+        let tool = ReadFileTool;
+
+        let result = tool
+            .execute(
+                "tc-read-missing-suggestion".to_string(),
+                json!({ "path": requested.to_string_lossy() }),
+                &test_tool_context_for(temp.path()),
+            )
+            .await
+            .expect("readFile should return a recoverable tool result");
+
+        assert!(!result.ok);
+        let error = result.error.expect("error should be present");
+        assert!(error.contains("file does not exist"));
+        assert!(error.contains("Did you mean"));
+        assert!(error.contains("TaskOutputTool.tsx"));
+        let metadata = result.metadata.expect("metadata should exist");
+        assert_eq!(metadata["notFound"], json!(true));
+        assert!(
+            metadata["suggestedPath"]
+                .as_str()
+                .expect("suggested path should be present")
+                .ends_with("TaskOutputTool.tsx")
+        );
     }
 
     #[tokio::test]
@@ -765,13 +886,13 @@ mod tests {
         let result = tool
             .execute(
                 "tc4".to_string(),
-                json!({ "path": file.to_string_lossy(), "maxChars": 1, "lineNumbers": false }),
+                json!({ "path": file.to_string_lossy(), "maxChars": 6 }),
                 &test_tool_context_for(temp.path()),
             )
             .await
             .expect("readFile should succeed");
 
-        assert_eq!(result.output, "你");
+        assert_eq!(result.output, "   1\t你");
         assert!(result.truncated);
     }
 
@@ -819,8 +940,7 @@ mod tests {
                     "path": file.to_string_lossy(),
                     "offset": 1,
                     "limit": 10,
-                    "maxChars": 6,
-                    "lineNumbers": false
+                    "maxChars": 6
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -833,7 +953,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_file_line_numbers_disabled() {
+    async fn read_file_always_returns_line_numbers() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let file = temp.path().join("sample.txt");
         tokio::fs::write(&file, "line0\nline1\nline2\n")
@@ -845,16 +965,14 @@ mod tests {
             .execute(
                 "tc-no-lnum".to_string(),
                 json!({
-                    "path": file.to_string_lossy(),
-                    "lineNumbers": false
+                    "path": file.to_string_lossy()
                 }),
                 &test_tool_context_for(temp.path()),
             )
             .await
             .expect("readFile should succeed");
 
-        // 关闭行号后输出应为纯文本
-        assert_eq!(result.output, "line0\nline1\nline2");
+        assert_eq!(result.output, "   1\tline0\n   2\tline1\n   3\tline2");
     }
 
     #[tokio::test]
@@ -1027,8 +1145,7 @@ mod tests {
             .execute(
                 "tc-svg-text".to_string(),
                 json!({
-                    "path": file.to_string_lossy(),
-                    "lineNumbers": false
+                    "path": file.to_string_lossy()
                 }),
                 &test_tool_context_for(temp.path()),
             )
@@ -1036,7 +1153,7 @@ mod tests {
             .expect("readFile should succeed");
 
         assert!(result.ok);
-        assert_eq!(result.output, "<svg><rect /></svg>");
+        assert_eq!(result.output, "   1\t<svg><rect /></svg>");
         let metadata = result.metadata.expect("metadata should exist");
         assert_eq!(metadata["bytes"], json!(19));
         assert!(metadata.get("fileType").is_none());
@@ -1059,8 +1176,7 @@ mod tests {
             .execute(
                 "tc-read-outside".to_string(),
                 json!({
-                    "path": "../outside.txt",
-                    "lineNumbers": false
+                    "path": "../outside.txt"
                 }),
                 &test_tool_context_for(&workspace),
             )
@@ -1068,7 +1184,7 @@ mod tests {
             .expect("readFile should succeed");
 
         assert!(result.ok);
-        assert_eq!(result.output, "outside");
+        assert_eq!(result.output, "   1\toutside");
         let metadata = result.metadata.expect("metadata should exist");
         assert_eq!(
             metadata["path"],

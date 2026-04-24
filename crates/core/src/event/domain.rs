@@ -8,7 +8,8 @@ use serde_json::Value;
 use crate::{
     AgentEventContext, ChildSessionNotification, CompactAppliedMeta, CompactTrigger,
     PromptMetricsPayload, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SubRunResult, ToolExecutionResult, ToolOutputStream,
+    SubRunResult,
+    action::{ToolExecutionResult, ToolOutputStream},
 };
 
 /// 会话阶段
@@ -69,6 +70,14 @@ pub enum AgentEvent {
         turn_id: String,
         agent: AgentEventContext,
         delta: String,
+    },
+    /// provider 流式响应坏流后开始重试。
+    StreamRetryStarted {
+        turn_id: String,
+        agent: AgentEventContext,
+        attempt: u32,
+        max_attempts: u32,
+        reason: String,
     },
     /// 助手消息（完整内容）
     AssistantMessage {

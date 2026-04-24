@@ -3,12 +3,9 @@
 //! 将 MCP 服务器握手响应中的 `instructions`
 //! 转换为 `PromptDeclaration`，注入到 Astrcode 的 prompt 组装管线。
 
-use astrcode_adapter_prompt::{
-    block::PromptLayer,
-    prompt_declaration::{
-        PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-        PromptDeclarationSource,
-    },
+use astrcode_prompt_contract::{
+    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    PromptDeclarationSource, SystemPromptLayer,
 };
 
 /// 将 MCP 服务器的 instructions 转换为 PromptDeclaration。
@@ -24,7 +21,7 @@ pub fn instructions_to_prompt_declaration(
         title: format!("MCP Server: {}", server_name),
         content: instructions.to_string(),
         render_target: PromptDeclarationRenderTarget::System,
-        layer: PromptLayer::default(),
+        layer: SystemPromptLayer::default(),
         kind: PromptDeclarationKind::ExtensionInstruction,
         priority_hint: None,
         always_include: false,

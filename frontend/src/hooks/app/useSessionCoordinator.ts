@@ -1,4 +1,4 @@
-import { useCallback, useState, type Dispatch, type MutableRefObject } from 'react';
+import { useCallback, useRef, useState, type Dispatch, type MutableRefObject } from 'react';
 import { ensureKnownProjects } from '../../lib/knownProjects';
 import { groupSessionsByProject, replaceSessionMessages } from '../../store/utils';
 import { findMatchingSessionId, normalizeSessionIdForCompare } from '../../lib/sessionId';
@@ -21,6 +21,65 @@ interface ActiveSubRunChildren {
 interface RefreshSessionsOptions {
   preferredSessionId?: string | null;
   preferredSubRunPath?: string[];
+}
+
+interface RefreshTargetInput {
+  availableSessionIds: string[];
+  requestedPreferredSessionId?: string | null;
+  pendingPreferredSessionId?: string | null;
+  activeSessionId?: string | null;
+  activeSubRunPath: string[];
+  requestedSubRunPath?: string[];
+  fallbackSessionId?: string | null;
+}
+
+interface RefreshTargetSelection {
+  effectivePreferredSessionId: string | null;
+  matchedPreferredSessionId: string | null;
+  nextSessionId: string | null;
+  nextActiveSubRunPath: string[];
+}
+
+export function resolveRefreshTargetSelection({
+  availableSessionIds,
+  requestedPreferredSessionId,
+  pendingPreferredSessionId,
+  activeSessionId,
+  activeSubRunPath,
+  requestedSubRunPath,
+  fallbackSessionId,
+}: RefreshTargetInput): RefreshTargetSelection {
+  const effectivePreferredSessionId =
+    requestedPreferredSessionId ?? pendingPreferredSessionId ?? null;
+  const matchedPreferredSessionId = findMatchingSessionId(
+    availableSessionIds,
+    effectivePreferredSessionId
+  );
+  const matchedActiveSessionId = findMatchingSessionId(availableSessionIds, activeSessionId);
+  const nextSessionId =
+    matchedPreferredSessionId ?? matchedActiveSessionId ?? fallbackSessionId ?? null;
+  const nextActiveSubRunPath =
+    nextSessionId !== null &&
+    effectivePreferredSessionId !== null &&
+    normalizeSessionIdForCompare(nextSessionId) ===
+      normalizeSessionIdForCompare(effectivePreferredSessionId)
+      ? requestedPreferredSessionId
+        ? (requestedSubRunPath ?? [])
+        : []
+      : nextSessionId !== null &&
+          activeSessionId !== null &&
+          activeSessionId !== undefined &&
+          normalizeSessionIdForCompare(nextSessionId) ===
+            normalizeSessionIdForCompare(activeSessionId)
+        ? activeSubRunPath
+        : [];
+
+  return {
+    effectivePreferredSessionId,
+    matchedPreferredSessionId,
+    nextSessionId,
+    nextActiveSubRunPath,
+  };
 }
 
 interface UseSessionCoordinatorOptions {
@@ -67,6 +126,7 @@ export function useSessionCoordinator({
       durable: null,
       live: null,
     });
+  const pendingPreferredSessionIdRef = useRef<string | null>(null);
 
   const loadSessionBundle = useCallback(
     async (sessionId: string, subRunPath: string[]) => {
@@ -92,6 +152,7 @@ export function useSessionCoordinator({
     async (projectId: string, sessionId: string, subRunPath: string[] = []) => {
       const activationGeneration = ++sessionActivationGenerationRef.current;
       const previousSessionId = activeSessionIdRef.current;
+      pendingPreferredSessionIdRef.current = null;
       disconnectSession();
       const loaded = await loadSessionBundle(sessionId, subRunPath);
       if (activationGeneration !== sessionActivationGenerationRef.current) {
@@ -163,39 +224,38 @@ export function useSessionCoordinator({
     async (options?: RefreshSessionsOptions) => {
       const activationGeneration = ++sessionActivationGenerationRef.current;
       const previousSessionId = activeSessionIdRef.current;
+      const requestedPreferredSessionId = options?.preferredSessionId;
+      if (requestedPreferredSessionId) {
+        pendingPreferredSessionIdRef.current = requestedPreferredSessionId;
+      }
+      const effectivePreferredSessionId =
+        requestedPreferredSessionId ?? pendingPreferredSessionIdRef.current;
       const sessionMetas = await listSessionsWithMeta();
       const knownWorkingDirs = ensureKnownProjects(sessionMetas.map((meta) => meta.workingDir));
       const availableSessionIds = sessionMetas.map((meta) => meta.sessionId);
-      const preferredSessionId = options?.preferredSessionId;
-      const matchedPreferredSessionId = findMatchingSessionId(
+      const preferredSessionIdForGrouping = findMatchingSessionId(
         availableSessionIds,
-        preferredSessionId
+        effectivePreferredSessionId
       );
-      const matchedActiveSessionId = findMatchingSessionId(
+      const activeSessionIdForGrouping = findMatchingSessionId(
         availableSessionIds,
         activeSessionIdRef.current
       );
       const projects = groupSessionsByProject(sessionMetas, knownWorkingDirs, {
         includeSessionIds: [
-          ...(matchedPreferredSessionId ? [matchedPreferredSessionId] : []),
-          ...(matchedActiveSessionId ? [matchedActiveSessionId] : []),
+          ...(preferredSessionIdForGrouping ? [preferredSessionIdForGrouping] : []),
+          ...(activeSessionIdForGrouping ? [activeSessionIdForGrouping] : []),
         ],
       });
-      const nextSessionId =
-        matchedPreferredSessionId ?? matchedActiveSessionId ?? projects[0]?.sessions[0]?.id ?? null;
-      const nextActiveSubRunPath =
-        nextSessionId !== null &&
-        preferredSessionId !== null &&
-        preferredSessionId !== undefined &&
-        normalizeSessionIdForCompare(nextSessionId) ===
-          normalizeSessionIdForCompare(preferredSessionId)
-          ? (options?.preferredSubRunPath ?? [])
-          : nextSessionId !== null &&
-              activeSessionIdRef.current !== null &&
-              normalizeSessionIdForCompare(nextSessionId) ===
-                normalizeSessionIdForCompare(activeSessionIdRef.current)
-            ? activeSubRunPathRef.current
-            : [];
+      const { nextSessionId, nextActiveSubRunPath } = resolveRefreshTargetSelection({
+        availableSessionIds,
+        requestedPreferredSessionId,
+        pendingPreferredSessionId: pendingPreferredSessionIdRef.current,
+        activeSessionId: activeSessionIdRef.current,
+        activeSubRunPath: activeSubRunPathRef.current,
+        requestedSubRunPath: options?.preferredSubRunPath,
+        fallbackSessionId: projects[0]?.sessions[0]?.id ?? null,
+      });
       const nextProjectId =
         projects.find((project) => project.sessions.some((session) => session.id === nextSessionId))
           ?.id ??
@@ -215,6 +275,13 @@ export function useSessionCoordinator({
           loaded.messageTree
         );
         activeSessionIdRef.current = nextSessionId;
+        if (
+          pendingPreferredSessionIdRef.current &&
+          normalizeSessionIdForCompare(nextSessionId) ===
+            normalizeSessionIdForCompare(pendingPreferredSessionIdRef.current)
+        ) {
+          pendingPreferredSessionIdRef.current = null;
+        }
         phaseRef.current = loaded.phase;
         setActiveSubRunChildren({
           subRuns: loaded.childSubRuns,
@@ -264,6 +331,7 @@ export function useSessionCoordinator({
       }
 
       activeSessionIdRef.current = null;
+      pendingPreferredSessionIdRef.current = null;
       phaseRef.current = 'idle';
       setActiveSubRunChildren({
         subRuns: [],

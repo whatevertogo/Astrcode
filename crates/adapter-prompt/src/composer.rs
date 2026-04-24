@@ -31,7 +31,8 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use astrcode_core::{LlmMessage, PromptCacheHints, UserMessageOrigin};
+use astrcode_core::{LlmMessage, UserMessageOrigin};
+use astrcode_prompt_contract::PromptCacheHints;
 
 use super::{
     BlockCondition, BlockContent, BlockKind, BlockSpec, PromptBlock, PromptContext,

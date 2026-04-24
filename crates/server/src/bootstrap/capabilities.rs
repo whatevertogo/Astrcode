@@ -22,7 +22,6 @@ use astrcode_adapter_tools::{
         exit_plan_mode::ExitPlanModeTool,
         find_files::FindFilesTool,
         grep::GrepTool,
-        list_dir::ListDirTool,
         read_file::ReadFileTool,
         shell::ShellTool,
         skill_tool::SkillTool,
@@ -32,19 +31,22 @@ use astrcode_adapter_tools::{
         write_file::WriteFileTool,
     },
 };
-use astrcode_application::AgentOrchestrationService;
-use astrcode_core::{SkillCatalog, SkillSpec};
+use astrcode_core::{CapabilitySpec, SkillCatalog, SkillSpec};
+use astrcode_host_session::{CollaborationExecutor, SubAgentExecutor};
+use astrcode_plugin_host::{ResourceCatalog, build_skill_catalog_base};
+use astrcode_tool_contract::Tool;
 
-use super::deps::{
-    core::{CapabilityInvoker, Result, Tool},
-    kernel::{CapabilityRouter, Kernel, ToolCapabilityInvoker},
+use super::deps::core::{CapabilityInvoker, Result};
+use crate::{
+    session_runtime_owner_bridge::ServerCapabilitySurfacePort,
+    tool_capability_invoker::ToolCapabilityInvoker,
 };
 
 /// 构建稳定本地层中的 core builtin tool invokers。
 ///
 /// 这里的“builtin”是能力来源语义，不等同于“所有稳定能力”。
 /// 例如 agent 四工具同样属于稳定本地能力，但不在本函数中构建，
-/// 因为它们依赖 `AgentOrchestrationService`，必须在更晚的组合根阶段装配。
+/// 因为它们依赖协作执行 trait object，必须在更晚的组合根阶段装配。
 pub(crate) fn build_core_tool_invokers(
     tool_search_index: Arc<ToolSearchIndex>,
     skill_catalog: Arc<dyn SkillCatalog>,
@@ -54,7 +56,6 @@ pub(crate) fn build_core_tool_invokers(
         Arc::new(WriteFileTool),
         Arc::new(EditFileTool),
         Arc::new(ApplyPatchTool),
-        Arc::new(ListDirTool),
         Arc::new(FindFilesTool),
         Arc::new(GrepTool),
         Arc::new(ShellTool),
@@ -86,12 +87,16 @@ pub(crate) fn build_core_tool_invokers(
 /// 这样 catalog 才能在后续叠加 user/project 时保持正确优先级。
 pub(crate) fn build_skill_catalog(
     home_dir: &Path,
-    mut external_base_skills: Vec<SkillSpec>,
+    external_base_skills: Vec<SkillSpec>,
+    resource_catalog: &ResourceCatalog,
 ) -> Arc<LayeredSkillCatalog> {
-    let mut base_skills = load_builtin_skills();
-    base_skills.append(&mut external_base_skills);
+    let base_build = build_skill_catalog_base(
+        load_builtin_skills(),
+        external_base_skills,
+        resource_catalog,
+    );
     Arc::new(LayeredSkillCatalog::new_with_home_dir(
-        base_skills,
+        base_build.base_skills,
         home_dir,
     ))
 }
@@ -111,32 +116,29 @@ pub(crate) fn sync_external_tool_search_index(
     tool_search_index.replace_from_specs(external_specs);
 }
 
-pub(crate) fn build_server_capability_router(
-    invokers: Vec<Arc<dyn CapabilityInvoker>>,
-) -> Result<CapabilityRouter> {
-    let router = CapabilityRouter::empty();
-    router.register_invokers(invokers)?;
-    Ok(router)
-}
-
 #[derive(Clone)]
 pub(crate) struct CapabilitySurfaceSync {
     stable_local_invokers: Vec<Arc<dyn CapabilityInvoker>>,
-    router: CapabilityRouter,
-    kernel: Arc<Kernel>,
+    capability_surface: Arc<dyn ServerCapabilitySurfacePort>,
     tool_search_index: Arc<ToolSearchIndex>,
+    current_capabilities: Arc<RwLock<Vec<CapabilitySpec>>>,
     current_external_invokers: Arc<RwLock<Vec<Arc<dyn CapabilityInvoker>>>>,
 }
 
 impl CapabilitySurfaceSync {
     pub(crate) fn new(
-        kernel: Arc<Kernel>,
+        capability_surface: Arc<dyn ServerCapabilitySurfacePort>,
         stable_local_invokers: Vec<Arc<dyn CapabilityInvoker>>,
         tool_search_index: Arc<ToolSearchIndex>,
     ) -> Self {
         Self {
-            router: kernel.gateway().capabilities().clone(),
-            kernel,
+            capability_surface,
+            current_capabilities: Arc::new(RwLock::new(
+                stable_local_invokers
+                    .iter()
+                    .map(|invoker| invoker.capability_spec())
+                    .collect(),
+            )),
             stable_local_invokers,
             tool_search_index,
             current_external_invokers: Arc::new(RwLock::new(Vec::new())),
@@ -154,16 +156,22 @@ impl CapabilitySurfaceSync {
     ) -> Result<()> {
         let mut invokers = self.stable_local_invokers.clone();
         invokers.extend(external_invokers.clone());
-        self.router.replace_invokers(invokers.clone())?;
-        self.kernel
-            .surface()
-            .replace_capabilities(&invokers, self.kernel.events());
+        self.capability_surface
+            .replace_capability_invokers(invokers.clone())?;
         let external_specs = invokers
             .iter()
             .skip(self.stable_local_invokers.len())
             .map(|invoker| invoker.capability_spec())
             .collect();
         self.tool_search_index.replace_from_specs(external_specs);
+        *self
+            .current_capabilities
+            .write()
+            .expect("capability surface sync current capabilities lock should not be poisoned") =
+            invokers
+                .iter()
+                .map(|invoker| invoker.capability_spec())
+                .collect();
         *self
             .current_external_invokers
             .write()
@@ -172,8 +180,11 @@ impl CapabilitySurfaceSync {
         Ok(())
     }
 
-    pub(crate) fn current_capabilities(&self) -> Vec<super::deps::core::CapabilitySpec> {
-        self.kernel.surface().snapshot().capability_specs
+    pub(crate) fn current_capabilities(&self) -> Vec<CapabilitySpec> {
+        self.current_capabilities
+            .read()
+            .expect("capability surface sync current capabilities lock should not be poisoned")
+            .clone()
     }
 
     pub(crate) fn current_external_invokers(&self) -> Vec<Arc<dyn CapabilityInvoker>> {
@@ -190,13 +201,14 @@ impl CapabilitySurfaceSync {
 /// 而 kernel 的 capability surface 又需要包含 agent 工具，
 /// 所以 agent 工具的注册必须在 kernel + session_runtime 构建之后单独完成。
 pub(crate) fn build_agent_tool_invokers(
-    agent_service: Arc<AgentOrchestrationService>,
+    subagent_executor: Arc<dyn SubAgentExecutor>,
+    collaboration_executor: Arc<dyn CollaborationExecutor>,
 ) -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
     let tools: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(SpawnAgentTool::new(agent_service.clone())),
-        Arc::new(SendAgentTool::new(agent_service.clone())),
-        Arc::new(CloseAgentTool::new(agent_service.clone())),
-        Arc::new(ObserveAgentTool::new(agent_service)),
+        Arc::new(SpawnAgentTool::new(subagent_executor)),
+        Arc::new(SendAgentTool::new(Arc::clone(&collaboration_executor))),
+        Arc::new(CloseAgentTool::new(Arc::clone(&collaboration_executor))),
+        Arc::new(ObserveAgentTool::new(collaboration_executor)),
     ];
     Ok(tools
         .into_iter()
@@ -226,9 +238,14 @@ pub(crate) fn build_stable_local_invokers(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        collections::HashSet,
+        sync::{Arc, RwLock},
+    };
 
     use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
+    use astrcode_plugin_host::ResourceCatalog;
+    use astrcode_tool_contract::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
@@ -236,18 +253,16 @@ mod tests {
         CapabilitySurfaceSync, build_core_tool_invokers, build_skill_catalog,
         build_stable_local_invokers,
     };
-    use crate::bootstrap::{
-        capabilities::sync_external_tool_search_index,
-        deps::{
-            core::{
+    use crate::{
+        bootstrap::{
+            capabilities::sync_external_tool_search_index,
+            deps::core::{
                 AstrError, CapabilityInvoker, CapabilityKind, CapabilitySpec,
-                CapabilitySpecBuildError, LlmEventSink, LlmOutput, LlmProvider, LlmRequest,
-                ModelLimits, PromptBuildOutput, PromptBuildRequest, PromptProvider,
-                ResourceProvider, ResourceReadResult, ResourceRequestContext, Result, Tool,
-                ToolContext, ToolDefinition, ToolExecutionResult,
+                CapabilitySpecBuildError, Result,
             },
-            kernel::{CapabilityRouter, Kernel, ToolCapabilityInvoker},
         },
+        session_runtime_owner_bridge::ServerCapabilitySurfacePort,
+        tool_capability_invoker::ToolCapabilityInvoker,
     };
 
     #[derive(Debug)]
@@ -294,63 +309,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct NoopLlmProvider;
-
-    #[async_trait]
-    impl LlmProvider for NoopLlmProvider {
-        async fn generate(
-            &self,
-            _request: LlmRequest,
-            _sink: Option<LlmEventSink>,
-        ) -> Result<LlmOutput> {
-            Err(AstrError::Validation(
-                "noop llm provider should not execute in this test".to_string(),
-            ))
-        }
-
-        fn model_limits(&self) -> ModelLimits {
-            ModelLimits {
-                context_window: 8192,
-                max_output_tokens: 4096,
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    struct NoopPromptProvider;
-
-    #[async_trait]
-    impl PromptProvider for NoopPromptProvider {
-        async fn build_prompt(&self, _request: PromptBuildRequest) -> Result<PromptBuildOutput> {
-            Ok(PromptBuildOutput {
-                system_prompt: "noop".to_string(),
-                system_prompt_blocks: Vec::new(),
-                prompt_cache_hints: Default::default(),
-                cache_metrics: Default::default(),
-                metadata: Value::Null,
-            })
-        }
-    }
-
-    #[derive(Debug)]
-    struct NoopResourceProvider;
-
-    #[async_trait]
-    impl ResourceProvider for NoopResourceProvider {
-        async fn read_resource(
-            &self,
-            _uri: &str,
-            _context: &ResourceRequestContext,
-        ) -> Result<ResourceReadResult> {
-            Ok(ResourceReadResult {
-                uri: "noop://resource".to_string(),
-                content: Value::Null,
-                metadata: Value::Null,
-            })
-        }
-    }
-
     fn invoker(name: &'static str, tags: &'static [&'static str]) -> Arc<dyn CapabilityInvoker> {
         Arc::new(
             ToolCapabilityInvoker::new(Arc::new(StaticTool { name, tags }))
@@ -358,31 +316,53 @@ mod tests {
         ) as Arc<dyn CapabilityInvoker>
     }
 
-    fn test_kernel(builtin_invokers: &[Arc<dyn CapabilityInvoker>]) -> Arc<Kernel> {
-        let mut builder = CapabilityRouter::builder();
-        for invoker in builtin_invokers {
-            builder = builder.register_invoker(Arc::clone(invoker));
+    #[derive(Default)]
+    struct TestCapabilitySurface {
+        invokers: RwLock<Vec<Arc<dyn CapabilityInvoker>>>,
+    }
+
+    impl TestCapabilitySurface {
+        fn capability_tool_names(&self) -> Vec<String> {
+            self.invokers
+                .read()
+                .expect("test capability surface lock should not be poisoned")
+                .iter()
+                .map(|invoker| invoker.capability_spec().name.to_string())
+                .collect()
         }
-        let router = builder.build().expect("router should build");
-        Arc::new(
-            Kernel::builder()
-                .with_capabilities(router)
-                .with_llm_provider(Arc::new(NoopLlmProvider))
-                .with_prompt_provider(Arc::new(NoopPromptProvider))
-                .with_resource_provider(Arc::new(NoopResourceProvider))
-                .build()
-                .expect("kernel should build"),
-        )
+    }
+
+    impl ServerCapabilitySurfacePort for TestCapabilitySurface {
+        fn replace_capability_invokers(
+            &self,
+            invokers: Vec<Arc<dyn CapabilityInvoker>>,
+        ) -> Result<()> {
+            let mut seen = HashSet::new();
+            for invoker in &invokers {
+                let name = invoker.capability_spec().name.to_string();
+                if !seen.insert(name.clone()) {
+                    return Err(AstrError::Validation(format!(
+                        "duplicate capability '{}'",
+                        name
+                    )));
+                }
+            }
+            *self
+                .invokers
+                .write()
+                .expect("test capability surface lock should not be poisoned") = invokers;
+            Ok(())
+        }
     }
 
     #[test]
     fn apply_external_invokers_keeps_previous_surface_on_failure() {
         let builtin_invoker = invoker("read_file", &["source:builtin"]);
         let core_tool_invokers = vec![builtin_invoker];
-        let kernel = test_kernel(&core_tool_invokers);
+        let capability_surface = Arc::new(TestCapabilitySurface::default());
         let tool_search_index = Arc::new(ToolSearchIndex::new());
         let sync = CapabilitySurfaceSync::new(
-            Arc::clone(&kernel),
+            capability_surface,
             core_tool_invokers.clone(),
             Arc::clone(&tool_search_index),
         );
@@ -446,10 +426,10 @@ mod tests {
         let agent_invoker = invoker("spawn", &["builtin", "agent"]);
         let stable_local_invokers =
             build_stable_local_invokers(vec![builtin_invoker], vec![agent_invoker]);
-        let kernel = test_kernel(&stable_local_invokers);
+        let capability_surface = Arc::new(TestCapabilitySurface::default());
         let tool_search_index = Arc::new(ToolSearchIndex::new());
         let sync = CapabilitySurfaceSync::new(
-            Arc::clone(&kernel),
+            capability_surface.clone(),
             stable_local_invokers,
             Arc::clone(&tool_search_index),
         );
@@ -457,17 +437,18 @@ mod tests {
         sync.apply_external_invokers(vec![invoker("mcp__demo__search", &["source:mcp"])])
             .expect("replace should succeed");
 
-        let names: Vec<String> = kernel.gateway().capabilities().tool_names();
+        let names = capability_surface.capability_tool_names();
         assert!(names.iter().any(|name| name == "read_file"));
         assert!(names.iter().any(|name| name == "spawn"));
         assert!(names.iter().any(|name| name == "mcp__demo__search"));
     }
 
     #[test]
-    fn build_core_tool_invokers_registers_task_write() {
+    fn build_core_tool_invokers_registers_expected_tool_surface() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let tool_search_index = Arc::new(ToolSearchIndex::new());
-        let skill_catalog = build_skill_catalog(temp.path(), Vec::new());
+        let skill_catalog =
+            build_skill_catalog(temp.path(), Vec::new(), &ResourceCatalog::default());
 
         let invokers = build_core_tool_invokers(tool_search_index, skill_catalog)
             .expect("core tool invokers should build");
@@ -477,5 +458,10 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(names.iter().any(|name| name == "taskWrite"));
+        assert!(!names.iter().any(|name| name == "listDir"));
+        assert!(names.iter().any(|name| name == "readFile"));
+        assert!(names.iter().any(|name| name == "findFiles"));
+        assert!(names.iter().any(|name| name == "grep"));
+        assert!(names.iter().any(|name| name == "shell"));
     }
 }

@@ -6,12 +6,30 @@
 pub use astrcode_core::{
     AgentCollaborationScorecardSnapshot as AgentCollaborationScorecardDto,
     ExecutionDiagnosticsSnapshot as ExecutionDiagnosticsDto,
-    OperationMetricsSnapshot as OperationMetricsDto, PluginHealth as PluginHealthDto,
-    PluginState as PluginRuntimeStateDto, ReplayMetricsSnapshot as ReplayMetricsDto,
+    OperationMetricsSnapshot as OperationMetricsDto, ReplayMetricsSnapshot as ReplayMetricsDto,
     RuntimeObservabilitySnapshot as RuntimeMetricsDto,
     SubRunExecutionMetricsSnapshot as SubRunExecutionMetricsDto,
 };
 use serde::{Deserialize, Serialize};
+
+/// 插件生命周期状态 wire DTO。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginRuntimeStateDto {
+    Discovered,
+    Initialized,
+    Failed,
+}
+
+/// 插件健康状态 wire DTO。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginHealthDto {
+    Unknown,
+    Healthy,
+    Degraded,
+    Unavailable,
+}
 
 /// 运行时能力的摘要信息。
 ///

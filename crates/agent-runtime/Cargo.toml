@@ -1,0 +1,25 @@
+[package]
+name = "astrcode-agent-runtime"
+version = "0.1.0"
+edition.workspace = true
+license-file.workspace = true
+authors.workspace = true
+
+[dependencies]
+astrcode-core = { path = "../core" }
+astrcode-context-window = { path = "../context-window" }
+astrcode-llm-contract = { path = "../llm-contract" }
+astrcode-runtime-contract = { path = "../runtime-contract" }
+astrcode-tool-contract = { path = "../tool-contract" }
+async-trait.workspace = true
+chrono.workspace = true
+log.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+astrcode-prompt-contract = { path = "../prompt-contract" }
+tempfile.workspace = true

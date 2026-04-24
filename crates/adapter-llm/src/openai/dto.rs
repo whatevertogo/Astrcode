@@ -11,7 +11,8 @@
 //! - Responses 专有类型继续使用 `serde_json::Value`（在 `responses.rs`）
 //! - 本模块只存放"两个路径都会用到"的类型和函数
 
-use astrcode_core::{LlmMessage, LlmUsage, ToolDefinition};
+use astrcode_core::{LlmMessage, ToolDefinition};
+use astrcode_llm_contract::LlmUsage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -210,5 +211,73 @@ pub(super) trait SseProcessor {
     /// 返回它。默认实现返回 `None`。
     fn take_completed_output(&mut self) -> Option<LlmOutput> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::{LlmMessage, ToolCallRequest, UserMessageOrigin};
+
+    use super::to_openai_message;
+
+    #[test]
+    fn assistant_message_without_content_or_tool_calls_serializes_empty_fields_as_none() {
+        let message = LlmMessage::Assistant {
+            content: String::new(),
+            tool_calls: Vec::new(),
+            reasoning: None,
+        };
+
+        let converted = to_openai_message(&message);
+
+        assert_eq!(converted.role, "assistant");
+        assert!(converted.content.is_none());
+        assert!(converted.tool_calls.is_none());
+        assert!(converted.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn assistant_tool_calls_serialize_without_empty_content() {
+        let message = LlmMessage::Assistant {
+            content: String::new(),
+            tool_calls: vec![ToolCallRequest {
+                id: "call-1".to_string(),
+                name: "readFile".to_string(),
+                args: serde_json::json!({"path":"README.md"}),
+            }],
+            reasoning: None,
+        };
+
+        let converted = to_openai_message(&message);
+        let tool_calls = converted
+            .tool_calls
+            .expect("assistant tool calls should be serialized");
+
+        assert_eq!(converted.role, "assistant");
+        assert!(converted.content.is_none());
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call-1");
+        assert_eq!(tool_calls[0].tool_type, "function");
+        assert_eq!(tool_calls[0].function.name, "readFile");
+        assert_eq!(tool_calls[0].function.arguments, r#"{"path":"README.md"}"#);
+    }
+
+    #[test]
+    fn user_and_tool_messages_keep_required_content_fields() {
+        let user = to_openai_message(&LlmMessage::User {
+            content: "hello".to_string(),
+            origin: UserMessageOrigin::User,
+        });
+        let tool = to_openai_message(&LlmMessage::Tool {
+            tool_call_id: "call-1".to_string(),
+            content: "result".to_string(),
+        });
+
+        assert_eq!(user.role, "user");
+        assert_eq!(user.content.as_deref(), Some("hello"));
+        assert!(user.tool_call_id.is_none());
+        assert_eq!(tool.role, "tool");
+        assert_eq!(tool.content.as_deref(), Some("result"));
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call-1"));
     }
 }

@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::Result;
-use astrcode_core::{PromptCacheHints, PromptLayerFingerprints};
+use astrcode_prompt_contract::{PromptCacheHints, PromptLayerFingerprints};
 
 use super::{
     PromptBuildOutput, PromptComposer, PromptComposerOptions, PromptContext, PromptContributor,

@@ -20,11 +20,13 @@
 
 use std::path::PathBuf;
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{CompactTrigger, LlmMessage, Result, ToolDefinition, ToolExecutionResult};
+use crate::{
+    CompactTrigger, LlmMessage,
+    action::{ToolDefinition, ToolExecutionResult},
+};
 
 /// 可被外部扩展拦截的生命周期事件。
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -35,6 +37,26 @@ pub enum HookEvent {
     PostToolUseFailure,
     PreCompact,
     PostCompact,
+}
+
+/// 新 hooks catalog 的稳定事件键。
+///
+/// 这些键是跨 owner 共享的最小语义；具体 payload、effect 解释与调度报告
+/// 归属 `agent-runtime`、`host-session` 或 `plugin-host`。
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEventKey {
+    Input,
+    Context,
+    BeforeAgentStart,
+    BeforeProviderRequest,
+    ToolCall,
+    ToolResult,
+    TurnStart,
+    TurnEnd,
+    SessionBeforeCompact,
+    ResourcesDiscover,
+    ModelSelect,
 }
 
 /// 工具调用的公共上下文。
@@ -98,79 +120,4 @@ pub struct CompactionHookResultContext {
     pub post_tokens_estimate: usize,
     pub messages_removed: usize,
     pub tokens_freed: usize,
-}
-
-/// Hook 统一输入。
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum HookInput {
-    PreToolUse(ToolHookContext),
-    PostToolUse(ToolHookResultContext),
-    PostToolUseFailure(ToolHookResultContext),
-    PreCompact(CompactionHookContext),
-    PostCompact(CompactionHookResultContext),
-}
-
-impl HookInput {
-    pub fn event(&self) -> HookEvent {
-        match self {
-            Self::PreToolUse(_) => HookEvent::PreToolUse,
-            Self::PostToolUse(_) => HookEvent::PostToolUse,
-            Self::PostToolUseFailure(_) => HookEvent::PostToolUseFailure,
-            Self::PreCompact(_) => HookEvent::PreCompact,
-            Self::PostCompact(_) => HookEvent::PostCompact,
-        }
-    }
-}
-
-/// Hook 对生命周期流程施加的影响。
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum HookOutcome {
-    /// 不改变当前流程，继续执行下一个 hook。
-    Continue,
-    /// 明确阻止当前动作继续。
-    Block { reason: String },
-    /// 仅允许 `PreToolUse` 修改工具参数。
-    ReplaceToolArgs { args: Value },
-    /// 仅允许 `PreCompact` 修改压缩上下文。
-    ///
-    /// 通过此变体，hook 可以：
-    /// - 在默认 compact prompt 后追加自定义指令
-    /// - 覆盖保留的最近 turn 数量（动态调整保留策略）
-    /// - 提供自定义摘要（跳过 LLM 调用，完全接管压缩逻辑）
-    ModifyCompactContext {
-        /// 在默认 compact prompt 后追加的系统指令。
-        /// 如果提供，将以附加段的方式拼接，避免插件直接替换整套默认压缩约束。
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        additional_system_prompt: Option<String>,
-        /// 覆盖保留的最近 turn 数量。
-        /// 如果提供，将替换 `keep_recent_turns` 配置。
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        override_keep_recent_turns: Option<usize>,
-        /// 提供自定义摘要内容。
-        /// 如果提供，将跳过 LLM 压缩调用，直接使用此摘要。
-        /// 这允许插件完全接管压缩逻辑（例如使用外部服务生成摘要）。
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        custom_summary: Option<String>,
-    },
-}
-
-#[async_trait]
-pub trait HookHandler: Send + Sync {
-    /// 稳定的人类可读名称，用于日志和报错。
-    fn name(&self) -> &str;
-
-    /// 声明本 handler 关注的生命周期节点。
-    fn event(&self) -> HookEvent;
-
-    /// 可选匹配器，用于做 tool name / source 等更细粒度筛选。
-    fn matches(&self, input: &HookInput) -> bool {
-        // 故意忽略：trait 默认实现不使用 input，只是消除未使用变量警告
-        let _ = input;
-        true
-    }
-
-    /// 执行 hook。
-    async fn run(&self, input: &HookInput) -> Result<HookOutcome>;
 }

@@ -9,8 +9,9 @@ use super::{
     spawn::DelegationMetadata,
 };
 use crate::{
-    AgentId, DeliveryId, ExecutionContinuation, ModeId, SessionId, SubRunId, TurnId,
+    AgentId, DeliveryId, ExecutionContinuation, SessionId, SubRunId, TurnId,
     error::{AstrError, Result},
+    mode::ModeId,
 };
 
 /// `send` 的稳定调用参数。

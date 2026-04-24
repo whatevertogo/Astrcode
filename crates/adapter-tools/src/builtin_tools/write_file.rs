@@ -10,9 +10,10 @@
 
 use std::{path::PathBuf, time::Instant};
 
-use astrcode_core::{
-    AstrError, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
-    ToolExecutionResult, ToolPromptMetadata,
+use astrcode_core::{AstrError, Result, SideEffect};
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -77,21 +78,11 @@ impl Tool for WriteFileTool {
                 ToolPromptMetadata::new(
                     "Create or fully replace a text file when the whole target content is known.",
                     "Use `writeFile` for file creation, regeneration, or full rewrites. Prefer \
-                     `editFile` when you only need to replace a small unique region, because that \
-                     keeps the change narrower and easier to validate.",
+                     `editFile` or `apply_patch` for narrow edits to existing files.",
                 )
                 .caveat(
                     "Overwrites the entire file. `createDirs` defaults to false — parent \
-                     directories must exist or set it to true. Relative paths resolve from the \
-                     current working directory; absolute host paths are allowed.",
-                )
-                .caveat(
-                    "For small edits to existing files, prefer `editFile` or `apply_patch` to \
-                     avoid accidentally dropping unrelated content.",
-                )
-                .example(
-                    "Create a new file: { path: \"src/utils.rs\", content: \"pub fn foo() {}\", \
-                     createDirs: true }",
+                     directories must exist or set it to true.",
                 )
                 .prompt_tag("filesystem")
                 .always_include(true),

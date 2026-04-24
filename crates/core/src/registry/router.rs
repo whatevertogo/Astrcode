@@ -10,10 +10,65 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    AgentEventContext, BoundModeToolContractSnapshot, CancelToken, CapabilitySpec,
-    ExecutionContinuation, ExecutionOwner, ExecutionResultCommon, ModeId, Result, SessionId,
-    ToolEventSink, ToolExecutionResult, ToolOutputDelta,
+    AgentEventContext, CancelToken, CapabilitySpec, ExecutionContinuation, ExecutionResultCommon,
+    InvocationKind, Result, SessionId, StorageEvent, TurnId,
+    action::{ToolExecutionResult, ToolOutputDelta},
+    mode::{BoundModeToolContractSnapshot, ModeId},
 };
+
+/// 工具调用链路的稳定归属标识。
+///
+/// 这是能力调用上下文的一部分，保留在 `core` 是为了让通用
+/// `CapabilityInvoker` 不依赖具体 tool contract。真正的工具执行接口
+/// 位于 `astrcode-tool-contract`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionOwner {
+    /// 根执行所在的 session。
+    pub root_session_id: SessionId,
+    /// 根执行所在的 turn。
+    pub root_turn_id: TurnId,
+    /// 当前工具调用若属于子执行域，则记录 sub-run id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_run_id: Option<String>,
+    /// 当前归属来源。
+    pub invocation_kind: InvocationKind,
+}
+
+impl ExecutionOwner {
+    /// 为顶层执行构造 owner。
+    pub fn root(
+        root_session_id: impl Into<SessionId>,
+        root_turn_id: impl Into<TurnId>,
+        invocation_kind: InvocationKind,
+    ) -> Self {
+        Self {
+            root_session_id: root_session_id.into(),
+            root_turn_id: root_turn_id.into(),
+            sub_run_id: None,
+            invocation_kind,
+        }
+    }
+
+    /// 在现有根归属上挂接当前 sub-run。
+    pub fn for_sub_run(&self, sub_run_id: impl Into<String>) -> Self {
+        Self {
+            root_session_id: self.root_session_id.clone(),
+            root_turn_id: self.root_turn_id.clone(),
+            sub_run_id: Some(sub_run_id.into()),
+            invocation_kind: InvocationKind::SubRun,
+        }
+    }
+}
+
+/// 能力内部产生 turn 级事件时使用的发射接口。
+///
+/// 子 Agent / 复合能力不能直接依赖 runtime 的会话写入实现，因此这里通过
+/// 最小抽象把事件交回当前 turn 的持久化/广播链路。
+#[async_trait]
+pub trait ToolEventSink: Send + Sync {
+    async fn emit(&self, event: StorageEvent) -> Result<()>;
+}
 
 /// 能力调用的上下文信息。
 #[derive(Clone)]

@@ -24,11 +24,18 @@ pub use astrcode_core::{
     ParentDeliveryPayload as ParentDeliveryPayloadDto,
     ParentDeliveryTerminalSemantics as ParentDeliveryTerminalSemanticsDto, Phase as PhaseDto,
     ProgressParentDeliveryPayload as ProgressParentDeliveryPayloadDto,
-    ResolvedExecutionLimitsSnapshot as ResolvedExecutionLimitsDto,
     ResolvedSubagentContextOverrides as ResolvedSubagentContextOverridesDto,
     SubRunFailure as SubRunFailureDto, SubRunFailureCode as SubRunFailureCodeDto,
     SubRunHandoff as SubRunHandoffDto, ToolOutputStream as ToolOutputStreamDto,
 };
+
+/// `resolvedLimits` 是 presence marker。
+///
+/// 不能直接复用 unit struct，否则 `Option<ResolvedExecutionLimitsDto>` 会被序列化成 `null`，
+/// 反序列化后无法区分 `Some` 与 `None`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedExecutionLimitsDto {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

@@ -8,7 +8,8 @@
 //! `render_system()` 将 system blocks 按优先级排序后拼接为完整的 system prompt 字符串。
 //! prepend/append 消息则直接作为 LLM 对话消息的一部分。
 
-use astrcode_core::{LlmMessage, ToolDefinition};
+use astrcode_core::LlmMessage;
+use astrcode_tool_contract::ToolDefinition;
 use serde::Serialize;
 
 use super::{PromptBlock, append_unique_tools, block::PromptLayer};

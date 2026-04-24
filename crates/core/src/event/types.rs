@@ -15,9 +15,10 @@ use serde_json::Value;
 use crate::{
     AgentCollaborationFact, AgentEventContext, AstrError, ChildSessionNotification,
     ExecutionContinuation, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,
-    InputQueuedPayload, ModeId, PersistedToolOutput, ResolvedExecutionLimitsSnapshot,
-    ResolvedSubagentContextOverrides, Result, SubRunResult, SystemPromptLayer, ToolOutputStream,
-    UserMessageOrigin, ports::PromptCacheDiagnostics,
+    InputQueuedPayload, PersistedToolOutput, ResolvedExecutionLimitsSnapshot,
+    ResolvedSubagentContextOverrides, Result, SubRunResult, UserMessageOrigin,
+    action::ToolOutputStream, mode::ModeId, policy::SystemPromptLayer,
+    prompt::PromptCacheDiagnostics,
 };
 
 /// Prompt/缓存指标共享载荷。
@@ -493,7 +494,7 @@ mod tests {
         let event: StorageEvent = serde_json::from_str(
             r#"{"type":"turnDone","turn_id":"turn-1","timestamp":"2026-01-01T00:00:00Z","reason":"custom-free-text"}"#,
         )
-        .expect("legacy turn done should deserialize");
+        .expect("previous turn done should deserialize");
 
         match event {
             StorageEvent {

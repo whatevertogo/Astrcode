@@ -5,7 +5,8 @@ use std::{
     time::Duration,
 };
 
-use astrcode_core::{SessionRecoveryCheckpoint, StorageEvent, StoredEvent, store::StoreResult};
+use astrcode_core::{StorageEvent, StoredEvent, store::StoreResult};
+use astrcode_host_session::SessionRecoveryCheckpoint;
 use tokio::sync::{Mutex, Notify, oneshot};
 
 use super::{event_log::EventLog, paths::resolve_existing_session_path_from_projects_root};

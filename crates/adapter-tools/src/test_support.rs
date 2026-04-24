@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use astrcode_core::{CancelToken, ToolContext};
+use astrcode_core::CancelToken;
+use astrcode_tool_contract::ToolContext;
 
 pub fn test_tool_context_for(path: impl Into<PathBuf>) -> ToolContext {
     let cwd = path.into();

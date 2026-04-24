@@ -1,18 +1,18 @@
 //! # Agent 生命周期与轮次结果
 //!
-//! 将旧 `AgentStatus` 拆分为两层：
+//! Agent 状态拆为两层：
 //! - `AgentLifecycleStatus`：agent 的长期生命周期（Pending → Running → Idle → Terminated）
 //! - `AgentTurnOutcome`：最近一轮执行的结束原因
 //!
-//! 拆分理由：旧 `AgentStatus` 同时承担生命周期（Pending/Running）和单轮结果（Completed/Failed），
+//! 拆分理由：单一状态同时承担生命周期（Pending/Running）和单轮结果（Completed/Failed），
 //! 无法表达"agent 完成一轮后进入空闲可继续接收指令"这一四工具模型核心状态。
 
 use serde::{Deserialize, Serialize};
 
 /// Agent 的持久生命周期状态。
 ///
-/// 与旧 `AgentStatus` 不同，该枚举只描述 agent 实例的长期存活阶段，
-/// 不包含单轮执行的具体结束原因（后者由 `AgentTurnOutcome` 表达）。
+/// 该枚举只描述 agent 实例的长期存活阶段，不包含单轮执行的具体结束原因
+/// （后者由 `AgentTurnOutcome` 表达）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentLifecycleStatus {

@@ -11,66 +11,108 @@ use std::{
 
 use astrcode_adapter_agents::AgentProfileLoader;
 use astrcode_adapter_llm::{
-    LlmClientConfig, ModelLimits,
+    LlmClientConfig,
     openai::{OpenAiProvider, OpenAiProviderCapabilities},
 };
-use astrcode_adapter_mcp::{core_port::McpResourceProvider, manager::McpConnectionManager};
-use astrcode_adapter_prompt::{
-    core_port::ComposerPromptProvider, layered_builder::default_layered_prompt_builder,
-};
 use astrcode_adapter_storage::config_store::FileConfigStore;
-use astrcode_application::{
-    ApplicationError, ProfileResolutionService,
-    config::{
-        ConfigService, PROVIDER_KIND_OPENAI, api_key, resolve_current_model,
-        resolve_openai_chat_completions_api_url, resolve_openai_responses_api_url,
-    },
-    execution::ProfileProvider,
-};
 use astrcode_core::config::{OpenAiApiMode, OpenAiProfileCapabilities};
+use astrcode_llm_contract::{LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
+use astrcode_plugin_host::{OPENAI_API_KIND, ProviderContributionCatalog};
 
 use super::deps::core::{
-    AgentProfile, AstrError, LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelConfig,
-    PromptProvider, ResolvedRuntimeConfig, ResourceProvider, Result, resolve_runtime_config,
+    AgentProfile, AstrError, ModelConfig, ResolvedRuntimeConfig, Result, resolve_runtime_config,
+};
+use crate::{
+    ApplicationError, ConfigService, ProfileProvider, ProfileResolutionService,
+    application_error_bridge::ServerRouteError,
+    config_mode_helpers,
+    config_service_bridge::ServerConfigService,
+    profile_service::{ServerProfilePort, ServerProfileService},
 };
 
 pub(crate) fn build_llm_provider(
-    config_service: Arc<ConfigService>,
+    config_service: Arc<ServerConfigService>,
     working_dir: PathBuf,
+    provider_catalog: Arc<RwLock<ProviderContributionCatalog>>,
 ) -> Arc<dyn LlmProvider> {
-    Arc::new(ConfigBackedLlmProvider::new(config_service, working_dir))
+    Arc::new(ConfigBackedLlmProvider::new(
+        config_service,
+        working_dir,
+        provider_catalog,
+    ))
 }
 
-pub(crate) fn build_prompt_provider() -> Arc<dyn PromptProvider> {
-    Arc::new(ComposerPromptProvider::new(default_layered_prompt_builder()))
-}
-
-pub(crate) fn build_resource_provider(
-    manager: Arc<McpConnectionManager>,
-) -> Arc<dyn ResourceProvider> {
-    Arc::new(McpResourceProvider::new(manager))
-}
-
-pub(crate) fn build_config_service(config_path: PathBuf) -> Result<Arc<ConfigService>> {
+pub(crate) fn build_config_service(config_path: PathBuf) -> Result<Arc<ServerConfigService>> {
     let config_store = FileConfigStore::new(config_path);
-    Ok(Arc::new(ConfigService::new(Arc::new(config_store))))
+    Ok(Arc::new(ServerConfigService::new(Arc::new(
+        ConfigService::new(Arc::new(config_store)),
+    ))))
 }
 
 pub(crate) fn build_profile_resolution_service(
     loader: AgentProfileLoader,
-) -> Result<Arc<ProfileResolutionService>> {
+) -> Result<Arc<ServerProfileService>> {
     let provider: Arc<dyn ProfileProvider> = Arc::new(LoaderBackedProfileProvider { loader });
-    Ok(Arc::new(ProfileResolutionService::new(provider)))
+    let profile_resolver = Arc::new(ProfileResolutionService::new(provider));
+    Ok(Arc::new(ServerProfileService::new(Arc::new(
+        ApplicationProfilePort {
+            inner: Arc::clone(&profile_resolver),
+        },
+    ))))
 }
 
 struct ConfigBackedLlmProvider {
-    config_service: Arc<ConfigService>,
+    config_service: Arc<ServerConfigService>,
     working_dir: PathBuf,
+    provider_catalog: Arc<RwLock<ProviderContributionCatalog>>,
     providers: RwLock<HashMap<String, Arc<dyn LlmProvider>>>,
 }
 
 struct LoaderBackedProfileProvider {
     loader: AgentProfileLoader,
+}
+
+struct ApplicationProfilePort {
+    inner: Arc<ProfileResolutionService>,
+}
+
+impl ServerProfilePort for ApplicationProfilePort {
+    fn resolve(
+        &self,
+        working_dir: &Path,
+    ) -> std::result::Result<Arc<Vec<AgentProfile>>, ServerRouteError> {
+        self.inner
+            .resolve(working_dir)
+            .map_err(application_error_to_server)
+    }
+
+    fn find_profile(
+        &self,
+        working_dir: &Path,
+        profile_id: &str,
+    ) -> std::result::Result<AgentProfile, ServerRouteError> {
+        self.inner
+            .find_profile(working_dir, profile_id)
+            .map_err(application_error_to_server)
+    }
+
+    fn resolve_global(&self) -> std::result::Result<Arc<Vec<AgentProfile>>, ServerRouteError> {
+        self.inner
+            .resolve_global()
+            .map_err(application_error_to_server)
+    }
+
+    fn invalidate(&self, working_dir: &Path) {
+        self.inner.invalidate(working_dir);
+    }
+
+    fn invalidate_global(&self) {
+        self.inner.invalidate_global();
+    }
+
+    fn invalidate_all(&self) {
+        self.inner.invalidate_all();
+    }
 }
 
 impl ProfileProvider for LoaderBackedProfileProvider {
@@ -103,10 +145,15 @@ impl std::fmt::Debug for ConfigBackedLlmProvider {
 }
 
 impl ConfigBackedLlmProvider {
-    fn new(config_service: Arc<ConfigService>, working_dir: PathBuf) -> Self {
+    fn new(
+        config_service: Arc<ServerConfigService>,
+        working_dir: PathBuf,
+        provider_catalog: Arc<RwLock<ProviderContributionCatalog>>,
+    ) -> Self {
         Self {
             config_service,
             working_dir,
+            provider_catalog,
             providers: RwLock::new(HashMap::new()),
         }
     }
@@ -114,8 +161,10 @@ impl ConfigBackedLlmProvider {
     fn resolve_spec(&self) -> std::result::Result<ResolvedLlmProviderSpec, ApplicationError> {
         let config = self
             .config_service
-            .load_overlayed_config(Some(self.working_dir.as_path()))?;
-        let selection = resolve_current_model(&config)?;
+            .load_overlayed_config(Some(self.working_dir.as_path()))
+            .map_err(server_error_to_application)?;
+        let selection = config_mode_helpers::resolve_current_model(&config)
+            .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
         let profile = config
             .profiles
             .iter()
@@ -136,23 +185,42 @@ impl ConfigBackedLlmProvider {
                     selection.model, profile.name
                 ))
             })?;
-        let api_key = api_key::resolve_api_key(profile)
+        let api_key = config_mode_helpers::resolve_api_key(profile)
             .map_err(|error| ApplicationError::Internal(error.to_string()))?;
         let limits = resolve_model_limits(&profile.provider_kind, model);
         let runtime = resolve_runtime_config(&config.runtime);
         let client_config = client_config_from_runtime(&runtime);
-        if profile.provider_kind != PROVIDER_KIND_OPENAI {
+        let provider_descriptor = {
+            let catalog = self
+                .provider_catalog
+                .read()
+                .expect("provider catalog read lock poisoned");
+            catalog
+                .provider(&profile.provider_kind)
+                .or_else(|| catalog.provider_for_api_kind(&profile.provider_kind))
+                .cloned()
+                .ok_or_else(|| {
+                    ApplicationError::InvalidArgument(format!(
+                        "unsupported provider_kind '{}'：未在 plugin-host ProviderDescriptor \
+                         catalog 中注册",
+                        profile.provider_kind
+                    ))
+                })?
+        };
+        if provider_descriptor.api_kind != OPENAI_API_KIND {
             return Err(ApplicationError::InvalidArgument(format!(
-                "unsupported provider_kind '{}'",
-                profile.provider_kind
+                "registered provider '{}' uses unsupported api_kind '{}'",
+                provider_descriptor.provider_id, provider_descriptor.api_kind
             )));
         }
         let api_mode = resolve_openai_api_mode(profile);
         let endpoint = match api_mode {
             OpenAiApiMode::ChatCompletions => {
-                resolve_openai_chat_completions_api_url(&profile.base_url)
+                config_mode_helpers::resolve_openai_chat_completions_api_url(&profile.base_url)
             },
-            OpenAiApiMode::Responses => resolve_openai_responses_api_url(&profile.base_url),
+            OpenAiApiMode::Responses => {
+                config_mode_helpers::resolve_openai_responses_api_url(&profile.base_url)
+            },
         };
         let openai_capabilities = Some(resolve_openai_provider_capabilities(
             endpoint.as_str(),
@@ -161,8 +229,9 @@ impl ConfigBackedLlmProvider {
 
         Ok(ResolvedLlmProviderSpec {
             cache_key: format!(
-                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-                profile.provider_kind,
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                provider_descriptor.provider_id,
+                provider_descriptor.api_kind,
                 match api_mode {
                     OpenAiApiMode::ChatCompletions => "chat_completions",
                     OpenAiApiMode::Responses => "responses",
@@ -181,7 +250,8 @@ impl ConfigBackedLlmProvider {
                     .map(|caps| caps.supports_stream_usage)
                     .unwrap_or(false)
             ),
-            provider_kind: profile.provider_kind.clone(),
+            provider_id: provider_descriptor.provider_id,
+            api_kind: provider_descriptor.api_kind,
             endpoint,
             api_key,
             model: model.id.clone(),
@@ -205,10 +275,10 @@ impl ConfigBackedLlmProvider {
             return Ok(existing);
         }
 
-        if spec.provider_kind != PROVIDER_KIND_OPENAI {
+        if spec.api_kind != OPENAI_API_KIND {
             return Err(AstrError::Validation(format!(
-                "unsupported provider_kind '{}'",
-                spec.provider_kind
+                "registered provider '{}' uses unsupported api_kind '{}'",
+                spec.provider_id, spec.api_kind
             )));
         }
         let provider: Arc<dyn LlmProvider> = Arc::new(OpenAiProvider::new_with_capabilities(
@@ -227,6 +297,26 @@ impl ConfigBackedLlmProvider {
             .expect("llm provider cache write lock")
             .insert(spec.cache_key, provider.clone());
         Ok(provider)
+    }
+}
+
+fn server_error_to_application(error: ServerRouteError) -> ApplicationError {
+    match error {
+        ServerRouteError::NotFound(message) => ApplicationError::NotFound(message),
+        ServerRouteError::Conflict(message) => ApplicationError::Conflict(message),
+        ServerRouteError::InvalidArgument(message) => ApplicationError::InvalidArgument(message),
+        ServerRouteError::PermissionDenied(message) => ApplicationError::PermissionDenied(message),
+        ServerRouteError::Internal(message) => ApplicationError::Internal(message),
+    }
+}
+
+fn application_error_to_server(error: ApplicationError) -> ServerRouteError {
+    match error {
+        ApplicationError::NotFound(message) => ServerRouteError::NotFound(message),
+        ApplicationError::Conflict(message) => ServerRouteError::Conflict(message),
+        ApplicationError::InvalidArgument(message) => ServerRouteError::InvalidArgument(message),
+        ApplicationError::PermissionDenied(message) => ServerRouteError::PermissionDenied(message),
+        ApplicationError::Internal(message) => ServerRouteError::Internal(message),
     }
 }
 
@@ -269,7 +359,8 @@ impl LlmProvider for ConfigBackedLlmProvider {
 #[derive(Debug, Clone)]
 struct ResolvedLlmProviderSpec {
     cache_key: String,
-    provider_kind: String,
+    provider_id: String,
+    api_kind: String,
     endpoint: String,
     api_key: String,
     model: String,
@@ -280,7 +371,7 @@ struct ResolvedLlmProviderSpec {
 
 fn resolve_model_limits(provider_kind: &str, model: &ModelConfig) -> ModelLimits {
     let default_context_window = match provider_kind {
-        PROVIDER_KIND_OPENAI => 128_000,
+        config_mode_helpers::PROVIDER_KIND_OPENAI => 128_000,
         _ => 128_000,
     };
     ModelLimits {
@@ -320,4 +411,95 @@ fn resolve_openai_provider_capabilities(
         }
     }
     resolved
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
+
+    use astrcode_adapter_storage::config_store::FileConfigStore;
+    use astrcode_core::{Config, ModelConfig, Profile};
+    use astrcode_plugin_host::{
+        OPENAI_API_KIND, PluginDescriptor, ProviderContributionCatalog, ProviderDescriptor,
+    };
+
+    use super::ConfigBackedLlmProvider;
+    use crate::{ConfigService, config_service_bridge::ServerConfigService};
+
+    fn provider_with_config(
+        config: Config,
+        catalog: ProviderContributionCatalog,
+        working_dir: &std::path::Path,
+    ) -> ConfigBackedLlmProvider {
+        let config_path = working_dir.join("config.json");
+        let store = FileConfigStore::new(config_path);
+        store.save(&config).expect("config should save");
+        ConfigBackedLlmProvider::new(
+            Arc::new(ServerConfigService::new(Arc::new(ConfigService::new(
+                Arc::new(store),
+            )))),
+            working_dir.to_path_buf(),
+            Arc::new(RwLock::new(catalog)),
+        )
+    }
+
+    fn config_for_provider_kind(provider_kind: &str) -> Config {
+        let mut model = ModelConfig::new("corp-model");
+        model.max_tokens = Some(4096);
+        model.context_limit = Some(128_000);
+        Config {
+            active_profile: "corp".to_string(),
+            active_model: "corp-model".to_string(),
+            profiles: vec![Profile {
+                name: "corp".to_string(),
+                provider_kind: provider_kind.to_string(),
+                base_url: "https://api.example.test".to_string(),
+                api_key: Some("literal:test-key".to_string()),
+                models: vec![model],
+                ..Profile::default()
+            }],
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn resolve_spec_uses_registered_provider_id_before_api_kind() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let mut descriptor = PluginDescriptor::builtin("corp-provider", "Corp Provider");
+        descriptor.providers.push(ProviderDescriptor {
+            provider_id: "corp-openai".to_string(),
+            api_kind: OPENAI_API_KIND.to_string(),
+        });
+        let catalog = ProviderContributionCatalog::from_descriptors(&[descriptor])
+            .expect("catalog should build");
+        let provider = provider_with_config(
+            config_for_provider_kind("corp-openai"),
+            catalog,
+            temp.path(),
+        );
+
+        let spec = provider.resolve_spec().expect("provider should resolve");
+
+        assert_eq!(spec.provider_id, "corp-openai");
+        assert_eq!(spec.api_kind, OPENAI_API_KIND);
+    }
+
+    #[test]
+    fn resolve_spec_keeps_api_kind_fallback_for_existing_openai_configs() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let mut descriptor = PluginDescriptor::builtin("renamed-openai", "Renamed OpenAI");
+        descriptor.providers.push(ProviderDescriptor {
+            provider_id: "renamed-openai".to_string(),
+            api_kind: OPENAI_API_KIND.to_string(),
+        });
+        let catalog = ProviderContributionCatalog::from_descriptors(&[descriptor])
+            .expect("catalog should build");
+        let provider =
+            provider_with_config(config_for_provider_kind("openai"), catalog, temp.path());
+
+        let spec = provider.resolve_spec().expect("provider should resolve");
+
+        assert_eq!(spec.provider_id, "renamed-openai");
+        assert_eq!(spec.api_kind, OPENAI_API_KIND);
+    }
 }

@@ -1,14 +1,12 @@
 //! # Agent 路由
 //!
 //! 提供 Agent Profile 查询、根执行入口和子会话状态查询。
-//! 所有路由通过 `App` 的稳定用例接口访问，不直接依赖 kernel 内部结构。
+//! 所有路由通过 server-owned bridge 访问，不直接依赖 kernel 内部结构。
 
 use std::path::PathBuf;
 
-use astrcode_application::{AgentExecuteSummary, RootExecutionRequest};
 use astrcode_protocol::http::{
-    AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, ExecutionControlDto,
-    SubRunStatusDto,
+    AgentExecuteRequestDto, AgentExecuteResponseDto, AgentProfileDto, SubRunStatusDto,
 };
 use axum::{
     Json,
@@ -20,17 +18,10 @@ use serde::Serialize;
 use crate::{
     ApiError, AppState,
     auth::require_auth,
-    mapper::{
-        from_subagent_context_overrides_dto, to_agent_execute_response_dto, to_subrun_status_dto,
-    },
+    mapper::{to_agent_execute_response_dto, to_subrun_status_dto},
+    root_execute_service::{ServerAgentExecuteSummary, ServerRootExecutionRequest},
     routes::sessions,
 };
-
-fn to_execution_control(
-    control: Option<ExecutionControlDto>,
-) -> Option<astrcode_application::ExecutionControl> {
-    control
-}
 
 pub(crate) async fn list_agents(
     State(state): State<AppState>,
@@ -38,7 +29,7 @@ pub(crate) async fn list_agents(
 ) -> Result<Json<Vec<AgentProfileDto>>, ApiError> {
     require_auth(&state, &headers, None)?;
     let profiles = state
-        .app
+        .agent_api
         .list_global_agent_profiles()
         .map_err(ApiError::from)?
         .into_iter()
@@ -57,15 +48,15 @@ pub(crate) async fn execute_agent(
         .working_dir
         .map(PathBuf::from)
         .ok_or_else(|| ApiError::bad_request("workingDir is required".to_string()))?;
-    let summary: AgentExecuteSummary = state
-        .app
-        .execute_root_agent_summary(RootExecutionRequest {
+    let summary: ServerAgentExecuteSummary = state
+        .agent_api
+        .execute_root_agent_summary(ServerRootExecutionRequest {
             agent_id: agent_id.clone(),
             working_dir: working_dir.to_string_lossy().to_string(),
             task: request.task,
             context: request.context,
-            control: to_execution_control(request.control),
-            context_overrides: from_subagent_context_overrides_dto(request.context_overrides),
+            control: request.control,
+            context_overrides: request.context_overrides,
         })
         .await
         .map_err(ApiError::from)?;
@@ -83,7 +74,7 @@ pub(crate) async fn get_subrun_status(
     require_auth(&state, &headers, None)?;
     let session_id = sessions::validate_session_path_id(&session_id)?;
     let summary = state
-        .app
+        .agent_api
         .get_subrun_status_summary(&session_id, &sub_run_id)
         .await
         .map_err(ApiError::from)?;
@@ -101,7 +92,7 @@ pub(crate) async fn close_agent(
     require_auth(&state, &headers, None)?;
     let session_id = sessions::validate_session_path_id(&session_id)?;
     let result = state
-        .app
+        .agent_api
         .close_agent(&session_id, &agent_id)
         .await
         .map_err(ApiError::from)?;

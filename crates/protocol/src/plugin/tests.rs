@@ -3,7 +3,7 @@
 //! 验证各类消息（初始化、调用、事件、结果等）的序列化/反序列化
 //! 是否正确，确保 JSON 格式与协议版本兼容。
 
-use astrcode_core::{
+use astrcode_governance_contract::{
     ActionPolicies, CapabilitySelector, ChildPolicySpec, GovernanceModeSpec, ModeArtifactDef,
     ModeExecutionPolicySpec, ModeExitGateDef, ModeId, ModePromptHooks, TransitionPolicySpec,
 };

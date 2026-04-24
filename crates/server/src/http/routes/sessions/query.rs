@@ -16,12 +16,11 @@ pub(crate) async fn list_sessions(
 ) -> Result<Json<Vec<SessionListItem>>, ApiError> {
     require_auth(&state, &headers, None)?;
     let sessions = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .map_err(ApiError::from)?
         .into_iter()
-        .map(astrcode_application::summarize_session_meta)
         .map(to_session_list_item)
         .collect();
     Ok(Json(sessions))
@@ -33,10 +32,8 @@ pub(crate) async fn list_modes(
 ) -> Result<Json<Vec<ModeSummaryDto>>, ApiError> {
     require_auth(&state, &headers, None)?;
     let modes = state
-        .app
-        .list_modes()
-        .await
-        .map_err(ApiError::from)?
+        .mode_catalog
+        .list()
         .into_iter()
         .map(|summary| ModeSummaryDto {
             id: summary.id.to_string(),
@@ -55,14 +52,14 @@ pub(crate) async fn get_session_mode(
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
     let mode = state
-        .app
-        .session_mode_state(&session_id)
+        .session_catalog
+        .session_mode_state(&session_id.into())
         .await
         .map_err(ApiError::from)?;
     Ok(Json(SessionModeStateDto {
         current_mode_id: mode.current_mode_id.to_string(),
         last_mode_changed_at: mode
             .last_mode_changed_at
-            .map(astrcode_application::format_local_rfc3339),
+            .map(astrcode_core::format_local_rfc3339),
     }))
 }

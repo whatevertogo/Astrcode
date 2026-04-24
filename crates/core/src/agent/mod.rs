@@ -14,7 +14,6 @@
 
 pub mod collaboration;
 pub mod delivery;
-pub mod executor;
 pub mod input_queue;
 pub mod lifecycle;
 pub mod lineage;
@@ -36,7 +35,7 @@ pub use lifecycle::{AgentLifecycleStatus, AgentTurnOutcome};
 pub use lineage::{
     ChildAgentRef, ChildExecutionIdentity, ChildSessionLineageKind, ChildSessionNode,
     ChildSessionNotification, ChildSessionNotificationKind, ChildSessionStatusSource,
-    LineageSnapshot, ParentExecutionRef, SubRunHandle,
+    LineageSnapshot, ParentExecutionRef,
 };
 use serde::{Deserialize, Serialize};
 pub use spawn::{

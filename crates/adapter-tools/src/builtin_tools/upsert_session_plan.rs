@@ -5,9 +5,12 @@
 
 use std::{fs, time::Instant};
 
-use astrcode_core::{
-    AstrError, Result, SessionPlanState, SessionPlanStatus, SideEffect, Tool,
-    ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
+use astrcode_core::{AstrError, Result, SideEffect};
+use astrcode_governance_contract::ModeId;
+use astrcode_host_session::{SessionPlanState, SessionPlanStatus};
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -73,22 +76,21 @@ impl Tool for UpsertSessionPlanTool {
             .side_effect(SideEffect::Local)
             .prompt(
                 ToolPromptMetadata::new(
-                    "Create or update the canonical session plan artifact.",
+                    "Create or update the session plan artifact — the single source of truth for \
+                     the current task plan.",
                     "Use `upsertSessionPlan` when plan mode needs to persist the canonical \
                      session plan markdown and its `state.json`. This tool is the only supported \
                      writer for `sessions/<id>/plan/**`.",
                 )
                 .caveat(
-                    "A session has exactly one canonical plan. Revise that plan for the same \
-                     task; if the task changes, overwrite the current canonical plan instead of \
-                     creating another one.",
+                    "One plan per session. Overwrite the existing plan when the task evolves \
+                     rather than creating a new one.",
                 )
                 .example(
                     "{ title: \"Cleanup crates\", content: \"# Plan: Cleanup crates\\n...\", \
                      status: \"draft\" }",
                 )
-                .prompt_tag("plan")
-                .always_include(true),
+                .prompt_tag("plan"),
             )
     }
 
@@ -197,7 +199,7 @@ impl Tool for UpsertSessionPlanTool {
             archived_at: existing.as_ref().and_then(|state| state.archived_at),
         };
         persist_session_plan_state(&paths.state_path, &state)?;
-        if ctx.current_mode_id() == &astrcode_core::ModeId::plan() {
+        if ctx.current_mode_id() == &ModeId::plan() {
             persist_planning_workflow_state(ctx, Some(&state))?;
         }
 
@@ -251,7 +253,9 @@ fn slugify(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId};
+    use astrcode_governance_contract::{
+        BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId,
+    };
     use serde_json::json;
 
     use super::*;

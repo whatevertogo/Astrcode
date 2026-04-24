@@ -14,9 +14,10 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{
-    Result, SideEffect, SkillCatalog, SkillSpec, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolExecutionResult, ToolPromptMetadata, normalize_skill_name,
+use astrcode_core::{Result, SideEffect, SkillCatalog, SkillSpec, normalize_skill_name};
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -204,7 +205,8 @@ fn normalize_skill_path(path: &str) -> String {
 mod tests {
     use std::sync::{Arc, RwLock};
 
-    use astrcode_core::{CancelToken, SkillCatalog, SkillSource, SkillSpec, ToolContext};
+    use astrcode_core::{CancelToken, SkillCatalog, SkillSource, SkillSpec};
+    use astrcode_tool_contract::ToolContext;
     use serde_json::json;
 
     use super::*;

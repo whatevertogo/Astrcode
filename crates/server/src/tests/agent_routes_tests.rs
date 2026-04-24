@@ -4,10 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use astrcode_core::{
-    AgentEventContext, CancelToken, SpawnAgentParams, ToolContext,
-    agent::executor::SubAgentExecutor,
-};
+use astrcode_core::{AgentEventContext, CancelToken, SpawnAgentParams};
+use astrcode_tool_contract::ToolContext;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -19,6 +17,7 @@ use crate::{
     auth::{AuthSessionManager, BootstrapAuth},
     routes::build_api_router,
     test_support::{ManualWatchHarness, ServerTestContext, test_state, test_state_with_options},
+    watch_service::WatchSource,
 };
 
 async fn json_body<T: serde::de::DeserializeOwned>(response: axum::http::Response<Body>) -> T {
@@ -87,8 +86,8 @@ async fn execute_agent_returns_not_found_for_unknown_profile_without_creating_se
     let (state, _guard) = test_state(None).await;
     let project = tempfile::tempdir().expect("tempdir should be created");
     let before = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -115,8 +114,8 @@ async fn execute_agent_returns_not_found_for_unknown_profile_without_creating_se
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let after = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -129,8 +128,8 @@ async fn execute_agent_rejects_subagent_only_profile_without_creating_session() 
     let project = tempfile::tempdir().expect("tempdir should be created");
     write_agent_profile(project.path(), "reviewer", "仓库审查");
     let before = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -157,8 +156,8 @@ async fn execute_agent_rejects_subagent_only_profile_without_creating_session() 
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let after = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -170,8 +169,8 @@ async fn execute_agent_rejects_invalid_execution_control_before_creating_session
     let (state, _guard) = test_state(None).await;
     let project = tempfile::tempdir().expect("tempdir should be created");
     let before = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -201,8 +200,8 @@ async fn execute_agent_rejects_invalid_execution_control_before_creating_session
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let after = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -214,8 +213,8 @@ async fn execute_agent_rejects_unsupported_context_overrides_before_creating_ses
     let (state, _guard) = test_state(None).await;
     let project = tempfile::tempdir().expect("tempdir should be created");
     let before = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -245,8 +244,8 @@ async fn execute_agent_rejects_unsupported_context_overrides_before_creating_ses
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let after = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -261,13 +260,12 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
     let project_dir = normalize_path(project.path());
 
     let parent = state
-        .app
+        .session_catalog
         .create_session(project.path().display().to_string())
         .await
         .expect("parent session should be created");
     state
-        .app
-        .kernel()
+        .agent_control
         .register_root_agent(
             "root-agent".to_string(),
             parent.session_id.clone(),
@@ -288,8 +286,7 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
     ));
 
     let result = state
-        .app
-        .agent()
+        .subagent_executor
         .launch(
             SpawnAgentParams {
                 r#type: Some("reviewer".to_string()),
@@ -319,7 +316,7 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
         .expect("child session artifact should exist");
 
     let subrun = state
-        .app
+        .agent_api
         .get_subrun_status(&child_agent_id)
         .await
         .expect("subrun query should succeed")
@@ -340,8 +337,8 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
     );
 
     let child_meta = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .into_iter()
@@ -359,13 +356,12 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
     let project = tempfile::tempdir().expect("tempdir should be created");
 
     let parent = state
-        .app
+        .session_catalog
         .create_session(project.path().display().to_string())
         .await
         .expect("parent session should be created");
     state
-        .app
-        .kernel()
+        .agent_control
         .register_root_agent(
             "root-agent".to_string(),
             parent.session_id.clone(),
@@ -375,8 +371,8 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
         .expect("root agent should be registered");
 
     let before = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -392,8 +388,7 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
     ));
 
     let error = state
-        .app
-        .agent()
+        .subagent_executor
         .launch(
             SpawnAgentParams {
                 r#type: Some("missing".to_string()),
@@ -411,8 +406,8 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
     );
 
     let after = state
-        .app
-        .list_sessions()
+        .session_catalog
+        .list_session_metas()
         .await
         .expect("sessions should list")
         .len();
@@ -437,13 +432,12 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
     let project = tempfile::tempdir().expect("tempdir should be created");
     write_agent_profile(project.path(), "reviewer", "仓库审查");
     let parent = initial_runtime
-        .app
+        .session_catalog
         .create_session(project.path().display().to_string())
         .await
         .expect("parent session should be created");
     initial_runtime
-        .app
-        .kernel()
+        .agent_control
         .register_root_agent(
             "root-agent".to_string(),
             parent.session_id.clone(),
@@ -464,8 +458,7 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
     ));
 
     let result = initial_runtime
-        .app
-        .agent()
+        .subagent_executor
         .launch(
             SpawnAgentParams {
                 r#type: Some("reviewer".to_string()),
@@ -489,7 +482,7 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
         .expect("child agent artifact should exist");
 
     initial_runtime
-        .app
+        .agent_api
         .close_agent(&parent.session_id, &child_agent_id)
         .await
         .expect("child should be closable so live handle disappears");
@@ -508,7 +501,16 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
     let auth_sessions = std::sync::Arc::new(AuthSessionManager::default());
     auth_sessions.issue_test_token("browser-token");
     let app = build_api_router().with_state(AppState {
-        app: std::sync::Arc::clone(&reloaded_runtime.app),
+        agent_api: std::sync::Arc::clone(&reloaded_runtime.agent_api),
+        agent_control: std::sync::Arc::clone(&reloaded_runtime.agent_control),
+        config: std::sync::Arc::clone(&reloaded_runtime.config),
+        session_catalog: std::sync::Arc::clone(&reloaded_runtime.session_catalog),
+        profiles: std::sync::Arc::clone(&reloaded_runtime.profiles),
+        subagent_executor: std::sync::Arc::clone(&reloaded_runtime.subagent_executor),
+        mcp_service: std::sync::Arc::clone(&reloaded_runtime.mcp_service),
+        skill_catalog: std::sync::Arc::clone(&reloaded_runtime.skill_catalog),
+        resource_catalog: std::sync::Arc::clone(&reloaded_runtime.resource_catalog),
+        mode_catalog: std::sync::Arc::clone(&reloaded_runtime.mode_catalog),
         governance: std::sync::Arc::clone(&reloaded_runtime.governance),
         auth_sessions,
         bootstrap_auth: BootstrapAuth::new(
@@ -545,7 +547,7 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
         payload
             .resolved_limits
             .expect("durable fallback should expose resolved limits"),
-        astrcode_protocol::http::ResolvedExecutionLimitsDto
+        astrcode_protocol::http::ResolvedExecutionLimitsDto {}
     );
 }
 
@@ -593,11 +595,11 @@ async fn scoped_agent_profile_watch_refreshes_profiles_without_restart() {
     let scoped_working_dir = project.path().display().to_string();
     write_agent_profile(project.path(), "reviewer", "初始描述");
     let session = state
-        .app
+        .session_catalog
         .create_session(scoped_working_dir.clone())
         .await
         .expect("session should be created to register watch source");
-    let scoped_source = astrcode_application::WatchSource::AgentDefinitions {
+    let scoped_source = WatchSource::AgentDefinitions {
         working_dir: session.working_dir.clone(),
     };
     watch
@@ -606,9 +608,11 @@ async fn scoped_agent_profile_watch_refreshes_profiles_without_restart() {
         .expect("scoped watch source should be registered before emitting changes");
 
     let first = state
-        .app
-        .list_agent_profiles_for_working_dir(project.path())
-        .expect("profiles should resolve");
+        .profiles
+        .resolve(project.path())
+        .expect("profiles should resolve")
+        .as_ref()
+        .clone();
     let first_reviewer = first
         .iter()
         .find(|profile| profile.id == "reviewer")
@@ -623,9 +627,10 @@ async fn scoped_agent_profile_watch_refreshes_profiles_without_restart() {
 
     wait_until(Duration::from_secs(5), || {
         state
-            .app
-            .list_agent_profiles_for_working_dir(project.path())
+            .profiles
+            .resolve(project.path())
             .ok()
+            .map(|profiles| profiles.as_ref().clone())
             .and_then(|profiles| {
                 profiles
                     .into_iter()
@@ -652,16 +657,20 @@ async fn global_agent_profile_watch_invalidates_scoped_cache_without_restart() {
     )
     .await
     .expect("server runtime should bootstrap");
-    let app = std::sync::Arc::clone(&runtime.app);
     let _runtime_handles = std::sync::Arc::clone(&runtime.handles);
     let project = tempfile::tempdir().expect("tempdir should be created");
-    app.create_session(project.path().display().to_string())
+    runtime
+        .session_catalog
+        .create_session(project.path().display().to_string())
         .await
         .expect("session should be created to register watch source");
 
-    let scoped_before = app
-        .list_agent_profiles_for_working_dir(project.path())
-        .expect("scoped profiles should resolve");
+    let scoped_before = runtime
+        .profiles
+        .resolve(project.path())
+        .expect("scoped profiles should resolve")
+        .as_ref()
+        .clone();
     assert_eq!(
         scoped_before
             .iter()
@@ -670,7 +679,8 @@ async fn global_agent_profile_watch_invalidates_scoped_cache_without_restart() {
             .description,
         "全局初始描述"
     );
-    let global_before = app
+    let global_before = runtime
+        .agent_api
         .list_global_agent_profiles()
         .expect("global profiles should resolve");
     assert_eq!(
@@ -685,14 +695,16 @@ async fn global_agent_profile_watch_invalidates_scoped_cache_without_restart() {
     tokio::time::sleep(Duration::from_millis(150)).await;
     write_global_agent_profile(context.home_dir(), "watcher-profile", "全局更新描述");
     watch.emit(
-        astrcode_application::WatchSource::GlobalAgentDefinitions,
+        WatchSource::GlobalAgentDefinitions,
         vec![".astrcode/agents/watcher-profile.md".to_string()],
     );
 
     wait_until(Duration::from_secs(5), || {
-        let scoped_updated = app
-            .list_agent_profiles_for_working_dir(project.path())
+        let scoped_updated = runtime
+            .profiles
+            .resolve(project.path())
             .ok()
+            .map(|profiles| profiles.as_ref().clone())
             .and_then(|profiles| {
                 profiles
                     .into_iter()
@@ -700,7 +712,8 @@ async fn global_agent_profile_watch_invalidates_scoped_cache_without_restart() {
                     .map(|profile| profile.description == "全局更新描述")
             })
             .unwrap_or(false);
-        let global_updated = app
+        let global_updated = runtime
+            .agent_api
             .list_global_agent_profiles()
             .ok()
             .and_then(|profiles| {
@@ -721,13 +734,12 @@ async fn get_subrun_status_rejects_mismatched_root_subrun_id() {
     let (state, _guard) = test_state(None).await;
     let project = tempfile::tempdir().expect("tempdir should be created");
     let session = state
-        .app
+        .session_catalog
         .create_session(project.path().display().to_string())
         .await
         .expect("session should be created");
     state
-        .app
-        .kernel()
+        .agent_control
         .register_root_agent(
             "root-agent".to_string(),
             session.session_id.clone(),
@@ -759,18 +771,17 @@ async fn close_agent_rejects_cross_session_requests() {
     let (state, _guard) = test_state(None).await;
     let project = tempfile::tempdir().expect("tempdir should be created");
     let owner_session = state
-        .app
+        .session_catalog
         .create_session(project.path().display().to_string())
         .await
         .expect("owner session should be created");
     let other_session = state
-        .app
+        .session_catalog
         .create_session(project.path().display().to_string())
         .await
         .expect("other session should be created");
     state
-        .app
-        .kernel()
+        .agent_control
         .register_root_agent(
             "root-agent".to_string(),
             owner_session.session_id.clone(),
@@ -797,7 +808,7 @@ async fn close_agent_rejects_cross_session_requests() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert!(
-        state.app.kernel().get_handle("root-agent").await.is_some(),
+        state.agent_control.get_handle("root-agent").await.is_some(),
         "跨 session 请求不得关闭目标 agent"
     );
 }

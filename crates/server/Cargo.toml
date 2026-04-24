@@ -6,7 +6,6 @@ license-file.workspace = true
 authors.workspace = true
 
 [dependencies]
-astrcode-application = { path = "../application" }
 astrcode-adapter-agents = { path = "../adapter-agents" }
 astrcode-adapter-llm = { path = "../adapter-llm" }
 astrcode-adapter-mcp = { path = "../adapter-mcp" }
@@ -14,12 +13,18 @@ astrcode-adapter-prompt = { path = "../adapter-prompt" }
 astrcode-adapter-skills = { path = "../adapter-skills" }
 astrcode-adapter-storage = { path = "../adapter-storage" }
 astrcode-adapter-tools = { path = "../adapter-tools" }
+astrcode-agent-runtime = { path = "../agent-runtime" }
+astrcode-context-window = { path = "../context-window" }
 astrcode-core = { path = "../core" }
-astrcode-kernel = { path = "../kernel" }
-astrcode-plugin = { path = "../plugin" }
+astrcode-governance-contract = { path = "../governance-contract" }
+astrcode-host-session = { path = "../host-session" }
+astrcode-llm-contract = { path = "../llm-contract" }
+astrcode-plugin-host = { path = "../plugin-host" }
+astrcode-prompt-contract = { path = "../prompt-contract" }
 astrcode-protocol = { path = "../protocol" }
-astrcode-session-runtime = { path = "../session-runtime" }
+astrcode-runtime-contract = { path = "../runtime-contract" }
 astrcode-support = { path = "../support" }
+astrcode-tool-contract = { path = "../tool-contract" }
 async-stream.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
@@ -32,15 +37,16 @@ log.workspace = true
 env_logger.workspace = true
 notify.workspace = true
 rand.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
 tower-http.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 astrcode-core = { path = "../core", features = ["test-support"] }
 astrcode-adapter-storage = { path = "../adapter-storage" }
-reqwest.workspace = true
 tempfile.workspace = true

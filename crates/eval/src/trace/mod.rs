@@ -4,7 +4,7 @@ use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentEventContext,
     CompactAppliedMeta, CompactTrigger, ExecutionContinuation, InvocationKind, PersistedToolOutput,
     PromptMetricsPayload, ResolvedExecutionLimitsSnapshot, ResolvedSubagentContextOverrides,
-    SubRunResult, SubRunStorageMode, ToolOutputStream,
+    SubRunResult, SubRunStorageMode, action::ToolOutputStream,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -310,7 +310,7 @@ pub struct TurnTimelineEvent {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{AgentEventContext, PersistedToolOutput, ToolOutputStream};
+    use astrcode_core::{AgentEventContext, PersistedToolOutput, action::ToolOutputStream};
     use chrono::{TimeZone, Utc};
     use serde_json::json;
 

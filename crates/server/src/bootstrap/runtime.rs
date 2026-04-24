@@ -1,7 +1,8 @@
 //! # 服务器运行时组合根
 //!
-//! 由 server 显式组装 adapter、kernel、session-runtime、application。
-//! 所有 provider 和 gateway 在此唯一位置接线，handler 只依赖 `App`。
+//! 由 server 装配 adapter 与运行时 owner。
+//! plugin/provider/resource 生效事实统一来自 plugin-host active snapshot，
+//! 组合根只负责把 server-owned bridge、host-session 与 agent-runtime 接起来。
 
 use std::{
     path::{Path, PathBuf},
@@ -10,51 +11,84 @@ use std::{
 
 use astrcode_adapter_storage::session::FileSystemSessionRepository;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
-use astrcode_application::{
-    AgentOrchestrationService, App, AppGovernance, GovernanceSurfaceAssembler,
-    RuntimeObservabilityCollector, WatchService, builtin_mode_catalog, lifecycle::TaskRegistry,
+use astrcode_core::SkillCatalog;
+use astrcode_governance_contract::GovernanceModeSpec;
+#[cfg(test)]
+use astrcode_host_session::SubAgentExecutor;
+use astrcode_host_session::{EventStore, SessionCatalog};
+use astrcode_plugin_host::{
+    CommandDescriptor, PluginActiveSnapshot, PluginDescriptor, PluginRegistry,
+    ProviderContributionCatalog, ResourceCatalog, builtin_collaboration_tools_descriptor,
+    builtin_modes_descriptor, builtin_openai_provider_descriptor, builtin_tools_descriptor,
+    resources_discover,
 };
 use astrcode_support::hostpaths::resolve_home_dir;
 
 use super::{
+    super::{
+        agent_api::ServerAgentApi,
+        agent_runtime_bridge::{ServerAgentRuntimeBuildInput, build_server_agent_runtime_bundle},
+    },
     capabilities::{
         CapabilitySurfaceSync, build_agent_tool_invokers, build_core_tool_invokers,
-        build_server_capability_router, build_skill_catalog, build_stable_local_invokers,
-        sync_external_tool_search_index,
+        build_skill_catalog, build_stable_local_invokers, sync_external_tool_search_index,
     },
-    composer_skills::RuntimeComposerSkillPort,
-    deps::{
-        core::{
-            self, AstrError, CapabilityInvoker, Config, EventStore, LlmProvider, PromptProvider,
-            ResolvedRuntimeConfig, ResourceProvider, Result, resolve_runtime_config,
-        },
-        kernel::{AgentControlLimits, CapabilityRouter, Kernel, KernelBuilder},
-        session_runtime::SessionRuntime,
+    deps::core::{
+        self, AstrError, CapabilityInvoker, Config, ResolvedRuntimeConfig, Result,
+        resolve_runtime_config,
     },
-    governance::{GovernanceBuildInput, build_app_governance},
+    governance::{GovernanceBuildInput, build_server_governance_service},
     mcp::{bootstrap_mcp_manager, build_mcp_service, warmup_mcp_manager},
     plugins::{PluginBootstrapResult, bootstrap_plugins_with_skill_root},
-    prompt_facts::build_prompt_facts_provider,
-    providers::{
-        build_config_service, build_llm_provider, build_profile_resolution_service,
-        build_prompt_provider, build_resource_provider,
-    },
+    providers::{build_config_service, build_llm_provider, build_profile_resolution_service},
     runtime_coordinator::RuntimeCoordinator,
     watch::{bootstrap_profile_watch_runtime, build_watch_service},
 };
+#[cfg(test)]
+use crate::{agent_control_bridge::ServerAgentControlPort, profile_service::ServerProfileService};
+use crate::{
+    config_service_bridge::ServerConfigService,
+    governance_service::ServerGovernanceService,
+    mcp_service::ServerMcpService,
+    mode_catalog_service::ServerModeCatalog,
+    runtime_owner_bridge::{
+        ServerRuntimeObservability, ServerTaskRegistry, builtin_server_mode_specs,
+    },
+    session_runtime_owner_bridge::{
+        ServerAgentControlLimits, ServerSessionRuntimeBootstrapInput, bootstrap_session_runtime,
+    },
+    watch_service::WatchService,
+};
+
+const BUILTIN_GOVERNANCE_MODES_PLUGIN_ID: &str = "builtin-governance-modes";
+const EXTERNAL_PLUGIN_MODES_PLUGIN_ID: &str = "external-plugin-modes";
 
 /// 服务器运行时：组合根输出。
 pub struct ServerRuntime {
-    pub app: Arc<App>,
-    pub governance: Arc<AppGovernance>,
+    pub agent_api: Arc<ServerAgentApi>,
+    #[cfg(test)]
+    pub agent_control: Arc<dyn ServerAgentControlPort>,
+    pub config: Arc<ServerConfigService>,
+    pub session_catalog: Arc<SessionCatalog>,
+    #[cfg(test)]
+    pub profiles: Arc<ServerProfileService>,
+    #[cfg(test)]
+    pub subagent_executor: Arc<dyn SubAgentExecutor>,
+    pub mcp_service: Arc<ServerMcpService>,
+    pub skill_catalog: Arc<dyn SkillCatalog>,
+    pub resource_catalog: Arc<std::sync::RwLock<ResourceCatalog>>,
+    pub mode_catalog: Arc<ServerModeCatalog>,
+    pub governance: Arc<ServerGovernanceService>,
     pub handles: Arc<ServerRuntimeHandles>,
 }
 
 pub struct ServerRuntimeHandles {
     // Why: server 集成测试需要直接操纵底层 session-runtime，避免把原始状态访问重新暴露给
     // application 端口；生产路径只把它当作资源守卫持有。
-    #[allow(dead_code)]
-    pub(crate) session_runtime: Arc<SessionRuntime>,
+    pub(crate) _session_runtime_guard: Arc<dyn std::any::Any + Send + Sync>,
+    #[cfg(test)]
+    pub(crate) session_runtime_test_support:
+        Arc<dyn crate::session_runtime_owner_bridge::ServerRuntimeTestSupport>,
     _profile_watch_runtime: Option<super::watch::ProfileWatchRuntime>,
     _mcp_warmup_runtime: McpWarmupRuntime,
 }
@@ -160,8 +194,10 @@ pub async fn bootstrap_server_runtime_with_options(
         skills: plugin_skills,
         modes: plugin_modes,
         registry: plugin_registry,
-        supervisors: plugin_supervisors,
+        managed_components: managed_plugin_components,
         search_paths: plugin_search_paths,
+        resource_catalog: plugin_resource_catalog,
+        descriptors: plugin_descriptors,
     } = bootstrap_plugins_with_skill_root(
         paths.plugin_search_paths.clone(),
         paths.plugin_skill_root.clone(),
@@ -175,70 +211,90 @@ pub async fn bootstrap_server_runtime_with_options(
 
     // core builtin tools：工具定义本身是 builtin + stable；
     // 其中 `Skill` 工具消费的 catalog 可以包含 builtin / mcp / plugin 三类 skill。
-    let skill_catalog = build_skill_catalog(paths.home_dir.as_path(), plugin_skills);
+    let skill_catalog = build_skill_catalog(
+        paths.home_dir.as_path(),
+        plugin_skills,
+        &plugin_resource_catalog,
+    );
+    let skill_catalog_bridge: Arc<dyn SkillCatalog> = skill_catalog.clone();
+    let builtin_mode_specs = builtin_server_mode_specs()?;
     let core_tool_invokers =
         build_core_tool_invokers(Arc::clone(&tool_search_index), skill_catalog.clone())?;
-
-    // 初始 router 先用“当前可立即装配的能力面”启动：
-    // core builtin tools + 当前 external 动态能力。
-    // agent tools 要等 agent_service 准备好后再并入稳定本地层。
-    let mut initial_router_invokers = core_tool_invokers.clone();
-    initial_router_invokers.extend(external_dynamic_invokers.clone());
-    let capabilities = build_server_capability_router(initial_router_invokers)?;
-
-    let kernel = Arc::new(build_kernel(
-        capabilities,
-        build_llm_provider(config_service.clone(), working_dir.clone()),
-        build_prompt_provider(),
-        build_resource_provider(mcp_manager.clone()),
-        resolve_agent_control_limits(&resolved_config),
-    )?);
-    let observability = Arc::new(RuntimeObservabilityCollector::new());
-    let task_registry = Arc::new(TaskRegistry::new());
-    let mode_catalog = Arc::new(builtin_mode_catalog()?);
-    mode_catalog.replace_plugin_modes(plugin_modes.clone())?;
-    let governance_surface = Arc::new(GovernanceSurfaceAssembler::new(
-        mode_catalog.as_ref().clone(),
+    let active_plugin_descriptors = build_server_plugin_contribution_descriptors(
+        &core_tool_invokers,
+        &mcp_invokers,
+        builtin_mode_specs,
+        plugin_modes,
+        plugin_descriptors.clone(),
+    );
+    let plugin_host_reload =
+        reload_server_plugin_host_snapshot(plugin_registry.as_ref(), active_plugin_descriptors)?;
+    log::info!(
+        "plugin-host bridge activated snapshot {} with {} plugins",
+        plugin_host_reload.snapshot.snapshot_id,
+        plugin_host_reload.snapshot.plugin_ids.len()
+    );
+    let plugin_resource_catalog_state =
+        Arc::new(std::sync::RwLock::new(plugin_host_reload.resources.clone()));
+    let provider_catalog = Arc::new(std::sync::RwLock::new(
+        plugin_host_reload.provider_catalog.clone(),
     ));
+
+    let observability = ServerRuntimeObservability::new();
+    let task_registry = ServerTaskRegistry::new();
+    let mode_catalog = ServerModeCatalog::from_mode_specs(
+        plugin_host_reload.builtin_modes.clone(),
+        plugin_host_reload.plugin_modes.clone(),
+    )?;
 
     let event_store: Arc<dyn EventStore> = Arc::new(
         FileSystemSessionRepository::new_with_projects_root(paths.projects_root.clone()),
     );
-    let prompt_facts_provider = build_prompt_facts_provider(
-        config_service.clone(),
-        skill_catalog.clone(),
-        mcp_manager.clone(),
-        agent_loader.clone(),
-    )?;
-    let session_runtime = Arc::new(SessionRuntime::new(
-        kernel.clone(),
-        prompt_facts_provider,
-        event_store,
-        observability.clone(),
-    ));
+    let session_catalog = Arc::new(SessionCatalog::new(Arc::clone(&event_store)));
+    // 初始 capability surface 先用“当前可立即装配的能力面”启动：
+    // core builtin tools + 当前 external 动态能力。
+    // agent tools 要等 agent_service 准备好后再并入稳定本地层。
+    let mut initial_router_invokers = core_tool_invokers.clone();
+    initial_router_invokers.extend(external_dynamic_invokers.clone());
+    let session_runtime = bootstrap_session_runtime(ServerSessionRuntimeBootstrapInput {
+        capability_invokers: initial_router_invokers,
+        llm_provider: build_llm_provider(
+            config_service.clone(),
+            working_dir.clone(),
+            Arc::clone(&provider_catalog),
+        ),
+        session_catalog: Arc::clone(&session_catalog),
+        mode_catalog: Arc::clone(&mode_catalog),
+        agent_limits: resolve_agent_control_limits(&resolved_config),
+    })?;
     let profiles = build_profile_resolution_service(agent_loader.clone())?;
     let watch_service = match options.watch_service_override.clone() {
         Some(service) => service,
         None => build_watch_service(agent_loader)
             .map_err(|error| AstrError::Internal(error.to_string()))?,
     };
-    let agent_service = Arc::new(AgentOrchestrationService::new(
-        kernel.clone(),
-        session_runtime.clone(),
-        config_service.clone(),
-        profiles.clone(),
-        Arc::clone(&governance_surface),
-        task_registry.clone(),
-        observability.clone(),
-    ));
+    let agent_runtime = build_server_agent_runtime_bundle(ServerAgentRuntimeBuildInput {
+        agent_kernel: session_runtime.agent_kernel.clone(),
+        agent_sessions: session_runtime.agent_sessions.clone(),
+        app_sessions: session_runtime.app_sessions.clone(),
+        agent_control: session_runtime.agent_control.clone(),
+        config_service: config_service.clone(),
+        profiles: profiles.clone(),
+        mode_catalog: mode_catalog.clone(),
+        task_registry: task_registry.clone(),
+        observability: observability.clone(),
+    });
 
     // agent 四工具依赖 agent_service，必须在 kernel/session_runtime 之后单独注册。
     // 组装完成后，稳定本地层 = core builtin tools + agent tools。
-    let agent_tool_invokers = build_agent_tool_invokers(agent_service.clone())?;
+    let agent_tool_invokers = build_agent_tool_invokers(
+        Arc::clone(&agent_runtime.subagent_executor),
+        Arc::clone(&agent_runtime.collaboration_executor),
+    )?;
     let stable_local_invokers =
         build_stable_local_invokers(core_tool_invokers, agent_tool_invokers);
     let capability_sync = CapabilitySurfaceSync::new(
-        kernel.clone(),
+        session_runtime.capability_surface.clone(),
         stable_local_invokers,
         Arc::clone(&tool_search_index),
     );
@@ -254,21 +310,8 @@ pub async fn bootstrap_server_runtime_with_options(
         mcp_manager.clone(),
         capability_sync.clone(),
     );
-
-    let app = Arc::new(App::new(
-        kernel.clone(),
-        session_runtime.clone(),
-        profiles,
-        config_service.clone(),
-        Arc::new(RuntimeComposerSkillPort::new(skill_catalog.clone())),
-        Arc::clone(&governance_surface),
-        Arc::clone(&mode_catalog),
-        mcp_service,
-        agent_service,
-    ));
-    let session_runtime_handle = Arc::clone(&session_runtime);
-    let governance = build_app_governance(GovernanceBuildInput {
-        session_runtime,
+    let governance = build_server_governance_service(GovernanceBuildInput {
+        sessions: session_runtime.sessions.clone(),
         config_service: config_service.clone(),
         coordinator,
         task_registry,
@@ -276,17 +319,23 @@ pub async fn bootstrap_server_runtime_with_options(
         mcp_manager: Arc::clone(&mcp_manager),
         capability_sync: capability_sync.clone(),
         skill_catalog,
+        resource_catalog: Arc::clone(&plugin_resource_catalog_state),
+        provider_catalog,
         plugin_search_paths: plugin_search_paths.clone(),
         plugin_skill_root: paths.plugin_skill_root.clone(),
-        plugin_supervisors,
+        managed_plugin_components,
         working_dir: working_dir.clone(),
-        mode_catalog: Some(mode_catalog),
+        mode_catalog: Some(Arc::clone(&mode_catalog)),
     });
     let profile_watch_runtime = if options.enable_profile_watch {
         Some(
-            bootstrap_profile_watch_runtime(Arc::clone(&app), Arc::clone(&watch_service))
-                .await
-                .map_err(|error| AstrError::Internal(error.to_string()))?,
+            bootstrap_profile_watch_runtime(
+                Arc::clone(&session_catalog),
+                Arc::clone(&profiles),
+                Arc::clone(&watch_service),
+            )
+            .await
+            .map_err(|error| AstrError::Internal(error.to_string()))?,
         )
     } else {
         None
@@ -302,14 +351,119 @@ pub async fn bootstrap_server_runtime_with_options(
     };
 
     Ok(ServerRuntime {
-        app,
+        agent_api: agent_runtime.agent_api,
+        #[cfg(test)]
+        agent_control: agent_runtime.agent_control,
+        config: config_service,
+        session_catalog,
+        #[cfg(test)]
+        profiles,
+        #[cfg(test)]
+        subagent_executor: agent_runtime.subagent_executor,
+        mcp_service,
+        skill_catalog: skill_catalog_bridge,
+        resource_catalog: Arc::clone(&plugin_resource_catalog_state),
+        mode_catalog,
         governance,
         handles: Arc::new(ServerRuntimeHandles {
-            session_runtime: session_runtime_handle,
+            _session_runtime_guard: session_runtime.keepalive,
+            #[cfg(test)]
+            session_runtime_test_support: session_runtime.test_support,
             _profile_watch_runtime: profile_watch_runtime,
             _mcp_warmup_runtime: mcp_warmup_runtime,
         }),
     })
+}
+
+fn build_server_plugin_contribution_descriptors(
+    core_tool_invokers: &[Arc<dyn CapabilityInvoker>],
+    mcp_invokers: &[Arc<dyn CapabilityInvoker>],
+    builtin_modes: Vec<GovernanceModeSpec>,
+    plugin_modes: Vec<GovernanceModeSpec>,
+    mut external_descriptors: Vec<PluginDescriptor>,
+) -> Vec<PluginDescriptor> {
+    let mut descriptors = vec![
+        builtin_openai_provider_descriptor(),
+        builtin_modes_descriptor(
+            BUILTIN_GOVERNANCE_MODES_PLUGIN_ID,
+            "Builtin Governance Modes",
+            builtin_modes,
+        ),
+        builtin_modes_descriptor(
+            EXTERNAL_PLUGIN_MODES_PLUGIN_ID,
+            "External Plugin Modes",
+            plugin_modes,
+        ),
+        builtin_composer_resources_descriptor(),
+        builtin_tools_descriptor(
+            "builtin-core-tools",
+            "Builtin Core Tools",
+            core_tool_invokers
+                .iter()
+                .map(|invoker| invoker.capability_spec())
+                .collect(),
+        ),
+        builtin_tools_descriptor(
+            "external-mcp-tools",
+            "External MCP Tools",
+            mcp_invokers
+                .iter()
+                .map(|invoker| invoker.capability_spec())
+                .collect(),
+        ),
+        builtin_collaboration_tools_descriptor(),
+    ];
+    descriptors.append(&mut external_descriptors);
+    descriptors
+}
+
+fn builtin_composer_resources_descriptor() -> PluginDescriptor {
+    let mut descriptor =
+        PluginDescriptor::builtin("builtin-composer-resources", "Builtin Composer Resources");
+    descriptor.commands.push(CommandDescriptor {
+        command_id: "compact".to_string(),
+        entry_ref: "builtin://commands/compact".to_string(),
+    });
+    descriptor
+}
+
+#[derive(Debug, Clone)]
+struct ServerPluginHostReload {
+    snapshot: PluginActiveSnapshot,
+    resources: ResourceCatalog,
+    provider_catalog: ProviderContributionCatalog,
+    builtin_modes: Vec<GovernanceModeSpec>,
+    plugin_modes: Vec<GovernanceModeSpec>,
+}
+
+fn reload_server_plugin_host_snapshot(
+    registry: &PluginRegistry,
+    descriptors: Vec<PluginDescriptor>,
+) -> Result<ServerPluginHostReload> {
+    let resources = resources_discover(&descriptors)?.catalog;
+    let provider_catalog = ProviderContributionCatalog::from_descriptors(&descriptors)?;
+    let builtin_modes = descriptor_modes(&descriptors, BUILTIN_GOVERNANCE_MODES_PLUGIN_ID);
+    let plugin_modes = descriptor_modes(&descriptors, EXTERNAL_PLUGIN_MODES_PLUGIN_ID);
+    registry.stage_candidate(descriptors)?;
+    let snapshot = registry.commit_candidate().ok_or_else(|| {
+        AstrError::Internal("plugin-host active snapshot commit unexpectedly failed".to_string())
+    })?;
+
+    Ok(ServerPluginHostReload {
+        snapshot,
+        resources,
+        provider_catalog,
+        builtin_modes,
+        plugin_modes,
+    })
+}
+
+fn descriptor_modes(descriptors: &[PluginDescriptor], plugin_id: &str) -> Vec<GovernanceModeSpec> {
+    descriptors
+        .iter()
+        .find(|descriptor| descriptor.plugin_id == plugin_id)
+        .map(|descriptor| descriptor.modes.clone())
+        .unwrap_or_default()
 }
 
 /// 解析插件搜索路径。
@@ -334,32 +488,15 @@ fn resolve_plugin_search_paths(
     }
 }
 
-fn build_kernel(
-    capabilities: CapabilityRouter,
-    llm_provider: Arc<dyn LlmProvider>,
-    prompt_provider: Arc<dyn PromptProvider>,
-    resource_provider: Arc<dyn ResourceProvider>,
-    agent_limits: AgentControlLimits,
-) -> Result<Kernel> {
-    KernelBuilder::default()
-        .with_capabilities(capabilities)
-        .with_llm_provider(llm_provider)
-        .with_prompt_provider(prompt_provider)
-        .with_resource_provider(resource_provider)
-        .with_agent_limits(agent_limits)
-        .build()
-        .map_err(|error| AstrError::Internal(error.to_string()))
-}
-
-fn resolve_agent_control_limits(config: &Config) -> AgentControlLimits {
+fn resolve_agent_control_limits(config: &Config) -> ServerAgentControlLimits {
     let runtime = resolve_runtime_config(&config.runtime);
     resolve_agent_control_limits_from_runtime(&runtime)
 }
 
 fn resolve_agent_control_limits_from_runtime(
     runtime: &ResolvedRuntimeConfig,
-) -> AgentControlLimits {
-    AgentControlLimits {
+) -> ServerAgentControlLimits {
+    ServerAgentControlLimits {
         max_depth: runtime.agent.max_subrun_depth,
         max_concurrent: runtime.agent.max_concurrent,
         finalized_retain_limit: runtime.agent.finalized_retain_limit,
@@ -370,7 +507,14 @@ fn resolve_agent_control_limits_from_runtime(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_agent_control_limits;
+    use astrcode_plugin_host::{
+        CommandDescriptor, PluginDescriptor, PluginRegistry, ProviderDescriptor,
+    };
+
+    use super::{
+        build_server_plugin_contribution_descriptors, builtin_server_mode_specs,
+        reload_server_plugin_host_snapshot, resolve_agent_control_limits,
+    };
     use crate::bootstrap::deps::core::{AgentConfig, Config, RuntimeConfig, config};
 
     #[test]
@@ -404,5 +548,95 @@ mod tests {
         let limits = resolve_agent_control_limits(&Config::default());
 
         assert_eq!(limits.max_depth, config::DEFAULT_MAX_SUBRUN_DEPTH);
+    }
+
+    #[test]
+    fn server_plugin_descriptors_collect_builtin_and_external_contributions() {
+        let external = PluginDescriptor::builtin("external-plugin", "External Plugin");
+        let builtin_modes = builtin_server_mode_specs().expect("builtin mode specs should build");
+
+        let descriptors = build_server_plugin_contribution_descriptors(
+            &[],
+            &[],
+            builtin_modes,
+            Vec::new(),
+            vec![external],
+        );
+        let plugin_ids = descriptors
+            .iter()
+            .map(|descriptor| descriptor.plugin_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            plugin_ids,
+            vec![
+                "builtin-provider-openai",
+                "builtin-governance-modes",
+                "external-plugin-modes",
+                "builtin-composer-resources",
+                "builtin-core-tools",
+                "external-mcp-tools",
+                "builtin-collaboration-tools",
+                "external-plugin",
+            ]
+        );
+        assert_eq!(descriptors[1].modes.len(), 3);
+    }
+
+    #[test]
+    fn server_plugin_reload_bridge_commits_snapshot_resources_and_providers() {
+        let registry = PluginRegistry::default();
+        let mut descriptor = PluginDescriptor::builtin("project-runtime", "Project Runtime");
+        descriptor.commands.push(CommandDescriptor {
+            command_id: "project.apply".to_string(),
+            entry_ref: ".codex/commands/apply.md".to_string(),
+        });
+        descriptor.providers.push(ProviderDescriptor {
+            provider_id: "project-openai".to_string(),
+            api_kind: "openai".to_string(),
+        });
+        let builtin_modes = builtin_server_mode_specs().expect("builtin mode specs should build");
+        let descriptors = build_server_plugin_contribution_descriptors(
+            &[],
+            &[],
+            builtin_modes,
+            Vec::new(),
+            vec![descriptor],
+        );
+
+        let reload = reload_server_plugin_host_snapshot(&registry, descriptors)
+            .expect("bridge reload should commit");
+
+        assert_eq!(
+            reload.snapshot.plugin_ids,
+            vec![
+                "builtin-provider-openai".to_string(),
+                "builtin-governance-modes".to_string(),
+                "external-plugin-modes".to_string(),
+                "builtin-composer-resources".to_string(),
+                "builtin-core-tools".to_string(),
+                "external-mcp-tools".to_string(),
+                "builtin-collaboration-tools".to_string(),
+                "project-runtime".to_string(),
+            ]
+        );
+        assert_eq!(reload.builtin_modes.len(), 3);
+        assert_eq!(reload.snapshot.modes.len(), 3);
+        assert_eq!(reload.resources.commands.len(), 2);
+        assert_eq!(
+            reload
+                .provider_catalog
+                .provider("project-openai")
+                .expect("provider should be registered")
+                .api_kind,
+            "openai"
+        );
+        assert_eq!(
+            registry
+                .active_snapshot()
+                .expect("active snapshot should be committed")
+                .snapshot_id,
+            reload.snapshot.snapshot_id
+        );
     }
 }

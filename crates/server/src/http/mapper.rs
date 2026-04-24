@@ -19,29 +19,32 @@
 //! - **配置相关**：`Config` → `ConfigView`、模型选项解析
 //! - **SSE 工具**：事件 ID 解析/格式化（`{storage_seq}.{subindex}` 格式）
 
-use astrcode_application::{
-    AgentExecuteSummary, ApplicationError, ComposerOption, Config, ResolvedRuntimeStatusSummary,
-    SessionCatalogEvent, SessionListSummary, SubRunStatusSourceSummary, SubRunStatusSummary,
-    SubagentContextOverrides,
-    config::{
-        ResolvedConfigSummary, list_model_options as resolve_model_options,
-        resolve_current_model as resolve_runtime_current_model,
-    },
+use astrcode_core::{SessionMeta, format_local_rfc3339};
+use astrcode_host_session::{
+    ComposerOption, ComposerOptionActionKind, ComposerOptionKind, SessionCatalogEvent,
 };
 use astrcode_protocol::http::{
-    AgentExecuteResponseDto, ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto,
-    ModelOptionDto, PROTOCOL_VERSION, ProfileView, ResolvedExecutionLimitsDto,
+    AgentExecuteResponseDto, ComposerOptionActionKindDto, ComposerOptionDto, ComposerOptionKindDto,
+    ComposerOptionsResponseDto, ConfigView, CurrentModelInfoDto, ModelOptionDto, PROTOCOL_VERSION,
+    PluginHealthDto, PluginRuntimeStateDto, ProfileView, ResolvedExecutionLimitsDto,
     RuntimeCapabilityDto, RuntimePluginDto, RuntimeStatusDto, SessionCatalogEventEnvelope,
-    SessionListItem, SubRunResultDto, SubRunStatusDto, SubRunStatusSourceDto,
-    SubagentContextOverridesDto,
+    SessionCatalogEventPayload, SessionListItem, SubRunResultDto, SubRunStatusDto,
+    SubRunStatusSourceDto,
 };
-use axum::{http::StatusCode, response::sse::Event};
+use axum::response::sse::Event;
 
-use crate::ApiError;
+use crate::{
+    ApiError,
+    agent_api::{ServerSubRunStatusSource, ServerSubRunStatusSummary},
+    config_mode_helpers,
+    root_execute_service::ServerAgentExecuteSummary,
+    view_projection::{
+        ServerResolvedConfigSummary, ServerResolvedRuntimeStatusSummary,
+        ServerRuntimeCapabilitySummary,
+    },
+};
 
-fn to_runtime_capability_dto(
-    capability: astrcode_application::RuntimeCapabilitySummary,
-) -> RuntimeCapabilityDto {
+fn to_runtime_capability_dto(capability: ServerRuntimeCapabilitySummary) -> RuntimeCapabilityDto {
     RuntimeCapabilityDto {
         name: capability.name,
         kind: capability.kind,
@@ -51,26 +54,26 @@ fn to_runtime_capability_dto(
     }
 }
 
-/// 将会话摘要输入映射为列表项 DTO。
+/// 将会话元数据映射为列表项 DTO。
 ///
 /// 用于 `GET /api/sessions` 和 `POST /api/sessions` 的响应，
-/// server 只负责协议包装，不再自行格式化时间字段。
-pub(crate) fn to_session_list_item(summary: SessionListSummary) -> SessionListItem {
+/// server 只负责协议包装，catalog 真相来自 `host-session`。
+pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
     SessionListItem {
-        session_id: summary.session_id,
-        working_dir: summary.working_dir,
-        display_name: summary.display_name,
-        title: summary.title,
-        created_at: summary.created_at,
-        updated_at: summary.updated_at,
-        parent_session_id: summary.parent_session_id,
-        parent_storage_seq: summary.parent_storage_seq,
-        phase: summary.phase,
+        session_id: meta.session_id,
+        working_dir: meta.working_dir,
+        display_name: meta.display_name,
+        title: meta.title,
+        created_at: format_local_rfc3339(meta.created_at),
+        updated_at: format_local_rfc3339(meta.updated_at),
+        parent_session_id: meta.parent_session_id,
+        parent_storage_seq: meta.parent_storage_seq,
+        phase: meta.phase,
     }
 }
 
 pub(crate) fn to_agent_execute_response_dto(
-    summary: AgentExecuteSummary,
+    summary: ServerAgentExecuteSummary,
 ) -> AgentExecuteResponseDto {
     AgentExecuteResponseDto {
         accepted: summary.accepted,
@@ -81,13 +84,13 @@ pub(crate) fn to_agent_execute_response_dto(
     }
 }
 
-pub(crate) fn to_subrun_status_dto(summary: SubRunStatusSummary) -> SubRunStatusDto {
+pub(crate) fn to_subrun_status_dto(summary: ServerSubRunStatusSummary) -> SubRunStatusDto {
     SubRunStatusDto {
         sub_run_id: summary.sub_run_id,
         tool_call_id: summary.tool_call_id,
         source: match summary.source {
-            SubRunStatusSourceSummary::Live => SubRunStatusSourceDto::Live,
-            SubRunStatusSourceSummary::Durable => SubRunStatusSourceDto::Durable,
+            ServerSubRunStatusSource::Live => SubRunStatusSourceDto::Live,
+            ServerSubRunStatusSource::Durable => SubRunStatusSourceDto::Durable,
         },
         agent_id: summary.agent_id,
         agent_profile: summary.agent_profile,
@@ -103,7 +106,9 @@ pub(crate) fn to_subrun_status_dto(summary: SubRunStatusSummary) -> SubRunStatus
         step_count: summary.step_count,
         estimated_tokens: summary.estimated_tokens,
         resolved_overrides: summary.resolved_overrides,
-        resolved_limits: summary.resolved_limits.map(|_| ResolvedExecutionLimitsDto),
+        resolved_limits: summary
+            .resolved_limits
+            .map(|_| ResolvedExecutionLimitsDto {}),
     }
 }
 
@@ -111,7 +116,9 @@ pub(crate) fn to_subrun_status_dto(summary: SubRunStatusSummary) -> SubRunStatus
 ///
 /// 包含运行时名称、类型、已加载会话数、运行中的会话 ID、
 /// 插件搜索路径、运行时指标、能力描述和插件状态。
-pub(crate) fn to_runtime_status_dto(summary: ResolvedRuntimeStatusSummary) -> RuntimeStatusDto {
+pub(crate) fn to_runtime_status_dto(
+    summary: ServerResolvedRuntimeStatusSummary,
+) -> RuntimeStatusDto {
     RuntimeStatusDto {
         runtime_name: summary.runtime_name,
         runtime_kind: summary.runtime_kind,
@@ -131,8 +138,8 @@ pub(crate) fn to_runtime_status_dto(summary: ResolvedRuntimeStatusSummary) -> Ru
                 name: plugin.name,
                 version: plugin.version,
                 description: plugin.description,
-                state: plugin.state,
-                health: plugin.health,
+                state: to_plugin_runtime_state_dto(plugin.state),
+                health: to_plugin_health_dto(plugin.health),
                 failure_count: plugin.failure_count,
                 failure: plugin.failure,
                 warnings: plugin.warnings,
@@ -147,10 +154,21 @@ pub(crate) fn to_runtime_status_dto(summary: ResolvedRuntimeStatusSummary) -> Ru
     }
 }
 
-pub(crate) fn from_subagent_context_overrides_dto(
-    dto: Option<SubagentContextOverridesDto>,
-) -> Option<SubagentContextOverrides> {
-    dto
+fn to_plugin_runtime_state_dto(state: astrcode_plugin_host::PluginState) -> PluginRuntimeStateDto {
+    match state {
+        astrcode_plugin_host::PluginState::Discovered => PluginRuntimeStateDto::Discovered,
+        astrcode_plugin_host::PluginState::Initialized => PluginRuntimeStateDto::Initialized,
+        astrcode_plugin_host::PluginState::Failed => PluginRuntimeStateDto::Failed,
+    }
+}
+
+fn to_plugin_health_dto(health: astrcode_plugin_host::PluginHealth) -> PluginHealthDto {
+    match health {
+        astrcode_plugin_host::PluginHealth::Unknown => PluginHealthDto::Unknown,
+        astrcode_plugin_host::PluginHealth::Healthy => PluginHealthDto::Healthy,
+        astrcode_plugin_host::PluginHealth::Degraded => PluginHealthDto::Degraded,
+        astrcode_plugin_host::PluginHealth::Unavailable => PluginHealthDto::Unavailable,
+    }
 }
 
 /// 将会话目录事件转换为 SSE 事件。
@@ -159,17 +177,19 @@ pub(crate) fn from_subagent_context_overrides_dto(
 /// 序列化失败时返回 `projectDeleted` 事件并携带错误信息，
 /// 保证 SSE 流不会中断。
 pub(crate) fn to_session_catalog_sse_event(event: SessionCatalogEvent) -> Event {
-    let payload =
-        serde_json::to_string(&SessionCatalogEventEnvelope::new(event)).unwrap_or_else(|error| {
-            serde_json::json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "event": "projectDeleted",
-                "data": {
-                    "workingDir": format!("serialization-error: {error}")
-                }
-            })
-            .to_string()
-        });
+    let payload = serde_json::to_string(&SessionCatalogEventEnvelope::new(
+        to_session_catalog_event_payload(event),
+    ))
+    .unwrap_or_else(|error| {
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "event": "projectDeleted",
+            "data": {
+                "workingDir": format!("serialization-error: {error}")
+            }
+        })
+        .to_string()
+    });
     Event::default().data(payload)
 }
 
@@ -177,7 +197,10 @@ pub(crate) fn to_session_catalog_sse_event(event: SessionCatalogEvent) -> Event 
 ///
 /// server 只负责补充 `config_path` 和协议外层壳，
 /// 已解析选择、profile 摘要与 API key 预览均由 application 统一提供。
-pub(crate) fn build_config_view(summary: ResolvedConfigSummary, config_path: String) -> ConfigView {
+pub(crate) fn build_config_view(
+    summary: ServerResolvedConfigSummary,
+    config_path: String,
+) -> ConfigView {
     ConfigView {
         config_path,
         active_profile: summary.active_profile,
@@ -200,16 +223,19 @@ pub(crate) fn build_config_view(summary: ResolvedConfigSummary, config_path: Str
 ///
 /// 从配置中提取当前使用的 profile 名称、模型名称和提供者类型，
 /// 用于 `GET /api/models/current` 响应。
-pub(crate) fn resolve_current_model(config: &Config) -> Result<CurrentModelInfoDto, ApiError> {
-    resolve_runtime_current_model(config).map_err(config_selection_error)
+pub(crate) fn resolve_current_model(
+    config: &astrcode_core::Config,
+) -> Result<CurrentModelInfoDto, ApiError> {
+    config_mode_helpers::resolve_current_model(config)
+        .map_err(|error| ApiError::bad_request(error.to_string()))
 }
 
 /// 列出所有可用的模型选项。
 ///
 /// 遍历配置中所有 profile 的模型，扁平化为列表，
 /// 用于 `GET /api/models` 响应，前端据此渲染模型选择器。
-pub(crate) fn list_model_options(config: &Config) -> Vec<ModelOptionDto> {
-    resolve_model_options(config)
+pub(crate) fn list_model_options(config: &astrcode_core::Config) -> Vec<ModelOptionDto> {
+    config_mode_helpers::list_model_options(config)
 }
 
 /// 将 runtime 输入候选项映射为协议 DTO。
@@ -218,27 +244,62 @@ pub(crate) fn list_model_options(config: &Config) -> Vec<ModelOptionDto> {
 pub(crate) fn to_composer_options_response(
     items: Vec<ComposerOption>,
 ) -> ComposerOptionsResponseDto {
-    ComposerOptionsResponseDto { items }
-}
-
-fn config_selection_error(error: ApplicationError) -> ApiError {
-    ApiError {
-        status: StatusCode::BAD_REQUEST,
-        message: error.to_string(),
+    ComposerOptionsResponseDto {
+        items: items.into_iter().map(to_composer_option_dto).collect(),
     }
 }
 
-fn to_subrun_result_dto(result: astrcode_application::SubRunResult) -> SubRunResultDto {
-    match result {
-        astrcode_application::SubRunResult::Running { handoff } => {
-            SubRunResultDto::Running { handoff }
+fn to_session_catalog_event_payload(event: SessionCatalogEvent) -> SessionCatalogEventPayload {
+    match event {
+        SessionCatalogEvent::SessionCreated { session_id } => {
+            SessionCatalogEventPayload::SessionCreated { session_id }
         },
-        astrcode_application::SubRunResult::Completed { outcome, handoff } => match outcome {
+        SessionCatalogEvent::SessionDeleted { session_id } => {
+            SessionCatalogEventPayload::SessionDeleted { session_id }
+        },
+        SessionCatalogEvent::ProjectDeleted { working_dir } => {
+            SessionCatalogEventPayload::ProjectDeleted { working_dir }
+        },
+        SessionCatalogEvent::SessionBranched {
+            session_id,
+            source_session_id,
+        } => SessionCatalogEventPayload::SessionBranched {
+            session_id,
+            source_session_id,
+        },
+    }
+}
+
+fn to_composer_option_dto(option: ComposerOption) -> ComposerOptionDto {
+    ComposerOptionDto {
+        kind: match option.kind {
+            ComposerOptionKind::Command => ComposerOptionKindDto::Command,
+            ComposerOptionKind::Skill => ComposerOptionKindDto::Skill,
+            ComposerOptionKind::Capability => ComposerOptionKindDto::Capability,
+        },
+        id: option.id,
+        title: option.title,
+        description: option.description,
+        insert_text: option.insert_text,
+        action_kind: match option.action_kind {
+            ComposerOptionActionKind::InsertText => ComposerOptionActionKindDto::InsertText,
+            ComposerOptionActionKind::ExecuteCommand => ComposerOptionActionKindDto::ExecuteCommand,
+        },
+        action_value: option.action_value,
+        badges: option.badges,
+        keywords: option.keywords,
+    }
+}
+
+fn to_subrun_result_dto(result: astrcode_core::SubRunResult) -> SubRunResultDto {
+    match result {
+        astrcode_core::SubRunResult::Running { handoff } => SubRunResultDto::Running { handoff },
+        astrcode_core::SubRunResult::Completed { outcome, handoff } => match outcome {
             astrcode_core::CompletedSubRunOutcome::Completed => {
                 SubRunResultDto::Completed { handoff }
             },
         },
-        astrcode_application::SubRunResult::Failed { outcome, failure } => match outcome {
+        astrcode_core::SubRunResult::Failed { outcome, failure } => match outcome {
             astrcode_core::FailedSubRunOutcome::Failed => SubRunResultDto::Failed { failure },
             astrcode_core::FailedSubRunOutcome::Cancelled => SubRunResultDto::Cancelled { failure },
         },

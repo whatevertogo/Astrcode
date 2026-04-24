@@ -32,13 +32,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use astrcode_core::{
-    AstrError, ResolvedShell, Result, ShellFamily, SideEffect, Tool, ToolCapabilityMetadata,
-    ToolContext, ToolDefinition, ToolExecutionResult, ToolOutputStream, ToolPromptMetadata,
-};
+use astrcode_core::{AstrError, ResolvedShell, Result, ShellFamily, SideEffect};
 use astrcode_support::{
     shell::{default_shell_label, resolve_shell},
     tool_results::maybe_persist_tool_result,
+};
+use astrcode_tool_contract::{
+    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
+    ToolOutputStream, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -57,17 +58,14 @@ pub struct ShellTool;
 
 /// Shell 工具的反序列化参数。
 ///
-/// `command` 是必填项；`cwd` 和 `shell` 可选，
-/// 未指定时分别使用上下文工作目录和当前环境推导出的默认 shell。
+/// `command` 是必填项；`cwd` 可选，未指定时使用上下文工作目录。
+/// shell 始终由运行时根据当前环境解析，避免模型误选 shell family。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShellArgs {
     command: String,
     #[serde(default)]
     cwd: Option<PathBuf>,
-    /// 覆盖默认 shell。
-    #[serde(default)]
-    shell: Option<String>,
     /// 超时参数（秒），默认 120，上限 300。
     #[serde(default)]
     timeout: Option<u64>,
@@ -351,19 +349,14 @@ impl Tool for ShellTool {
         ToolDefinition {
             name: "shell".to_string(),
             description: format!(
-                "Execute a non-interactive shell command once with the current default shell \
-                 ({default_shell}). `shell` may override it for supported shell families; return \
-                 stdout/stderr/exitCode."
+                "Run a non-interactive shell command with the default shell ({default_shell}). \
+                 Use for directory inspection and commands without a dedicated tool."
             ),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string" },
                     "cwd": { "type": "string" },
-                    "shell": {
-                        "type": "string",
-                        "description": "Optional shell override. Supported families: pwsh/powershell, cmd, wsl, sh/bash/zsh."
-                    },
                     "timeout": {
                         "type": "integer",
                         "minimum": 1,
@@ -386,32 +379,23 @@ impl Tool for ShellTool {
             .prompt(
                 ToolPromptMetadata::new(
                     format!(
-                        "Run a one-shot shell command with the current default shell \
-                         (`{default_shell}`) when file tools or search tools are not precise \
-                         enough."
+                        "Run one-shot shell commands with `{default_shell}`. Use for directory \
+                         inspection, build/test/git/system commands, and operations without a \
+                         dedicated tool."
                     ),
                     format!(
-                        "Use `shell` for non-interactive commands that are easier to express as a \
-                         single command line than as a dedicated file tool. This session defaults \
-                         to `{default_shell}` and resolves that default by preferring the current \
-                         environment's shell before falling back to platform-safe options. The \
-                         optional `shell` override only supports known shell families \
-                         (PowerShell, cmd, WSL bash, sh/bash/zsh) so runtime can pass the command \
-                         with the correct flags. Prefer `shell` for build/test/git/system \
-                         inspection commands. Prefer dedicated tools instead of `shell` for file \
-                         reading (`readFile`), code search (`grep`/`findFiles`), and structured \
-                         file edits (`editFile`/`apply_patch`). Keep commands scoped to the \
-                         intended host paths, explain risky commands before running them, and \
-                         prefer read-only inspection before mutation."
+                        "Use `shell` for non-interactive commands with the default shell \
+                         `{default_shell}`. Use `ls`, `dir`, or `Get-ChildItem` to inspect \
+                         directories. Prefer `readFile` for files, `findFiles` for path globs, \
+                         `grep` for content search, and `editFile`/`writeFile`/`apply_patch` for \
+                         file changes. Keep commands scoped and prefer read-only inspection \
+                         before mutation."
                     ),
                 )
                 .caveat(
-                    "Non-interactive single shot — no stdin, no interactive prompts. Use `cwd` to \
-                     set the working directory instead of `cd &&`. On timeout the process is \
-                     killed; only output produced so far is returned. If quoting issues, set \
-                     `shell` explicitly to pwsh/cmd/wsl/sh.",
+                    "Single shot only: no stdin and no interactive prompts. Use `cwd` instead of \
+                     `cd &&`; set `shell` explicitly only for quoting or shell-family issues.",
                 )
-                .example("Run cargo test: { command: \"cargo test --lib\", timeout: 300 }")
                 .prompt_tag("shell"),
             )
             .max_result_inline_size(30_000)
@@ -432,7 +416,7 @@ impl Tool for ShellTool {
             ));
         }
 
-        let spec = command_spec(args.shell.as_deref(), &args.command)?;
+        let spec = command_spec(&args.command)?;
         let started_at = Instant::now();
         let command_text = args.command.clone();
         let shell_display = spec.display_shell.clone();
@@ -641,9 +625,9 @@ impl Tool for ShellTool {
 /// 根据平台和用户偏好构建 shell 命令规范。
 ///
 /// 默认策略优先继承当前环境中的 shell 线索，再回退到平台可用的
-/// bash/PowerShell/WSL 兜底链。用户显式传入 `shell` 时始终优先。
-fn command_spec(shell: Option<&str>, command: &str) -> Result<CommandSpec> {
-    let resolved_shell = resolve_shell(shell)?;
+/// bash/PowerShell/WSL 兜底链。
+fn command_spec(command: &str) -> Result<CommandSpec> {
+    let resolved_shell = resolve_shell(None)?;
     Ok(command_spec_for_family(resolved_shell, command))
 }
 
@@ -680,8 +664,8 @@ fn default_shell_for_prompt() -> String {
 mod tests {
     use std::{collections::VecDeque, io, path::Path};
 
-    use astrcode_core::ToolOutputDelta;
     use astrcode_support::shell::detect_shell_family;
+    use astrcode_tool_contract::ToolOutputDelta;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -721,6 +705,27 @@ mod tests {
             deltas.push(delta);
         }
         deltas
+    }
+
+    fn default_shell_family_for_tests() -> ShellFamily {
+        let spec = command_spec("echo ok").expect("default shell should resolve");
+        detect_shell_family(&spec.program).expect("default shell family should be known")
+    }
+
+    fn large_output_command_for_default_shell() -> String {
+        match default_shell_family_for_tests() {
+            ShellFamily::Cmd => "for /l %i in (1,1,10000) do @<nul set /p=x".to_string(),
+            ShellFamily::PowerShell => "[Console]::Write(('x' * 10000))".to_string(),
+            ShellFamily::Posix | ShellFamily::Wsl => "yes x | head -c 10000".to_string(),
+        }
+    }
+
+    fn pwd_command_for_default_shell() -> String {
+        match default_shell_family_for_tests() {
+            ShellFamily::Cmd => "cd".to_string(),
+            ShellFamily::PowerShell => "(Get-Location).Path".to_string(),
+            ShellFamily::Posix | ShellFamily::Wsl => "pwd".to_string(),
+        }
     }
 
     #[test]
@@ -826,11 +831,7 @@ mod tests {
     #[tokio::test]
     async fn shell_tool_runs_non_interactive_command() {
         let tool = ShellTool;
-        let args = if cfg!(windows) {
-            json!({"command": "echo ok", "shell": "cmd"})
-        } else {
-            json!({"command": "echo ok", "shell": "sh"})
-        };
+        let args = json!({"command": "echo ok"});
 
         let result = tool
             .execute(
@@ -845,6 +846,20 @@ mod tests {
         assert!(result.output.contains("ok"));
     }
 
+    #[test]
+    fn shell_prompt_describes_directory_inspection_entrypoint() {
+        let prompt = ShellTool
+            .capability_metadata()
+            .prompt
+            .expect("shell should expose prompt metadata");
+
+        assert!(prompt.guide.contains("inspect directories"));
+        assert!(prompt.guide.contains("Get-ChildItem"));
+        assert!(prompt.guide.contains("readFile"));
+        assert!(prompt.guide.contains("findFiles"));
+        assert!(prompt.guide.contains("grep"));
+    }
+
     #[tokio::test]
     async fn shell_persists_large_output_and_read_file_can_open_it() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
@@ -852,17 +867,9 @@ mod tests {
             .with_resolved_inline_limit(4 * 1024)
             .with_max_output_size(20 * 1024);
         let tool = ShellTool;
-        let args = if cfg!(windows) {
-            json!({
-                "command": "[Console]::Write(('x' * 10000))",
-                "shell": "pwsh"
-            })
-        } else {
-            json!({
-                "command": "yes x | head -c 10000",
-                "shell": "sh"
-            })
-        };
+        let args = json!({
+            "command": large_output_command_for_default_shell()
+        });
 
         let result = tool
             .execute("tc-shell-persisted".to_string(), args, &shell_ctx)
@@ -910,19 +917,10 @@ mod tests {
             .await
             .expect("outside dir should be created");
         let tool = ShellTool;
-        let args = if cfg!(windows) {
-            json!({
-                "command": "(Get-Location).Path",
-                "shell": "pwsh",
-                "cwd": outside.to_string_lossy()
-            })
-        } else {
-            json!({
-                "command": "pwd",
-                "shell": "sh",
-                "cwd": outside.to_string_lossy()
-            })
-        };
+        let args = json!({
+            "command": pwd_command_for_default_shell(),
+            "cwd": outside.to_string_lossy()
+        });
 
         let result = tool
             .execute(
@@ -996,20 +994,9 @@ mod tests {
     }
 
     #[test]
-    fn command_spec_rejects_unknown_shell_override() {
-        let err = command_spec(Some("fish"), "echo ok").expect_err("unsupported shell should fail");
-        assert!(matches!(err, AstrError::Validation(_)));
-    }
-
-    #[test]
-    fn command_spec_uses_stable_display_labels() {
-        let cmd_spec = command_spec(Some("cmd"), "echo ok").expect("cmd should resolve");
-        assert_eq!(cmd_spec.display_shell, "cmd");
-
-        let pwsh_spec = command_spec(Some("pwsh"), "echo ok").expect("pwsh should resolve");
-        assert_eq!(pwsh_spec.display_shell, "pwsh");
-
-        let wsl_spec = command_spec(Some("wsl.exe"), "echo ok").expect("wsl should resolve");
-        assert_eq!(wsl_spec.display_shell, "wsl-bash");
+    fn command_spec_uses_runtime_default_shell() {
+        let spec = command_spec("echo ok").expect("default shell should resolve");
+        assert!(!spec.program.is_empty());
+        assert_eq!(spec.display_shell, default_shell_for_prompt());
     }
 }

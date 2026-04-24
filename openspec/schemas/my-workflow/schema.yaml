@@ -1,0 +1,210 @@
+name: my-workflow
+version: 1
+description: 自定义 OpenSpec 工作流：research → proposal → specs → dto → design → tasks
+artifacts:
+  - id: research
+    generates: research.md
+    requires: []
+    description: 调研当前现状、约束、风险与可复用点的背景文档
+    template: research.md
+    instruction: |
+      目标：
+      - 先弄清楚“项目现在是什么样”，再进入提案、规格和设计。
+
+      主要输入：
+      - 用户需求
+      - 当前代码、文档、脚本、测试、既有 specs
+
+      必须回答：
+      - 相关功能、模块、接口、数据结构现在在哪里、如何工作
+      - 哪些内容可以直接复用，哪些是限制、风险或潜在冲突
+      - 如果是改已有能力，当前行为与目标行为差异是什么
+      - 哪些事实已经确认，哪些仍然只是推测
+
+      写作要求：
+      - 用通俗中文，少空话，优先写清楚事实
+      - 尽量引用真实文件路径、目录、接口名、spec 名称
+      - 事实与判断分开写，方便后续文档直接引用
+      - 这一阶段聚焦现状与问题，不展开具体实现方案
+
+      输出要求：
+      - 按模板整理为可复用上下文，供 proposal / specs / dto / design 直接消费
+
+  - id: proposal
+    generates: proposal.md
+    description: 说明为什么做、做什么、影响范围是什么的变更提案
+    template: proposal.md
+    instruction: |
+      目标：
+      - 说明这次变更为什么值得做，以及本次到底要改什么。
+
+      主要输入：
+      - `research.md`
+
+      必须回答：
+      - 当前问题或机会是什么，为什么现在处理
+      - 本次要新增、修改、删除什么
+      - 本次明确不做什么
+      - 会影响哪些模块、接口、数据、流程或使用方式
+      - 哪些能力需要写新 spec，哪些能力需要修改现有 spec
+
+      写作要求：
+      - 先讲“为什么”，再讲“做什么”，不要提前写实现细节
+      - `新增能力` 和 `修改能力` 要写得足够明确，因为后续 specs 会直接据此展开
+      - 若存在 breaking change，要显式标注 `BREAKING`
+      - 内容简洁、边界明确，通常控制在 1-2 页
+
+      输出要求：
+      - 让读者看完后能明确本次变更的目标、边界、影响范围和 spec 拆分方式
+    requires:
+      - research
+
+  - id: specs
+    generates: specs/**/*.md
+    description: 定义系统应表现为什么样的行为规格
+    template: spec.md
+    instruction: |
+      目标：
+      - 用清晰、可验证的方式定义“系统应该做什么”。
+
+      主要输入：
+      - `proposal.md`
+      - `research.md`
+
+      必须回答：
+      - 每个能力的预期行为是什么
+      - 正常路径、边界条件、失败路径分别怎么表现
+      - 哪些需求是新增，哪些是修改、删除或重命名
+
+      写作要求：
+      - 每个能力写一个 spec 文件
+      - 新能力使用 proposal 中给出的 kebab-case 名称：`specs/<capability>/spec.md`
+      - 修改已有能力时，沿用 `openspec/specs/<capability>/` 的既有目录名
+      - 保留以下 delta 头，不要翻译：
+        - `## ADDED Requirements`
+        - `## MODIFIED Requirements`
+        - `## REMOVED Requirements`
+        - `## RENAMED Requirements`
+      - 每条需求使用 `### Requirement: <名称>`
+      - 每个场景使用 `#### Scenario: <名称>`
+      - 场景正文使用 `WHEN` / `THEN`
+      - 每条需求至少有一个场景
+      - 修改已有需求时，必须粘贴并改写完整 requirement block，不要只改一半
+      - 删除需求时，必须写 `Reason` 和 `Migration`
+      - 重命名需求时，使用 `FROM:` / `TO:` 格式
+
+      输出要求：
+      - 需求必须能被测试或验收，不要写“优化一下”“支持一下”这类模糊描述
+    requires:
+      - proposal
+      - research
+
+  - id: dto
+    generates: dto.md
+    description: 梳理边界数据模型、字段约束与映射关系的数据说明
+    template: dto.md
+    instruction: |
+      目标：
+      - 把本次变更涉及的数据模型讲清楚，减少实现阶段对字段和边界的反复猜测。
+
+      主要输入：
+      - `proposal.md`
+      - `research.md`
+      - `specs/**/*.md`
+
+      必须回答：
+      - 本次涉及哪些模型：新增、修改、复用各有哪些
+      - 每个模型属于哪个边界：请求 / 响应 / 命令 / 事件 / 持久化 / 内部视图 / 其他
+      - 字段名、类型、必填性、默认值、约束、不变量分别是什么
+      - 模型之间是什么关系，数据从哪里来、流向哪里
+      - 与现有结构如何映射，是否有兼容性或 breaking 影响
+
+      写作要求：
+      - 区分“对外边界 DTO”和“内部核心模型”
+      - 优先基于真实需求和现有结构，不要凭空发明字段
+      - 如果本次不需要新增 DTO，也要明确说明沿用了哪些现有模型，以及为什么够用
+      - 重点是让实现者和 LLM 一眼看懂每个模型的职责、边界和字段约束
+
+      输出要求：
+      - 每个模型都应能独立被实现、序列化、校验或映射
+    requires:
+      - proposal
+      - research
+      - specs
+
+  - id: design
+    generates: design.md
+    description: 说明方案如何落地、为什么这样落地的技术设计文档
+    template: design.md
+    instruction: |
+      目标：
+      - 说明“准备怎么做”，以及“为什么这样做而不是别的做法”。
+
+      主要输入：
+      - `proposal.md`
+      - `research.md`
+      - `specs/**/*.md`
+      - `dto.md`
+
+      必须回答：
+      - 关键模块、职责和边界如何划分
+      - 主要数据流、控制流、错误流如何走
+      - 关键技术决策是什么，备选方案为什么没选
+      - 迁移、回滚、兼容性、性能、安全、可观测性需要注意什么
+      - 本次实现如何满足 spec 与 dto 的要求
+
+      写作要求：
+      - design 是本工作流的正式 artifact，简单变更可以写短版，但不要留空
+      - 重点解释边界、方案和取舍，不要写成逐行代码说明
+      - 复杂点要说明风险与缓解方式
+      - 如果会新增、修改、删除关键文件或模块，尽量明确指出
+
+      输出要求：
+      - 让实现者能据此开展编码，也让审阅者能快速判断方案是否合理
+    requires:
+      - proposal
+      - research
+      - specs
+      - dto
+
+  - id: tasks
+    generates: tasks.md
+    description: 按依赖顺序拆分、可跟踪执行的任务清单
+    template: tasks.md
+    instruction: |
+      目标：
+      - 把实现工作拆成按顺序执行、可验证、可勾选的任务。
+
+      主要输入：
+      - `specs/**/*.md`
+      - `dto.md`
+      - `design.md`
+
+      必须回答：
+      - 先做什么，后做什么，哪些任务互相依赖
+      - 每个任务修改哪里、产出什么、怎么验证
+
+      写作要求：
+      - 保持以下格式，不要改：
+        - 分组标题：`## 1. 分组名称`
+        - 任务项：`- [ ] 1.1 任务描述`
+      - 每个任务尽量只做一件明确的事
+      - 任务描述尽量带上模块、文件、接口或对象名称
+      - 优先按依赖顺序拆分，而不是按技术层机械分组
+      - 大任务继续拆小，不要把整块重构写成一条
+      - 每个任务都应具备完成判定，最好能看出验证方式
+
+      输出要求：
+      - 让实现阶段可以直接按清单推进，并在完成后逐条勾选
+    requires:
+      - specs
+      - dto
+      - design
+apply:
+  requires:
+    - tasks
+  tracks: tasks.md
+  instruction: |
+    先读取所有上下文文件，再按未完成任务顺序实施。
+    每完成一项就立即更新 `tasks.md`。
+    如果发现阻塞、事实与文档不一致、或需要回写 proposal/specs/dto/design，先停下来更新对应 artifact，再继续。

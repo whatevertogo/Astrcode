@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), allow(dead_code))]
+
 #[allow(dead_code)]
 pub const FRONTEND_MODE_ENV: &str = "ASTRCODE_DESKTOP_FRONTEND_MODE";
 pub const TAURI_CLI_VERBOSITY_ENV: &str = "TAURI_CLI_VERBOSITY";
@@ -20,7 +22,6 @@ impl DesktopFrontendMode {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn parse(mode: &str) -> Result<Self, String> {
         match mode {
             "tauri-dev-cli" => Ok(Self::TauriDevCli),
@@ -30,7 +31,6 @@ impl DesktopFrontendMode {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn resolve(tauri_cli_invoked: bool, tauri_is_dev: bool) -> Self {
         match (tauri_cli_invoked, tauri_is_dev) {
             (true, true) => Self::TauriDevCli,
@@ -40,12 +40,10 @@ impl DesktopFrontendMode {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn tauri_cli_invoked_from_env() -> bool {
     std::env::var_os(TAURI_CLI_VERBOSITY_ENV).is_some()
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn tauri_is_dev_from_env() -> bool {
     matches!(
         std::env::var(DEP_TAURI_DEV_ENV).as_deref(),

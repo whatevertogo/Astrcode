@@ -10,9 +10,8 @@
 //! - `summary` → output（LLM 可见的文本摘要）
 //! - 整个 CollaborationResult 序列化为 metadata（供前端消费）
 
-use astrcode_core::{
-    CollaborationResult, DelegationMetadata, ExecutionResultCommon, ToolExecutionResult,
-};
+use astrcode_core::{CollaborationResult, DelegationMetadata, ExecutionResultCommon};
+use astrcode_tool_contract::ToolExecutionResult;
 use serde_json::json;
 
 /// 协作工具的错误结果（参数校验失败等）。

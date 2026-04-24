@@ -6,10 +6,11 @@
 //! # 设计原则
 //!
 //! - 外部 MCP / plugin 工具仅保留粗略摘要，不展开详细指南
-//! - 非外部工具保持详细指南可见，不再因为工具总数被整体折叠
+//! - 内置工具默认进入稳定摘要，只有工具发现和协作类工具展开详细指南
 //! - 只负责工具指南；外部 `PromptDeclaration` 由独立 contributor 承接
 
-use astrcode_core::{CapabilitySpec, ToolPromptMetadata};
+use astrcode_core::CapabilitySpec;
+use astrcode_tool_contract::ToolPromptMetadata;
 use async_trait::async_trait;
 
 use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
@@ -23,7 +24,7 @@ impl PromptContributor for CapabilityPromptContributor {
     }
 
     fn cache_version(&self) -> u64 {
-        6
+        7
     }
 
     fn cache_fingerprint(&self, ctx: &PromptContext) -> String {
@@ -128,11 +129,10 @@ fn is_external_tool(spec: &CapabilitySpec) -> bool {
 fn tool_summary_rank(name: &str) -> u8 {
     match name {
         "readFile" => 0,
-        "listDir" => 1,
-        "findFiles" => 2,
-        "grep" => 3,
+        "findFiles" => 1,
+        "grep" => 2,
+        "shell" => 3,
         "tool_search" => 4,
-        "shell" => 5,
         "Skill" => 6,
         "apply_patch" => 90,
         "editFile" => 91,
@@ -142,9 +142,8 @@ fn tool_summary_rank(name: &str) -> u8 {
 }
 
 fn should_render_detailed_tool_guide(guide: &ToolGuideEntry) -> bool {
-    guide.prompt.always_include
-        || is_agent_collaboration_tool(guide)
-        || !is_external_tool(&guide.spec)
+    is_agent_collaboration_tool(guide)
+        || matches!(guide.spec.name.as_str(), "tool_search" | "Skill")
 }
 
 fn is_agent_collaboration_tool(guide: &ToolGuideEntry) -> bool {
@@ -163,7 +162,10 @@ fn build_tool_summary_block(
         "Use the narrowest tool that can answer the request. Prefer read-only inspection before \
          mutation. All paths must stay inside the working directory. When a tool returns a \
          persisted-result reference for large output, keep the reference in context and inspect \
-         it with `readFile` chunks instead of asking the tool to inline the whole result again.",
+         it with `readFile` chunks instead of asking the tool to inline the whole result again. \
+         Use `findFiles` for file names and paths, `grep` for content search, `shell` for \
+         directory inspection or commands, `readFile` for known files, and \
+         `editFile`/`writeFile`/`apply_patch` for file changes.",
     );
 
     if !tool_guides.is_empty() {
@@ -172,15 +174,9 @@ fn build_tool_summary_block(
             .iter()
             .filter(|guide| !is_agent_collaboration_tool(guide))
         {
-            let caveat = guide
-                .prompt
-                .caveats
-                .first()
-                .map(|caveat| format!(" Caveat: {caveat}"))
-                .unwrap_or_default();
             content.push_str(&format!(
-                "\n- `{}`: {}{}",
-                guide.spec.name, guide.prompt.summary, caveat
+                "\n- `{}`: {}",
+                guide.spec.name, guide.prompt.summary
             ));
         }
 
@@ -195,15 +191,9 @@ fn build_tool_summary_block(
                  calls.",
             );
             for guide in collaboration_guides {
-                let caveat = guide
-                    .prompt
-                    .caveats
-                    .first()
-                    .map(|caveat| format!(" Caveat: {caveat}"))
-                    .unwrap_or_default();
                 content.push_str(&format!(
-                    "\n- `{}`: {}{}",
-                    guide.spec.name, guide.prompt.summary, caveat
+                    "\n- `{}`: {}",
+                    guide.spec.name, guide.prompt.summary
                 ));
             }
         }
@@ -300,9 +290,8 @@ fn build_detailed_tool_block(guide: &ToolGuideEntry) -> BlockSpec {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{
-        CapabilityKind, CapabilitySpec, ToolPromptMetadata, test_support::TestEnvGuard,
-    };
+    use astrcode_core::{CapabilityKind, CapabilitySpec, test_support::TestEnvGuard};
+    use astrcode_tool_contract::ToolPromptMetadata;
     use serde_json::json;
 
     use super::*;
@@ -365,7 +354,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn contributes_tool_summary_and_detailed_guides() {
+    async fn contributes_tool_summary_without_default_core_guides() {
         let contribution = CapabilityPromptContributor.contribute(&context()).await;
 
         assert!(
@@ -375,15 +364,15 @@ mod tests {
                 .any(|block| block.id == "tool-summary" && block.kind == BlockKind::ToolGuide)
         );
         assert!(
-            contribution
+            !contribution
                 .blocks
                 .iter()
-                .any(|block| block.id == "tool-guide-grep" && block.kind == BlockKind::ToolGuide)
+                .any(|block| block.id == "tool-guide-grep")
         );
     }
 
     #[tokio::test]
-    async fn large_tool_surfaces_keep_internal_tool_guides_visible() {
+    async fn large_tool_surfaces_keep_core_tools_in_summary_only() {
         let _guard = TestEnvGuard::new();
         let mut ctx = context();
         ctx.capability_specs = vec![
@@ -398,12 +387,51 @@ mod tests {
 
         for name in ["alpha", "beta", "gamma", "delta", "epsilon"] {
             assert!(
-                contribution
+                !contribution
                     .blocks
                     .iter()
                     .any(|block| block.id == format!("tool-guide-{name}"))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn only_discovery_and_collaboration_tools_get_detailed_guides() {
+        let _guard = TestEnvGuard::new();
+        let mut ctx = context();
+        ctx.capability_specs = vec![
+            tool_spec("readFile", false),
+            tool_spec("tool_search", false),
+            tool_spec("upsertSessionPlan", false),
+            tool_spec("Skill", false),
+        ];
+
+        let contribution = CapabilityPromptContributor.contribute(&ctx).await;
+
+        assert!(
+            !contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-guide-readFile")
+        );
+        assert!(
+            !contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-guide-upsertSessionPlan")
+        );
+        assert!(
+            contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-guide-tool_search")
+        );
+        assert!(
+            contribution
+                .blocks
+                .iter()
+                .any(|block| block.id == "tool-guide-Skill")
+        );
     }
 
     #[tokio::test]

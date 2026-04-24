@@ -7,7 +7,9 @@ authors.workspace = true
 
 [dependencies]
 astrcode-core = { path = "../core" }
-astrcode-adapter-prompt = { path = "../adapter-prompt" }
+astrcode-prompt-contract = { path = "../prompt-contract" }
+astrcode-runtime-contract = { path = "../runtime-contract" }
+astrcode-plugin-host = { path = "../plugin-host" }
 astrcode-support = { path = "../support" }
 async-trait.workspace = true
 base64.workspace = true

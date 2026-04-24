@@ -7,7 +7,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::env::{ASTRCODE_MAX_TOOL_CONCURRENCY_ENV, DEEPSEEK_API_KEY_ENV, OPENAI_API_KEY_ENV};
+use crate::env::{DEEPSEEK_API_KEY_ENV, OPENAI_API_KEY_ENV};
 
 const CURRENT_CONFIG_VERSION: &str = "1";
 const PROVIDER_KIND_OPENAI: &str = "openai";
@@ -52,6 +52,7 @@ pub const DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT: usize = 256;
 pub const DEFAULT_INBOX_CAPACITY: usize = 1024;
 pub const DEFAULT_PARENT_DELIVERY_CAPACITY: usize = 1024;
 pub const DEFAULT_MAX_CONSECUTIVE_FAILURES: usize = 3;
+pub const DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS: usize = 3;
 pub const DEFAULT_RECOVERY_TRUNCATE_BYTES: usize = 30_000;
 pub const DEFAULT_API_SESSION_TTL_HOURS: i64 = 8;
 
@@ -111,6 +112,8 @@ pub struct RuntimeConfig {
     pub agent: Option<AgentConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_consecutive_failures: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_continuation_attempts: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery_truncate_bytes: Option<usize>,
 
@@ -206,6 +209,7 @@ pub struct ResolvedRuntimeConfig {
     pub compact_keep_recent_user_messages: u8,
     pub agent: ResolvedAgentConfig,
     pub max_consecutive_failures: usize,
+    pub max_output_continuation_attempts: usize,
     pub recovery_truncate_bytes: usize,
     pub llm_connect_timeout_secs: u64,
     pub llm_read_timeout_secs: u64,
@@ -260,7 +264,7 @@ impl Default for ResolvedAgentConfig {
 impl Default for ResolvedRuntimeConfig {
     fn default() -> Self {
         Self {
-            max_tool_concurrency: max_tool_concurrency(),
+            max_tool_concurrency: DEFAULT_MAX_TOOL_CONCURRENCY,
             auto_compact_enabled: DEFAULT_AUTO_COMPACT_ENABLED,
             compact_threshold_percent: DEFAULT_COMPACT_THRESHOLD_PERCENT,
             tool_result_max_bytes: DEFAULT_TOOL_RESULT_MAX_BYTES,
@@ -268,6 +272,7 @@ impl Default for ResolvedRuntimeConfig {
             compact_keep_recent_user_messages: DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES,
             agent: ResolvedAgentConfig::default(),
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
+            max_output_continuation_attempts: DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
             recovery_truncate_bytes: DEFAULT_RECOVERY_TRUNCATE_BYTES,
             llm_connect_timeout_secs: DEFAULT_LLM_CONNECT_TIMEOUT_SECS,
             llm_read_timeout_secs: DEFAULT_LLM_READ_TIMEOUT_SECS,
@@ -459,6 +464,10 @@ impl fmt::Debug for RuntimeConfig {
             )
             .field("agent", &self.agent)
             .field("max_consecutive_failures", &self.max_consecutive_failures)
+            .field(
+                "max_output_continuation_attempts",
+                &self.max_output_continuation_attempts,
+            )
             .field("recovery_truncate_bytes", &self.recovery_truncate_bytes)
             .field("llm_connect_timeout_secs", &self.llm_connect_timeout_secs)
             .field("llm_read_timeout_secs", &self.llm_read_timeout_secs)
@@ -620,13 +629,9 @@ fn env_reference(name: &str) -> String {
     format!("{ENV_REFERENCE_PREFIX}{name}")
 }
 
-/// 从进程环境变量/默认值获取最大安全工具并发数。
+/// 返回默认最大安全工具并发数。
 pub fn max_tool_concurrency() -> usize {
-    std::env::var(ASTRCODE_MAX_TOOL_CONCURRENCY_ENV)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_MAX_TOOL_CONCURRENCY)
-        .max(1)
+    DEFAULT_MAX_TOOL_CONCURRENCY
 }
 
 /// 从 `Option<AgentConfig>` 解析出完整的 `ResolvedAgentConfig`。
@@ -696,6 +701,10 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
         max_consecutive_failures: runtime
             .max_consecutive_failures
             .unwrap_or(defaults.max_consecutive_failures)
+            .max(1),
+        max_output_continuation_attempts: runtime
+            .max_output_continuation_attempts
+            .unwrap_or(defaults.max_output_continuation_attempts)
             .max(1),
         recovery_truncate_bytes: runtime
             .recovery_truncate_bytes
@@ -811,6 +820,10 @@ mod tests {
             resolved.compact_max_output_tokens,
             DEFAULT_COMPACT_MAX_OUTPUT_TOKENS
         );
+        assert_eq!(
+            resolved.max_output_continuation_attempts,
+            DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS
+        );
     }
 
     #[test]
@@ -818,6 +831,7 @@ mod tests {
         let resolved = resolve_runtime_config(&RuntimeConfig {
             max_tool_concurrency: Some(16),
             llm_read_timeout_secs: Some(120),
+            max_output_continuation_attempts: Some(5),
             agent: Some(AgentConfig {
                 max_subrun_depth: Some(5),
                 max_spawn_per_turn: Some(2),
@@ -828,6 +842,7 @@ mod tests {
 
         assert_eq!(resolved.max_tool_concurrency, 16);
         assert_eq!(resolved.llm_read_timeout_secs, 120);
+        assert_eq!(resolved.max_output_continuation_attempts, 5);
         assert_eq!(resolved.agent.max_subrun_depth, 5);
         assert_eq!(resolved.agent.max_spawn_per_turn, 2);
     }

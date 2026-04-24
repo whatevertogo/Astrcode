@@ -3,55 +3,65 @@
 //! 负责把底层 `RuntimeCoordinator` 适配成应用层治理端口，
 //! 并为治理入口接入真实 reload/observability 组合根。
 
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 
 use astrcode_adapter_mcp::{
     config::McpServerConfig,
     manager::{McpConnectionManager, McpReloadSnapshot},
 };
 use astrcode_adapter_skills::{LayeredSkillCatalog, load_builtin_skills};
-use astrcode_application::{
-    AppGovernance, ApplicationError, ModeCatalog, RuntimeGovernancePort, RuntimeGovernanceSnapshot,
-    RuntimeObservabilityCollector, RuntimeReloader, SessionInfoProvider, config::ConfigService,
-    lifecycle::TaskRegistry, mode::ModeCatalogSnapshot,
+use astrcode_core::{CapabilityInvoker, SkillSpec};
+use astrcode_plugin_host::{
+    PluginEntry, ProviderContributionCatalog, ResourceCatalog, build_skill_catalog_base,
+    builtin_openai_provider_descriptor,
 };
-use astrcode_core::{CapabilityInvoker, SkillSpec, plugin::PluginEntry};
-use astrcode_plugin::Supervisor;
+use astrcode_runtime_contract::{ManagedRuntimeComponent, RuntimeHandle};
 use async_trait::async_trait;
 
 use super::{
-    capabilities::CapabilitySurfaceSync,
-    deps::{
-        core::{AstrError, ManagedRuntimeComponent, RuntimeHandle},
-        session_runtime::SessionRuntime,
+    capabilities::CapabilitySurfaceSync, deps::core::AstrError, mcp::load_declared_configs,
+    plugins::bootstrap_plugins_with_skill_root, runtime_coordinator::RuntimeCoordinator,
+};
+use crate::{
+    AppGovernance, ApplicationError, GovernanceSnapshot, RuntimeGovernancePort,
+    RuntimeGovernanceSnapshot, RuntimeReloader, SessionInfoProvider,
+    application_error_bridge::ServerRouteError,
+    config_service_bridge::ServerConfigService,
+    governance_service::{
+        ServerGovernancePort, ServerGovernanceReloadResult, ServerGovernanceService,
+        ServerGovernanceSnapshot,
     },
-    mcp::load_declared_configs,
-    plugins::bootstrap_plugins_with_skill_root,
-    runtime_coordinator::RuntimeCoordinator,
+    mode_catalog_service::{ServerModeCatalog, ServerModeCatalogSnapshot},
+    runtime_owner_bridge::{ServerRuntimeObservability, ServerTaskRegistry},
 };
 
 pub(crate) struct GovernanceBuildInput {
-    pub session_runtime: Arc<SessionRuntime>,
-    pub config_service: Arc<ConfigService>,
+    pub sessions: Arc<dyn SessionInfoProvider>,
+    pub config_service: Arc<ServerConfigService>,
     pub coordinator: Arc<RuntimeCoordinator>,
-    pub task_registry: Arc<TaskRegistry>,
-    pub observability: Arc<RuntimeObservabilityCollector>,
+    pub task_registry: Arc<ServerTaskRegistry>,
+    pub observability: Arc<ServerRuntimeObservability>,
     pub mcp_manager: Arc<McpConnectionManager>,
     pub capability_sync: CapabilitySurfaceSync,
     pub skill_catalog: Arc<LayeredSkillCatalog>,
+    pub resource_catalog: Arc<RwLock<ResourceCatalog>>,
+    pub provider_catalog: Arc<RwLock<ProviderContributionCatalog>>,
     pub plugin_search_paths: Vec<PathBuf>,
     pub plugin_skill_root: PathBuf,
-    pub plugin_supervisors: Vec<Arc<Supervisor>>,
+    pub managed_plugin_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     pub working_dir: PathBuf,
-    pub mode_catalog: Option<Arc<ModeCatalog>>,
+    pub mode_catalog: Option<Arc<ServerModeCatalog>>,
 }
 
-pub(crate) fn build_app_governance(input: GovernanceBuildInput) -> Arc<AppGovernance> {
+pub(crate) fn build_server_governance_service(
+    input: GovernanceBuildInput,
+) -> Arc<ServerGovernanceService> {
     let runtime_port = Arc::new(CoordinatorGovernancePort {
         coordinator: Arc::clone(&input.coordinator),
-    });
-    let sessions = Arc::new(SessionRuntimeInfo {
-        session_runtime: Arc::clone(&input.session_runtime),
     });
     let reloader: Arc<dyn RuntimeReloader> = Arc::new(ServerRuntimeReloader {
         config_service: Arc::clone(&input.config_service),
@@ -59,31 +69,78 @@ pub(crate) fn build_app_governance(input: GovernanceBuildInput) -> Arc<AppGovern
         mcp_manager: Arc::clone(&input.mcp_manager),
         capability_sync: input.capability_sync.clone(),
         skill_catalog: Arc::clone(&input.skill_catalog),
+        resource_catalog: Arc::clone(&input.resource_catalog),
+        provider_catalog: Arc::clone(&input.provider_catalog),
         plugin_search_paths: input.plugin_search_paths.clone(),
         plugin_skill_root: input.plugin_skill_root.clone(),
         working_dir: input.working_dir.clone(),
         mode_catalog: input.mode_catalog,
     });
-    let managed_components: Vec<Arc<dyn ManagedRuntimeComponent>> = input
-        .plugin_supervisors
-        .into_iter()
-        .map(|supervisor| supervisor as Arc<dyn ManagedRuntimeComponent>)
-        .collect();
+    let managed_components: Vec<Arc<dyn ManagedRuntimeComponent>> = input.managed_plugin_components;
     input.coordinator.replace_runtime_surface(
         input.coordinator.plugin_registry().snapshot(),
         input.capability_sync.current_capabilities(),
         managed_components,
     );
 
-    Arc::new(
+    let governance = Arc::new(
         AppGovernance::new(
             runtime_port,
-            input.task_registry,
+            input.task_registry.inner(),
             input.observability,
-            sessions,
+            input.sessions,
         )
         .with_reloader(reloader),
-    )
+    );
+    Arc::new(ServerGovernanceService::new(Arc::new(
+        ApplicationGovernancePort { inner: governance },
+    )))
+}
+
+struct ApplicationGovernancePort {
+    inner: Arc<AppGovernance>,
+}
+
+const SERVER_RUNTIME_NAME: &str = "astrcode-server";
+const SERVER_RUNTIME_KIND: &str = "server";
+
+#[async_trait]
+impl ServerGovernancePort for ApplicationGovernancePort {
+    fn capabilities(&self) -> Vec<astrcode_core::CapabilitySpec> {
+        self.inner.runtime().snapshot().capabilities
+    }
+
+    async fn reload(&self) -> Result<ServerGovernanceReloadResult, ServerRouteError> {
+        let reloaded = self
+            .inner
+            .reload()
+            .await
+            .map_err(application_error_to_server)?;
+        Ok(ServerGovernanceReloadResult {
+            snapshot: server_snapshot_from_application(reloaded.snapshot),
+            reloaded_at: reloaded.reloaded_at,
+        })
+    }
+
+    async fn shutdown(&self, timeout_secs: u64) -> Result<(), ServerRouteError> {
+        self.inner
+            .shutdown(timeout_secs)
+            .await
+            .map_err(application_error_to_server)
+    }
+}
+
+fn server_snapshot_from_application(snapshot: GovernanceSnapshot) -> ServerGovernanceSnapshot {
+    ServerGovernanceSnapshot {
+        runtime_name: snapshot.runtime_name,
+        runtime_kind: snapshot.runtime_kind,
+        loaded_session_count: snapshot.loaded_session_count,
+        running_session_ids: snapshot.running_session_ids,
+        plugin_search_paths: snapshot.plugin_search_paths,
+        metrics: snapshot.metrics,
+        capabilities: snapshot.capabilities,
+        plugins: snapshot.plugins,
+    }
 }
 
 #[derive(Debug)]
@@ -125,11 +182,11 @@ pub(crate) struct AppRuntimeHandle;
 #[async_trait]
 impl RuntimeHandle for AppRuntimeHandle {
     fn runtime_name(&self) -> &'static str {
-        "astrcode-application"
+        SERVER_RUNTIME_NAME
     }
 
     fn runtime_kind(&self) -> &'static str {
-        "application"
+        SERVER_RUNTIME_KIND
     }
 
     async fn shutdown(&self, _timeout_secs: u64) -> std::result::Result<(), AstrError> {
@@ -137,41 +194,19 @@ impl RuntimeHandle for AppRuntimeHandle {
     }
 }
 
-struct SessionRuntimeInfo {
-    session_runtime: Arc<SessionRuntime>,
-}
-
-impl SessionInfoProvider for SessionRuntimeInfo {
-    fn loaded_session_count(&self) -> usize {
-        self.session_runtime.list_sessions().len()
-    }
-
-    fn running_session_ids(&self) -> Vec<String> {
-        self.session_runtime
-            .list_running_sessions()
-            .into_iter()
-            .map(|id| id.to_string())
-            .collect()
-    }
-}
-
-impl std::fmt::Debug for SessionRuntimeInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionRuntimeInfo").finish_non_exhaustive()
-    }
-}
-
 #[derive(Clone)]
 struct ServerRuntimeReloader {
-    config_service: Arc<ConfigService>,
+    config_service: Arc<ServerConfigService>,
     coordinator: Arc<RuntimeCoordinator>,
     mcp_manager: Arc<McpConnectionManager>,
     capability_sync: CapabilitySurfaceSync,
     skill_catalog: Arc<LayeredSkillCatalog>,
+    resource_catalog: Arc<RwLock<ResourceCatalog>>,
+    provider_catalog: Arc<RwLock<ProviderContributionCatalog>>,
     plugin_search_paths: Vec<PathBuf>,
     plugin_skill_root: PathBuf,
     working_dir: PathBuf,
-    mode_catalog: Option<Arc<ModeCatalog>>,
+    mode_catalog: Option<Arc<ServerModeCatalog>>,
 }
 
 impl std::fmt::Debug for ServerRuntimeReloader {
@@ -186,8 +221,10 @@ impl std::fmt::Debug for ServerRuntimeReloader {
 struct PreparedGovernanceReload {
     search_paths: Vec<PathBuf>,
     mcp_configs: Vec<McpServerConfig>,
-    mode_snapshot: Option<ModeCatalogSnapshot>,
+    mode_snapshot: Option<ServerModeCatalogSnapshot>,
     base_skills: Vec<SkillSpec>,
+    resource_catalog: ResourceCatalog,
+    provider_catalog: ProviderContributionCatalog,
     plugin_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     plugin_entries: Vec<PluginEntry>,
     managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
@@ -241,8 +278,9 @@ impl GovernanceReloadRollback {
 
 impl ServerRuntimeReloader {
     async fn prepare_reload_candidate(&self) -> Result<PreparedGovernanceReload, ApplicationError> {
-        let mcp_configs =
-            load_declared_configs(&self.config_service, self.working_dir.as_path()).await?;
+        let mcp_configs = load_declared_configs(&self.config_service, self.working_dir.as_path())
+            .await
+            .map_err(server_error_to_application)?;
         let plugin_bootstrap = bootstrap_plugins_with_skill_root(
             self.plugin_search_paths.clone(),
             self.plugin_skill_root.clone(),
@@ -257,23 +295,26 @@ impl ServerRuntimeReloader {
             None => None,
         };
 
-        let mut base_skills = load_builtin_skills();
-        base_skills.extend(plugin_bootstrap.skills.clone());
-        let managed_components: Vec<Arc<dyn ManagedRuntimeComponent>> = plugin_bootstrap
-            .supervisors
-            .iter()
-            .cloned()
-            .map(|supervisor| supervisor as Arc<dyn ManagedRuntimeComponent>)
-            .collect();
-
+        let base_skills = build_skill_catalog_base(
+            load_builtin_skills(),
+            plugin_bootstrap.skills.clone(),
+            &plugin_bootstrap.resource_catalog,
+        )
+        .base_skills;
+        let mut provider_descriptors = vec![builtin_openai_provider_descriptor()];
+        provider_descriptors.extend(plugin_bootstrap.descriptors.clone());
+        let provider_catalog = ProviderContributionCatalog::from_descriptors(&provider_descriptors)
+            .map_err(ApplicationError::from)?;
         Ok(PreparedGovernanceReload {
             search_paths: plugin_bootstrap.search_paths,
             mcp_configs,
             mode_snapshot,
             base_skills,
+            resource_catalog: plugin_bootstrap.resource_catalog,
+            provider_catalog,
             plugin_invokers: plugin_bootstrap.invokers,
             plugin_entries: plugin_bootstrap.registry.snapshot(),
-            managed_components,
+            managed_components: plugin_bootstrap.managed_components,
         })
     }
 
@@ -300,7 +341,10 @@ impl RuntimeReloader for ServerRuntimeReloader {
         Box<dyn std::future::Future<Output = Result<Vec<PathBuf>, ApplicationError>> + Send + '_>,
     > {
         Box::pin(async move {
-            self.config_service.reload_from_disk().await?;
+            self.config_service
+                .reload_from_disk()
+                .await
+                .map_err(server_error_to_application)?;
             let candidate = self.prepare_reload_candidate().await?;
             let rollback =
                 GovernanceReloadRollback::capture(&self.mcp_manager, &self.capability_sync).await;
@@ -338,6 +382,14 @@ impl RuntimeReloader for ServerRuntimeReloader {
 
             self.skill_catalog
                 .replace_base_skills(candidate.base_skills);
+            *self
+                .resource_catalog
+                .write()
+                .expect("plugin resource catalog lock poisoned") = candidate.resource_catalog;
+            *self
+                .provider_catalog
+                .write()
+                .expect("provider catalog lock poisoned") = candidate.provider_catalog;
             if let (Some(mode_catalog), Some(mode_snapshot)) =
                 (&self.mode_catalog, candidate.mode_snapshot)
             {
@@ -362,23 +414,45 @@ impl RuntimeReloader for ServerRuntimeReloader {
     }
 }
 
+fn server_error_to_application(error: ServerRouteError) -> ApplicationError {
+    match error {
+        ServerRouteError::NotFound(message) => ApplicationError::NotFound(message),
+        ServerRouteError::Conflict(message) => ApplicationError::Conflict(message),
+        ServerRouteError::InvalidArgument(message) => ApplicationError::InvalidArgument(message),
+        ServerRouteError::PermissionDenied(message) => ApplicationError::PermissionDenied(message),
+        ServerRouteError::Internal(message) => ApplicationError::Internal(message),
+    }
+}
+
+fn application_error_to_server(error: ApplicationError) -> ServerRouteError {
+    match error {
+        ApplicationError::NotFound(message) => ServerRouteError::NotFound(message),
+        ApplicationError::Conflict(message) => ServerRouteError::Conflict(message),
+        ApplicationError::InvalidArgument(message) => ServerRouteError::InvalidArgument(message),
+        ApplicationError::PermissionDenied(message) => ServerRouteError::PermissionDenied(message),
+        ApplicationError::Internal(message) => ServerRouteError::Internal(message),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::{Arc, RwLock},
+    };
 
+    use astrcode_plugin_host::PluginRegistry;
+    use astrcode_tool_contract::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::bootstrap::deps::{
-        core::{
+    use crate::{
+        bootstrap::deps::core::{
             AstrError, CapabilityInvoker, CapabilityKind, CapabilitySpec, CapabilitySpecBuildError,
-            LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits, PluginRegistry,
-            PromptBuildOutput, PromptBuildRequest, PromptProvider, ResourceProvider,
-            ResourceReadResult, ResourceRequestContext, Result, Tool, ToolContext, ToolDefinition,
-            ToolExecutionResult,
+            Result,
         },
-        kernel::{CapabilityRouter, Kernel, ToolCapabilityInvoker},
+        tool_capability_invoker::ToolCapabilityInvoker,
     };
 
     #[derive(Debug)]
@@ -425,63 +499,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct NoopLlmProvider;
-
-    #[async_trait]
-    impl LlmProvider for NoopLlmProvider {
-        async fn generate(
-            &self,
-            _request: LlmRequest,
-            _sink: Option<LlmEventSink>,
-        ) -> Result<LlmOutput> {
-            Err(AstrError::Validation(
-                "noop llm provider should not execute in this test".to_string(),
-            ))
-        }
-
-        fn model_limits(&self) -> ModelLimits {
-            ModelLimits {
-                context_window: 8192,
-                max_output_tokens: 4096,
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    struct NoopPromptProvider;
-
-    #[async_trait]
-    impl PromptProvider for NoopPromptProvider {
-        async fn build_prompt(&self, _request: PromptBuildRequest) -> Result<PromptBuildOutput> {
-            Ok(PromptBuildOutput {
-                system_prompt: "noop".to_string(),
-                system_prompt_blocks: Vec::new(),
-                prompt_cache_hints: Default::default(),
-                cache_metrics: Default::default(),
-                metadata: Value::Null,
-            })
-        }
-    }
-
-    #[derive(Debug)]
-    struct NoopResourceProvider;
-
-    #[async_trait]
-    impl ResourceProvider for NoopResourceProvider {
-        async fn read_resource(
-            &self,
-            _uri: &str,
-            _context: &ResourceRequestContext,
-        ) -> Result<ResourceReadResult> {
-            Ok(ResourceReadResult {
-                uri: "noop://resource".to_string(),
-                content: Value::Null,
-                metadata: Value::Null,
-            })
-        }
-    }
-
     fn invoker(name: &'static str, tags: &'static [&'static str]) -> Arc<dyn CapabilityInvoker> {
         Arc::new(
             ToolCapabilityInvoker::new(Arc::new(StaticTool { name, tags }))
@@ -489,21 +506,32 @@ mod tests {
         ) as Arc<dyn CapabilityInvoker>
     }
 
-    fn test_kernel(builtin_invokers: &[Arc<dyn CapabilityInvoker>]) -> Arc<Kernel> {
-        let mut builder = CapabilityRouter::builder();
-        for invoker in builtin_invokers {
-            builder = builder.register_invoker(Arc::clone(invoker));
+    #[derive(Default)]
+    struct TestCapabilitySurface {
+        invokers: RwLock<Vec<Arc<dyn CapabilityInvoker>>>,
+    }
+
+    impl crate::session_runtime_owner_bridge::ServerCapabilitySurfacePort for TestCapabilitySurface {
+        fn replace_capability_invokers(
+            &self,
+            invokers: Vec<Arc<dyn CapabilityInvoker>>,
+        ) -> Result<()> {
+            let mut seen = HashSet::new();
+            for invoker in &invokers {
+                let name = invoker.capability_spec().name.to_string();
+                if !seen.insert(name.clone()) {
+                    return Err(AstrError::Validation(format!(
+                        "duplicate capability '{}'",
+                        name
+                    )));
+                }
+            }
+            *self
+                .invokers
+                .write()
+                .expect("test capability surface lock should not be poisoned") = invokers;
+            Ok(())
         }
-        let router = builder.build().expect("router should build");
-        Arc::new(
-            Kernel::builder()
-                .with_capabilities(router)
-                .with_llm_provider(Arc::new(NoopLlmProvider))
-                .with_prompt_provider(Arc::new(NoopPromptProvider))
-                .with_resource_provider(Arc::new(NoopResourceProvider))
-                .build()
-                .expect("kernel should build"),
-        )
     }
 
     #[tokio::test]
@@ -525,8 +553,8 @@ mod tests {
         let port = CoordinatorGovernancePort { coordinator };
 
         let snapshot = port.snapshot();
-        assert_eq!(snapshot.runtime_name, "astrcode-application");
-        assert_eq!(snapshot.runtime_kind, "application");
+        assert_eq!(snapshot.runtime_name, SERVER_RUNTIME_NAME);
+        assert_eq!(snapshot.runtime_kind, SERVER_RUNTIME_KIND);
         assert_eq!(snapshot.capabilities.len(), 1);
         assert!(snapshot.plugins.is_empty());
 
@@ -559,11 +587,11 @@ mod tests {
             .expect("alpha config should apply");
 
         let stable_local_invokers = vec![invoker("read_file", &["source:builtin"])];
-        let kernel = test_kernel(&stable_local_invokers);
+        let capability_surface = Arc::new(TestCapabilitySurface::default());
         let tool_search_index =
             Arc::new(astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex::new());
         let capability_sync = CapabilitySurfaceSync::new(
-            kernel,
+            capability_surface,
             stable_local_invokers,
             Arc::clone(&tool_search_index),
         );

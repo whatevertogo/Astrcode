@@ -32,8 +32,7 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, CancelToken, LlmMessage, PromptCacheGlobalStrategy, PromptCacheHints,
-    ReasoningContent, Result, ToolCallRequest, ToolDefinition,
+    AstrError, CancelToken, LlmMessage, ReasoningContent, Result, ToolCallRequest, ToolDefinition,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -43,7 +42,8 @@ use tokio::select;
 
 use crate::{
     EventSink, FinishReason, LlmAccumulator, LlmClientConfig, LlmEvent, LlmOutput, LlmProvider,
-    LlmRequest, LlmUsage, ModelLimits, Utf8StreamDecoder, build_http_client,
+    LlmRequest, LlmUsage, ModelLimits, PromptCacheGlobalStrategy, PromptCacheHints,
+    Utf8StreamDecoder, build_http_client,
     cache_tracker::{CacheCheckContext, CacheTracker, stable_hash},
     emit_event, is_retryable_status, wait_retry_delay,
 };
@@ -299,80 +299,100 @@ impl OpenAiProvider {
         output.prompt_cache_diagnostics = tracker.finalize(pending_cache_check, output.usage);
     }
 
-    /// 发送 HTTP 请求并处理响应。
+    /// 执行单次 HTTP 请求并处理响应状态。
     ///
-    /// 内置指数退避重试逻辑：
-    /// - 可重试的 HTTP 状态码（408/429/5xx）和传输层错误会自动重试
-    /// - 重试期间监听取消令牌，一旦取消立即中断
-    /// - 非重试错误（如 400/401/403）直接返回
-    async fn send_request<T: Serialize + ?Sized>(
+    /// 调用方在更外层统一管理 attempt 预算，使“建立响应”和“读取流式 body”
+    /// 属于同一个重试边界。
+    async fn send_request_once<T: Serialize + ?Sized>(
         &self,
         req: &T,
         cancel: CancelToken,
     ) -> Result<reqwest::Response> {
-        for attempt in 0..=self.client_config.max_retries {
-            let send_future = self
-                .client
-                .post(&self.api_url)
-                .bearer_auth(&self.api_key)
-                .json(req)
-                .send();
+        let send_future = self
+            .client
+            .post(&self.api_url)
+            .bearer_auth(&self.api_key)
+            .json(req)
+            .send();
 
-            let response = select! {
-                _ = crate::cancelled(cancel.clone()) => {
-                    return Err(AstrError::LlmInterrupted);
-                }
-                result = send_future => result
-                    .map_err(|error| AstrError::http_with_source(
-                        "failed to call openai endpoint",
-                        error.is_timeout() || error.is_connect() || error.is_body(),
-                        error,
-                    ))
-            };
-
-            match response {
-                Ok(response) => {
-                    let status = response.status();
-                    if status.is_success() {
-                        return Ok(response);
-                    }
-
-                    let body = response.text().await.unwrap_or_default();
-                    if is_retryable_status(status) && attempt < self.client_config.max_retries {
-                        wait_retry_delay(
-                            attempt,
-                            cancel.clone(),
-                            self.client_config.retry_base_delay,
-                        )
-                        .await?;
-                        continue;
-                    }
-
-                    return Err(AstrError::LlmRequestFailed {
-                        status: status.as_u16(),
-                        body,
-                    });
-                },
-                Err(error) => {
-                    if error.is_retryable() && attempt < self.client_config.max_retries {
-                        wait_retry_delay(
-                            attempt,
-                            cancel.clone(),
-                            self.client_config.retry_base_delay,
-                        )
-                        .await?;
-                        continue;
-                    }
-                    return Err(error);
-                },
+        let response = select! {
+            _ = crate::cancelled(cancel.clone()) => {
+                return Err(AstrError::LlmInterrupted);
             }
+            result = send_future => result
+                .map_err(|error| AstrError::http_with_source(
+                    "failed to call openai endpoint",
+                    error.is_timeout() || error.is_connect() || error.is_body(),
+                    error,
+                ))?
+        };
+
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
         }
 
-        // 所有路径都会通过 return 退出循环；若到达此处说明逻辑有误，
-        // 返回 Internal 而非 panic 以保证运行时安全
-        Err(AstrError::Internal(
-            "retry loop should have returned on all paths".into(),
-        ))
+        let body = response.text().await.unwrap_or_default();
+        Err(AstrError::LlmRequestFailed {
+            status: status.as_u16(),
+            body,
+        })
+    }
+
+    fn should_retry_generation_error(&self, error: &AstrError) -> bool {
+        if error.is_cancelled() {
+            return false;
+        }
+        if error.is_retryable() {
+            return true;
+        }
+        match error {
+            AstrError::LlmRequestFailed { status, .. } => {
+                reqwest::StatusCode::from_u16(*status).is_ok_and(is_retryable_status)
+            },
+            _ => false,
+        }
+    }
+
+    async fn wait_before_generation_retry(
+        &self,
+        error: &AstrError,
+        attempt: u32,
+        cancel: CancelToken,
+        sink: Option<&EventSink>,
+    ) -> Result<()> {
+        if let Some(sink) = sink {
+            emit_event(
+                LlmEvent::StreamRetryStarted {
+                    attempt: attempt.saturating_add(2),
+                    max_attempts: self.client_config.max_retries.saturating_add(1),
+                    reason: error.to_string(),
+                },
+                &mut LlmAccumulator::default(),
+                sink,
+            );
+        }
+        wait_retry_delay(attempt, cancel, self.client_config.retry_base_delay).await
+    }
+
+    fn annotate_retry_exhausted(&self, error: AstrError, attempts: u32) -> AstrError {
+        if !self.should_retry_generation_error(&error) || attempts <= 1 {
+            return error;
+        }
+        match error {
+            AstrError::HttpRequest {
+                context,
+                detail,
+                retryable,
+                source,
+            } => AstrError::HttpRequest {
+                context: format!("{context} after {attempts} attempts"),
+                detail,
+                retryable,
+                source,
+            },
+            other => other,
+        }
     }
 }
 
@@ -476,7 +496,10 @@ impl OpenAiProvider {
             let bytes = item.map_err(|error| {
                 AstrError::http_with_source(
                     "failed to read openai response stream",
-                    error.is_timeout() || error.is_connect() || error.is_body(),
+                    error.is_timeout()
+                        || error.is_connect()
+                        || error.is_body()
+                        || error.is_decode(),
                     error,
                 )
             })?;
@@ -581,7 +604,7 @@ fn is_official_openai_api_url(url: &str) -> bool {
 fn build_prompt_cache_key(
     model: &str,
     system_prompt: Option<&str>,
-    system_prompt_blocks: &[astrcode_core::SystemPromptBlock],
+    system_prompt_blocks: &[astrcode_governance_contract::SystemPromptBlock],
     prompt_cache_hints: Option<&PromptCacheHints>,
     tools: &[&ToolDefinition],
 ) -> String {
@@ -636,11 +659,40 @@ fn build_prompt_cache_key(
 fn order_tools_for_cache(tools: &[ToolDefinition]) -> Vec<&ToolDefinition> {
     let mut ordered: Vec<&ToolDefinition> = tools.iter().collect();
     ordered.sort_by(|left, right| {
-        let left_key = (left.name.starts_with("mcp__"), left.name.as_str());
-        let right_key = (right.name.starts_with("mcp__"), right.name.as_str());
+        let left_key = (
+            builtin_tool_rank(left.name.as_str()).unwrap_or(u8::MAX),
+            left.name.as_str(),
+        );
+        let right_key = (
+            builtin_tool_rank(right.name.as_str()).unwrap_or(u8::MAX),
+            right.name.as_str(),
+        );
         left_key.cmp(&right_key)
     });
     ordered
+}
+
+fn builtin_tool_rank(name: &str) -> Option<u8> {
+    match name {
+        "readFile" => Some(0),
+        "findFiles" => Some(1),
+        "grep" => Some(2),
+        "shell" => Some(3),
+        "editFile" => Some(4),
+        "writeFile" => Some(5),
+        "apply_patch" => Some(6),
+        "enterPlanMode" => Some(7),
+        "exitPlanMode" => Some(8),
+        "upsertSessionPlan" => Some(9),
+        "taskWrite" => Some(10),
+        "tool_search" => Some(11),
+        "Skill" => Some(12),
+        "spawn" => Some(13),
+        "send" => Some(14),
+        "observe" => Some(15),
+        "close" => Some(16),
+        _ => None,
+    }
 }
 
 #[async_trait]
@@ -664,61 +716,101 @@ impl LlmProvider for OpenAiProvider {
             .as_ref()
             .map(|hints| hints.global_cache_strategy)
             .unwrap_or(PromptCacheGlobalStrategy::SystemPrompt);
-        let cancel = request.cancel;
-        let req = self.build_chat_completions_request(OpenAiBuildRequestInput {
-            messages: &request.messages,
-            tools: &request.tools,
-            system_prompt: request.system_prompt.as_deref(),
-            system_prompt_blocks: &request.system_prompt_blocks,
-            prompt_cache_hints: prompt_cache_hints.as_ref(),
-            max_output_tokens_override: request.max_output_tokens_override,
-            stream: sink.is_some(),
-        });
-        let pending_cache_check = self.cache_tracker.lock().ok().map(|tracker| {
-            tracker.prepare(&Self::build_cache_check_context(
-                &req,
-                global_cache_strategy,
-                prompt_cache_hints
-                    .as_ref()
-                    .is_some_and(|hints| hints.compacted),
-                prompt_cache_hints
-                    .as_ref()
-                    .is_some_and(|hints| hints.tool_result_rebudgeted),
-            ))
-        });
-        let response = self.send_request(&req, cancel.clone()).await?;
+        let cancel = request.cancel.clone();
+        let max_retries = self.client_config.max_retries;
 
-        match sink {
-            None => {
-                // 非流式路径：解析完整 JSON 响应
-                let parsed: OpenAiChatResponse = response.json().await.map_err(|error| {
-                    AstrError::http_with_source(
-                        "failed to parse openai response",
-                        error.is_timeout() || error.is_connect() || error.is_body(),
-                        error,
+        for attempt in 0..=max_retries {
+            let req = self.build_chat_completions_request(OpenAiBuildRequestInput {
+                messages: &request.messages,
+                tools: &request.tools,
+                system_prompt: request.system_prompt.as_deref(),
+                system_prompt_blocks: &request.system_prompt_blocks,
+                prompt_cache_hints: prompt_cache_hints.as_ref(),
+                max_output_tokens_override: request.max_output_tokens_override,
+                stream: sink.is_some(),
+            });
+            let pending_cache_check = self.cache_tracker.lock().ok().map(|tracker| {
+                tracker.prepare(&Self::build_cache_check_context(
+                    &req,
+                    global_cache_strategy,
+                    prompt_cache_hints
+                        .as_ref()
+                        .is_some_and(|hints| hints.compacted),
+                    prompt_cache_hints
+                        .as_ref()
+                        .is_some_and(|hints| hints.tool_result_rebudgeted),
+                ))
+            });
+            let response = self.send_request_once(&req, cancel.clone()).await;
+            let result = match (response, sink.as_ref()) {
+                (Ok(response), None) => {
+                    // 非流式路径：解析完整 JSON 响应
+                    match response
+                        .json::<OpenAiChatResponse>()
+                        .await
+                        .map_err(|error| {
+                            AstrError::http_with_source(
+                                "failed to parse openai response",
+                                error.is_timeout() || error.is_connect() || error.is_body(),
+                                error,
+                            )
+                        }) {
+                        Ok(parsed) => {
+                            let OpenAiChatResponse { choices, usage } = parsed;
+                            let usage = usage.map(openai_usage_to_llm_usage);
+                            match choices.into_iter().next() {
+                                Some(first_choice) => {
+                                    let mut output = message_to_output(
+                                        first_choice.message,
+                                        usage,
+                                        first_choice.finish_reason,
+                                    );
+                                    self.apply_cache_diagnostics(&mut output, pending_cache_check);
+                                    Ok(output)
+                                },
+                                None => Err(AstrError::LlmStreamError(
+                                    "openai response did not include choices".to_string(),
+                                )),
+                            }
+                        },
+                        Err(error) => Err(error),
+                    }
+                },
+                (Ok(response), Some(sink)) => {
+                    self.stream_response(
+                        response,
+                        ChatCompletionsSseProcessor::new(),
+                        cancel.clone(),
+                        Arc::clone(sink),
+                        pending_cache_check,
                     )
-                })?;
-                let OpenAiChatResponse { choices, usage } = parsed;
-                let usage = usage.map(openai_usage_to_llm_usage);
-                let first_choice = choices.into_iter().next().ok_or_else(|| {
-                    AstrError::LlmStreamError("openai response did not include choices".to_string())
-                })?;
-                let mut output =
-                    message_to_output(first_choice.message, usage, first_choice.finish_reason);
-                self.apply_cache_diagnostics(&mut output, pending_cache_check);
-                Ok(output)
-            },
-            Some(sink) => {
-                self.stream_response(
-                    response,
-                    ChatCompletionsSseProcessor::new(),
-                    cancel,
-                    sink,
-                    pending_cache_check,
-                )
-                .await
-            },
+                    .await
+                },
+                (Err(error), _) => Err(error),
+            };
+
+            match result {
+                Ok(output) => return Ok(output),
+                Err(error)
+                    if attempt < max_retries && self.should_retry_generation_error(&error) =>
+                {
+                    self.wait_before_generation_retry(
+                        &error,
+                        attempt,
+                        cancel.clone(),
+                        sink.as_ref(),
+                    )
+                    .await?;
+                },
+                Err(error) => {
+                    return Err(self.annotate_retry_exhausted(error, attempt.saturating_add(1)));
+                },
+            }
         }
+
+        Err(AstrError::Internal(
+            "openai generation retry loop should have returned on all paths".into(),
+        ))
     }
 
     /// 返回当前模型的上下文窗口估算。
@@ -737,22 +829,48 @@ impl OpenAiProvider {
         sink: Option<EventSink>,
     ) -> Result<LlmOutput> {
         let cancel = request.cancel.clone();
-        let req = responses::build_request(self, &request, sink.is_some());
-        let response = self.send_request(&req, cancel.clone()).await?;
+        let max_retries = self.client_config.max_retries;
 
-        match sink {
-            None => responses::parse_non_streaming_response(response).await,
-            Some(sink) => {
-                self.stream_response(
-                    response,
-                    responses::ResponsesSseProcessor::new(),
-                    cancel,
-                    sink,
-                    None,
-                )
-                .await
-            },
+        for attempt in 0..=max_retries {
+            let req = responses::build_request(self, &request, sink.is_some());
+            let response = self.send_request_once(&req, cancel.clone()).await;
+            let result = match (response, sink.as_ref()) {
+                (Ok(response), None) => responses::parse_non_streaming_response(response).await,
+                (Ok(response), Some(sink)) => {
+                    self.stream_response(
+                        response,
+                        responses::ResponsesSseProcessor::new(),
+                        cancel.clone(),
+                        Arc::clone(sink),
+                        None,
+                    )
+                    .await
+                },
+                (Err(error), _) => Err(error),
+            };
+
+            match result {
+                Ok(output) => return Ok(output),
+                Err(error)
+                    if attempt < max_retries && self.should_retry_generation_error(&error) =>
+                {
+                    self.wait_before_generation_retry(
+                        &error,
+                        attempt,
+                        cancel.clone(),
+                        sink.as_ref(),
+                    )
+                    .await?;
+                },
+                Err(error) => {
+                    return Err(self.annotate_retry_exhausted(error, attempt.saturating_add(1)));
+                },
+            }
         }
+
+        Err(AstrError::Internal(
+            "openai responses retry loop should have returned on all paths".into(),
+        ))
     }
 }
 
@@ -1032,7 +1150,7 @@ struct OpenAiBuildRequestInput<'a> {
     messages: &'a [LlmMessage],
     tools: &'a [ToolDefinition],
     system_prompt: Option<&'a str>,
-    system_prompt_blocks: &'a [astrcode_core::SystemPromptBlock],
+    system_prompt_blocks: &'a [astrcode_governance_contract::SystemPromptBlock],
     prompt_cache_hints: Option<&'a PromptCacheHints>,
     max_output_tokens_override: Option<usize>,
     stream: bool,
@@ -1153,6 +1271,7 @@ mod tests {
     use std::{
         net::TcpListener,
         sync::{Arc, Mutex},
+        time::Duration,
     };
 
     use astrcode_core::{CancelToken, UserMessageOrigin};
@@ -1166,6 +1285,10 @@ mod tests {
     use crate::sink_collector;
 
     fn spawn_server(response: String) -> (String, JoinHandle<()>) {
+        spawn_server_responses(vec![response])
+    }
+
+    fn spawn_server_responses(responses: Vec<String>) -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
         listener
@@ -1174,16 +1297,18 @@ mod tests {
         let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
 
         let handle = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("accept should work");
-            let mut buf = [0_u8; 4096];
-            // 故意忽略：读取残余数据仅用于清理，失败无影响
-            let _ = socket.read(&mut buf).await;
-            socket
-                .write_all(response.as_bytes())
-                .await
-                .expect("response should be written");
-            // 故意忽略：关闭 socket 时连接可能已断开
-            let _ = socket.shutdown().await;
+            for response in responses {
+                let (mut socket, _) = listener.accept().await.expect("accept should work");
+                let mut buf = [0_u8; 4096];
+                // 故意忽略：读取残余数据仅用于清理，失败无影响
+                let _ = socket.read(&mut buf).await;
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response should be written");
+                // 故意忽略：关闭 socket 时连接可能已断开
+                let _ = socket.shutdown().await;
+            }
         });
 
         (format!("http://{}", addr), handle)
@@ -1265,29 +1390,29 @@ mod tests {
             origin: UserMessageOrigin::User,
         }];
         let system_blocks = vec![
-            astrcode_core::SystemPromptBlock {
+            astrcode_governance_contract::SystemPromptBlock {
                 title: "Stable 1".to_string(),
                 content: "stable content 1".to_string(),
                 cache_boundary: false,
-                layer: astrcode_core::SystemPromptLayer::Stable,
+                layer: astrcode_prompt_contract::SystemPromptLayer::Stable,
             },
-            astrcode_core::SystemPromptBlock {
+            astrcode_governance_contract::SystemPromptBlock {
                 title: "Stable 2".to_string(),
                 content: "stable content 2".to_string(),
                 cache_boundary: true,
-                layer: astrcode_core::SystemPromptLayer::Stable,
+                layer: astrcode_prompt_contract::SystemPromptLayer::Stable,
             },
-            astrcode_core::SystemPromptBlock {
+            astrcode_governance_contract::SystemPromptBlock {
                 title: "Semi 1".to_string(),
                 content: "semi content 1".to_string(),
                 cache_boundary: true,
-                layer: astrcode_core::SystemPromptLayer::SemiStable,
+                layer: astrcode_prompt_contract::SystemPromptLayer::SemiStable,
             },
-            astrcode_core::SystemPromptBlock {
+            astrcode_governance_contract::SystemPromptBlock {
                 title: "Inherited 1".to_string(),
                 content: "inherited content 1".to_string(),
                 cache_boundary: true,
-                layer: astrcode_core::SystemPromptLayer::Inherited,
+                layer: astrcode_prompt_contract::SystemPromptLayer::Inherited,
             },
         ];
         let request = provider.build_request(OpenAiBuildRequestInput {
@@ -1502,25 +1627,35 @@ mod tests {
         }];
         let first_tools = vec![
             ToolDefinition {
-                name: "mcp__search".to_string(),
-                description: "Search".to_string(),
+                name: "zzz_plugin_search".to_string(),
+                description: "Plugin Search".to_string(),
                 parameters: json!({"type":"object"}),
             },
             ToolDefinition {
-                name: "read_file".to_string(),
+                name: "readFile".to_string(),
                 description: "Read".to_string(),
+                parameters: json!({"type":"object"}),
+            },
+            ToolDefinition {
+                name: "mcp__search".to_string(),
+                description: "MCP Search".to_string(),
                 parameters: json!({"type":"object"}),
             },
         ];
         let second_tools = vec![
             ToolDefinition {
-                name: "read_file".to_string(),
-                description: "Read".to_string(),
+                name: "mcp__search".to_string(),
+                description: "MCP Search".to_string(),
                 parameters: json!({"type":"object"}),
             },
             ToolDefinition {
-                name: "mcp__search".to_string(),
-                description: "Search".to_string(),
+                name: "zzz_plugin_search".to_string(),
+                description: "Plugin Search".to_string(),
+                parameters: json!({"type":"object"}),
+            },
+            ToolDefinition {
+                name: "readFile".to_string(),
+                description: "Read".to_string(),
                 parameters: json!({"type":"object"}),
             },
         ];
@@ -1559,8 +1694,14 @@ mod tests {
             .map(|tool| tool.function.name.as_str())
             .collect();
 
-        assert_eq!(first_names, vec!["read_file", "mcp__search"]);
-        assert_eq!(second_names, vec!["read_file", "mcp__search"]);
+        assert_eq!(
+            first_names,
+            vec!["readFile", "mcp__search", "zzz_plugin_search"]
+        );
+        assert_eq!(
+            second_names,
+            vec!["readFile", "mcp__search", "zzz_plugin_search"]
+        );
         assert_eq!(first.prompt_cache_key, second.prompt_cache_key);
     }
 
@@ -1573,7 +1714,7 @@ mod tests {
         }];
         let ordered_tools = order_tools_for_cache(&tools);
         let base_hints = PromptCacheHints {
-            layer_fingerprints: astrcode_core::PromptLayerFingerprints {
+            layer_fingerprints: astrcode_prompt_contract::PromptLayerFingerprints {
                 stable: Some("stable-a".to_string()),
                 semi_stable: Some("semi-a".to_string()),
                 inherited: Some("inherited-a".to_string()),
@@ -1818,6 +1959,145 @@ mod tests {
                 cache_read_input_tokens: 1200,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn generate_streaming_retries_bad_body_and_resets_live_draft() {
+        let first_body = format!(
+            "data: {}\n\n",
+            json!({
+                "choices": [{
+                    "delta": { "content": "bad" },
+                    "finish_reason": null
+                }]
+            })
+        );
+        let first_response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: \
+             {}\r\nconnection: close\r\n\r\n{}",
+            first_body.len() + 128,
+            first_body
+        );
+        let second_body = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({
+                "choices": [{
+                    "delta": { "content": "ok" },
+                    "finish_reason": "stop"
+                }]
+            })
+        );
+        let second_response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: \
+             {}\r\nconnection: close\r\n\r\n{}",
+            second_body.len(),
+            second_body
+        );
+        let (base_url, handle) = spawn_server_responses(vec![first_response, second_response]);
+        let provider = OpenAiProvider::new(
+            base_url,
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+            LlmClientConfig {
+                max_retries: 1,
+                retry_base_delay: Duration::from_millis(1),
+                ..LlmClientConfig::default()
+            },
+        )
+        .expect("provider should build");
+        let events = Arc::new(Mutex::new(Vec::new()));
+
+        let output = provider
+            .generate(
+                LlmRequest::new(
+                    vec![LlmMessage::User {
+                        content: "hi".to_string(),
+                        origin: UserMessageOrigin::User,
+                    }],
+                    vec![],
+                    CancelToken::new(),
+                ),
+                Some(sink_collector(events.clone())),
+            )
+            .await
+            .expect("generate should retry and succeed");
+
+        handle.await.expect("server should join");
+        let events = events.lock().expect("lock").clone();
+
+        assert_eq!(output.content, "ok");
+        assert!(matches!(
+            events.as_slice(),
+            [
+                LlmEvent::TextDelta(first),
+                LlmEvent::StreamRetryStarted {
+                    attempt: 2,
+                    max_attempts: 2,
+                    ..
+                },
+                LlmEvent::TextDelta(second),
+            ] if first == "bad" && second == "ok"
+        ));
+    }
+
+    #[tokio::test]
+    async fn generate_streaming_reports_attempts_after_retry_exhaustion() {
+        let body = format!(
+            "data: {}\n\n",
+            json!({
+                "choices": [{
+                    "delta": { "content": "bad" },
+                    "finish_reason": null
+                }]
+            })
+        );
+        let bad_response = || {
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: \
+                 {}\r\nconnection: close\r\n\r\n{}",
+                body.len() + 128,
+                body
+            )
+        };
+        let (base_url, handle) = spawn_server_responses(vec![bad_response(), bad_response()]);
+        let provider = OpenAiProvider::new(
+            base_url,
+            "sk-test".to_string(),
+            "model-a".to_string(),
+            ModelLimits {
+                context_window: 128_000,
+                max_output_tokens: 2048,
+            },
+            LlmClientConfig {
+                max_retries: 1,
+                retry_base_delay: Duration::from_millis(1),
+                ..LlmClientConfig::default()
+            },
+        )
+        .expect("provider should build");
+
+        let error = provider
+            .generate(
+                LlmRequest::new(
+                    vec![LlmMessage::User {
+                        content: "hi".to_string(),
+                        origin: UserMessageOrigin::User,
+                    }],
+                    vec![],
+                    CancelToken::new(),
+                ),
+                Some(sink_collector(Arc::new(Mutex::new(Vec::new())))),
+            )
+            .await
+            .expect_err("generate should exhaust retries");
+
+        handle.await.expect("server should join");
+        assert!(error.is_retryable());
+        assert!(error.to_string().contains("after 2 attempts"));
     }
 
     #[test]

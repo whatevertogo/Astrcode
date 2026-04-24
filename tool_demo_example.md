@@ -4,7 +4,7 @@
 
 ## 工具列表
 
-1. **listDir** - ✅ 已使用：列出根目录内容
+1. **shell** - ✅ 已使用：查看根目录内容
 2. **findFiles** - ✅ 已使用：查找所有 Rust 文件
 3. **readFile** - ✅ 已使用：读取 core/src/lib.rs 前 30 行
 4. **writeFile** - ✅ 已使用：创建当前文件

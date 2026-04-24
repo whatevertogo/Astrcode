@@ -4,10 +4,10 @@
 
 use std::sync::{Arc, RwLock};
 
-use super::deps::core::{
-    AstrError, CapabilitySpec, ManagedRuntimeComponent, PluginRegistry, Result, RuntimeHandle,
-    plugin::PluginEntry, support,
-};
+use astrcode_plugin_host::{PluginEntry, PluginRegistry};
+use astrcode_runtime_contract::{ManagedRuntimeComponent, RuntimeHandle};
+
+use super::deps::core::{AstrError, CapabilitySpec, Result, support};
 
 /// 运行时协调器。
 ///
@@ -42,7 +42,7 @@ impl RuntimeCoordinator {
         }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn with_managed_components(
         self,
         managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
@@ -68,15 +68,6 @@ impl RuntimeCoordinator {
             &self.capabilities,
             "runtime coordinator capabilities",
             |capabilities| capabilities.iter().cloned().collect(),
-        )
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn managed_components(&self) -> Vec<Arc<dyn ManagedRuntimeComponent>> {
-        support::with_read_lock_recovery(
-            &self.managed_components,
-            "runtime coordinator managed components",
-            Clone::clone,
         )
     }
 
@@ -149,14 +140,14 @@ impl RuntimeCoordinator {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use astrcode_plugin_host::{PluginEntry, PluginHealth, PluginRegistry, PluginState};
+    use astrcode_runtime_contract::{ManagedRuntimeComponent, RuntimeHandle};
     use async_trait::async_trait;
     use serde_json::json;
 
     use super::RuntimeCoordinator;
     use crate::bootstrap::deps::core::{
-        AstrError, CapabilityKind, CapabilitySpec, InvocationMode, ManagedRuntimeComponent,
-        PluginRegistry, Result, RuntimeHandle, SideEffect, Stability,
-        plugin::{PluginEntry, PluginHealth},
+        AstrError, CapabilityKind, CapabilitySpec, InvocationMode, Result, SideEffect, Stability,
     };
 
     struct FakeRuntimeHandle {
@@ -306,16 +297,22 @@ mod tests {
     fn replace_runtime_surface_swaps_registry_capabilities_and_components() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let registry = Arc::new(PluginRegistry::default());
-        registry.record_discovered(crate::bootstrap::deps::core::PluginManifest {
+        registry.record_discovered(astrcode_plugin_host::PluginManifest {
             name: "alpha".to_string(),
             version: "0.1.0".to_string(),
             description: "alpha".to_string(),
-            plugin_type: vec![crate::bootstrap::deps::core::PluginType::Tool],
+            plugin_type: vec![astrcode_plugin_host::PluginType::Tool],
             capabilities: Vec::new(),
             executable: Some("alpha.exe".to_string()),
             args: Vec::new(),
             working_dir: None,
             repository: None,
+            resources: Vec::new(),
+            commands: Vec::new(),
+            themes: Vec::new(),
+            prompts: Vec::new(),
+            providers: Vec::new(),
+            skills: Vec::new(),
         });
         let coordinator = RuntimeCoordinator::new(
             Arc::new(FakeRuntimeHandle {
@@ -333,18 +330,24 @@ mod tests {
 
         let old = coordinator.replace_runtime_surface(
             vec![PluginEntry {
-                manifest: crate::bootstrap::deps::core::PluginManifest {
+                manifest: astrcode_plugin_host::PluginManifest {
                     name: "beta".to_string(),
                     version: "0.2.0".to_string(),
                     description: "beta".to_string(),
-                    plugin_type: vec![crate::bootstrap::deps::core::PluginType::Tool],
+                    plugin_type: vec![astrcode_plugin_host::PluginType::Tool],
                     capabilities: Vec::new(),
                     executable: Some("beta.exe".to_string()),
                     args: Vec::new(),
                     working_dir: None,
                     repository: None,
+                    resources: Vec::new(),
+                    commands: Vec::new(),
+                    themes: Vec::new(),
+                    prompts: Vec::new(),
+                    providers: Vec::new(),
+                    skills: Vec::new(),
                 },
-                state: crate::bootstrap::deps::core::PluginState::Initialized,
+                state: PluginState::Initialized,
                 health: PluginHealth::Healthy,
                 failure_count: 0,
                 capabilities: vec![capability("tool.beta")],
