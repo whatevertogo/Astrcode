@@ -137,8 +137,8 @@ impl ToolBridgeContext {
             turn_id: ctx.turn_id().map(ToString::to_string),
             request_id: None,
             agent: ctx.agent_context().clone(),
-            current_mode_id: ctx.current_mode_id().clone().into(),
-            bound_mode_tool_contract: ctx.bound_mode_tool_contract().cloned().map(Into::into),
+            current_mode_id: ctx.current_mode_id().clone(),
+            bound_mode_tool_contract: ctx.bound_mode_tool_contract().cloned(),
             execution_owner: ctx.execution_owner().cloned().map(contract_owner_to_core),
             tool_output_sender: ctx.tool_output_sender(),
             event_sink: ctx.event_sink().map(|sink| {
@@ -192,9 +192,9 @@ impl ToolBridgeContext {
             tool_ctx = tool_ctx.with_tool_call_id(tool_call_id);
         }
         tool_ctx = tool_ctx.with_agent_context(self.agent);
-        tool_ctx = tool_ctx.with_current_mode_id(self.current_mode_id.into());
+        tool_ctx = tool_ctx.with_current_mode_id(self.current_mode_id);
         if let Some(snapshot) = self.bound_mode_tool_contract {
-            tool_ctx = tool_ctx.with_bound_mode_tool_contract(snapshot.into());
+            tool_ctx = tool_ctx.with_bound_mode_tool_contract(snapshot);
         }
         if let Some(sender) = self.tool_output_sender {
             tool_ctx = tool_ctx.with_tool_output_sender(sender);

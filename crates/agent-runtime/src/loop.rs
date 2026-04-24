@@ -47,6 +47,9 @@ pub enum StepOutcome {
 }
 
 /// 单 turn 执行所需的无状态资源快照。
+///
+/// 由 `TurnInput` 一次性提取，整个 turn 生命周期内不再变化。
+/// 可变状态全部放在 `TurnExecutionContext` 中。
 #[derive(Clone)]
 pub struct TurnExecutionResources {
     pub session_id: String,
@@ -155,6 +158,10 @@ impl TurnExecutionResources {
 }
 
 /// 单 turn 执行上下文。
+///
+/// 与 `TurnExecutionResources` 互补：这里存放 turn 执行过程中的**可变状态**，
+/// 包括消息历史、待刷出的事件、token 统计、micro-compact 状态等。
+/// 每个 step 修改此结构体，Resources 保持不变。
 #[derive(Debug, Clone)]
 pub struct TurnExecutionContext {
     pub messages: Vec<LlmMessage>,
@@ -170,6 +177,7 @@ pub struct TurnExecutionContext {
     pub(crate) file_access_tracker: FileAccessTracker,
     pub(crate) tool_result_replacement_state: ToolResultReplacementState,
     pub(crate) tool_result_budget_stats: ToolResultBudgetStats,
+    /// 此 turn 中自动 compact 被触发的次数（含 reactive compact）。
     pub(crate) auto_compaction_count: usize,
 }
 
@@ -243,6 +251,14 @@ impl TurnStepRunner for ProviderTurnStepRunner {
 }
 
 /// 单 turn 主循环。
+///
+/// 执行流程：
+/// 1. 派发 `TurnStart` hook → 若 hook 终止则直接返回
+/// 2. 进入 step 循环，每次 step 由 `TurnStepRunner` 驱动
+///    - `Continue` → 记录 transition，刷出事件，继续下一轮
+///    - `Completed` → 派发 `TurnEnd` hook，然后终止
+///    - `Error` → 立即终止（不经过 `TurnEnd` hook）
+/// 3. 终止时调用 `finalize_turn` 统一收尾
 #[derive(Debug, Default)]
 pub struct TurnLoop;
 
@@ -262,6 +278,7 @@ impl TurnLoop {
         let mut execution = TurnExecutionContext::new(input.messages, &resources);
         let mut emitted_events = Vec::new();
 
+        // TurnStart 阶段：hook 可以在 turn 开始时中止执行
         execution.push_event(RuntimeTurnEvent::TurnStarted {
             identity: resources.turn_identity(),
         });
@@ -291,6 +308,7 @@ impl TurnLoop {
         }
         flush_pending_events(event_sink.as_ref(), &mut execution, &mut emitted_events);
 
+        // Step 循环：每次迭代由 runner 执行一个 step
         loop {
             match runner.run_single_step(&mut execution, &resources).await {
                 StepOutcome::Continue(transition) => {
@@ -304,6 +322,7 @@ impl TurnLoop {
                 },
                 StepOutcome::Completed(stop_cause) => {
                     execution.record_stop(stop_cause);
+                    // Completed 时派发 TurnEnd hook，hook 可覆盖最终的 stop_cause
                     if let Some(hook_outcome) =
                         dispatch_runtime_hook(&mut execution, &resources, HookEventKey::TurnEnd)
                             .await
@@ -358,6 +377,7 @@ async fn run_single_step(
     execution: &mut TurnExecutionContext,
     resources: &TurnExecutionResources,
 ) -> StepOutcome {
+    // 阶段 1：派发前置 hook（Context → BeforeAgentStart → BeforeProviderRequest）
     for event in [
         HookEventKey::Context,
         HookEventKey::BeforeAgentStart,
@@ -376,6 +396,10 @@ async fn run_single_step(
         return StepOutcome::Completed(TurnStopCause::Cancelled);
     }
 
+    // 阶段 2：组装请求 + 调用 provider
+    // stream_events 同时通过两条路径输出：
+    //   1. 即时推送到 event_sink（供 UI 实时展示）
+    //   2. 缓存到 stream_events（供 step 完成后追加到 pending_events）
     let stream_events = Arc::new(Mutex::new(Vec::new()));
     let stream_events_sink = Arc::clone(&stream_events);
     let stream_event_sink = Arc::clone(&resources.event_sink);
@@ -404,6 +428,7 @@ async fn run_single_step(
         Err(error) if error.is_cancelled() => {
             return StepOutcome::Completed(TurnStopCause::Cancelled);
         },
+        // "prompt too long" 错误时尝试 reactive compact：缩小上下文后重试当前 step
         Err(error)
             if is_prompt_too_long_message(&error.to_string())
                 && execution.reactive_compact_attempts
@@ -424,6 +449,7 @@ async fn run_single_step(
         Err(error) => return StepOutcome::Error(StepError::from(&error)),
     };
 
+    // 将缓存中的 stream 事件追加到 pending_events，供最终 flush 输出
     for event in stream_events
         .lock()
         .expect("provider stream event buffer poisoned")
@@ -435,6 +461,7 @@ async fn run_single_step(
         });
     }
 
+    // 阶段 3：记录 provider 输出 + 更新 token 统计
     record_provider_output(execution, resources, &output);
     apply_prompt_metrics_usage(
         &mut execution.pending_events,
@@ -444,6 +471,7 @@ async fn run_single_step(
     );
     execution.token_tracker.record_usage(output.usage);
 
+    // 阶段 4：若有 tool_calls，执行工具调度
     if !output.tool_calls.is_empty() {
         if let Some(dispatcher) = &resources.tool_dispatcher {
             match execute_tool_calls(
@@ -461,6 +489,8 @@ async fn run_single_step(
                 Err(error) => return StepOutcome::Error(StepError::from(&error)),
             }
         }
+        // 有 tool_calls 但没有 dispatcher → 标记 ToolUseRequested 后结束 turn
+        // 由宿主层负责后续的工具执行
         execution.push_event(RuntimeTurnEvent::ToolUseRequested {
             identity: resources.turn_identity(),
             tool_call_count: output.tool_calls.len(),
@@ -468,6 +498,7 @@ async fn run_single_step(
         return StepOutcome::Completed(TurnStopCause::Completed);
     }
 
+    // 阶段 5：输出被 max_tokens 截断时，注入 continuation prompt 继续生成
     if output.finish_reason.is_max_tokens()
         && execution.max_output_continuation_count < resources.max_output_continuations
     {
@@ -483,6 +514,14 @@ async fn run_single_step(
     StepOutcome::Completed(TurnStopCause::Completed)
 }
 
+/// 派发运行时 hook 并处理返回的 effects。
+///
+/// - `Continue` / `Diagnostic` → 忽略，继续执行
+/// - `AugmentPrompt` → 注入一条用户消息到消息流（用于上下文增强）
+/// - `CancelTurn` → 返回 `Completed(Cancelled)`
+/// - `Block` → 返回 `Error`
+///
+/// 返回 `None` 表示 hook 允许继续执行；`Some` 表示 hook 终止了流程。
 async fn dispatch_runtime_hook(
     execution: &mut TurnExecutionContext,
     resources: &TurnExecutionResources,
@@ -554,10 +593,13 @@ async fn execute_tool_calls(
     dispatcher: &dyn ToolDispatcher,
     tool_calls: &[ToolCallRequest],
 ) -> astrcode_core::Result<()> {
+    // 每个 tool_call 共享同一个 unbounded channel，用于接收流式输出 delta。
+    // drop sender 在所有 dispatch 之前，确保 receiver 侧能在 join_all 完成后正确结束。
     let (tool_output_sender, mut tool_output_receiver) =
         tokio::sync::mpsc::unbounded_channel::<ToolOutputDelta>();
 
     // Phase 1: Pre-dispatch hooks and event emissions (sequential, order-preserving)
+    // 每个 tool_call 按顺序触发 ToolCall hook、发射事件、构造 dispatch future
     let mut futures = Vec::with_capacity(tool_calls.len());
     for tool_call in tool_calls {
         if resources.cancel.is_cancelled() {
@@ -599,6 +641,7 @@ async fn execute_tool_calls(
     drop(tool_output_sender);
 
     // Phase 2: Execute all tool dispatches concurrently (I/O-bound parallelism)
+    // 使用 select! 同时等待：流式 delta 实时到达，或全部 dispatch 完成
     let mut results_future = Box::pin(futures_util::future::join_all(futures));
     let results = loop {
         tokio::select! {
@@ -615,6 +658,7 @@ async fn execute_tool_calls(
     };
 
     // Phase 3: Process results in order (sequential, preserving message ordering)
+    // 结果按原始 tool_calls 顺序处理，保证消息排列确定性
     for (tool_call, result) in tool_calls.iter().zip(results) {
         let result = match result {
             Ok(r) => r,
@@ -631,6 +675,8 @@ async fn execute_tool_calls(
     Ok(())
 }
 
+/// 将 hook 返回的 `StepOutcome` 转换为 `AstrError`。
+/// 用于 `execute_tool_calls` 中 hook 意外终止工具调度流程的场景。
 fn step_outcome_to_error(outcome: StepOutcome) -> AstrError {
     match outcome {
         StepOutcome::Error(step_error) => AstrError::Internal(step_error.message),
@@ -732,6 +778,9 @@ fn record_tool_output_delta(
     );
 }
 
+/// 立即推送到 event_sink 并追加到 pending_events。
+/// 用于需要在产生时就对外可见的事件（如 ProviderStream、工具存储事件），
+/// 与 `flush_pending_events` 的延迟推送互补。
 fn push_immediate_event(
     execution: &mut TurnExecutionContext,
     resources: &TurnExecutionResources,
@@ -753,6 +802,11 @@ fn tool_definitions_from_specs(specs: &[CapabilitySpec]) -> Arc<[ToolDefinition]
         .into()
 }
 
+/// 将 pending_events 刷出到 event_sink 并追加到 emitted_events。
+///
+/// `ProviderStream` 和即时工具存储事件（ToolCall/ToolCallDelta/ToolResult）
+/// 已在产生时通过 `push_immediate_event` 即时推送过 sink，此处只追加到 emitted_events
+/// 以避免重复推送。
 fn flush_pending_events(
     event_sink: &dyn RuntimeEventSink,
     execution: &mut TurnExecutionContext,

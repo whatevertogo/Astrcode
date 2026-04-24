@@ -8,7 +8,5 @@ authors.workspace = true
 [dependencies]
 astrcode-core = { path = "../core" }
 astrcode-llm-contract = { path = "../llm-contract" }
-astrcode-tool-contract = { path = "../tool-contract" }
 async-trait.workspace = true
-chrono.workspace = true
 

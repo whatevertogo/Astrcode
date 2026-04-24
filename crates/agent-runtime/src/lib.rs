@@ -13,7 +13,6 @@ mod context_window;
 pub mod hook_dispatch;
 pub mod r#loop;
 pub mod runtime;
-pub mod stream;
 pub mod tool_dispatch;
 pub mod types;
 

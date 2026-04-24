@@ -8,9 +8,9 @@
 //! - Skill：system prompt 中仅暴露索引（名称+描述），正文通过 `Skill` tool 按需加载
 //! - PromptDeclaration：直接注入到 system prompt 或对话消息中，始终可见
 
-pub use astrcode_prompt_contract::{
+pub use astrcode_core::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, SystemPromptLayer as PromptLayer,
+    PromptDeclarationSource, policy::SystemPromptLayer as PromptLayer,
 };
 
 use crate::{BlockKind, RenderTarget};

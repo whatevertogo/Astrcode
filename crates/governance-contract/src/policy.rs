@@ -2,8 +2,9 @@
 //!
 //! 定义治理层的策略接口和请求/审批类型。
 
-use astrcode_core::{CapabilitySpec, LlmMessage, Result, action::ToolDefinition};
-use astrcode_prompt_contract::SystemPromptLayer;
+use astrcode_core::{
+    CapabilitySpec, LlmMessage, Result, action::ToolDefinition, policy::SystemPromptLayer,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -19,10 +19,19 @@ use astrcode_runtime_contract::RuntimeTurnEvent;
 
 use crate::r#loop::{TurnExecutionContext, TurnExecutionResources};
 
+/// 组装下一次 provider 请求。
+///
+/// 按 5 个阶段依次处理消息：
+/// 1. **tool result budget** — 超预算的工具输出持久化到磁盘，替换为引用
+/// 2. **micro compact** — 空闲间隙期间过期且可清除的工具结果被压缩
+/// 3. **prune pass** — 超过大小限制的工具结果被截断，旧的可清除结果被清空
+/// 4. **auto compact** — 若 token 估算超过阈值，调用 LLM 生成摘要压缩历史
+/// 5. **prompt metrics** — 记录当前 token 快照供后续使用量回填
 pub(crate) async fn assemble_runtime_request(
     execution: &mut TurnExecutionContext,
     resources: &TurnExecutionResources,
 ) -> astrcode_core::Result<LlmRequest> {
+    // 阶段 1：工具结果预算控制
     let budget_outcome = apply_tool_result_budget(ApplyToolResultBudgetRequest {
         messages: &execution.messages,
         session_id: &resources.session_id,
@@ -47,6 +56,7 @@ pub(crate) async fn assemble_runtime_request(
         budget_outcome.stats,
     );
 
+    // 阶段 2：micro compact（基于空闲间隔的轻量压缩）
     let micro_outcome = execution.micro_compact_state.apply_if_idle(
         &budget_outcome.messages,
         &resources.clearable_tools,
@@ -54,6 +64,7 @@ pub(crate) async fn assemble_runtime_request(
         Instant::now(),
     );
 
+    // 阶段 3：prune pass（按大小截断 + 按年龄清空旧结果）
     let prune_outcome = apply_prune_pass(
         &micro_outcome.messages,
         &resources.clearable_tools,
@@ -71,6 +82,7 @@ pub(crate) async fn assemble_runtime_request(
         ));
     };
 
+    // 阶段 4：auto compact（若 token 估算超过阈值，调用 LLM 生成摘要）
     let mut snapshot = build_prompt_snapshot(
         &execution.token_tracker,
         &messages,
@@ -98,6 +110,7 @@ pub(crate) async fn assemble_runtime_request(
             .await?
             {
                 messages = compaction.messages.clone();
+                // compact 后重新注入最近访问过的文件内容，恢复被压缩的文件上下文
                 messages.extend(build_post_compact_recovery_messages(
                     &execution.file_access_tracker,
                     &resources.settings,
@@ -148,6 +161,9 @@ pub(crate) async fn assemble_runtime_request(
     ))
 }
 
+/// "prompt too long" 错误后的响应式 compact。
+/// 在 `run_single_step` 中 provider 返回上下文溢出错误时调用，
+/// 尝试通过 compact 缩小消息后重试当前 step。
 pub(crate) async fn recover_from_prompt_too_long(
     execution: &mut TurnExecutionContext,
     resources: &TurnExecutionResources,
@@ -186,6 +202,10 @@ pub(crate) async fn recover_from_prompt_too_long(
     Ok(true)
 }
 
+/// 将 provider 返回的实际 token 使用量回填到之前发出的 PromptMetrics 事件中。
+///
+/// 从 events 尾部向前搜索匹配当前 step_index 的 PromptMetrics 事件，因为
+/// metrics 事件在 provider 调用之前就已创建（只含估算值），需要用真实值覆盖。
 pub(crate) fn apply_prompt_metrics_usage(
     events: &mut [RuntimeTurnEvent],
     step_index: usize,

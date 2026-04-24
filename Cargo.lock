@@ -386,7 +386,6 @@ name = "astrcode-governance-contract"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-prompt-contract",
  "async-trait",
  "serde",
  "serde_json",
@@ -465,9 +464,7 @@ version = "0.1.0"
 dependencies = [
  "astrcode-core",
  "astrcode-llm-contract",
- "astrcode-tool-contract",
  "async-trait",
- "chrono",
 ]
 
 [[package]]

@@ -28,7 +28,6 @@ pub mod ports;
 pub mod project;
 pub mod prompt;
 pub mod registry;
-pub mod runtime;
 pub mod session;
 mod shell;
 pub mod skill;
@@ -107,7 +106,10 @@ pub use observability::{
     SubRunExecutionMetricsSnapshot,
 };
 pub use ports::{McpSettingsStore, SkillCatalog};
-pub use prompt::{PromptCacheBreakReason, PromptCacheDiagnostics};
+pub use prompt::{
+    PromptCacheBreakReason, PromptCacheDiagnostics, PromptDeclaration, PromptDeclarationKind,
+    PromptDeclarationRenderTarget, PromptDeclarationSource,
+};
 pub use registry::{
     CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, ExecutionOwner, ToolEventSink,
 };

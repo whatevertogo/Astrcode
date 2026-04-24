@@ -24,8 +24,8 @@ pub async fn emit_mode_changed(
             turn_id: None,
             agent: AgentEventContext::default(),
             payload: StorageEventPayload::ModeChanged {
-                from: from.into(),
-                to: to.into(),
+                from,
+                to,
                 timestamp: Utc::now(),
             },
         })
