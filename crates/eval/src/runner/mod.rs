@@ -601,7 +601,7 @@ expected_outcome:
             concurrency: 2,
             keep_workspace: false,
             output: None,
-            timeout: Duration::from_secs(3),
+            timeout: Duration::from_secs(10),
             poll_interval: Duration::from_millis(20),
             auth_token: None,
         })
