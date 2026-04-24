@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use astrcode_core::{AstrError, GovernanceModeSpec, ModeId, Result};
+use astrcode_core::{AstrError, BoundModeToolContractSnapshot, GovernanceModeSpec, ModeId, Result};
 
 use crate::mode::{ModeCatalog, validate_mode_transition};
 
@@ -113,6 +113,22 @@ impl ServerModeCatalog {
         let catalog = ModeCatalog::new(builtin_modes, plugin_modes)?;
         validate_mode_transition(&catalog, from_mode_id, to_mode_id)?;
         Ok(())
+    }
+
+    pub(crate) fn bound_tool_contract_snapshot(
+        &self,
+        mode_id: &ModeId,
+    ) -> Result<BoundModeToolContractSnapshot> {
+        let snapshot = self.snapshot();
+        let entry = snapshot
+            .entries
+            .get(mode_id.as_str())
+            .ok_or_else(|| AstrError::Validation(format!("unknown mode '{}'", mode_id)))?;
+        Ok(BoundModeToolContractSnapshot {
+            mode_id: entry.spec.id.clone(),
+            artifact: entry.spec.artifact.clone(),
+            exit_gate: entry.spec.exit_gate.clone(),
+        })
     }
 }
 

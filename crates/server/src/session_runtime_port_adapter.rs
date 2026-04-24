@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use astrcode_agent_runtime::{
     AgentRuntime, AgentRuntimeExecutionSurface, LlmEvent, LlmProvider, RuntimeEventSink,
@@ -67,9 +70,58 @@ struct RouterToolDispatcher {
     working_dir: PathBuf,
     cancel: CancelToken,
     agent: astrcode_core::AgentEventContext,
+    mode_tool_state: RuntimeModeToolState,
+    event_sink: Arc<dyn ToolEventSink>,
+}
+
+#[derive(Clone)]
+struct RuntimeModeToolState {
+    inner: Arc<Mutex<RuntimeModeToolStateSnapshot>>,
+}
+
+#[derive(Clone)]
+struct RuntimeModeToolStateSnapshot {
     current_mode_id: ModeId,
     bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
-    event_sink: Arc<dyn ToolEventSink>,
+}
+
+impl RuntimeModeToolState {
+    fn new(
+        current_mode_id: ModeId,
+        bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(RuntimeModeToolStateSnapshot {
+                current_mode_id,
+                bound_mode_tool_contract,
+            })),
+        }
+    }
+
+    fn snapshot(&self) -> RuntimeModeToolStateSnapshot {
+        self.inner
+            .lock()
+            .expect("runtime mode tool state lock poisoned")
+            .clone()
+    }
+
+    fn current_mode_id(&self) -> ModeId {
+        self.snapshot().current_mode_id
+    }
+
+    fn replace(
+        &self,
+        current_mode_id: ModeId,
+        bound_mode_tool_contract: Option<BoundModeToolContractSnapshot>,
+    ) {
+        *self
+            .inner
+            .lock()
+            .expect("runtime mode tool state lock poisoned") = RuntimeModeToolStateSnapshot {
+            current_mode_id,
+            bound_mode_tool_contract,
+        };
+    }
 }
 
 struct SpawnTurnExecutionInput {
@@ -111,10 +163,11 @@ impl ToolDispatcher for RouterToolDispatcher {
         )
         .with_turn_id(request.turn_id)
         .with_tool_call_id(request.tool_call.id.clone())
-        .with_agent_context(self.agent.clone())
-        .with_current_mode_id(self.current_mode_id.clone());
-        if let Some(snapshot) = &self.bound_mode_tool_contract {
-            tool_ctx = tool_ctx.with_bound_mode_tool_contract(snapshot.clone());
+        .with_agent_context(self.agent.clone());
+        let mode_snapshot = self.mode_tool_state.snapshot();
+        tool_ctx = tool_ctx.with_current_mode_id(mode_snapshot.current_mode_id);
+        if let Some(snapshot) = mode_snapshot.bound_mode_tool_contract {
+            tool_ctx = tool_ctx.with_bound_mode_tool_contract(snapshot);
         }
         if let Some(sender) = request.tool_output_sender {
             tool_ctx = tool_ctx.with_tool_output_sender(sender);
@@ -226,6 +279,8 @@ impl SessionRuntimeCompatPort {
             let resolved_overrides = submission.resolved_overrides.clone();
             let current_mode_id = submission.current_mode_id.clone();
             let bound_mode_tool_contract = submission.bound_mode_tool_contract.clone();
+            let mode_tool_state =
+                RuntimeModeToolState::new(current_mode_id, bound_mode_tool_contract);
             let (runtime_event_sink, runtime_event_bridge) = spawn_runtime_event_bridge(
                 Arc::clone(&session_catalog),
                 session_id.clone(),
@@ -235,6 +290,7 @@ impl SessionRuntimeCompatPort {
             let tool_event_sink = Arc::new(RuntimeToolEventSink {
                 runtime_event_sink: Arc::clone(&runtime_event_sink),
                 mode_catalog: Arc::clone(&mode_catalog),
+                mode_tool_state: mode_tool_state.clone(),
             });
 
             let _ = session_catalog
@@ -276,8 +332,7 @@ impl SessionRuntimeCompatPort {
                 working_dir: working_dir.clone(),
                 cancel: CancelToken::new(),
                 agent: agent.clone(),
-                current_mode_id,
-                bound_mode_tool_contract,
+                mode_tool_state,
                 event_sink: tool_event_sink,
             }))
             .with_working_dir(working_dir)
@@ -745,6 +800,7 @@ impl SessionRuntimePort for SessionRuntimeCompatPort {
 struct RuntimeToolEventSink {
     runtime_event_sink: Arc<dyn RuntimeEventSink>,
     mode_catalog: Arc<ServerModeCatalog>,
+    mode_tool_state: RuntimeModeToolState,
 }
 
 #[async_trait]
@@ -752,6 +808,16 @@ impl ToolEventSink for RuntimeToolEventSink {
     async fn emit(&self, event: StorageEvent) -> astrcode_core::Result<()> {
         if let StorageEventPayload::ModeChanged { from, to, .. } = &event.payload {
             self.mode_catalog.validate_transition(from, to)?;
+            let current_mode_id = self.mode_tool_state.current_mode_id();
+            if &current_mode_id != from {
+                return Err(AstrError::Validation(format!(
+                    "mode transition from '{}' does not match current runtime mode '{}'",
+                    from, current_mode_id
+                )));
+            }
+            let bound_mode_tool_contract = self.mode_catalog.bound_tool_contract_snapshot(to)?;
+            self.mode_tool_state
+                .replace(to.clone(), Some(bound_mode_tool_contract));
         }
         self.runtime_event_sink
             .emit_event(RuntimeTurnEvent::StorageEvent {
@@ -1220,7 +1286,10 @@ fn map_pending_parent_deliveries(
 mod tests {
     use std::sync::Arc;
 
-    use astrcode_adapter_tools::builtin_tools::enter_plan_mode::EnterPlanModeTool;
+    use astrcode_adapter_tools::builtin_tools::{
+        enter_plan_mode::EnterPlanModeTool, exit_plan_mode::ExitPlanModeTool,
+        upsert_session_plan::UpsertSessionPlanTool,
+    };
     use astrcode_agent_runtime::{RuntimeEventSink, ToolDispatchRequest, ToolDispatcher};
     use astrcode_core::{
         AgentEvent, AgentEventContext, CancelToken, CapabilityInvoker, ModeId, StorageEvent,
@@ -1228,7 +1297,7 @@ mod tests {
     };
 
     use super::{
-        RouterToolDispatcher, RuntimeToolEventSink, RuntimeTurnEvent,
+        RouterToolDispatcher, RuntimeModeToolState, RuntimeToolEventSink, RuntimeTurnEvent,
         runtime_event_to_live_agent_events,
     };
     use crate::{
@@ -1287,16 +1356,18 @@ mod tests {
             Arc::new(move |event: RuntimeTurnEvent| {
                 let _ = event_tx.send(event);
             });
+        let mode_catalog = builtin_server_mode_catalog();
+        let mode_tool_state = RuntimeModeToolState::new(ModeId::code(), None);
         let dispatcher = RouterToolDispatcher {
             capability_router,
             working_dir: std::env::temp_dir(),
             cancel: CancelToken::new(),
             agent: AgentEventContext::root_execution("agent-root", "default"),
-            current_mode_id: ModeId::code(),
-            bound_mode_tool_contract: None,
+            mode_tool_state: mode_tool_state.clone(),
             event_sink: Arc::new(RuntimeToolEventSink {
                 runtime_event_sink,
-                mode_catalog: builtin_server_mode_catalog(),
+                mode_catalog,
+                mode_tool_state,
             }),
         };
 
@@ -1328,6 +1399,122 @@ mod tests {
                         if *from == ModeId::code() && *to == ModeId::plan()
                 )
         ));
+    }
+
+    #[tokio::test]
+    async fn router_tool_dispatcher_updates_mode_contract_after_enter_plan_mode() {
+        let capability_router = CapabilityRouter::builder()
+            .register_invoker(Arc::new(
+                ToolCapabilityInvoker::new(Arc::new(EnterPlanModeTool))
+                    .expect("enterPlanMode should register"),
+            ) as Arc<dyn CapabilityInvoker>)
+            .register_invoker(Arc::new(
+                ToolCapabilityInvoker::new(Arc::new(UpsertSessionPlanTool))
+                    .expect("upsertSessionPlan should register"),
+            ) as Arc<dyn CapabilityInvoker>)
+            .register_invoker(Arc::new(
+                ToolCapabilityInvoker::new(Arc::new(ExitPlanModeTool))
+                    .expect("exitPlanMode should register"),
+            ) as Arc<dyn CapabilityInvoker>)
+            .build()
+            .expect("capability router should build");
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let runtime_event_sink: Arc<dyn RuntimeEventSink> =
+            Arc::new(move |event: RuntimeTurnEvent| {
+                let _ = event_tx.send(event);
+            });
+        let mode_catalog = builtin_server_mode_catalog();
+        let mode_tool_state = RuntimeModeToolState::new(ModeId::code(), None);
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let dispatcher = RouterToolDispatcher {
+            capability_router,
+            working_dir: temp.path().to_path_buf(),
+            cancel: CancelToken::new(),
+            agent: AgentEventContext::root_execution("agent-root", "default"),
+            mode_tool_state: mode_tool_state.clone(),
+            event_sink: Arc::new(RuntimeToolEventSink {
+                runtime_event_sink,
+                mode_catalog,
+                mode_tool_state,
+            }),
+        };
+
+        dispatcher
+            .dispatch_tool(ToolDispatchRequest {
+                session_id: "session-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                agent_id: "agent-root".to_string(),
+                tool_call: ToolCallRequest {
+                    id: "call-enter".to_string(),
+                    name: "enterPlanMode".to_string(),
+                    args: serde_json::json!({ "reason": "need a plan" }),
+                },
+                tool_output_sender: None,
+            })
+            .await
+            .expect("enterPlanMode dispatch should succeed");
+        let event = event_rx.recv().await.expect("mode event should emit");
+        assert!(matches!(
+            event,
+            RuntimeTurnEvent::StorageEvent { event }
+                if matches!(
+                    &event.payload,
+                    StorageEventPayload::ModeChanged { from, to, .. }
+                        if *from == ModeId::code() && *to == ModeId::plan()
+                )
+        ));
+
+        let upsert_result = dispatcher
+            .dispatch_tool(ToolDispatchRequest {
+                session_id: "session-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                agent_id: "agent-root".to_string(),
+                tool_call: ToolCallRequest {
+                    id: "call-upsert".to_string(),
+                    name: "upsertSessionPlan".to_string(),
+                    args: serde_json::json!({
+                        "title": "Cleanup crates",
+                        "content": "# Plan: Cleanup crates\n\n## Context\n- inspect first\n\n## Goal\n- produce a plan\n\n## Implementation Steps\n- update the code\n\n## Verification\n- run tests",
+                        "status": "draft"
+                    }),
+                },
+                tool_output_sender: None,
+            })
+            .await
+            .expect("upsertSessionPlan dispatch should succeed");
+        assert!(upsert_result.ok);
+        let upsert_metadata = upsert_result
+            .metadata
+            .as_ref()
+            .expect("upsertSessionPlan metadata should exist");
+        assert_eq!(
+            upsert_metadata["artifactType"],
+            serde_json::json!("canonical-plan")
+        );
+
+        let exit_result = dispatcher
+            .dispatch_tool(ToolDispatchRequest {
+                session_id: "session-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                agent_id: "agent-root".to_string(),
+                tool_call: ToolCallRequest {
+                    id: "call-exit".to_string(),
+                    name: "exitPlanMode".to_string(),
+                    args: serde_json::json!({}),
+                },
+                tool_output_sender: None,
+            })
+            .await
+            .expect("exitPlanMode dispatch should succeed");
+        assert!(exit_result.ok);
+        let exit_metadata = exit_result
+            .metadata
+            .as_ref()
+            .expect("exitPlanMode metadata should exist");
+        assert_eq!(
+            exit_metadata["schema"],
+            serde_json::json!("sessionPlanExitReviewPending")
+        );
     }
 
     fn builtin_server_mode_catalog() -> Arc<ServerModeCatalog> {

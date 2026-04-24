@@ -496,7 +496,10 @@ impl OpenAiProvider {
             let bytes = item.map_err(|error| {
                 AstrError::http_with_source(
                     "failed to read openai response stream",
-                    error.is_timeout() || error.is_connect() || error.is_body(),
+                    error.is_timeout()
+                        || error.is_connect()
+                        || error.is_body()
+                        || error.is_decode(),
                     error,
                 )
             })?;
