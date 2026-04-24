@@ -40,11 +40,20 @@ impl ServerControlClient {
     }
 
     pub async fn probe(&self) -> EvalResult<()> {
-        let request = self
-            .http
-            .get(format!("{}/__astrcode__/run-info", self.base_url));
         let response = self
-            .send(request)
+            .send(self.http.get(format!("{}/", self.base_url)))
+            .await
+            .map_err(|error| EvalError::http("探测 server 失败", error))?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+
+        let response = self
+            .send(
+                self.http
+                    .get(format!("{}/__astrcode__/run-info", self.base_url))
+                    .header("origin", "http://127.0.0.1:5173"),
+            )
             .await
             .map_err(|error| EvalError::http("探测 server 失败", error))?;
         if response.status().is_success() {

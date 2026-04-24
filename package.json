@@ -7,6 +7,7 @@
     "dev:unix": "bash scripts/dev.sh",
     "dev:frontend": "cd frontend && npm run dev",
     "dev:tauri": "node scripts/tauri-cli.js dev",
+    "eval:api": "node scripts/run-api-eval.mjs",
     "build": "node scripts/tauri-cli.js build",
     "check:rust:push": "cargo check --workspace && cargo test --workspace --exclude astrcode --lib",
     "check:frontend:push": "cd frontend && npm run typecheck",
