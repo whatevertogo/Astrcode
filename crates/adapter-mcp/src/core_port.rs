@@ -1,13 +1,12 @@
-//! 桥接 `adapter-mcp` 与 `core::ports::ResourceProvider`。
+//! 桥接 `adapter-mcp` 与 `plugin-host::ResourceProvider`。
 //!
 //! 让 kernel 通过统一的资源端口读取 MCP 资源。
 //! 通过 resource_index 将 URI 反查到所属服务器，再委托给 McpConnectionManager::read_resource。
 
 use std::sync::Arc;
 
-use astrcode_core::{
-    AstrError, ResourceProvider, ResourceReadResult, ResourceRequestContext, Result,
-};
+use astrcode_core::{AstrError, Result};
+use astrcode_plugin_host::{ResourceProvider, ResourceReadResult, ResourceRequestContext};
 use async_trait::async_trait;
 use log::warn;
 use serde_json::json;

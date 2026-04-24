@@ -1,12 +1,30 @@
 //! 会话目录事件 DTO。
 //!
-//! 目录事件载荷已经是共享语义，协议层直接复用 `core`；
-//! 外层信封仍由 protocol 拥有。
+//! 目录事件载荷由 host-session 拥有；协议层保留同构 wire DTO，
+//! 避免 protocol 反向依赖 runtime owner crate。
 
-pub use astrcode_core::SessionCatalogEvent as SessionCatalogEventPayload;
 use serde::{Deserialize, Serialize};
 
 use crate::http::PROTOCOL_VERSION;
+
+/// 会话目录事件 wire DTO。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "event", content = "data")]
+pub enum SessionCatalogEventPayload {
+    SessionCreated {
+        session_id: String,
+    },
+    SessionDeleted {
+        session_id: String,
+    },
+    ProjectDeleted {
+        working_dir: String,
+    },
+    SessionBranched {
+        session_id: String,
+        source_session_id: String,
+    },
+}
 
 /// 会话目录事件信封。
 ///

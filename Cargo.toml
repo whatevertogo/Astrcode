@@ -2,9 +2,9 @@
 members = [
     "crates/core",
     "crates/support",
-    "crates/kernel",
-    "crates/session-runtime",
-    "crates/application",
+    "crates/agent-runtime",
+    "crates/host-session",
+    "crates/plugin-host",
     "crates/eval",
     "crates/adapter-storage",
     "crates/adapter-agents",
@@ -14,12 +14,9 @@ members = [
     "crates/protocol",
     "crates/client",
     "crates/cli",
-    "crates/plugin",
-    "crates/sdk",
     "crates/adapter-tools",
     "crates/adapter-mcp",
     "crates/server",
-    "examples/example-plugin",
     "src-tauri",
 ]
 resolver = "2"

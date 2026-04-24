@@ -6,7 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_core::{RecoveredSessionState, SessionRecoveryCheckpoint, StoredEvent};
+use astrcode_core::StoredEvent;
+use astrcode_host_session::{RecoveredSessionState, SessionRecoveryCheckpoint};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

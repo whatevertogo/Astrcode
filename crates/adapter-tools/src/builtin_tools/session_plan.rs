@@ -9,11 +9,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_core::{
-    AstrError, ModeArtifactDef, Result, ToolContext, WorkflowArtifactRef, WorkflowInstanceState,
-    session_plan_content_digest,
+use astrcode_core::{AstrError, ModeArtifactDef, Result, ToolContext};
+pub use astrcode_host_session::{SessionPlanState, SessionPlanStatus};
+use astrcode_host_session::{
+    WorkflowArtifactRef, WorkflowInstanceState, session_plan_content_digest,
 };
-pub use astrcode_core::{SessionPlanState, SessionPlanStatus};
 use chrono::Utc;
 
 use crate::builtin_tools::fs_common::session_dir_for_tool_results;

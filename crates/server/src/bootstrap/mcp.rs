@@ -15,15 +15,20 @@ use astrcode_adapter_mcp::{
     manager::McpConnectionManager,
 };
 use astrcode_adapter_storage::mcp_settings_store::FileMcpSettingsStore;
-use astrcode_application::{
-    ApplicationError, McpPort, McpServerStatusView, RegisterMcpServerInput,
-    config::{ConfigService, McpConfigFileScope},
-};
+use astrcode_core::ports::McpConfigFileScope;
 use async_trait::async_trait;
 
 use super::{
     capabilities::CapabilitySurfaceSync,
     deps::core::{AstrError, CapabilityInvoker, Result as CoreResult},
+};
+use crate::{
+    application_error_bridge::ServerRouteError,
+    config_service_bridge::ServerConfigService,
+    mcp_service::{
+        ServerMcpConfigScope, ServerMcpPort, ServerMcpServerStatusSummary, ServerMcpService,
+        ServerRegisterMcpServerInput,
+    },
 };
 
 /// 构建并初始化 MCP 连接管理器。
@@ -45,7 +50,7 @@ pub(crate) async fn bootstrap_mcp_manager(
 /// MCP 作为外部能力面可在后台预热，失败只影响对应能力，不应拖垮桌面端启动。
 pub(crate) async fn warmup_mcp_manager(
     manager: Arc<McpConnectionManager>,
-    config_service: Arc<ConfigService>,
+    config_service: Arc<ServerConfigService>,
     working_dir: PathBuf,
     capability_sync: CapabilitySurfaceSync,
     plugin_invokers: Vec<Arc<dyn CapabilityInvoker>>,
@@ -75,23 +80,21 @@ pub(crate) async fn warmup_mcp_manager(
 
 /// 构建 MCP 服务，使用 `McpConnectionManager` 作为实际端口实现。
 pub(crate) fn build_mcp_service(
-    config_service: Arc<ConfigService>,
+    config_service: Arc<ServerConfigService>,
     working_dir: PathBuf,
     manager: Arc<McpConnectionManager>,
     capability_sync: CapabilitySurfaceSync,
-) -> Arc<astrcode_application::McpService> {
-    Arc::new(astrcode_application::McpService::new(Arc::new(
-        ManagerMcpPort {
-            config_service,
-            working_dir,
-            manager,
-            capability_sync,
-        },
-    )))
+) -> Arc<ServerMcpService> {
+    Arc::new(ServerMcpService::new(Arc::new(ManagerMcpPort {
+        config_service,
+        working_dir,
+        manager,
+        capability_sync,
+    })))
 }
 
 struct ManagerMcpPort {
-    config_service: Arc<ConfigService>,
+    config_service: Arc<ServerConfigService>,
     working_dir: PathBuf,
     manager: Arc<McpConnectionManager>,
     capability_sync: CapabilitySurfaceSync,
@@ -104,66 +107,60 @@ impl std::fmt::Debug for ManagerMcpPort {
 }
 
 #[async_trait]
-impl McpPort for ManagerMcpPort {
-    async fn list_server_status(&self) -> Vec<McpServerStatusView> {
+impl ServerMcpPort for ManagerMcpPort {
+    async fn list_server_status_summary(&self) -> Vec<ServerMcpServerStatusSummary> {
         self.manager
             .list_status()
             .await
             .into_iter()
-            .map(snapshot_to_view)
+            .map(snapshot_to_summary)
             .collect()
     }
 
-    async fn approve_server(
-        &self,
-        server_signature: &str,
-    ) -> std::result::Result<(), ApplicationError> {
+    async fn approve_server(&self, server_signature: &str) -> Result<(), ServerRouteError> {
         self.manager
             .approve_server(server_signature)
-            .map_err(core_error_to_app)?;
+            .map_err(core_error_to_server)?;
         self.reload_from_source().await
     }
 
-    async fn reject_server(
-        &self,
-        server_signature: &str,
-    ) -> std::result::Result<(), ApplicationError> {
+    async fn reject_server(&self, server_signature: &str) -> Result<(), ServerRouteError> {
         self.manager
             .reject_server(server_signature)
-            .map_err(core_error_to_app)?;
+            .map_err(core_error_to_server)?;
         self.reload_from_source().await
     }
 
-    async fn reconnect_server(&self, name: &str) -> std::result::Result<(), ApplicationError> {
+    async fn reconnect_server(&self, name: &str) -> Result<(), ServerRouteError> {
         self.manager
             .reconnect_server(name)
             .await
-            .map_err(core_error_to_app)?;
+            .map_err(core_error_to_server)?;
         self.sync_capabilities().await
     }
 
-    async fn reset_project_choices(&self) -> std::result::Result<(), ApplicationError> {
+    async fn reset_project_choices(&self) -> Result<(), ServerRouteError> {
         self.manager
             .reset_project_choices()
-            .map_err(core_error_to_app)?;
+            .map_err(core_error_to_server)?;
         self.reload_from_source().await
     }
 
     async fn upsert_server(
         &self,
-        input: &RegisterMcpServerInput,
-    ) -> std::result::Result<(), ApplicationError> {
+        input: ServerRegisterMcpServerInput,
+    ) -> Result<(), ServerRouteError> {
         self.config_service
-            .upsert_mcp_server(self.working_dir.as_path(), input)
+            .upsert_mcp_server(self.working_dir.as_path(), &input)
             .await?;
         self.reload_from_source().await
     }
 
     async fn remove_server(
         &self,
-        scope: astrcode_application::McpConfigScope,
+        scope: ServerMcpConfigScope,
         name: &str,
-    ) -> std::result::Result<(), ApplicationError> {
+    ) -> Result<(), ServerRouteError> {
         self.config_service
             .remove_mcp_server(self.working_dir.as_path(), scope, name)
             .await?;
@@ -172,10 +169,10 @@ impl McpPort for ManagerMcpPort {
 
     async fn set_server_enabled(
         &self,
-        scope: astrcode_application::McpConfigScope,
+        scope: ServerMcpConfigScope,
         name: &str,
         enabled: bool,
-    ) -> std::result::Result<(), ApplicationError> {
+    ) -> Result<(), ServerRouteError> {
         self.config_service
             .set_mcp_server_enabled(self.working_dir.as_path(), scope, name, enabled)
             .await?;
@@ -184,32 +181,32 @@ impl McpPort for ManagerMcpPort {
 }
 
 impl ManagerMcpPort {
-    async fn reload_from_source(&self) -> std::result::Result<(), ApplicationError> {
+    async fn reload_from_source(&self) -> Result<(), ServerRouteError> {
         let configs =
             load_declared_configs(&self.config_service, self.working_dir.as_path()).await?;
         self.manager
             .reload_config(configs)
             .await
-            .map_err(core_error_to_app)?;
+            .map_err(core_error_to_server)?;
         self.sync_capabilities().await
     }
 
-    async fn sync_capabilities(&self) -> std::result::Result<(), ApplicationError> {
+    async fn sync_capabilities(&self) -> Result<(), ServerRouteError> {
         let surface = self.manager.current_surface().await;
         self.capability_sync
             .apply_external_invokers(surface.capability_invokers)
-            .map_err(core_error_to_app)
+            .map_err(core_error_to_server)
     }
 }
 
-fn snapshot_to_view(
+fn snapshot_to_summary(
     snapshot: astrcode_adapter_mcp::manager::surface::McpServerStatusSnapshot,
-) -> McpServerStatusView {
-    McpServerStatusView {
+) -> ServerMcpServerStatusSummary {
+    ServerMcpServerStatusSummary {
         name: snapshot.name,
         scope: snapshot.scope,
         enabled: snapshot.enabled,
-        state: snapshot.state,
+        status: snapshot.state,
         error: snapshot.error,
         tool_count: snapshot.tool_count,
         prompt_count: snapshot.prompt_count,
@@ -219,14 +216,14 @@ fn snapshot_to_view(
     }
 }
 
-fn core_error_to_app(error: AstrError) -> ApplicationError {
-    ApplicationError::Internal(error.to_string())
+fn core_error_to_server(error: AstrError) -> ServerRouteError {
+    ServerRouteError::internal(error.to_string())
 }
 
 pub(crate) async fn load_declared_configs(
-    config_service: &Arc<ConfigService>,
+    config_service: &Arc<ServerConfigService>,
     working_dir: &Path,
-) -> std::result::Result<Vec<McpServerConfig>, ApplicationError> {
+) -> Result<Vec<McpServerConfig>, ServerRouteError> {
     let mut merged = HashMap::new();
     let working_dir_display = working_dir.display().to_string();
 
@@ -235,7 +232,8 @@ pub(crate) async fn load_declared_configs(
         merge_configs_or_warn(
             &mut merged,
             "user config.json mcp",
-            McpConfigManager::load_from_value(mcp, McpConfigScope::User).map_err(core_error_to_app),
+            McpConfigManager::load_from_value(mcp, McpConfigScope::User)
+                .map_err(core_error_to_server),
         );
     }
 
@@ -244,7 +242,7 @@ pub(crate) async fn load_declared_configs(
             &mut merged,
             "user mcp.json",
             McpConfigManager::load_from_value(&mcp, McpConfigScope::User)
-                .map_err(core_error_to_app),
+                .map_err(core_error_to_server),
         ),
         Ok(None) => {},
         Err(error) => log::warn!("failed to load user mcp.json, skipping source: {error}"),
@@ -256,7 +254,7 @@ pub(crate) async fn load_declared_configs(
             &mut merged,
             &format!("project MCP file '{}'", project_file.display()),
             McpConfigManager::load_from_file(&project_file, McpConfigScope::Project)
-                .map_err(core_error_to_app),
+                .map_err(core_error_to_server),
         );
     }
 
@@ -267,7 +265,7 @@ pub(crate) async fn load_declared_configs(
                     &mut merged,
                     &format!("local overlay mcp for '{}'", working_dir_display),
                     McpConfigManager::load_from_value(&mcp, McpConfigScope::Local)
-                        .map_err(core_error_to_app),
+                        .map_err(core_error_to_server),
                 );
             }
         },
@@ -283,7 +281,7 @@ pub(crate) async fn load_declared_configs(
             &mut merged,
             &format!("local sidecar mcp for '{}'", working_dir_display),
             McpConfigManager::load_from_value(&mcp, McpConfigScope::Local)
-                .map_err(core_error_to_app),
+                .map_err(core_error_to_server),
         ),
         Ok(None) => {},
         Err(error) => log::warn!(
@@ -298,7 +296,7 @@ pub(crate) async fn load_declared_configs(
 fn merge_configs_or_warn(
     merged: &mut HashMap<String, McpServerConfig>,
     source_label: &str,
-    configs: std::result::Result<Vec<McpServerConfig>, ApplicationError>,
+    configs: Result<Vec<McpServerConfig>, ServerRouteError>,
 ) {
     match configs {
         Ok(configs) => {
@@ -399,7 +397,9 @@ mod tests {
             )
             .expect("local sidecar should save");
 
-        let config_service = Arc::new(ConfigService::new(store));
+        let config_service = Arc::new(ServerConfigService::new(Arc::new(
+            crate::ConfigService::new(store),
+        )));
         let configs = load_declared_configs(&config_service, project.path())
             .await
             .expect("configs should load");
@@ -442,7 +442,9 @@ mod tests {
         fs::write(project.path().join(".mcp.json"), "{ invalid json")
             .expect("broken project mcp should be written");
 
-        let config_service = Arc::new(ConfigService::new(store));
+        let config_service = Arc::new(ServerConfigService::new(Arc::new(
+            crate::ConfigService::new(store),
+        )));
         let configs = load_declared_configs(&config_service, project.path())
             .await
             .expect("invalid project source should be skipped");

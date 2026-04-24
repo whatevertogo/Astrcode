@@ -15,7 +15,7 @@ pub(crate) async fn session_catalog_events(
     headers: HeaderMap,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     require_auth(&state, &headers, None)?;
-    let mut receiver = state.app.subscribe_catalog();
+    let mut receiver = state.session_catalog.subscribe_catalog_events();
 
     let event_stream = stream! {
         loop {

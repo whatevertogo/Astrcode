@@ -13,17 +13,29 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
     sync::Arc,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use astrcode_adapter_skills::collect_asset_files;
-use astrcode_core::{GovernanceModeSpec, SkillSource, SkillSpec, is_valid_skill_name};
-use astrcode_plugin::{PluginLoader, Supervisor, default_initialize_message, default_profiles};
-use astrcode_protocol::plugin::{PeerDescriptor, SkillDescriptor};
+use astrcode_core::{
+    AstrError, CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilitySpec,
+    GovernanceModeSpec, InvocationMode, ManagedRuntimeComponent, Result, SkillSource, SkillSpec,
+    is_valid_skill_name,
+};
+use astrcode_plugin_host::{
+    PluginDescriptor, PluginLoader, PluginManifest, PluginRegistry, PluginSourceKind, PluginType,
+    ResourceCatalog,
+    backend::{ExternalPluginRuntimeHandle, PluginBackendPlan},
+    default_initialize_message, default_local_peer_descriptor, default_profiles,
+    resources_discover,
+};
+use astrcode_protocol::plugin::{EventPhase, InvocationContext, SkillDescriptor, WorkspaceRef};
 #[cfg(test)]
 use astrcode_support::hostpaths::resolve_home_dir;
+use async_trait::async_trait;
 use log::warn;
-
-use super::deps::core::{CapabilityInvoker, PluginRegistry};
+use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 /// 插件装配结果。
 pub(crate) struct PluginBootstrapResult {
@@ -35,10 +47,14 @@ pub(crate) struct PluginBootstrapResult {
     pub modes: Vec<GovernanceModeSpec>,
     /// 插件注册表引用（治理视图使用）。
     pub registry: Arc<PluginRegistry>,
-    /// 活跃的插件 supervisor 列表（shutdown 时需要关闭）。
-    pub supervisors: Vec<Arc<Supervisor>>,
+    /// 活跃的插件宿主组件列表（shutdown/reload 时需要关闭）。
+    pub managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     /// 插件搜索路径。
     pub search_paths: Vec<PathBuf>,
+    /// plugin-host 聚合出的统一资源目录。
+    pub resource_catalog: ResourceCatalog,
+    /// plugin-host 发现出的完整 descriptor 贡献面。
+    pub descriptors: Vec<PluginDescriptor>,
 }
 
 /// 发现、装载并物化所有插件。
@@ -65,8 +81,8 @@ pub(crate) async fn bootstrap_plugins_with_skill_root(
         search_paths: search_paths.clone(),
     };
 
-    let manifests = match loader.discover() {
-        Ok(manifests) => manifests,
+    let mut descriptors = match loader.discover_descriptors() {
+        Ok(descriptors) => descriptors,
         Err(error) => {
             log::warn!("plugin discovery failed: {error}");
             return PluginBootstrapResult {
@@ -74,87 +90,470 @@ pub(crate) async fn bootstrap_plugins_with_skill_root(
                 skills: Vec::new(),
                 modes: Vec::new(),
                 registry,
-                supervisors: Vec::new(),
+                managed_components: Vec::new(),
                 search_paths,
+                resource_catalog: ResourceCatalog::default(),
+                descriptors: Vec::new(),
             };
         },
     };
+    descriptors.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
+    log::info!("discovered {} plugin(s)", descriptors.len());
 
-    log::info!("discovered {} plugin(s)", manifests.len());
-
-    let local_peer = PeerDescriptor {
-        id: "astrcode-host".to_string(),
-        name: "Astrcode Host".to_string(),
-        role: astrcode_protocol::plugin::PeerRole::Core,
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        supported_profiles: vec!["coding".to_string()],
-        metadata: serde_json::json!({}),
-    };
+    let local_peer = default_local_peer_descriptor();
     let init_message =
         default_initialize_message(local_peer.clone(), Vec::new(), default_profiles());
 
     let mut all_invokers: Vec<Arc<dyn CapabilityInvoker>> = Vec::new();
     let mut all_skills = Vec::new();
     let mut all_modes = Vec::new();
-    let mut supervisors = Vec::new();
+    let mut managed_components: Vec<Arc<dyn ManagedRuntimeComponent>> = Vec::new();
 
-    for manifest in manifests {
-        let name = manifest.name.clone();
+    for descriptor in &mut descriptors {
+        let manifest = plugin_manifest_from_descriptor(descriptor);
+        let name = descriptor.plugin_id.clone();
         log::info!("loading plugin '{name}'...");
-
         registry.record_discovered(manifest.clone());
 
-        match loader
-            .start(&manifest, local_peer.clone(), Some(init_message.clone()))
-            .await
-        {
-            Ok(supervisor) => {
-                let supervisor = Arc::new(supervisor);
-                // 物化能力
-                let invokers = supervisor.capability_invokers();
-                let capabilities: Vec<_> = invokers
-                    .iter()
-                    .map(|invoker| invoker.capability_spec())
-                    .collect();
-                let (skills, warnings) = materialize_plugin_skills(
+        match bootstrap_external_plugin_runtime(descriptor, init_message.clone()).await {
+            Ok(initialized) => {
+                let (skills, mut warnings) = materialize_plugin_skills(
                     plugin_skill_root.as_path(),
                     &name,
-                    supervisor.declared_skills(),
+                    initialized.declared_skills.clone(),
                 );
-                let modes = supervisor.declared_modes();
-
+                warnings.extend(initialized.warnings.clone());
                 log::info!(
                     "plugin '{name}' initialized with {} capabilities, {} skills and {} modes",
-                    capabilities.len(),
+                    initialized.capabilities.len(),
                     skills.len(),
-                    modes.len()
+                    initialized.modes.len()
                 );
 
-                registry.record_initialized(manifest, capabilities, warnings);
-                all_invokers.extend(invokers);
+                registry.record_initialized(manifest, initialized.capabilities.clone(), warnings);
+                apply_remote_descriptor_enrichment(descriptor, &initialized);
+                all_invokers.extend(initialized.invokers);
                 all_skills.extend(skills);
-                all_modes.extend(modes);
-                supervisors.push(supervisor);
+                all_modes.extend(initialized.modes);
+                managed_components.push(initialized.runtime);
             },
             Err(error) => {
                 log::error!("plugin '{name}' failed to initialize: {error}");
                 registry.record_failed(
                     manifest,
                     error.to_string(),
-                    Vec::new(),
+                    descriptor.tools.clone(),
                     vec![format!("initialization failed: {error}")],
                 );
             },
         }
     }
 
+    let resource_catalog = resource_catalog_from_descriptors(&descriptors);
+
     PluginBootstrapResult {
         invokers: all_invokers,
         skills: all_skills,
         modes: all_modes,
         registry,
-        supervisors,
+        managed_components,
         search_paths,
+        resource_catalog,
+        descriptors,
+    }
+}
+
+fn resource_catalog_from_descriptors(descriptors: &[PluginDescriptor]) -> ResourceCatalog {
+    match resources_discover(descriptors).map(|report| report.catalog) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            warn!("plugin resource discovery failed: {error}");
+            ResourceCatalog::default()
+        },
+    }
+}
+
+struct BootstrappedPluginRuntime {
+    runtime: Arc<dyn ManagedRuntimeComponent>,
+    invokers: Vec<Arc<dyn CapabilityInvoker>>,
+    capabilities: Vec<CapabilitySpec>,
+    declared_skills: Vec<SkillDescriptor>,
+    modes: Vec<GovernanceModeSpec>,
+    warnings: Vec<String>,
+}
+
+struct HostedExternalPluginRuntime {
+    plugin_id: String,
+    display_name: String,
+    handle: Mutex<ExternalPluginRuntimeHandle>,
+}
+
+impl HostedExternalPluginRuntime {
+    fn new(plugin_id: String, display_name: String, handle: ExternalPluginRuntimeHandle) -> Self {
+        Self {
+            plugin_id,
+            display_name,
+            handle: Mutex::new(handle),
+        }
+    }
+
+    async fn invoke(
+        &self,
+        capability_name: &str,
+        payload: Value,
+        ctx: &CapabilityContext,
+        invocation_mode: InvocationMode,
+    ) -> Result<CapabilityExecutionResult> {
+        let started_at = Instant::now();
+        let invocation = to_invocation_context(ctx, capability_name);
+        let mut handle = self.handle.lock().await;
+
+        if matches!(invocation_mode, InvocationMode::Streaming) {
+            let events = handle
+                .invoke_stream(&astrcode_protocol::plugin::InvokeMessage {
+                    id: invocation.request_id.clone(),
+                    capability: capability_name.to_string(),
+                    input: payload,
+                    context: invocation,
+                    stream: true,
+                })
+                .await?;
+            finish_stream_invocation(capability_name.to_string(), events, started_at)
+        } else {
+            let result = handle
+                .invoke_unary(&astrcode_protocol::plugin::InvokeMessage {
+                    id: invocation.request_id.clone(),
+                    capability: capability_name.to_string(),
+                    input: payload,
+                    context: invocation,
+                    stream: false,
+                })
+                .await?;
+            let (success, error) = if result.success {
+                (true, None)
+            } else {
+                let message = result
+                    .error
+                    .map(|value| value.message)
+                    .unwrap_or_else(|| "plugin invocation failed".to_string());
+                (false, Some(message))
+            };
+            Ok(CapabilityExecutionResult::from_common(
+                capability_name.to_string(),
+                success,
+                result.output,
+                None,
+                astrcode_core::ExecutionResultCommon {
+                    error,
+                    metadata: Some(result.metadata),
+                    duration_ms: started_at.elapsed().as_millis() as u64,
+                    truncated: false,
+                },
+            ))
+        }
+    }
+}
+
+#[async_trait]
+impl ManagedRuntimeComponent for HostedExternalPluginRuntime {
+    fn component_name(&self) -> String {
+        format!("plugin-host '{}' ({})", self.plugin_id, self.display_name)
+    }
+
+    async fn shutdown_component(&self) -> Result<()> {
+        let mut handle = self.handle.lock().await;
+        handle.shutdown().await
+    }
+}
+
+#[derive(Clone)]
+struct HostedPluginCapabilityInvoker {
+    runtime: Arc<HostedExternalPluginRuntime>,
+    capability_spec: CapabilitySpec,
+    remote_name: String,
+}
+
+#[async_trait]
+impl CapabilityInvoker for HostedPluginCapabilityInvoker {
+    fn capability_spec(&self) -> CapabilitySpec {
+        self.capability_spec.clone()
+    }
+
+    async fn invoke(
+        &self,
+        payload: Value,
+        ctx: &CapabilityContext,
+    ) -> Result<CapabilityExecutionResult> {
+        self.runtime
+            .invoke(
+                self.remote_name.as_str(),
+                payload,
+                ctx,
+                self.capability_spec.invocation_mode,
+            )
+            .await
+    }
+}
+
+async fn bootstrap_external_plugin_runtime(
+    descriptor: &PluginDescriptor,
+    init_message: astrcode_protocol::plugin::InitializeMessage,
+) -> Result<BootstrappedPluginRuntime> {
+    if !matches!(
+        descriptor.source_kind,
+        PluginSourceKind::Process | PluginSourceKind::Command
+    ) {
+        return Err(AstrError::Validation(format!(
+            "plugin '{}' 不是 external process backend，无法走 plugin-host 宿主路径",
+            descriptor.plugin_id
+        )));
+    }
+
+    let plan = PluginBackendPlan::from_descriptor(descriptor)?;
+    let backend = plan.start_process().await?;
+    let mut handle = ExternalPluginRuntimeHandle::from_backend(backend).with_initialize_state(
+        astrcode_plugin_host::PluginInitializeState::new(init_message),
+    );
+    let remote_initialize = handle.initialize_remote().await?.clone();
+    let runtime = Arc::new(HostedExternalPluginRuntime::new(
+        descriptor.plugin_id.clone(),
+        descriptor.display_name.clone(),
+        handle,
+    ));
+    let capabilities = remote_initialize.capabilities.clone();
+    let invokers = capabilities
+        .iter()
+        .cloned()
+        .filter_map(|capability| {
+            create_plugin_capability_invoker(Arc::clone(&runtime), capability.clone()).map_or_else(
+                |error| {
+                    log::error!(
+                        "failed to adapt plugin capability '{}' for '{}': {}",
+                        capability.name,
+                        descriptor.plugin_id,
+                        error
+                    );
+                    None
+                },
+                Some,
+            )
+        })
+        .collect();
+
+    Ok(BootstrappedPluginRuntime {
+        runtime: runtime as Arc<dyn ManagedRuntimeComponent>,
+        invokers,
+        capabilities,
+        declared_skills: remote_initialize.skills,
+        modes: remote_initialize.modes,
+        warnings: Vec::new(),
+    })
+}
+
+fn create_plugin_capability_invoker(
+    runtime: Arc<HostedExternalPluginRuntime>,
+    capability: CapabilitySpec,
+) -> Result<Arc<dyn CapabilityInvoker>> {
+    capability.validate().map_err(|error| {
+        AstrError::Validation(format!(
+            "invalid protocol capability wire descriptor '{}': {}",
+            capability.name, error
+        ))
+    })?;
+    Ok(Arc::new(HostedPluginCapabilityInvoker {
+        runtime,
+        remote_name: capability.name.to_string(),
+        capability_spec: capability,
+    }) as Arc<dyn CapabilityInvoker>)
+}
+
+fn apply_remote_descriptor_enrichment(
+    descriptor: &mut PluginDescriptor,
+    initialized: &BootstrappedPluginRuntime,
+) {
+    descriptor.tools = initialized.capabilities.clone();
+    descriptor.modes = initialized.modes.clone();
+
+    let mut known_skill_ids = descriptor
+        .skills
+        .iter()
+        .map(|skill| skill.skill_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for skill in &initialized.declared_skills {
+        if known_skill_ids.insert(skill.name.clone()) {
+            descriptor
+                .skills
+                .push(astrcode_plugin_host::SkillDescriptor {
+                    skill_id: skill.name.clone(),
+                    entry_ref: format!("plugin://{}/skills/{}", descriptor.plugin_id, skill.name),
+                });
+        }
+    }
+}
+
+fn plugin_manifest_from_descriptor(descriptor: &PluginDescriptor) -> PluginManifest {
+    let mut plugin_type = Vec::new();
+    if !descriptor.tools.is_empty() {
+        plugin_type.push(PluginType::Tool);
+    }
+    if !descriptor.providers.is_empty() {
+        plugin_type.push(PluginType::Provider);
+    }
+    if !descriptor.hooks.is_empty() {
+        plugin_type.push(PluginType::Hook);
+    }
+    if plugin_type.is_empty() {
+        plugin_type.push(PluginType::Tool);
+    }
+
+    PluginManifest {
+        name: descriptor.plugin_id.clone(),
+        version: descriptor.version.clone(),
+        description: descriptor.display_name.clone(),
+        plugin_type,
+        capabilities: descriptor.tools.clone(),
+        executable: descriptor.launch_command.clone(),
+        args: descriptor.launch_args.clone(),
+        working_dir: descriptor.working_dir.clone(),
+        repository: descriptor.repository.clone(),
+        resources: descriptor
+            .resources
+            .iter()
+            .cloned()
+            .map(|resource| astrcode_plugin_host::ResourceManifestEntry {
+                id: resource.resource_id,
+                kind: resource.kind,
+                locator: resource.locator,
+            })
+            .collect(),
+        commands: descriptor
+            .commands
+            .iter()
+            .cloned()
+            .map(|command| astrcode_plugin_host::CommandManifestEntry {
+                id: command.command_id,
+                entry_ref: command.entry_ref,
+            })
+            .collect(),
+        themes: descriptor
+            .themes
+            .iter()
+            .cloned()
+            .map(|theme| astrcode_plugin_host::ThemeManifestEntry { id: theme.theme_id })
+            .collect(),
+        providers: descriptor
+            .providers
+            .iter()
+            .cloned()
+            .map(|provider| astrcode_plugin_host::ProviderManifestEntry {
+                id: provider.provider_id,
+                api_kind: provider.api_kind,
+            })
+            .collect(),
+        prompts: descriptor
+            .prompts
+            .iter()
+            .cloned()
+            .map(|prompt| astrcode_plugin_host::PromptManifestEntry {
+                id: prompt.prompt_id,
+                body: prompt.body,
+            })
+            .collect(),
+        skills: descriptor
+            .skills
+            .iter()
+            .cloned()
+            .map(|skill| astrcode_plugin_host::SkillManifestEntry {
+                id: skill.skill_id,
+                entry_ref: skill.entry_ref,
+            })
+            .collect(),
+    }
+}
+
+fn finish_stream_invocation(
+    capability_name: String,
+    events: Vec<astrcode_protocol::plugin::EventMessage>,
+    started_at: Instant,
+) -> Result<CapabilityExecutionResult> {
+    let mut deltas = Vec::new();
+    for event in events {
+        match event.phase {
+            EventPhase::Started => {},
+            EventPhase::Delta => deltas.push(json!({
+                "event": event.event,
+                "payload": event.payload,
+                "seq": event.seq,
+            })),
+            EventPhase::Completed => {
+                return Ok(CapabilityExecutionResult::from_common(
+                    capability_name,
+                    true,
+                    event.payload,
+                    None,
+                    astrcode_core::ExecutionResultCommon::success(
+                        Some(json!({ "streamEvents": deltas })),
+                        started_at.elapsed().as_millis() as u64,
+                        false,
+                    ),
+                ));
+            },
+            EventPhase::Failed => {
+                let error = event
+                    .error
+                    .map(|value| value.message)
+                    .unwrap_or_else(|| "stream invocation failed".to_string());
+                return Ok(CapabilityExecutionResult::from_common(
+                    capability_name,
+                    false,
+                    Value::Null,
+                    None,
+                    astrcode_core::ExecutionResultCommon::failure(
+                        error,
+                        Some(json!({ "streamEvents": deltas })),
+                        started_at.elapsed().as_millis() as u64,
+                        false,
+                    ),
+                ));
+            },
+        }
+    }
+
+    Err(AstrError::Internal(
+        "plugin stream ended without terminal event".to_string(),
+    ))
+}
+
+fn to_invocation_context(ctx: &CapabilityContext, capability_name: &str) -> InvocationContext {
+    let working_dir = ctx.working_dir.to_string_lossy().into_owned();
+    let request_id = ctx.request_id.clone().unwrap_or_else(|| {
+        format!(
+            "{}:{}:{}",
+            ctx.session_id,
+            capability_name,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        )
+    });
+
+    InvocationContext {
+        request_id,
+        trace_id: ctx.trace_id.clone(),
+        session_id: Some(ctx.session_id.to_string()),
+        caller: None,
+        workspace: Some(WorkspaceRef {
+            working_dir: Some(working_dir.clone()),
+            repo_root: Some(working_dir),
+            branch: None,
+            metadata: Value::Null,
+        }),
+        deadline_ms: None,
+        budget: None,
+        profile: ctx.profile.clone(),
+        profile_context: ctx.profile_context.clone(),
+        metadata: ctx.metadata.clone(),
     }
 }
 
@@ -355,10 +754,97 @@ fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use astrcode_core::{CapabilitySelector, ModeId, SkillSource};
+    use astrcode_plugin_host::{PluginHealth, PluginState};
     use astrcode_protocol::plugin::{SkillAssetDescriptor, SkillDescriptor};
 
     use super::*;
-    use crate::bootstrap::deps::core::plugin::{PluginHealth, PluginState};
+
+    fn node_protocol_script() -> &'static str {
+        r#"
+const readline = require('node:readline');
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'initialize') {
+    console.log(JSON.stringify({
+      type: 'result',
+      id: msg.id,
+      kind: 'initialize',
+      success: true,
+      output: {
+        protocolVersion: '5',
+        peer: {
+          id: 'fixture-worker',
+          name: 'fixture-worker',
+          role: 'worker',
+          version: '0.1.0',
+          supportedProfiles: ['coding'],
+          metadata: { fixture: true }
+        },
+        capabilities: [{
+          name: 'tool.echo',
+          kind: 'tool',
+          description: 'Echo input',
+          inputSchema: { type: 'object' },
+          outputSchema: { type: 'object' },
+          invocationMode: 'unary',
+          concurrencySafe: false,
+          compactClearable: false,
+          profiles: ['coding'],
+          tags: ['source:plugin'],
+          permissions: [],
+          sideEffect: 'none',
+          stability: 'stable',
+          metadata: null,
+          maxResultInlineSize: null
+        }],
+        handlers: [],
+        profiles: [{
+          name: 'coding',
+          version: '1',
+          description: 'coding',
+          contextSchema: null,
+          metadata: null
+        }],
+        skills: [{
+          name: 'repo-search',
+          description: 'Search repo',
+          guide: 'Use repo-search skill.',
+          allowedTools: ['grep'],
+          assets: [],
+          metadata: null
+        }],
+        modes: [{
+          id: 'plugin-review',
+          name: 'Plugin Review',
+          description: 'review via plugin',
+          capabilitySelector: 'allTools',
+          actionPolicies: {},
+          childPolicy: {},
+          executionPolicy: {},
+          promptProgram: [],
+          transitionPolicy: { allowedTargets: ['code'] }
+        }],
+        metadata: null
+      },
+      metadata: null
+    }));
+    return;
+  }
+  if (msg.type === 'invoke') {
+    console.log(JSON.stringify({
+      type: 'result',
+      id: msg.id,
+      kind: 'tool_result',
+      success: true,
+      output: { echoed: msg.input },
+      metadata: null
+    }));
+  }
+});
+"#
+    }
 
     #[tokio::test]
     async fn bootstrap_with_empty_paths_returns_empty() {
@@ -366,7 +852,7 @@ mod tests {
         assert!(result.invokers.is_empty());
         assert!(result.skills.is_empty());
         assert!(result.modes.is_empty());
-        assert!(result.supervisors.is_empty());
+        assert!(result.managed_components.is_empty());
         assert!(result.registry.snapshot().is_empty());
     }
 
@@ -376,7 +862,7 @@ mod tests {
         assert!(result.invokers.is_empty());
         assert!(result.skills.is_empty());
         assert!(result.modes.is_empty());
-        assert!(result.supervisors.is_empty());
+        assert!(result.managed_components.is_empty());
     }
 
     #[tokio::test]
@@ -400,7 +886,10 @@ executable = "nonexistent-binary"
         let result = bootstrap_plugins(vec![temp_dir.path().to_path_buf()]).await;
 
         // 插件被发现了，但启动失败（进程不存在）
-        assert!(result.supervisors.is_empty(), "不应有成功的 supervisor");
+        assert!(
+            result.managed_components.is_empty(),
+            "不应有成功的托管插件组件"
+        );
         let entries = result.registry.snapshot();
         assert_eq!(entries.len(), 1, "应有一个 registry 条目");
 
@@ -467,6 +956,61 @@ executable = "also-missing"
                 entry.manifest.name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn external_plugin_bootstrap_materializes_invokers_skills_and_modes() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let script_path = temp_dir.path().join("protocol-plugin.js");
+        std::fs::write(&script_path, node_protocol_script()).expect("script should be written");
+        std::fs::write(
+            temp_dir.path().join("protocol-plugin.toml"),
+            format!(
+                r#"
+name = "protocol-plugin"
+version = "0.1.0"
+description = "Protocol plugin"
+plugin_type = ["Tool"]
+capabilities = []
+executable = "node"
+args = ["{script_path}"]
+"#,
+                script_path = script_path.display().to_string().replace('\\', "\\\\")
+            ),
+        )
+        .expect("toml should be written");
+
+        let result = bootstrap_plugins(vec![temp_dir.path().to_path_buf()]).await;
+
+        assert_eq!(result.managed_components.len(), 1);
+        assert_eq!(result.invokers.len(), 1);
+        assert_eq!(
+            result.invokers[0].capability_spec().name.as_str(),
+            "tool.echo"
+        );
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].id, "repo-search");
+        assert_eq!(result.skills[0].source, SkillSource::Plugin);
+        assert_eq!(result.modes.len(), 1);
+        assert_eq!(result.modes[0].id, ModeId::from("plugin-review"));
+        assert_eq!(
+            result.modes[0].capability_selector,
+            CapabilitySelector::AllTools
+        );
+        assert!(result.descriptors.iter().any(|descriptor| {
+            descriptor.plugin_id == "protocol-plugin"
+                && descriptor
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name.as_str() == "tool.echo")
+        }));
+
+        let entry = result
+            .registry
+            .get("protocol-plugin")
+            .expect("plugin registry entry should exist");
+        assert!(matches!(entry.state, PluginState::Initialized));
+        assert_eq!(entry.health, PluginHealth::Healthy);
     }
 
     #[test]

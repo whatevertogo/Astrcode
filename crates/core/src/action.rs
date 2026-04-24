@@ -470,9 +470,9 @@ mod tests {
     }
 
     #[test]
-    fn user_message_origin_accepts_legacy_auto_continue_nudge_alias() {
+    fn user_message_origin_accepts_previous_auto_continue_nudge_alias() {
         let parsed: UserMessageOrigin =
-            serde_json::from_str("\"auto_continue_nudge\"").expect("legacy origin should parse");
+            serde_json::from_str("\"auto_continue_nudge\"").expect("previous origin should parse");
 
         assert_eq!(parsed, UserMessageOrigin::ContinuationPrompt);
     }

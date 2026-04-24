@@ -3,9 +3,12 @@
 //! `core::ports::PromptProvider` 是 kernel 消费的简化端口接口，
 //! 本模块将其适配到 `LayeredPromptBuilder` 的完整 prompt 构建能力上。
 
-use astrcode_core::{
-    PromptCacheGlobalStrategy, Result, SystemPromptBlock, SystemPromptLayer,
-    ports::{PromptBuildCacheMetrics, PromptBuildOutput, PromptBuildRequest, PromptProvider},
+use astrcode_agent_runtime::{PromptCacheGlobalStrategy, PromptCacheHints};
+use astrcode_core::{Result, SystemPromptBlock, SystemPromptLayer};
+use astrcode_host_session::{
+    PromptAgentProfileSummary as HostPromptAgentProfileSummary, PromptBuildCacheMetrics,
+    PromptBuildOutput, PromptBuildRequest, PromptProvider,
+    PromptSkillSummary as HostPromptSkillSummary,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -99,13 +102,11 @@ impl PromptProvider for ComposerPromptProvider {
     }
 }
 
-fn convert_agent_profile(
-    summary: astrcode_core::PromptAgentProfileSummary,
-) -> PromptAgentProfileSummary {
+fn convert_agent_profile(summary: HostPromptAgentProfileSummary) -> PromptAgentProfileSummary {
     PromptAgentProfileSummary::new(summary.id, summary.description)
 }
 
-fn convert_skill(summary: astrcode_core::PromptSkillSummary) -> PromptSkillSummary {
+fn convert_skill(summary: HostPromptSkillSummary) -> PromptSkillSummary {
     PromptSkillSummary::new(summary.id, summary.description)
 }
 
@@ -176,7 +177,7 @@ fn build_output_metadata(
     step_index: usize,
     turn_index: usize,
     output: &crate::PromptBuildOutput,
-    prompt_cache_hints: astrcode_core::PromptCacheHints,
+    prompt_cache_hints: PromptCacheHints,
 ) -> Value {
     serde_json::json!({
         "extra_tools_count": output.plan.extra_tools.len(),
@@ -249,9 +250,9 @@ fn insert_json_string(
 mod tests {
     use std::path::PathBuf;
 
-    use astrcode_core::{
-        CapabilityKind, CapabilitySpec, PromptCacheGlobalStrategy, ports::PromptBuildRequest,
-    };
+    use astrcode_agent_runtime::PromptCacheGlobalStrategy;
+    use astrcode_core::{CapabilityKind, CapabilitySpec};
+    use astrcode_host_session::PromptBuildRequest;
 
     use super::{build_output_metadata, build_prompt_vars, select_global_cache_strategy};
     use crate::{BlockKind, PromptBlock, PromptDiagnostics, PromptPlan, block::BlockMetadata};

@@ -4,7 +4,7 @@
 //!
 //! ## 职责范围
 //!
-//! - **运行时组合根**（`runtime`）：组装 `App`、`AppGovernance` 等
+//! - **运行时组合根**（`runtime`）：组装 server owner bridge、治理层与运行时依赖
 //! - **前端静态文件服务**：加载 `frontend/dist/` 构建产物并注入 bootstrap token
 //! - **运行信息管理**：写入/清理 `~/.astrcode/run.json`，供浏览器桥接和诊断读取
 //! - **浏览器引导 token 注入**：将 `window.__ASTRCODE_BOOTSTRAP__` 嵌入 HTML
@@ -21,12 +21,10 @@
 //! 它保留的原因是浏览器开发模式仍需要一个稳定的本地文件来读取 bootstrap token。
 
 mod capabilities;
-mod composer_skills;
 mod deps;
 mod governance;
 mod mcp;
 mod plugins;
-mod prompt_facts;
 mod providers;
 pub(crate) mod runtime;
 mod runtime_coordinator;

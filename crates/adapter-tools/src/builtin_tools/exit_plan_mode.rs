@@ -8,8 +8,9 @@ use std::{fs, path::Path, time::Instant};
 use astrcode_core::{
     AstrError, BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId, Result,
     SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolPromptMetadata, session_plan_content_digest,
+    ToolPromptMetadata,
 };
+use astrcode_host_session::session_plan_content_digest;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;

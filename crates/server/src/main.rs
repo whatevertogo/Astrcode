@@ -18,9 +18,21 @@
     windows_subsystem = "windows"
 )]
 
+#[path = "agent/mod.rs"]
+mod agent;
+#[path = "http/agent_api.rs"]
+mod agent_api;
+#[path = "agent_control_bridge.rs"]
+mod agent_control_bridge;
+#[path = "agent_control_registry/mod.rs"]
+mod agent_control_registry;
 #[cfg(test)]
 #[path = "tests/agent_routes_tests.rs"]
 mod agent_routes_tests;
+#[path = "agent_runtime_bridge.rs"]
+mod agent_runtime_bridge;
+#[path = "application_error_bridge.rs"]
+mod application_error_bridge;
 #[path = "http/auth.rs"]
 mod auth;
 #[cfg(test)]
@@ -28,45 +40,132 @@ mod auth;
 mod auth_routes_tests;
 #[path = "bootstrap/mod.rs"]
 mod bootstrap;
+#[path = "capability_router.rs"]
+mod capability_router;
+#[path = "http/composer_catalog.rs"]
+mod composer_catalog;
 #[cfg(test)]
 #[path = "tests/composer_routes_tests.rs"]
 mod composer_routes_tests;
+#[path = "config/mod.rs"]
+mod config;
+#[path = "config_mode_helpers.rs"]
+mod config_mode_helpers;
 #[cfg(test)]
 #[path = "tests/config_routes_tests.rs"]
 mod config_routes_tests;
+#[path = "config_service_bridge.rs"]
+mod config_service_bridge;
+#[path = "conversation_read_model.rs"]
+mod conversation_read_model;
+#[path = "errors.rs"]
+mod errors;
+#[path = "execution/mod.rs"]
+mod execution;
+#[path = "governance_service.rs"]
+mod governance_service;
+#[path = "governance_surface/mod.rs"]
+mod governance_surface;
+#[path = "lifecycle/mod.rs"]
+mod lifecycle;
 #[path = "logging.rs"]
 mod logging;
 #[path = "http/mapper.rs"]
 mod mapper;
+#[path = "mcp/mod.rs"]
+mod mcp;
+#[path = "mcp_service.rs"]
+mod mcp_service;
+#[path = "mode/mod.rs"]
+mod mode;
+#[path = "mode_catalog_service.rs"]
+mod mode_catalog_service;
+#[path = "observability/mod.rs"]
+mod observability;
+#[path = "ports/mod.rs"]
+mod ports;
+#[path = "profile_service.rs"]
+mod profile_service;
+#[path = "root_execute_service.rs"]
+mod root_execute_service;
 #[path = "http/routes/mod.rs"]
 mod routes;
+#[path = "runtime_owner_bridge.rs"]
+mod runtime_owner_bridge;
 #[cfg(test)]
 #[path = "tests/session_contract_tests.rs"]
 mod session_contract_tests;
+#[path = "session_identity.rs"]
+mod session_identity;
+#[path = "session_runtime_owner_bridge.rs"]
+mod session_runtime_owner_bridge;
+#[path = "session_runtime_port.rs"]
+mod session_runtime_port;
+#[path = "session_use_cases.rs"]
+mod session_use_cases;
 #[path = "http/terminal_projection.rs"]
 mod terminal_projection;
 #[cfg(test)]
 #[path = "tests/test_support.rs"]
 mod test_support;
+#[path = "tool_capability_invoker.rs"]
+mod tool_capability_invoker;
+#[path = "view_projection.rs"]
+mod view_projection;
+#[path = "watch_service.rs"]
+mod watch_service;
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
+pub(crate) use agent::AgentOrchestrationService;
 use anyhow::{Result as AnyhowResult, anyhow};
-use astrcode_application::{App, AppGovernance, ApplicationError, AstrError};
+use astrcode_core::{AstrError, SkillCatalog};
+use astrcode_host_session::{SessionCatalog, SubAgentExecutor};
+use astrcode_plugin_host::ResourceCatalog;
 use axum::{
     Json, Router,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+pub(crate) use config::ConfigService;
+pub(crate) use errors::ApplicationError;
+pub(crate) use execution::{ExecutionControl, ProfileProvider, ProfileResolutionService};
+pub(crate) use governance_surface::{
+    GovernanceSurfaceAssembler, ResolvedGovernanceSurface, RootGovernanceInput,
+};
+pub(crate) use lifecycle::{
+    TaskRegistry,
+    governance::{
+        AppGovernance, ObservabilitySnapshotProvider, RuntimeGovernancePort,
+        RuntimeGovernanceSnapshot, RuntimeReloader, SessionInfoProvider,
+    },
+};
+pub(crate) use mcp::{McpConfigScope, RegisterMcpServerInput};
+pub(crate) use mode::{
+    CompiledModeEnvelope, ModeCatalog, builtin_mode_catalog, compile_mode_envelope,
+    compile_mode_envelope_for_child,
+};
+pub(crate) use observability::{GovernanceSnapshot, RuntimeObservabilityCollector};
+pub(crate) use ports::{
+    AgentKernelPort, AgentSessionPort, AppAgentPromptSubmission, RecoverableParentDelivery,
+    SessionTurnOutcomeSummary,
+};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
+    agent_api::ServerAgentApi,
+    application_error_bridge::ServerRouteError,
     auth::{AuthSessionManager, BootstrapAuth},
     bootstrap::{
         ServerRuntimeHandles, attach_frontend_build, build_cors_layer, clear_run_info,
         prepare_server_launch,
     },
+    config_service_bridge::ServerConfigService,
+    governance_service::ServerGovernanceService,
+    mcp_service::ServerMcpService,
+    mode_catalog_service::ServerModeCatalog,
+    profile_service::ServerProfileService,
     routes::build_api_router,
 };
 
@@ -79,14 +178,36 @@ pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";
 /// 应用状态（共享给所有路由处理器）。
 ///
 /// 通过 Axum 的 `State` 提取器注入到每个路由处理器中，
-/// 包含应用层入口、治理模型、认证管理器和前端构建产物。
+/// 包含运行时入口、server 侧 owner bridge、治理模型、认证管理器和前端构建产物。
 /// 所有字段均为 `Arc` 或可 `Clone` 类型，支持多线程共享。
 #[derive(Clone)]
 pub(crate) struct AppState {
-    /// 应用层唯一业务入口
-    app: Arc<App>,
-    /// 新治理层（快照/shutdown/reload，替代旧 RuntimeGovernance）
-    governance: Arc<AppGovernance>,
+    /// server-owned agent route bridge；agent routes 不再经由 `application::agent` 用例入口。
+    agent_api: Arc<ServerAgentApi>,
+    /// server-owned agent control bridge；测试和路由不直接暴露底层 kernel。
+    #[allow(dead_code)]
+    agent_control: Arc<dyn agent_control_bridge::ServerAgentControlPort>,
+    /// server-owned 配置服务桥接；配置/模型 API 不再经由 App 访问配置。
+    config: Arc<ServerConfigService>,
+    /// server-owned 会话目录桥接；catalog API 不再经由 App 访问 session catalog。
+    session_catalog: Arc<SessionCatalog>,
+    /// server-owned profile resolver；watch/profile 测试不再经由 `App::profiles()`.
+    #[allow(dead_code)]
+    profiles: Arc<ServerProfileService>,
+    /// subagent 启动桥接；测试直接消费 host-session 合同。
+    #[allow(dead_code)]
+    subagent_executor: Arc<dyn SubAgentExecutor>,
+    /// server-owned MCP service；MCP API 不再经由 App facade。
+    mcp_service: Arc<ServerMcpService>,
+    /// server-owned skill catalog bridge；composer/skill discovery 不再经由 App facade。
+    skill_catalog: Arc<dyn SkillCatalog>,
+    /// server-owned plugin resource catalog；commands/prompts/themes/resources discovery 统一走
+    /// plugin-host。
+    resource_catalog: Arc<std::sync::RwLock<ResourceCatalog>>,
+    /// server-owned mode catalog bridge；mode API 不再经由 App 访问 mode catalog。
+    mode_catalog: Arc<ServerModeCatalog>,
+    /// server-owned 治理层（快照/shutdown/reload）。
+    governance: Arc<ServerGovernanceService>,
     /// 认证会话管理器
     auth_sessions: Arc<AuthSessionManager>,
     /// Bootstrap 阶段的认证（短期 token）
@@ -142,6 +263,13 @@ impl ApiError {
             message,
         }
     }
+
+    pub(crate) fn internal_server_error(message: String) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message,
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -156,28 +284,63 @@ impl IntoResponse for ApiError {
     }
 }
 
-impl From<ApplicationError> for ApiError {
-    fn from(value: ApplicationError) -> Self {
+impl From<AstrError> for ApiError {
+    fn from(value: AstrError) -> Self {
+        let message = value.to_string();
         match value {
-            ApplicationError::NotFound(message) => Self {
+            AstrError::SessionNotFound(_) | AstrError::ProjectNotFound(_) => Self {
                 status: StatusCode::NOT_FOUND,
                 message,
             },
-            ApplicationError::Conflict(message) => Self {
+            AstrError::TurnInProgress(_) => Self {
                 status: StatusCode::CONFLICT,
                 message,
             },
-            ApplicationError::InvalidArgument(message) => Self {
+            AstrError::InvalidSessionId(_)
+            | AstrError::ConfigError { .. }
+            | AstrError::MissingApiKey(_)
+            | AstrError::MissingBaseUrl(_)
+            | AstrError::NoProfilesConfigured
+            | AstrError::ModelNotFound { .. }
+            | AstrError::UnsupportedProvider(_)
+            | AstrError::Validation(_) => Self {
                 status: StatusCode::BAD_REQUEST,
                 message,
             },
-            ApplicationError::PermissionDenied(message) => Self {
+            AstrError::Cancelled => Self {
+                status: StatusCode::CONFLICT,
+                message,
+            },
+            _ => Self {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message,
+            },
+        }
+    }
+}
+
+impl From<ServerRouteError> for ApiError {
+    fn from(value: ServerRouteError) -> Self {
+        match value {
+            ServerRouteError::NotFound(message) => Self {
+                status: StatusCode::NOT_FOUND,
+                message,
+            },
+            ServerRouteError::Conflict(message) => Self {
+                status: StatusCode::CONFLICT,
+                message,
+            },
+            ServerRouteError::InvalidArgument(message) => Self {
+                status: StatusCode::BAD_REQUEST,
+                message,
+            },
+            ServerRouteError::PermissionDenied(message) => Self {
                 status: StatusCode::FORBIDDEN,
                 message,
             },
-            ApplicationError::Internal(error) => Self {
+            ServerRouteError::Internal(message) => Self {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: error,
+                message,
             },
         }
     }
@@ -201,8 +364,6 @@ async fn main() -> AnyhowResult<()> {
     let runtime = crate::bootstrap::bootstrap_server_runtime()
         .await
         .map_err(|error| anyhow!(error.to_string()))?;
-    let app_service = runtime.app;
-
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| AstrError::io("failed to bind server listener", e))?;
@@ -217,7 +378,16 @@ async fn main() -> AnyhowResult<()> {
     );
 
     let state = AppState {
-        app: Arc::clone(&app_service),
+        agent_api: Arc::clone(&runtime.agent_api),
+        agent_control: Arc::clone(&runtime.agent_control),
+        config: Arc::clone(&runtime.config),
+        session_catalog: Arc::clone(&runtime.session_catalog),
+        profiles: Arc::clone(&runtime.profiles),
+        subagent_executor: Arc::clone(&runtime.subagent_executor),
+        mcp_service: Arc::clone(&runtime.mcp_service),
+        skill_catalog: Arc::clone(&runtime.skill_catalog),
+        resource_catalog: Arc::clone(&runtime.resource_catalog),
+        mode_catalog: Arc::clone(&runtime.mode_catalog),
         governance: Arc::clone(&runtime.governance),
         auth_sessions: Arc::new(AuthSessionManager::default()),
         bootstrap_auth: prepared_launch.bootstrap_auth,

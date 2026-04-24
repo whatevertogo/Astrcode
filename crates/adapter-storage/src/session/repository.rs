@@ -4,11 +4,11 @@ use std::{
 };
 
 use astrcode_core::{
-    DeleteProjectResult, RecoveredSessionState, Result, SessionId, SessionMeta,
-    SessionRecoveryCheckpoint, SessionTurnAcquireResult, StorageEvent, StoredEvent,
-    ports::EventStore,
+    DeleteProjectResult, Result, SessionId, SessionMeta, SessionTurnAcquireResult, StorageEvent,
+    StoredEvent,
     store::{EventLogWriter, SessionManager, StoreResult},
 };
+use astrcode_host_session::{EventStore, RecoveredSessionState, SessionRecoveryCheckpoint};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
@@ -378,8 +378,11 @@ mod tests {
     use std::time::Instant;
 
     use astrcode_core::{
-        AgentEventContext, AgentState, EventStore, LlmMessage, ModeId, Phase,
-        SessionRecoveryCheckpoint, StorageEvent, StorageEventPayload, UserMessageOrigin,
+        AgentEventContext, LlmMessage, ModeId, Phase, StorageEvent, StorageEventPayload,
+        UserMessageOrigin,
+    };
+    use astrcode_host_session::{
+        AgentState, EventStore, ProjectionRegistrySnapshot, SessionRecoveryCheckpoint,
     };
 
     use super::*;
@@ -471,7 +474,7 @@ mod tests {
                     turn_count: 2,
                     last_assistant_at: None,
                 },
-                astrcode_core::ProjectionRegistrySnapshot::default(),
+                ProjectionRegistrySnapshot::default(),
                 2,
             ),
         )
@@ -531,7 +534,7 @@ mod tests {
                     turn_count: 1,
                     last_assistant_at: None,
                 },
-                astrcode_core::ProjectionRegistrySnapshot::default(),
+                ProjectionRegistrySnapshot::default(),
                 1,
             ),
         )

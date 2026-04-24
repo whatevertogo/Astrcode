@@ -5,43 +5,51 @@ use std::{
 };
 
 use astrcode_adapter_agents::{AgentProfileLoader, AgentWatchPath};
-use astrcode_application::{App, ApplicationError, WatchPort, WatchService, WatchSource};
+use astrcode_host_session::SessionCatalog;
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::broadcast;
 
+use crate::{
+    application_error_bridge::ServerRouteError,
+    profile_service::ServerProfileService,
+    watch_service::{WatchEvent, WatchPort, WatchService, WatchSource},
+};
+
 pub(crate) fn build_watch_service(
     loader: AgentProfileLoader,
-) -> Result<Arc<WatchService>, ApplicationError> {
+) -> Result<Arc<WatchService>, ServerRouteError> {
     Ok(Arc::new(WatchService::new(Arc::new(
         FileSystemWatchPort::new(loader),
     ))))
 }
 
 pub(crate) async fn bootstrap_profile_watch_runtime(
-    app: Arc<App>,
+    session_catalog: Arc<SessionCatalog>,
+    profiles: Arc<ServerProfileService>,
     watch_service: Arc<WatchService>,
-) -> Result<ProfileWatchRuntime, ApplicationError> {
-    let mut sources = desired_agent_watch_sources(&app).await?;
+) -> Result<ProfileWatchRuntime, ServerRouteError> {
+    let mut sources = desired_agent_watch_sources(session_catalog.as_ref()).await?;
     watch_service.start_watch(sources.iter().cloned().collect())?;
 
-    let mut catalog_rx = app.subscribe_catalog();
-    let watch_app = Arc::downgrade(&app);
+    let mut catalog_rx = session_catalog.subscribe_catalog_events();
+    let watch_session_catalog = Arc::downgrade(&session_catalog);
     let watch_service_for_catalog = Arc::clone(&watch_service);
     let catalog_task = tokio::spawn(async move {
         loop {
             if catalog_rx.recv().await.is_err() {
                 break;
             }
-            let Some(watch_app) = watch_app.upgrade() else {
+            let Some(watch_session_catalog) = watch_session_catalog.upgrade() else {
                 break;
             };
-            let next_sources = match desired_agent_watch_sources(&watch_app).await {
-                Ok(next) => next,
-                Err(error) => {
-                    log::warn!("failed to recompute agent watch sources: {error}");
-                    continue;
-                },
-            };
+            let next_sources =
+                match desired_agent_watch_sources(watch_session_catalog.as_ref()).await {
+                    Ok(next) => next,
+                    Err(error) => {
+                        log::warn!("failed to recompute agent watch sources: {error}");
+                        continue;
+                    },
+                };
 
             for source in next_sources.difference(&sources) {
                 if let Err(error) = watch_service_for_catalog.add_source(source.clone()) {
@@ -57,7 +65,6 @@ pub(crate) async fn bootstrap_profile_watch_runtime(
         }
     });
 
-    let profiles = Arc::clone(app.profiles());
     let mut watch_rx = watch_service.subscribe();
     let event_task = tokio::spawn(async move {
         loop {
@@ -78,7 +85,6 @@ pub(crate) async fn bootstrap_profile_watch_runtime(
                 WatchSource::AgentDefinitions { working_dir } => {
                     profiles.invalidate(Path::new(&working_dir));
                 },
-                _ => {},
             }
         }
     });
@@ -107,9 +113,9 @@ impl Drop for ProfileWatchRuntime {
 }
 
 async fn desired_agent_watch_sources(
-    app: &Arc<App>,
-) -> Result<HashSet<WatchSource>, ApplicationError> {
-    let sessions = app.list_sessions().await?;
+    session_catalog: &SessionCatalog,
+) -> Result<HashSet<WatchSource>, ServerRouteError> {
+    let sessions = session_catalog.list_session_metas().await?;
     let mut sources = HashSet::from([WatchSource::GlobalAgentDefinitions]);
     for session in sessions {
         sources.insert(WatchSource::AgentDefinitions {
@@ -140,14 +146,11 @@ impl FileSystemWatchPort {
         }
     }
 
-    fn ensure_watcher(
-        &self,
-        tx: broadcast::Sender<astrcode_application::WatchEvent>,
-    ) -> Result<(), ApplicationError> {
+    fn ensure_watcher(&self, tx: broadcast::Sender<WatchEvent>) -> Result<(), ServerRouteError> {
         let mut watcher_guard = self
             .watcher
             .lock()
-            .map_err(|_| ApplicationError::Internal("watcher lock poisoned".to_string()))?;
+            .map_err(|_| ServerRouteError::internal("watcher lock poisoned"))?;
         if watcher_guard.is_some() {
             return Ok(());
         }
@@ -159,7 +162,7 @@ impl FileSystemWatchPort {
             },
             NotifyConfig::default(),
         )
-        .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+        .map_err(|error| ServerRouteError::internal(error.to_string()))?;
         *watcher_guard = Some(watcher);
         Ok(())
     }
@@ -170,25 +173,24 @@ impl FileSystemWatchPort {
             WatchSource::AgentDefinitions { working_dir } => {
                 self.loader.watch_paths(Some(Path::new(working_dir)))
             },
-            _ => Vec::new(),
         }
     }
 
-    fn add_source_inner(&self, source: WatchSource) -> Result<(), ApplicationError> {
+    fn add_source_inner(&self, source: WatchSource) -> Result<(), ServerRouteError> {
         let targets = self.resolve_targets(&source);
         let mut watcher_guard = self
             .watcher
             .lock()
-            .map_err(|_| ApplicationError::Internal("watcher lock poisoned".to_string()))?;
+            .map_err(|_| ServerRouteError::internal("watcher lock poisoned"))?;
         let Some(watcher) = watcher_guard.as_mut() else {
-            return Err(ApplicationError::Internal(
+            return Err(ServerRouteError::internal(
                 "watcher must be initialized before adding sources".to_string(),
             ));
         };
         let mut registry = self
             .registry
             .lock()
-            .map_err(|_| ApplicationError::Internal("watch registry lock poisoned".to_string()))?;
+            .map_err(|_| ServerRouteError::internal("watch registry lock poisoned"))?;
         if registry.source_targets.contains_key(&source) {
             return Ok(());
         }
@@ -205,7 +207,7 @@ impl FileSystemWatchPort {
                             RecursiveMode::NonRecursive
                         },
                     )
-                    .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+                    .map_err(|error| ServerRouteError::internal(error.to_string()))?;
             }
             *entry += 1;
         }
@@ -213,15 +215,15 @@ impl FileSystemWatchPort {
         Ok(())
     }
 
-    fn remove_source_inner(&self, source: &WatchSource) -> Result<(), ApplicationError> {
+    fn remove_source_inner(&self, source: &WatchSource) -> Result<(), ServerRouteError> {
         let mut watcher_guard = self
             .watcher
             .lock()
-            .map_err(|_| ApplicationError::Internal("watcher lock poisoned".to_string()))?;
+            .map_err(|_| ServerRouteError::internal("watcher lock poisoned"))?;
         let mut registry = self
             .registry
             .lock()
-            .map_err(|_| ApplicationError::Internal("watch registry lock poisoned".to_string()))?;
+            .map_err(|_| ServerRouteError::internal("watch registry lock poisoned"))?;
         let Some(targets) = registry.source_targets.remove(source) else {
             return Ok(());
         };
@@ -240,7 +242,7 @@ impl FileSystemWatchPort {
                 registry.watched_targets.remove(&key);
                 watcher
                     .unwatch(&target.path)
-                    .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+                    .map_err(|error| ServerRouteError::internal(error.to_string()))?;
             }
         }
         Ok(())
@@ -251,8 +253,8 @@ impl WatchPort for FileSystemWatchPort {
     fn start_watch(
         &self,
         sources: Vec<WatchSource>,
-        tx: broadcast::Sender<astrcode_application::WatchEvent>,
-    ) -> Result<(), ApplicationError> {
+        tx: broadcast::Sender<WatchEvent>,
+    ) -> Result<(), ServerRouteError> {
         self.ensure_watcher(tx)?;
         for source in sources {
             self.add_source_inner(source)?;
@@ -260,33 +262,33 @@ impl WatchPort for FileSystemWatchPort {
         Ok(())
     }
 
-    fn stop_all(&self) -> Result<(), ApplicationError> {
+    fn stop_all(&self) -> Result<(), ServerRouteError> {
         let mut watcher_guard = self
             .watcher
             .lock()
-            .map_err(|_| ApplicationError::Internal("watcher lock poisoned".to_string()))?;
+            .map_err(|_| ServerRouteError::internal("watcher lock poisoned"))?;
         *watcher_guard = None;
         let mut registry = self
             .registry
             .lock()
-            .map_err(|_| ApplicationError::Internal("watch registry lock poisoned".to_string()))?;
+            .map_err(|_| ServerRouteError::internal("watch registry lock poisoned"))?;
         registry.source_targets.clear();
         registry.watched_targets.clear();
         Ok(())
     }
 
-    fn add_source(&self, source: WatchSource) -> Result<(), ApplicationError> {
+    fn add_source(&self, source: WatchSource) -> Result<(), ServerRouteError> {
         self.add_source_inner(source)
     }
 
-    fn remove_source(&self, source: &WatchSource) -> Result<(), ApplicationError> {
+    fn remove_source(&self, source: &WatchSource) -> Result<(), ServerRouteError> {
         self.remove_source_inner(source)
     }
 }
 
 fn dispatch_watch_event(
     registry: &Arc<Mutex<WatchRegistry>>,
-    tx: &broadcast::Sender<astrcode_application::WatchEvent>,
+    tx: &broadcast::Sender<WatchEvent>,
     event: Event,
 ) {
     let registry = match registry.lock() {
@@ -310,7 +312,7 @@ fn dispatch_watch_event(
         if affected_paths.is_empty() {
             continue;
         }
-        let _ = tx.send(astrcode_application::WatchEvent {
+        let _ = tx.send(WatchEvent {
             source: source.clone(),
             affected_paths,
         });

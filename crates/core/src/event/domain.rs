@@ -70,6 +70,14 @@ pub enum AgentEvent {
         agent: AgentEventContext,
         delta: String,
     },
+    /// provider 流式响应坏流后开始重试。
+    StreamRetryStarted {
+        turn_id: String,
+        agent: AgentEventContext,
+        attempt: u32,
+        max_attempts: u32,
+        reason: String,
+    },
     /// 助手消息（完整内容）
     AssistantMessage {
         turn_id: String,

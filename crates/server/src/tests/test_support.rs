@@ -5,17 +5,33 @@ use std::{
     time::Duration,
 };
 
-use astrcode_application::{ApplicationError, WatchEvent, WatchPort, WatchService, WatchSource};
 use astrcode_core::{
-    AgentEventContext, EventTranslator, SessionId, StorageEvent, StorageEventPayload,
-    TurnTerminalKind, UserMessageOrigin,
+    AgentCollaborationFact, AgentEventContext, AgentLifecycleStatus, AstrError,
+    DeleteProjectResult, ExecutionAccepted, InputBatchAckedPayload, InputBatchStartedPayload,
+    InputDiscardedPayload, InputQueuedPayload, LlmMessage, ModeId, PromptDeclaration,
+    ResolvedRuntimeConfig, SessionId, SessionMeta, SkillCatalog, StorageEvent, StorageEventPayload,
+    StoredEvent, TaskSnapshot, TurnId, TurnTerminalKind, UserMessageOrigin,
 };
+use astrcode_host_session::{SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState};
+use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use crate::{
-    AppState, FrontendBuild,
+    AgentSessionPort, AppAgentPromptSubmission, AppState, FrontendBuild, RecoverableParentDelivery,
+    SessionTurnOutcomeSummary,
+    application_error_bridge::ServerRouteError,
     auth::{AuthSessionManager, BootstrapAuth},
     bootstrap::{ServerBootstrapOptions, bootstrap_server_runtime_with_options},
+    conversation_read_model::{
+        ConversationSnapshotFacts, ConversationStreamReplayFacts, SessionReplay,
+        SessionTranscriptSnapshot,
+    },
+    ports::{
+        AppSessionPort, DurableSubRunStatusSummary, SessionObserveSnapshot,
+        SessionTurnTerminalState,
+    },
+    session_use_cases::SessionForkSelector,
+    watch_service::{WatchEvent, WatchPort, WatchService, WatchSource},
 };
 
 pub(crate) struct ServerTestContext {
@@ -114,7 +130,7 @@ impl WatchPort for ManualWatchPort {
         &self,
         sources: Vec<WatchSource>,
         tx: broadcast::Sender<WatchEvent>,
-    ) -> Result<(), ApplicationError> {
+    ) -> Result<(), ServerRouteError> {
         *self
             .tx
             .lock()
@@ -127,7 +143,7 @@ impl WatchPort for ManualWatchPort {
         Ok(())
     }
 
-    fn stop_all(&self) -> Result<(), ApplicationError> {
+    fn stop_all(&self) -> Result<(), ServerRouteError> {
         *self
             .tx
             .lock()
@@ -139,7 +155,7 @@ impl WatchPort for ManualWatchPort {
         Ok(())
     }
 
-    fn add_source(&self, source: WatchSource) -> Result<(), ApplicationError> {
+    fn add_source(&self, source: WatchSource) -> Result<(), ServerRouteError> {
         self.sources
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -147,12 +163,415 @@ impl WatchPort for ManualWatchPort {
         Ok(())
     }
 
-    fn remove_source(&self, source: &WatchSource) -> Result<(), ApplicationError> {
+    fn remove_source(&self, source: &WatchSource) -> Result<(), ServerRouteError> {
         self.sources
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(source);
         Ok(())
+    }
+}
+
+fn unimplemented_for_test(area: &str) -> ! {
+    panic!("not used in {area}")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedPromptSubmission {
+    pub(crate) session_id: String,
+    pub(crate) text: String,
+    pub(crate) prompt_declarations: Vec<PromptDeclaration>,
+    pub(crate) injected_messages: Vec<LlmMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedModeSwitch {
+    pub(crate) session_id: String,
+    pub(crate) from: ModeId,
+    pub(crate) to: ModeId,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct StubSessionPort {
+    pub(crate) stored_events: Vec<StoredEvent>,
+    pub(crate) working_dir: Option<String>,
+    pub(crate) control_state: Option<SessionControlStateSnapshot>,
+    pub(crate) active_task_snapshot: Arc<Mutex<Option<TaskSnapshot>>>,
+    pub(crate) mode_state: Arc<Mutex<Option<SessionModeState>>>,
+    pub(crate) switch_mode_error: Arc<Mutex<Option<String>>>,
+    pub(crate) recorded_submissions: Arc<Mutex<Vec<RecordedPromptSubmission>>>,
+    pub(crate) recorded_mode_switches: Arc<Mutex<Vec<RecordedModeSwitch>>>,
+}
+
+impl Default for StubSessionPort {
+    fn default() -> Self {
+        Self {
+            stored_events: Vec::new(),
+            working_dir: None,
+            control_state: None,
+            active_task_snapshot: Arc::new(Mutex::new(None)),
+            mode_state: Arc::new(Mutex::new(None)),
+            switch_mode_error: Arc::new(Mutex::new(None)),
+            recorded_submissions: Arc::new(Mutex::new(Vec::new())),
+            recorded_mode_switches: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[async_trait]
+impl AppSessionPort for StubSessionPort {
+    fn subscribe_catalog_events(&self) -> broadcast::Receiver<SessionCatalogEvent> {
+        let (_tx, rx) = broadcast::channel(1);
+        rx
+    }
+
+    async fn list_session_metas(&self) -> astrcode_core::Result<Vec<SessionMeta>> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn create_session(&self, _working_dir: String) -> astrcode_core::Result<SessionMeta> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn fork_session(
+        &self,
+        _session_id: &str,
+        _selector: SessionForkSelector,
+    ) -> astrcode_core::Result<SessionMeta> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn delete_session(&self, _session_id: &str) -> astrcode_core::Result<()> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn delete_project(
+        &self,
+        _working_dir: &str,
+    ) -> astrcode_core::Result<DeleteProjectResult> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn get_session_working_dir(&self, _session_id: &str) -> astrcode_core::Result<String> {
+        Ok(self.working_dir.clone().unwrap_or_else(|| ".".to_string()))
+    }
+
+    async fn submit_prompt_for_agent(
+        &self,
+        session_id: &str,
+        text: String,
+        _runtime: ResolvedRuntimeConfig,
+        submission: AppAgentPromptSubmission,
+    ) -> astrcode_core::Result<ExecutionAccepted> {
+        self.recorded_submissions
+            .lock()
+            .expect("submission record lock should work")
+            .push(RecordedPromptSubmission {
+                session_id: session_id.to_string(),
+                text,
+                prompt_declarations: submission.prompt_declarations,
+                injected_messages: submission.injected_messages,
+            });
+        Ok(ExecutionAccepted {
+            session_id: SessionId::from(session_id.to_string()),
+            turn_id: TurnId::from("turn-stub".to_string()),
+            agent_id: None,
+            branched_from_session_id: None,
+        })
+    }
+
+    async fn interrupt_session(&self, _session_id: &str) -> astrcode_core::Result<()> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn compact_session(
+        &self,
+        _session_id: &str,
+        _runtime: ResolvedRuntimeConfig,
+        _instructions: Option<String>,
+    ) -> astrcode_core::Result<bool> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn session_transcript_snapshot(
+        &self,
+        _session_id: &str,
+    ) -> astrcode_core::Result<SessionTranscriptSnapshot> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn conversation_snapshot(
+        &self,
+        _session_id: &str,
+    ) -> astrcode_core::Result<ConversationSnapshotFacts> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn session_control_state(
+        &self,
+        _session_id: &str,
+    ) -> astrcode_core::Result<SessionControlStateSnapshot> {
+        Ok(self
+            .control_state
+            .clone()
+            .unwrap_or(SessionControlStateSnapshot {
+                phase: astrcode_core::Phase::Idle,
+                active_turn_id: None,
+                manual_compact_pending: false,
+                compacting: false,
+                last_compact_meta: None,
+                current_mode_id: ModeId::code(),
+                last_mode_changed_at: None,
+            }))
+    }
+
+    async fn active_task_snapshot(
+        &self,
+        _session_id: &str,
+        _owner: &str,
+    ) -> astrcode_core::Result<Option<TaskSnapshot>> {
+        Ok(self
+            .active_task_snapshot
+            .lock()
+            .expect("active task snapshot lock should work")
+            .clone())
+    }
+
+    async fn session_mode_state(
+        &self,
+        _session_id: &str,
+    ) -> astrcode_core::Result<SessionModeState> {
+        Ok(self
+            .mode_state
+            .lock()
+            .expect("mode state lock should work")
+            .clone()
+            .unwrap_or(SessionModeState {
+                current_mode_id: ModeId::code(),
+                last_mode_changed_at: None,
+            }))
+    }
+
+    async fn switch_mode(
+        &self,
+        session_id: &str,
+        from: ModeId,
+        to: ModeId,
+    ) -> astrcode_core::Result<StoredEvent> {
+        if let Some(message) = self
+            .switch_mode_error
+            .lock()
+            .expect("mode switch error lock should work")
+            .clone()
+        {
+            return Err(AstrError::Internal(message));
+        }
+        self.recorded_mode_switches
+            .lock()
+            .expect("mode switch record lock should work")
+            .push(RecordedModeSwitch {
+                session_id: session_id.to_string(),
+                from: from.clone(),
+                to: to.clone(),
+            });
+        *self.mode_state.lock().expect("mode state lock should work") = Some(SessionModeState {
+            current_mode_id: to.clone(),
+            last_mode_changed_at: None,
+        });
+        Ok(StoredEvent {
+            storage_seq: 1,
+            event: StorageEvent {
+                turn_id: None,
+                agent: AgentEventContext::default(),
+                payload: StorageEventPayload::ModeChanged {
+                    from,
+                    to,
+                    timestamp: chrono::Utc::now(),
+                },
+            },
+        })
+    }
+
+    async fn session_child_nodes(
+        &self,
+        _session_id: &str,
+    ) -> astrcode_core::Result<Vec<astrcode_core::ChildSessionNode>> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn session_stored_events(
+        &self,
+        _session_id: &str,
+    ) -> astrcode_core::Result<Vec<StoredEvent>> {
+        Ok(self.stored_events.clone())
+    }
+
+    async fn durable_subrun_status_snapshot(
+        &self,
+        _parent_session_id: &str,
+        _requested_subrun_id: &str,
+    ) -> astrcode_core::Result<Option<DurableSubRunStatusSummary>> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn session_replay(
+        &self,
+        _session_id: &str,
+        _last_event_id: Option<&str>,
+    ) -> astrcode_core::Result<SessionReplay> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn conversation_stream_replay(
+        &self,
+        _session_id: &str,
+        _last_event_id: Option<&str>,
+    ) -> astrcode_core::Result<ConversationStreamReplayFacts> {
+        unimplemented_for_test("server test stub")
+    }
+}
+
+#[async_trait]
+impl AgentSessionPort for StubSessionPort {
+    async fn create_child_session(
+        &self,
+        _working_dir: &str,
+        _parent_session_id: &str,
+    ) -> astrcode_core::Result<SessionMeta> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn submit_prompt_for_agent_with_submission(
+        &self,
+        _session_id: &str,
+        _text: String,
+        _runtime: ResolvedRuntimeConfig,
+        _submission: AppAgentPromptSubmission,
+    ) -> astrcode_core::Result<ExecutionAccepted> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn try_submit_prompt_for_agent_with_turn_id(
+        &self,
+        _session_id: &str,
+        _turn_id: TurnId,
+        _text: String,
+        _runtime: ResolvedRuntimeConfig,
+        _submission: AppAgentPromptSubmission,
+    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn submit_queued_inputs_for_agent_with_turn_id(
+        &self,
+        _session_id: &str,
+        _turn_id: TurnId,
+        _queued_inputs: Vec<String>,
+        _runtime: ResolvedRuntimeConfig,
+        _submission: AppAgentPromptSubmission,
+    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn append_agent_input_queued(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+        _agent: AgentEventContext,
+        _payload: InputQueuedPayload,
+    ) -> astrcode_core::Result<StoredEvent> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn append_agent_input_discarded(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+        _agent: AgentEventContext,
+        _payload: InputDiscardedPayload,
+    ) -> astrcode_core::Result<StoredEvent> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn append_agent_input_batch_started(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+        _agent: AgentEventContext,
+        _payload: InputBatchStartedPayload,
+    ) -> astrcode_core::Result<StoredEvent> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn append_agent_input_batch_acked(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+        _agent: AgentEventContext,
+        _payload: InputBatchAckedPayload,
+    ) -> astrcode_core::Result<StoredEvent> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn append_child_session_notification(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+        _agent: AgentEventContext,
+        _notification: astrcode_core::ChildSessionNotification,
+    ) -> astrcode_core::Result<StoredEvent> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn append_agent_collaboration_fact(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+        _agent: AgentEventContext,
+        _fact: AgentCollaborationFact,
+    ) -> astrcode_core::Result<StoredEvent> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn pending_delivery_ids_for_agent(
+        &self,
+        _session_id: &str,
+        _agent_id: &str,
+    ) -> astrcode_core::Result<Vec<String>> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn recoverable_parent_deliveries(
+        &self,
+        _parent_session_id: &str,
+    ) -> astrcode_core::Result<Vec<RecoverableParentDelivery>> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn observe_agent_session(
+        &self,
+        _open_session_id: &str,
+        _target_agent_id: &str,
+        _lifecycle_status: AgentLifecycleStatus,
+    ) -> astrcode_core::Result<SessionObserveSnapshot> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn project_turn_outcome(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+    ) -> astrcode_core::Result<SessionTurnOutcomeSummary> {
+        unimplemented_for_test("server test stub")
+    }
+
+    async fn wait_for_turn_terminal_snapshot(
+        &self,
+        _session_id: &str,
+        _turn_id: &str,
+    ) -> astrcode_core::Result<SessionTurnTerminalState> {
+        unimplemented_for_test("server test stub")
     }
 }
 
@@ -178,14 +597,32 @@ pub(crate) async fn test_state_with_options(
     let runtime = bootstrap_server_runtime_with_options(options)
         .await
         .expect("server runtime should bootstrap in tests");
-    let app = Arc::clone(&runtime.app);
+    let agent_api = Arc::clone(&runtime.agent_api);
+    let agent_control = Arc::clone(&runtime.agent_control);
+    let config = Arc::clone(&runtime.config);
+    let session_catalog = Arc::clone(&runtime.session_catalog);
+    let profiles = Arc::clone(&runtime.profiles);
+    let subagent_executor = Arc::clone(&runtime.subagent_executor);
+    let mcp_service = Arc::clone(&runtime.mcp_service);
+    let skill_catalog: Arc<dyn SkillCatalog> = Arc::clone(&runtime.skill_catalog);
+    let resource_catalog = Arc::clone(&runtime.resource_catalog);
+    let mode_catalog = Arc::clone(&runtime.mode_catalog);
     let governance = Arc::clone(&runtime.governance);
     let auth_sessions = Arc::new(AuthSessionManager::default());
     auth_sessions.issue_test_token("browser-token");
 
     (
         AppState {
-            app,
+            agent_api,
+            agent_control,
+            config,
+            session_catalog,
+            profiles,
+            subagent_executor,
+            mcp_service,
+            skill_catalog,
+            resource_catalog,
+            mode_catalog,
             governance,
             auth_sessions,
             bootstrap_auth: BootstrapAuth::new(
@@ -206,29 +643,12 @@ pub(crate) async fn test_state_with_options(
 }
 
 async fn append_root_event(state: &crate::AppState, session_id: &str, event: StorageEvent) {
-    let session_state = state
+    state
         ._runtime_handles
-        .session_runtime
-        .get_session_state(&SessionId::from(session_id.to_string()))
-        .await
-        .expect("session state should load");
-    let mut translator = EventTranslator::new(
-        session_state
-            .current_phase()
-            .expect("session phase should be readable"),
-    );
-    let stored = session_state
-        .writer
-        .clone()
-        .append(event)
+        .session_runtime_test_support
+        .append_event(session_id, event)
         .await
         .expect("event should append");
-    let records = session_state
-        .translate_store_and_cache(&stored, &mut translator)
-        .expect("event should translate");
-    for record in records {
-        let _ = session_state.broadcaster.send(record);
-    }
 }
 
 pub(crate) async fn seed_completed_root_turn(
@@ -307,20 +727,8 @@ pub(crate) async fn seed_unfinished_root_turn(
 pub(crate) async fn mark_session_running(state: &crate::AppState, session_id: &str) {
     state
         ._runtime_handles
-        .session_runtime
+        .session_runtime_test_support
         .prepare_test_turn_runtime(session_id, "test-running-turn")
         .await
         .expect("session should enter running state");
-}
-
-pub(crate) async fn stored_events_for_session(
-    state: &crate::AppState,
-    session_id: &str,
-) -> Vec<astrcode_core::StoredEvent> {
-    state
-        ._runtime_handles
-        .session_runtime
-        .replay_stored_events(&SessionId::from(session_id.to_string()))
-        .await
-        .expect("events should replay")
 }

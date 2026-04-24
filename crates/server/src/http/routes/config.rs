@@ -4,9 +4,6 @@
 //! - `GET /api/config` — 获取配置视图（含 profile 列表和当前选择）
 //! - `POST /api/config/active-selection` — 保存活跃的 profile/model 选择
 
-use astrcode_application::{
-    config::resolve_config_summary, format_local_rfc3339, resolve_runtime_status_summary,
-};
 use astrcode_protocol::http::{ConfigReloadResponse, ConfigView, SaveActiveSelectionRequest};
 use axum::{
     Json,
@@ -18,6 +15,7 @@ use crate::{
     ApiError, AppState,
     auth::require_auth,
     mapper::{build_config_view, to_runtime_status_dto},
+    view_projection::{resolve_server_config_summary, resolve_server_runtime_status_summary},
 };
 
 /// 获取当前配置视图。
@@ -29,14 +27,9 @@ pub(crate) async fn get_config(
     headers: HeaderMap,
 ) -> Result<Json<ConfigView>, ApiError> {
     require_auth(&state, &headers, None)?;
-    let config = state.app.config().get_config().await;
-    let config_path = state
-        .app
-        .config()
-        .config_path()
-        .to_string_lossy()
-        .to_string();
-    let summary = resolve_config_summary(&config).map_err(ApiError::from)?;
+    let config = state.config.get_config().await;
+    let config_path = state.config.config_path().to_string_lossy().to_string();
+    let summary = resolve_server_config_summary(&config).map_err(ApiError::bad_request)?;
     Ok(Json(build_config_view(summary, config_path)))
 }
 
@@ -52,8 +45,7 @@ pub(crate) async fn save_active_selection(
 ) -> Result<StatusCode, ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .app
-        .config()
+        .config
         .save_active_selection(request.active_profile, request.active_model)
         .await
         .map_err(ApiError::from)?;
@@ -70,22 +62,17 @@ pub(crate) async fn reload_config(
 ) -> Result<(StatusCode, Json<ConfigReloadResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let reloaded = state.governance.reload().await.map_err(ApiError::from)?;
-    let config = state.app.config().get_config().await;
-    let summary = resolve_config_summary(&config).map_err(ApiError::from)?;
-    let config_path = state
-        .app
-        .config()
-        .config_path()
-        .to_string_lossy()
-        .to_string();
+    let config = state.config.get_config().await;
+    let summary = resolve_server_config_summary(&config).map_err(ApiError::bad_request)?;
+    let config_path = state.config.config_path().to_string_lossy().to_string();
     let config_view = build_config_view(summary, config_path);
 
     Ok((
         StatusCode::ACCEPTED,
         Json(ConfigReloadResponse {
-            reloaded_at: format_local_rfc3339(reloaded.reloaded_at),
+            reloaded_at: astrcode_core::format_local_rfc3339(reloaded.reloaded_at),
             config: config_view,
-            status: to_runtime_status_dto(resolve_runtime_status_summary(reloaded.snapshot)),
+            status: to_runtime_status_dto(resolve_server_runtime_status_summary(reloaded.snapshot)),
         }),
     ))
 }

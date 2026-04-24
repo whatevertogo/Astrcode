@@ -39,7 +39,8 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use astrcode_core::{AstrError, CancelToken, LlmEvent, ReasoningContent, Result, ToolCallRequest};
+use astrcode_agent_runtime::LlmEvent;
+use astrcode_core::{AstrError, CancelToken, ReasoningContent, Result, ToolCallRequest};
 use log::warn;
 use serde_json::Value;
 use tokio::{select, time::sleep};
@@ -47,9 +48,10 @@ use tokio::{select, time::sleep};
 pub mod cache_tracker;
 pub mod openai;
 
-pub use astrcode_core::{
+pub use astrcode_agent_runtime::{
     LlmEventSink as EventSink, LlmFinishReason as FinishReason, LlmOutput, LlmProvider, LlmRequest,
-    LlmUsage, ModelLimits,
+    LlmUsage, ModelLimits, PromptCacheBreakReason, PromptCacheDiagnostics,
+    PromptCacheGlobalStrategy, PromptCacheHints, PromptLayerFingerprints,
 };
 
 // ---------------------------------------------------------------------------
@@ -443,6 +445,7 @@ impl LlmAccumulator {
             LlmEvent::ThinkingSignature(signature) => {
                 self.thinking_signature = Some(signature.clone());
             },
+            LlmEvent::StreamRetryStarted { .. } => {},
             LlmEvent::ToolCallDelta {
                 index,
                 id,

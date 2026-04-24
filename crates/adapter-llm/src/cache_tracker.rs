@@ -4,7 +4,7 @@
 //! - 请求发送前记录一次 prompt/tool/cache 策略快照
 //! - 响应返回后根据真实 `cache_read_input_tokens` 跌幅判断是否发生 cache break
 
-use astrcode_core::{
+use astrcode_agent_runtime::{
     LlmUsage, PromptCacheBreakReason, PromptCacheDiagnostics, PromptCacheGlobalStrategy,
 };
 use serde::Serialize;

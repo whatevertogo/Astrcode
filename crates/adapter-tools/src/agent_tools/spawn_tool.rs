@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use astrcode_core::{
-    Result, SpawnAgentParams, SubAgentExecutor, Tool, ToolCapabilityMetadata, ToolContext,
-    ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
+    Result, SpawnAgentParams, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, ToolPromptMetadata,
 };
+use astrcode_host_session::SubAgentExecutor;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 

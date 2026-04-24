@@ -52,6 +52,7 @@ pub const DEFAULT_FINALIZED_AGENT_RETAIN_LIMIT: usize = 256;
 pub const DEFAULT_INBOX_CAPACITY: usize = 1024;
 pub const DEFAULT_PARENT_DELIVERY_CAPACITY: usize = 1024;
 pub const DEFAULT_MAX_CONSECUTIVE_FAILURES: usize = 3;
+pub const DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS: usize = 3;
 pub const DEFAULT_RECOVERY_TRUNCATE_BYTES: usize = 30_000;
 pub const DEFAULT_API_SESSION_TTL_HOURS: i64 = 8;
 
@@ -111,6 +112,8 @@ pub struct RuntimeConfig {
     pub agent: Option<AgentConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_consecutive_failures: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_continuation_attempts: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery_truncate_bytes: Option<usize>,
 
@@ -206,6 +209,7 @@ pub struct ResolvedRuntimeConfig {
     pub compact_keep_recent_user_messages: u8,
     pub agent: ResolvedAgentConfig,
     pub max_consecutive_failures: usize,
+    pub max_output_continuation_attempts: usize,
     pub recovery_truncate_bytes: usize,
     pub llm_connect_timeout_secs: u64,
     pub llm_read_timeout_secs: u64,
@@ -268,6 +272,7 @@ impl Default for ResolvedRuntimeConfig {
             compact_keep_recent_user_messages: DEFAULT_COMPACT_KEEP_RECENT_USER_MESSAGES,
             agent: ResolvedAgentConfig::default(),
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
+            max_output_continuation_attempts: DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS,
             recovery_truncate_bytes: DEFAULT_RECOVERY_TRUNCATE_BYTES,
             llm_connect_timeout_secs: DEFAULT_LLM_CONNECT_TIMEOUT_SECS,
             llm_read_timeout_secs: DEFAULT_LLM_READ_TIMEOUT_SECS,
@@ -459,6 +464,10 @@ impl fmt::Debug for RuntimeConfig {
             )
             .field("agent", &self.agent)
             .field("max_consecutive_failures", &self.max_consecutive_failures)
+            .field(
+                "max_output_continuation_attempts",
+                &self.max_output_continuation_attempts,
+            )
             .field("recovery_truncate_bytes", &self.recovery_truncate_bytes)
             .field("llm_connect_timeout_secs", &self.llm_connect_timeout_secs)
             .field("llm_read_timeout_secs", &self.llm_read_timeout_secs)
@@ -697,6 +706,10 @@ pub fn resolve_runtime_config(runtime: &RuntimeConfig) -> ResolvedRuntimeConfig 
             .max_consecutive_failures
             .unwrap_or(defaults.max_consecutive_failures)
             .max(1),
+        max_output_continuation_attempts: runtime
+            .max_output_continuation_attempts
+            .unwrap_or(defaults.max_output_continuation_attempts)
+            .max(1),
         recovery_truncate_bytes: runtime
             .recovery_truncate_bytes
             .unwrap_or(defaults.recovery_truncate_bytes)
@@ -811,6 +824,10 @@ mod tests {
             resolved.compact_max_output_tokens,
             DEFAULT_COMPACT_MAX_OUTPUT_TOKENS
         );
+        assert_eq!(
+            resolved.max_output_continuation_attempts,
+            DEFAULT_MAX_OUTPUT_CONTINUATION_ATTEMPTS
+        );
     }
 
     #[test]
@@ -818,6 +835,7 @@ mod tests {
         let resolved = resolve_runtime_config(&RuntimeConfig {
             max_tool_concurrency: Some(16),
             llm_read_timeout_secs: Some(120),
+            max_output_continuation_attempts: Some(5),
             agent: Some(AgentConfig {
                 max_subrun_depth: Some(5),
                 max_spawn_per_turn: Some(2),
@@ -828,6 +846,7 @@ mod tests {
 
         assert_eq!(resolved.max_tool_concurrency, 16);
         assert_eq!(resolved.llm_read_timeout_secs, 120);
+        assert_eq!(resolved.max_output_continuation_attempts, 5);
         assert_eq!(resolved.agent.max_subrun_depth, 5);
         assert_eq!(resolved.agent.max_spawn_per_turn, 2);
     }

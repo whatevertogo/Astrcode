@@ -6,7 +6,9 @@ license-file.workspace = true
 authors.workspace = true
 
 [dependencies]
+astrcode-agent-runtime = { path = "../agent-runtime" }
 astrcode-core = { path = "../core" }
+astrcode-host-session = { path = "../host-session" }
 astrcode-support = { path = "../support" }
 anyhow.workspace = true
 async-trait.workspace = true

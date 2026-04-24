@@ -56,25 +56,40 @@ function buildRules() {
     },
     {
       id: 'R003',
-      description: 'kernel 仅承载全局控制面，只允许依赖 core',
+      description: 'kernel 是迁移源，只允许依赖 core 与新 owner 边界',
       source: 'astrcode-kernel',
-      allowedExact: new Set(['astrcode-core']),
+      allowedExact: new Set([
+        'astrcode-core',
+        'astrcode-agent-runtime',
+        'astrcode-host-session',
+        'astrcode-plugin-host',
+      ]),
     },
     {
       id: 'R004',
-      description: 'session-runtime 仅允许依赖 core、support 与 kernel',
+      description: 'session-runtime 是迁移源，只允许依赖 core、support、kernel 与新 owner 边界',
       source: 'astrcode-session-runtime',
-      allowedExact: new Set(['astrcode-core', 'astrcode-support', 'astrcode-kernel']),
+      allowedExact: new Set([
+        'astrcode-core',
+        'astrcode-support',
+        'astrcode-kernel',
+        'astrcode-agent-runtime',
+        'astrcode-host-session',
+        'astrcode-plugin-host',
+      ]),
     },
     {
       id: 'R005',
-      description: 'application 仅允许依赖 core、support、kernel、session-runtime',
+      description: 'application 是迁移源，只允许依赖 core、support、旧迁移源与新 owner 边界',
       source: 'astrcode-application',
       allowedExact: new Set([
         'astrcode-core',
         'astrcode-support',
         'astrcode-kernel',
         'astrcode-session-runtime',
+        'astrcode-agent-runtime',
+        'astrcode-host-session',
+        'astrcode-plugin-host',
       ]),
     },
     {
@@ -82,6 +97,29 @@ function buildRules() {
       description: 'support 仅允许依赖 core',
       source: 'astrcode-support',
       allowedExact: new Set(['astrcode-core']),
+    },
+    {
+      id: 'R007',
+      description: 'agent-runtime 是最小执行内核，只允许依赖 core',
+      source: 'astrcode-agent-runtime',
+      allowedExact: new Set(['astrcode-core']),
+    },
+    {
+      id: 'R008',
+      description: 'plugin-host 只承载统一插件宿主，只允许依赖 core、protocol、support',
+      source: 'astrcode-plugin-host',
+      allowedExact: new Set(['astrcode-core', 'astrcode-protocol', 'astrcode-support']),
+    },
+    {
+      id: 'R009',
+      description: 'host-session 只承载 session owner 逻辑，只允许依赖 core、support、agent-runtime、plugin-host',
+      source: 'astrcode-host-session',
+      allowedExact: new Set([
+        'astrcode-core',
+        'astrcode-support',
+        'astrcode-agent-runtime',
+        'astrcode-plugin-host',
+      ]),
     },
   ];
 }

@@ -2,9 +2,6 @@
 //!
 //! 提供 MCP 状态查询、审批，以及服务端配置管理入口。
 
-use astrcode_application::{
-    McpActionSummary, McpConfigScope, McpServerStatusSummary, RegisterMcpServerInput,
-};
 use axum::{
     Json,
     extract::State,
@@ -12,7 +9,14 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{ApiError, AppState, auth::require_auth};
+use crate::{
+    ApiError, AppState,
+    auth::require_auth,
+    mcp_service::{
+        ServerMcpActionSummary, ServerMcpConfigScope, ServerMcpServerStatusSummary,
+        ServerRegisterMcpServerInput,
+    },
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,8 +96,7 @@ pub(crate) async fn get_mcp_status(
 ) -> Result<(StatusCode, Json<McpStatusResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let servers = state
-        .app
-        .mcp()
+        .mcp_service
         .list_status_summary()
         .await
         .into_iter()
@@ -109,8 +112,7 @@ pub(crate) async fn approve_mcp_server(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .app
-        .mcp()
+        .mcp_service
         .approve_server(&request.server_signature)
         .await
         .map_err(ApiError::from)?;
@@ -124,8 +126,7 @@ pub(crate) async fn reject_mcp_server(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .app
-        .mcp()
+        .mcp_service
         .reject_server(&request.server_signature)
         .await
         .map_err(ApiError::from)?;
@@ -139,8 +140,7 @@ pub(crate) async fn reconnect_mcp_server(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .app
-        .mcp()
+        .mcp_service
         .reconnect_server(&request.name)
         .await
         .map_err(ApiError::from)?;
@@ -153,8 +153,7 @@ pub(crate) async fn reset_project_mcp_choices(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .app
-        .mcp()
+        .mcp_service
         .reset_project_choices()
         .await
         .map_err(ApiError::from)?;
@@ -167,7 +166,7 @@ pub(crate) async fn upsert_mcp_server(
     Json(request): Json<UpsertServerRequest>,
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
-    let input = RegisterMcpServerInput {
+    let input = ServerRegisterMcpServerInput {
         name: request.name,
         scope: parse_scope(&request.scope)?,
         enabled: request.enabled.unwrap_or(true),
@@ -177,8 +176,7 @@ pub(crate) async fn upsert_mcp_server(
         transport_config: request.transport,
     };
     state
-        .app
-        .mcp()
+        .mcp_service
         .upsert_config(input)
         .await
         .map_err(ApiError::from)?;
@@ -192,8 +190,7 @@ pub(crate) async fn remove_mcp_server(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .app
-        .mcp()
+        .mcp_service
         .remove_config(parse_scope(&request.scope)?, &request.name)
         .await
         .map_err(ApiError::from)?;
@@ -207,8 +204,7 @@ pub(crate) async fn set_mcp_server_enabled(
 ) -> Result<(StatusCode, Json<McpActionResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     state
-        .app
-        .mcp()
+        .mcp_service
         .set_enabled(parse_scope(&request.scope)?, &request.name, request.enabled)
         .await
         .map_err(ApiError::from)?;
@@ -216,7 +212,7 @@ pub(crate) async fn set_mcp_server_enabled(
 }
 
 fn ok_response(status: StatusCode) -> (StatusCode, Json<McpActionResponse>) {
-    let summary = McpActionSummary::ok();
+    let summary = ServerMcpActionSummary::ok();
     (
         status,
         Json(McpActionResponse {
@@ -226,11 +222,11 @@ fn ok_response(status: StatusCode) -> (StatusCode, Json<McpActionResponse>) {
     )
 }
 
-fn parse_scope(scope: &str) -> Result<McpConfigScope, ApiError> {
+fn parse_scope(scope: &str) -> Result<ServerMcpConfigScope, ApiError> {
     match scope {
-        "user" => Ok(McpConfigScope::User),
-        "project" => Ok(McpConfigScope::Project),
-        "local" => Ok(McpConfigScope::Local),
+        "user" => Ok(ServerMcpConfigScope::User),
+        "project" => Ok(ServerMcpConfigScope::Project),
+        "local" => Ok(ServerMcpConfigScope::Local),
         other => Err(ApiError::bad_request(format!(
             "unsupported MCP scope '{}'",
             other
@@ -238,8 +234,8 @@ fn parse_scope(scope: &str) -> Result<McpConfigScope, ApiError> {
     }
 }
 
-impl From<McpServerStatusSummary> for McpServerStatus {
-    fn from(value: McpServerStatusSummary) -> Self {
+impl From<ServerMcpServerStatusSummary> for McpServerStatus {
+    fn from(value: ServerMcpServerStatusSummary) -> Self {
         Self {
             name: value.name,
             scope: value.scope,
