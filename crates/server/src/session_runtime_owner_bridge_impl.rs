@@ -1,38 +1,28 @@
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(test)]
-use astrcode_core::{
-    AgentLifecycleStatus, AgentProfile, SessionId, SessionTurnAcquireResult, SessionTurnLease,
-    StorageEvent, StoredEvent,
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
-use astrcode_core::{CapabilityInvoker, Result};
-#[cfg(test)]
-use astrcode_host_session::EventTranslator;
-use astrcode_host_session::SessionCatalog;
 
-#[cfg(test)]
-use crate::session_runtime_owner_bridge::ServerRuntimeTestSupport;
+use astrcode_core::{
+    AgentLifecycleStatus, AgentProfile, CapabilityInvoker, Result, SessionId,
+    SessionTurnAcquireResult, SessionTurnLease, StorageEvent, StoredEvent,
+};
+use astrcode_host_session::{EventTranslator, SessionCatalog};
+
 use crate::{
     SessionInfoProvider,
-    agent_control_bridge::ServerAgentControlPort,
+    agent_control_bridge::{ServerAgentControlPort, ServerLiveSubRunStatus},
     agent_control_registry::{AgentControlLimits, AgentControlRegistry},
     capability_router::CapabilityRouter,
     ports::{
-        AgentKernelPort, AgentSessionPort, AppSessionPort,
+        AgentKernelPort, AgentSessionPort, AppSessionPort, ServerKernelControlError,
         kernel_bridge::build_server_kernel_bridge, session_bridge::build_server_session_bridge,
     },
     session_runtime_owner_bridge::{
         ActiveSessionRegistry, ServerBootstrappedSessionRuntime, ServerCapabilitySurfacePort,
-        ServerSessionRuntimeBootstrapInput,
+        ServerRuntimeTestSupport, ServerSessionRuntimeBootstrapInput,
     },
-    session_runtime_port::adapter::build_session_runtime_port,
-};
-#[cfg(test)]
-use crate::{
-    agent_control_bridge::ServerLiveSubRunStatus, ports::ServerKernelControlError,
-    session_runtime_port::SessionRuntimePort,
+    session_runtime_port::{SessionRuntimePort, adapter::build_session_runtime_port},
 };
 
 pub(crate) fn bootstrap_session_runtime(
@@ -83,7 +73,6 @@ pub(crate) fn bootstrap_session_runtime(
         keepalive: Arc::new(SessionRuntimeCompatKeepalive {
             _agent_control: agent_control_registry,
         }),
-        #[cfg(test)]
         test_support: Arc::new(SessionRuntimeTestSupportBridge {
             session_catalog: input.session_catalog,
             active_sessions,
@@ -123,13 +112,13 @@ impl SessionInfoProvider for SessionRuntimeInfoBridge {
     }
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 struct PreparedTestTurn {
     session_id: String,
     _lease: Box<dyn SessionTurnLease>,
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 struct SessionRuntimeTestSupportBridge {
     session_catalog: Arc<SessionCatalog>,
     active_sessions: Arc<ActiveSessionRegistry>,
@@ -138,7 +127,6 @@ struct SessionRuntimeTestSupportBridge {
     prepared_turns: std::sync::Mutex<std::collections::HashMap<u64, PreparedTestTurn>>,
 }
 
-#[cfg(test)]
 #[async_trait::async_trait]
 impl ServerRuntimeTestSupport for SessionRuntimeTestSupportBridge {
     fn list_running_session_ids(&self) -> Vec<String> {

@@ -13,9 +13,7 @@ use astrcode_adapter_storage::session::FileSystemSessionRepository;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
 use astrcode_core::SkillCatalog;
 use astrcode_governance_contract::GovernanceModeSpec;
-#[cfg(test)]
-use astrcode_host_session::SubAgentExecutor;
-use astrcode_host_session::{EventStore, SessionCatalog};
+use astrcode_host_session::{EventStore, SessionCatalog, SubAgentExecutor};
 use astrcode_plugin_host::{
     CommandDescriptor, PluginActiveSnapshot, PluginDescriptor, PluginRegistry,
     ProviderContributionCatalog, ResourceCatalog, builtin_collaboration_tools_descriptor,
@@ -44,15 +42,13 @@ use super::{
     runtime_coordinator::RuntimeCoordinator,
     watch::{bootstrap_profile_watch_runtime, build_watch_service},
 };
-#[cfg(test)]
-use crate::agent_control_bridge::ServerAgentControlPort;
-#[cfg(test)]
-use crate::profile_service::ServerProfileService;
 use crate::{
+    agent_control_bridge::ServerAgentControlPort,
     config_service_bridge::ServerConfigService,
     governance_service::ServerGovernanceService,
     mcp_service::ServerMcpService,
     mode_catalog_service::ServerModeCatalog,
+    profile_service::ServerProfileService,
     runtime_owner_bridge::{
         ServerRuntimeObservability, ServerTaskRegistry, builtin_server_mode_specs,
     },
@@ -68,13 +64,13 @@ const EXTERNAL_PLUGIN_MODES_PLUGIN_ID: &str = "external-plugin-modes";
 /// 服务器运行时：组合根输出。
 pub struct ServerRuntime {
     pub agent_api: Arc<ServerAgentApi>,
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub agent_control: Arc<dyn ServerAgentControlPort>,
     pub config: Arc<ServerConfigService>,
     pub session_catalog: Arc<SessionCatalog>,
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub profiles: Arc<ServerProfileService>,
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub subagent_executor: Arc<dyn SubAgentExecutor>,
     pub mcp_service: Arc<ServerMcpService>,
     pub skill_catalog: Arc<dyn SkillCatalog>,
@@ -88,8 +84,7 @@ pub struct ServerRuntimeHandles {
     // Why: server 集成测试需要直接操纵底层 session-runtime，避免把原始状态访问重新暴露给
     // application 端口；生产路径只把它当作资源守卫持有。
     pub(crate) _session_runtime_guard: Arc<dyn std::any::Any + Send + Sync>,
-    #[cfg(test)]
-    pub(crate) session_runtime_test_support:
+    pub(crate) _session_runtime_test_support:
         Arc<dyn crate::session_runtime_owner_bridge::ServerRuntimeTestSupport>,
     _profile_watch_runtime: Option<super::watch::ProfileWatchRuntime>,
     _mcp_warmup_runtime: McpWarmupRuntime,
@@ -354,13 +349,10 @@ pub async fn bootstrap_server_runtime_with_options(
 
     Ok(ServerRuntime {
         agent_api: agent_runtime.agent_api,
-        #[cfg(test)]
         agent_control: agent_runtime.agent_control,
         config: config_service,
         session_catalog,
-        #[cfg(test)]
         profiles,
-        #[cfg(test)]
         subagent_executor: agent_runtime.subagent_executor,
         mcp_service,
         skill_catalog: skill_catalog_bridge,
@@ -369,8 +361,7 @@ pub async fn bootstrap_server_runtime_with_options(
         governance,
         handles: Arc::new(ServerRuntimeHandles {
             _session_runtime_guard: session_runtime.keepalive,
-            #[cfg(test)]
-            session_runtime_test_support: session_runtime.test_support,
+            _session_runtime_test_support: session_runtime.test_support,
             _profile_watch_runtime: profile_watch_runtime,
             _mcp_warmup_runtime: mcp_warmup_runtime,
         }),

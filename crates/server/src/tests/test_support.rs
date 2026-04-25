@@ -663,7 +663,7 @@ pub(crate) async fn test_state_with_options(
 async fn append_root_event(state: &crate::AppState, session_id: &str, event: StorageEvent) {
     state
         ._runtime_handles
-        .session_runtime_test_support
+        ._session_runtime_test_support
         .append_event(session_id, event)
         .await
         .expect("event should append");
@@ -745,7 +745,7 @@ pub(crate) async fn seed_unfinished_root_turn(
 pub(crate) async fn mark_session_running(state: &crate::AppState, session_id: &str) {
     state
         ._runtime_handles
-        .session_runtime_test_support
+        ._session_runtime_test_support
         .prepare_test_turn_runtime(session_id, "test-running-turn")
         .await
         .expect("session should enter running state");

@@ -81,7 +81,7 @@ async fn config_reload_rejects_when_session_is_running() {
     assert!(
         !state
             ._runtime_handles
-            .session_runtime_test_support
+            ._session_runtime_test_support
             .list_running_session_ids()
             .contains(&session.session_id)
     );
@@ -120,7 +120,7 @@ async fn compact_route_accepts_immediately_when_only_previous_busy_flag_is_set()
     assert!(
         !state
             ._runtime_handles
-            .session_runtime_test_support
+            ._session_runtime_test_support
             .list_running_session_ids()
             .contains(&session.session_id)
     );

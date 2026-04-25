@@ -4,22 +4,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[cfg(test)]
-use astrcode_core::{AgentLifecycleStatus, AgentProfile};
-use astrcode_core::{CapabilityInvoker, Result};
-use astrcode_host_session::SessionCatalog;
-#[cfg(test)]
-use astrcode_host_session::SubRunHandle;
+use astrcode_core::{AgentLifecycleStatus, AgentProfile, CapabilityInvoker, Result};
+use astrcode_host_session::{SessionCatalog, SubRunHandle};
 use astrcode_llm_contract::LlmProvider;
 
-#[cfg(test)]
-use crate::agent_control_bridge::ServerLiveSubRunStatus;
-#[cfg(test)]
-use crate::ports::ServerKernelControlError;
 use crate::{
     SessionInfoProvider,
-    agent_control_bridge::ServerAgentControlPort,
-    ports::{AgentKernelPort, AgentSessionPort, AppSessionPort},
+    agent_control_bridge::{ServerAgentControlPort, ServerLiveSubRunStatus},
+    ports::{AgentKernelPort, AgentSessionPort, AppSessionPort, ServerKernelControlError},
 };
 
 #[path = "session_runtime_owner_bridge_impl.rs"]
@@ -77,7 +69,7 @@ pub(crate) trait ServerCapabilitySurfacePort: Send + Sync {
     fn replace_capability_invokers(&self, invokers: Vec<Arc<dyn CapabilityInvoker>>) -> Result<()>;
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 #[async_trait::async_trait]
 pub(crate) trait ServerRuntimeTestSupport: Send + Sync {
     fn list_running_session_ids(&self) -> Vec<String>;
@@ -149,6 +141,5 @@ pub(crate) struct ServerBootstrappedSessionRuntime {
     pub capability_surface: Arc<dyn ServerCapabilitySurfacePort>,
     pub sessions: Arc<dyn SessionInfoProvider>,
     pub keepalive: Arc<dyn Any + Send + Sync>,
-    #[cfg(test)]
     pub test_support: Arc<dyn ServerRuntimeTestSupport>,
 }
