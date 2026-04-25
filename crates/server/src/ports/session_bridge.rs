@@ -14,7 +14,7 @@ use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{
     InputQueueProjection, ProjectedTurnOutcome, SessionCatalog, SubRunHandle, replay_records,
 };
-use astrcode_runtime_contract::ExecutionAccepted;
+use astrcode_runtime_contract::ExecutionSubmissionOutcome;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
@@ -163,7 +163,7 @@ impl AppSessionPort for ServerSessionBridge {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted> {
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome> {
         self.session_runtime
             .submit_prompt_for_agent(session_id, text, runtime, submission)
             .await
@@ -328,7 +328,7 @@ impl AgentSessionPort for ServerSessionBridge {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted> {
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome> {
         self.session_runtime
             .submit_prompt_for_agent_with_submission(session_id, text, runtime, submission)
             .await
@@ -341,7 +341,7 @@ impl AgentSessionPort for ServerSessionBridge {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>> {
         self.session_runtime
             .try_submit_prompt_for_agent_with_turn_id(
                 session_id, turn_id, text, runtime, submission,
@@ -356,7 +356,7 @@ impl AgentSessionPort for ServerSessionBridge {
         queued_inputs: Vec<String>,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>> {
         self.session_runtime
             .submit_queued_inputs_for_agent_with_turn_id(
                 session_id,

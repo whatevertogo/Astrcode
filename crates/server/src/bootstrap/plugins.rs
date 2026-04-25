@@ -974,7 +974,7 @@ fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use astrcode_core::SkillSource;
-    use astrcode_governance_contract::{CapabilitySelector, ModeId};
+    use astrcode_governance_contract::ModeId;
     use astrcode_plugin_host::{PluginHealth, PluginState};
     use astrcode_protocol::plugin::{SkillAssetDescriptor, SkillDescriptor};
     use axum::{Json, Router, routing::post};
@@ -1215,10 +1215,6 @@ args = ["{script_path}"]
         assert_eq!(result.skills[0].source, SkillSource::Plugin);
         assert_eq!(result.modes.len(), 1);
         assert_eq!(result.modes[0].id, ModeId::from("plugin-review"));
-        assert_eq!(
-            result.modes[0].capability_selector,
-            CapabilitySelector::AllTools
-        );
         assert!(result.descriptors.iter().any(|descriptor| {
             descriptor.plugin_id == "protocol-plugin"
                 && descriptor

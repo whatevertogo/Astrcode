@@ -8,7 +8,7 @@ use astrcode_core::{
     SessionMeta, SessionTurnAcquireResult, StorageEvent, StoredEvent, TaskSnapshot, TurnId,
     TurnTerminalKind,
 };
-use astrcode_governance_contract::{ModeId, SystemPromptBlock};
+use astrcode_governance_contract::SystemPromptBlock;
 use astrcode_prompt_contract::{
     PromptCacheGlobalStrategy, PromptCacheHints, PromptDeclaration, SystemPromptLayer,
 };
@@ -147,23 +147,6 @@ pub struct RecoveredSessionState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct PromptGovernanceContext {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_capability_names: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode_id: Option<ModeId>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub approval_mode: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub policy_revision: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_subrun_depth: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_spawn_per_turn: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct PromptFactsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
@@ -172,8 +155,6 @@ pub struct PromptFactsRequest {
     pub working_dir: PathBuf,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_capability_names: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub governance: Option<PromptGovernanceContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

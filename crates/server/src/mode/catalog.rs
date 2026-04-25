@@ -4,9 +4,9 @@
 //! 以及 plan 模板辅助函数。
 
 use astrcode_governance_contract::{
-    ActionPolicies, ActionPolicyEffect, ActionPolicyRule, CapabilitySelector, ChildPolicySpec,
-    GovernanceModeSpec, ModeArtifactDef, ModeExecutionPolicySpec, ModeExitGateDef, ModeId,
-    ModePromptHooks, PromptProgramEntry, SubmitBusyPolicy, TransitionPolicySpec,
+    ActionPolicies, ActionPolicyEffect, ActionPolicyRule, ChildPolicySpec, GovernanceModeSpec,
+    ModeArtifactDef, ModeExecutionPolicySpec, ModeExitGateDef, ModeId, ModePromptHooks,
+    PromptProgramEntry, TransitionPolicySpec,
 };
 
 use super::builtin_prompts::{
@@ -52,7 +52,6 @@ pub(crate) fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
             id: ModeId::code(),
             name: "Code".to_string(),
             description: "默认执行模式，保留完整能力面与委派能力。".to_string(),
-            capability_selector: CapabilitySelector::AllTools,
             action_policies: ActionPolicies::default(),
             child_policy: ChildPolicySpec {
                 allow_delegation: true,
@@ -60,10 +59,7 @@ pub(crate) fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
                 default_mode_id: Some(ModeId::code()),
                 ..ChildPolicySpec::default()
             },
-            execution_policy: ModeExecutionPolicySpec {
-                submit_busy_policy: Some(SubmitBusyPolicy::BranchOnBusy),
-                ..ModeExecutionPolicySpec::default()
-            },
+            execution_policy: ModeExecutionPolicySpec::default(),
             prompt_program: vec![PromptProgramEntry {
                 block_id: "mode.code".to_string(),
                 title: "Execution Mode".to_string(),
@@ -79,23 +75,9 @@ pub(crate) fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
             id: ModeId::plan(),
             name: "Plan".to_string(),
             description: "规划模式，只暴露只读工具并禁止继续委派。".to_string(),
-            capability_selector: CapabilitySelector::Union(vec![
-                CapabilitySelector::Difference {
-                    base: Box::new(CapabilitySelector::AllTools),
-                    subtract: Box::new(CapabilitySelector::Union(vec![
-                        CapabilitySelector::SideEffect(astrcode_core::SideEffect::Local),
-                        CapabilitySelector::SideEffect(astrcode_core::SideEffect::Workspace),
-                        CapabilitySelector::SideEffect(astrcode_core::SideEffect::External),
-                        CapabilitySelector::Tag("agent".to_string()),
-                    ])),
-                },
-                CapabilitySelector::Name("exitPlanMode".to_string()),
-                CapabilitySelector::Name("upsertSessionPlan".to_string()),
-            ]),
             action_policies: ActionPolicies {
                 default_effect: ActionPolicyEffect::Allow,
                 rules: vec![ActionPolicyRule {
-                    selector: CapabilitySelector::Tag("agent".to_string()),
                     effect: ActionPolicyEffect::Deny,
                 }],
             },
@@ -111,10 +93,7 @@ pub(crate) fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
                 ),
                 ..ChildPolicySpec::default()
             },
-            execution_policy: ModeExecutionPolicySpec {
-                submit_busy_policy: Some(SubmitBusyPolicy::RejectOnBusy),
-                ..ModeExecutionPolicySpec::default()
-            },
+            execution_policy: ModeExecutionPolicySpec::default(),
             prompt_program: vec![PromptProgramEntry {
                 block_id: "mode.plan".to_string(),
                 title: "Planning Mode".to_string(),
@@ -166,7 +145,7 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::Result;
-    use astrcode_governance_contract::{CapabilitySelector, GovernanceModeSpec, ModeId};
+    use astrcode_governance_contract::{GovernanceModeSpec, ModeId};
 
     use super::builtin_mode_specs;
     use crate::mode_catalog_service::ServerModeCatalog;
@@ -229,7 +208,6 @@ mod tests {
                 id: ModeId::plan(),
                 name: "Plan Override".to_string(),
                 description: "invalid".to_string(),
-                capability_selector: CapabilitySelector::AllTools,
                 action_policies: Default::default(),
                 child_policy: Default::default(),
                 execution_policy: Default::default(),
@@ -251,7 +229,6 @@ mod tests {
             id: ModeId::from("plugin.plan-lite"),
             name: "Plan Lite".to_string(),
             description: "invalid".to_string(),
-            capability_selector: CapabilitySelector::AllTools,
             action_policies: Default::default(),
             child_policy: Default::default(),
             execution_policy: Default::default(),
@@ -277,7 +254,6 @@ mod tests {
             id: ModeId::from("plugin.plan-lite"),
             name: "Plan Lite".to_string(),
             description: "valid".to_string(),
-            capability_selector: CapabilitySelector::AllTools,
             action_policies: Default::default(),
             child_policy: Default::default(),
             execution_policy: Default::default(),

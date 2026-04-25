@@ -14,6 +14,7 @@ pub mod event_log;
 mod event_translate;
 pub mod execution_surface;
 pub mod fork;
+pub mod input_hooks;
 pub mod input_queue;
 pub mod model_selection;
 pub mod ports;
@@ -41,11 +42,13 @@ pub use event_log::SessionWriter;
 pub use event_translate::{EventTranslator, replay_records};
 pub use execution_surface::HostSessionSnapshot;
 pub use fork::{ForkPoint, ForkResult};
+pub use input_hooks::{InputHookApplyRequest, InputHookDecision, apply_input_hooks};
 pub use input_queue::{InputKind, InputQueueProjection};
+pub use model_selection::{ModelSelectionDecision, apply_model_select_hooks};
 pub use ports::{
-    EventStore, ProjectionRegistrySnapshot, PromptAgentProfileSummary, PromptBuildCacheMetrics,
-    PromptBuildOutput, PromptBuildRequest, PromptEntrySummary, PromptFacts, PromptFactsProvider,
-    PromptFactsRequest, PromptGovernanceContext, PromptProvider, PromptSkillSummary,
+    EventStore, HookDispatch, ProjectionRegistrySnapshot, PromptAgentProfileSummary,
+    PromptBuildCacheMetrics, PromptBuildOutput, PromptBuildRequest, PromptEntrySummary,
+    PromptFacts, PromptFactsProvider, PromptFactsRequest, PromptProvider, PromptSkillSummary,
     RecoveredSessionState, SessionRecoveryCheckpoint, TurnProjectionSnapshot,
 };
 pub use projection::{AgentState, AgentStateProjector, project};

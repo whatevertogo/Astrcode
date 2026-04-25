@@ -114,9 +114,10 @@ provider emits tool calls
 user input
   -> host-session input hook
   -> TransformInput / HandledInput / SwitchMode / Continue
-  -> mode transition durable event if needed
-  -> compile envelope
-  -> runtime turn
+  -> HandledInput 返回 ExecutionSubmissionOutcome::Handled，不生成 turn id
+  -> 如需要则写入 mode transition durable event
+  -> 编译 envelope
+  -> 启动 runtime turn 并返回 ExecutionSubmissionOutcome::Accepted
 ```
 
 ### Compact

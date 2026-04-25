@@ -10,7 +10,7 @@ use astrcode_core::{
 };
 use astrcode_governance_contract::ModeId;
 use astrcode_host_session::SubRunHandle;
-use astrcode_runtime_contract::ExecutionAccepted;
+use astrcode_runtime_contract::{ExecutionAccepted, ExecutionSubmissionOutcome};
 
 use crate::{
     AgentKernelPort, AgentSessionPort,
@@ -20,8 +20,7 @@ use crate::{
     errors::ApplicationError,
     execution::{ensure_profile_mode, merge_task_with_context},
     governance_surface::{
-        FreshChildGovernanceInput, GovernanceBusyPolicy, GovernanceSurfaceAssembler,
-        build_delegation_metadata,
+        FreshChildGovernanceInput, GovernanceSurfaceAssembler, build_delegation_metadata,
     },
     ports::ServerKernelControlError,
 };
@@ -80,7 +79,6 @@ pub async fn launch_subagent(
                 runtime: runtime_config,
                 description: request.description.clone(),
                 task: request.task.clone(),
-                busy_policy: GovernanceBusyPolicy::BranchOnBusy,
             },
         )
         .await?;
@@ -126,7 +124,7 @@ pub async fn launch_subagent(
         .map_err(ApplicationError::Internal)?;
     let merged_task = merge_task_with_context(&request.task, request.context.as_deref());
 
-    let mut accepted = session_runtime
+    let outcome = session_runtime
         .submit_prompt_for_agent_with_submission(
             &child_session.session_id,
             merged_task,
@@ -138,6 +136,14 @@ pub async fn launch_subagent(
         )
         .await
         .map_err(ApplicationError::from)?;
+    let mut accepted = match outcome {
+        ExecutionSubmissionOutcome::Accepted(accepted) => accepted,
+        ExecutionSubmissionOutcome::Handled { response, .. } => {
+            return Err(ApplicationError::Internal(format!(
+                "child agent prompt was handled before turn creation: {response}"
+            )));
+        },
+    };
     metrics.record_child_spawned();
     accepted.agent_id = Some(handle.agent_id.clone());
     Ok(LaunchedSubagent { accepted, handle })

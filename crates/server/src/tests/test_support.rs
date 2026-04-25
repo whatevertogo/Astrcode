@@ -16,8 +16,7 @@ use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{
     SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState, SubAgentExecutor,
 };
-use astrcode_prompt_contract::PromptDeclaration;
-use astrcode_runtime_contract::ExecutionAccepted;
+use astrcode_runtime_contract::{ExecutionAccepted, ExecutionSubmissionOutcome};
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
@@ -210,7 +209,6 @@ fn unimplemented_for_test(area: &str) -> ! {
 pub(crate) struct RecordedPromptSubmission {
     pub(crate) session_id: String,
     pub(crate) text: String,
-    pub(crate) prompt_declarations: Vec<PromptDeclaration>,
     pub(crate) injected_messages: Vec<LlmMessage>,
 }
 
@@ -285,22 +283,21 @@ impl AppSessionPort for StubSessionPort {
         text: String,
         _runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted> {
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome> {
         self.recorded_submissions
             .lock()
             .expect("submission record lock should work")
             .push(RecordedPromptSubmission {
                 session_id: session_id.to_string(),
                 text,
-                prompt_declarations: submission.prompt_declarations,
                 injected_messages: submission.injected_messages,
             });
-        Ok(ExecutionAccepted {
+        Ok(ExecutionSubmissionOutcome::accepted(ExecutionAccepted {
             session_id: SessionId::from(session_id.to_string()),
             turn_id: TurnId::from("turn-stub".to_string()),
             agent_id: None,
             branched_from_session_id: None,
-        })
+        }))
     }
 
     async fn interrupt_session(&self, _session_id: &str) -> astrcode_core::Result<()> {
@@ -470,7 +467,7 @@ impl AgentSessionPort for StubSessionPort {
         _text: String,
         _runtime: ResolvedRuntimeConfig,
         _submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted> {
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome> {
         unimplemented_for_test("server test stub")
     }
 
@@ -481,7 +478,7 @@ impl AgentSessionPort for StubSessionPort {
         _text: String,
         _runtime: ResolvedRuntimeConfig,
         _submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>> {
         unimplemented_for_test("server test stub")
     }
 
@@ -492,7 +489,7 @@ impl AgentSessionPort for StubSessionPort {
         _queued_inputs: Vec<String>,
         _runtime: ResolvedRuntimeConfig,
         _submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>> {
         unimplemented_for_test("server test stub")
     }
 

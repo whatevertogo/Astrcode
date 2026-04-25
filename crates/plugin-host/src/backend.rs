@@ -414,7 +414,8 @@ fn now_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use astrcode_protocol::plugin::{
-        EventPhase, InitializeResultData, InvokeMessage, PeerDescriptor, PeerRole,
+        EventPhase, HookDispatchMessage, InitializeResultData, InvokeMessage, PeerDescriptor,
+        PeerRole,
     };
     use serde_json::json;
 
@@ -516,6 +517,21 @@ rl.on('line', (line) => {
       success: true,
       output: { echoed: msg.input },
       metadata: { transport: 'node-fixture' }
+    }));
+    return;
+  }
+  if (msg.type === 'dispatch_hook') {
+    console.log(JSON.stringify({
+      type: 'hook_result',
+      correlationId: msg.correlationId,
+      diagnostics: [{ message: 'remote hook handled', severity: 'info' }],
+      effects: [{
+        kind: 'BlockToolResult',
+        payload: {
+          toolCallId: msg.payload.toolCallId,
+          reason: 'remote policy denied'
+        }
+      }]
     }));
   }
 });
@@ -809,6 +825,62 @@ rl.on('line', (line) => {
         assert_eq!(stream.len(), 3);
         assert_eq!(stream[1].phase, EventPhase::Delta);
         assert_eq!(stream[2].phase, EventPhase::Completed);
+
+        handle.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn external_runtime_handle_can_dispatch_hook_over_stdio_transport() {
+        let (command, args) = node_protocol_command();
+        let mut descriptor = PluginDescriptor::builtin("repo-inspector", "Repo Inspector");
+        descriptor.source_kind = PluginSourceKind::Process;
+        descriptor.source_ref = "plugins/repo-inspector.toml".to_string();
+        descriptor.launch_command = Some(command);
+        descriptor.launch_args = args;
+
+        let plan = PluginBackendPlan::from_descriptor(&descriptor)
+            .expect("process descriptor should map to backend plan");
+        let backend = plan
+            .start_process()
+            .await
+            .expect("process backend should start");
+        let local_peer = PeerDescriptor {
+            id: "host-1".to_string(),
+            name: "plugin-host".to_string(),
+            role: PeerRole::Supervisor,
+            version: "0.1.0".to_string(),
+            supported_profiles: vec!["coding".to_string()],
+            metadata: serde_json::Value::Null,
+        };
+        let initialize_state = PluginInitializeState::new(default_initialize_message(
+            local_peer,
+            Vec::new(),
+            default_profiles(),
+        ));
+        let mut handle = ExternalPluginRuntimeHandle::from_backend(backend)
+            .with_initialize_state(initialize_state);
+
+        handle
+            .initialize_remote()
+            .await
+            .expect("initialize should succeed");
+
+        let result = handle
+            .dispatch_hook(&HookDispatchMessage {
+                correlation_id: "hook-1".to_string(),
+                snapshot_id: "snapshot-1".to_string(),
+                plugin_id: "repo-inspector".to_string(),
+                hook_id: "remote-tool-policy".to_string(),
+                event: "tool_call".to_string(),
+                payload: json!({ "toolCallId": "call-1" }),
+            })
+            .await
+            .expect("hook dispatch should succeed");
+
+        assert_eq!(result.correlation_id, "hook-1");
+        assert_eq!(result.effects[0].kind, "BlockToolResult");
+        assert_eq!(result.effects[0].payload["toolCallId"], "call-1");
+        assert_eq!(result.diagnostics[0].message, "remote hook handled");
 
         handle.shutdown().await.expect("shutdown should succeed");
     }

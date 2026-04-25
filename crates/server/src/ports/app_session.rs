@@ -10,7 +10,7 @@ use astrcode_core::{
 };
 use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState};
-use astrcode_runtime_contract::ExecutionAccepted;
+use astrcode_runtime_contract::ExecutionSubmissionOutcome;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
@@ -40,7 +40,7 @@ pub trait AppSessionPort: Send + Sync {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted>;
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome>;
     async fn interrupt_session(&self, session_id: &str) -> astrcode_core::Result<()>;
     async fn compact_session(
         &self,

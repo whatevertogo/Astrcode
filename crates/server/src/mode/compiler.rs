@@ -2,16 +2,11 @@
 //!
 //! 将声明式的 `GovernanceModeSpec` 编译为运行时可消费的 `CompiledModeEnvelope`：
 //! - 保留 mode prompt / contracts / child policy 等稳定语义
-//! - 不再根据 capability selector 收缩工具 surface
 //! - 生成 mode prompt declarations 和子代理策略
-#![allow(dead_code)]
 
-use std::collections::BTreeSet;
-
-use astrcode_core::{CapabilitySpec, Result};
+use astrcode_core::Result;
 use astrcode_governance_contract::{
-    CapabilitySelector, CompiledModeContracts, GovernanceModeSpec, ResolvedChildPolicy,
-    ResolvedTurnEnvelope, SubmitBusyPolicy,
+    CompiledModeContracts, GovernanceModeSpec, ResolvedChildPolicy, ResolvedTurnEnvelope,
 };
 use astrcode_prompt_contract::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
@@ -20,16 +15,7 @@ use astrcode_prompt_contract::{
 
 #[derive(Clone)]
 pub struct CompiledModeEnvelope {
-    pub spec: GovernanceModeSpec,
     pub envelope: ResolvedTurnEnvelope,
-}
-
-pub fn compile_capability_selector(
-    capability_specs: &[CapabilitySpec],
-    selector: &CapabilitySelector,
-) -> Result<Vec<String>> {
-    let selected = evaluate_selector(capability_specs, selector)?;
-    Ok(selected.into_iter().collect())
 }
 
 pub fn compile_mode_envelope(
@@ -41,7 +27,6 @@ pub fn compile_mode_envelope(
         mode_id: spec.id.clone(),
         prompt_declarations: prompt_declarations.clone(),
         mode_contracts: compiled_mode_contracts(spec),
-        action_policies: spec.action_policies.clone(),
         child_policy: ResolvedChildPolicy {
             mode_id: spec
                 .child_policy
@@ -59,17 +44,10 @@ pub fn compile_mode_envelope(
                 .or(spec.execution_policy.fork_mode.clone()),
             reuse_scope_summary: spec.child_policy.reuse_scope_summary.clone(),
         },
-        submit_busy_policy: spec
-            .execution_policy
-            .submit_busy_policy
-            .unwrap_or(SubmitBusyPolicy::BranchOnBusy),
         fork_mode: spec.execution_policy.fork_mode.clone(),
         diagnostics: Vec::new(),
     };
-    Ok(CompiledModeEnvelope {
-        spec: spec.clone(),
-        envelope,
-    })
+    Ok(CompiledModeEnvelope { envelope })
 }
 
 pub fn compile_mode_envelope_for_child(spec: &GovernanceModeSpec) -> Result<CompiledModeEnvelope> {
@@ -78,7 +56,6 @@ pub fn compile_mode_envelope_for_child(spec: &GovernanceModeSpec) -> Result<Comp
         mode_id: spec.id.clone(),
         prompt_declarations: prompt_declarations.clone(),
         mode_contracts: compiled_mode_contracts(spec),
-        action_policies: spec.action_policies.clone(),
         child_policy: ResolvedChildPolicy {
             mode_id: spec
                 .child_policy
@@ -96,10 +73,6 @@ pub fn compile_mode_envelope_for_child(spec: &GovernanceModeSpec) -> Result<Comp
                 .or(spec.execution_policy.fork_mode.clone()),
             reuse_scope_summary: spec.child_policy.reuse_scope_summary.clone(),
         },
-        submit_busy_policy: spec
-            .execution_policy
-            .submit_busy_policy
-            .unwrap_or(SubmitBusyPolicy::BranchOnBusy),
         fork_mode: spec
             .execution_policy
             .fork_mode
@@ -107,10 +80,7 @@ pub fn compile_mode_envelope_for_child(spec: &GovernanceModeSpec) -> Result<Comp
             .or(spec.child_policy.fork_mode.clone()),
         diagnostics: Vec::new(),
     };
-    Ok(CompiledModeEnvelope {
-        spec: spec.clone(),
-        envelope,
-    })
+    Ok(CompiledModeEnvelope { envelope })
 }
 
 fn compiled_mode_contracts(spec: &GovernanceModeSpec) -> CompiledModeContracts {
@@ -119,66 +89,6 @@ fn compiled_mode_contracts(spec: &GovernanceModeSpec) -> CompiledModeContracts {
         exit_gate: spec.exit_gate.clone(),
         prompt_hooks: spec.prompt_hooks.clone(),
     }
-}
-
-fn evaluate_selector(
-    capability_specs: &[CapabilitySpec],
-    selector: &CapabilitySelector,
-) -> Result<BTreeSet<String>> {
-    let tools = capability_specs
-        .iter()
-        .filter(|spec| spec.kind.is_tool())
-        .collect::<Vec<_>>();
-    Ok(match selector {
-        CapabilitySelector::AllTools => tools
-            .into_iter()
-            .map(|spec| spec.name.to_string())
-            .collect(),
-        CapabilitySelector::Name(name) => tools
-            .into_iter()
-            .filter(|spec| spec.name.as_str() == name.as_str())
-            .map(|spec| spec.name.to_string())
-            .collect(),
-        CapabilitySelector::Kind(kind) => tools
-            .into_iter()
-            .filter(|spec| spec.kind == *kind)
-            .map(|spec| spec.name.to_string())
-            .collect(),
-        CapabilitySelector::SideEffect(side_effect) => tools
-            .into_iter()
-            .filter(|spec| spec.side_effect == *side_effect)
-            .map(|spec| spec.name.to_string())
-            .collect(),
-        CapabilitySelector::Tag(tag) => tools
-            .into_iter()
-            .filter(|spec| spec.tags.iter().any(|candidate| candidate == tag))
-            .map(|spec| spec.name.to_string())
-            .collect(),
-        CapabilitySelector::Union(selectors) => {
-            let mut combined = BTreeSet::new();
-            for selector in selectors {
-                combined.extend(evaluate_selector(capability_specs, selector)?);
-            }
-            combined
-        },
-        CapabilitySelector::Intersection(selectors) => {
-            let mut iter = selectors.iter();
-            let Some(first) = iter.next() else {
-                return Ok(BTreeSet::new());
-            };
-            let mut combined = evaluate_selector(capability_specs, first)?;
-            for selector in iter {
-                let next = evaluate_selector(capability_specs, selector)?;
-                combined = combined.intersection(&next).cloned().collect();
-            }
-            combined
-        },
-        CapabilitySelector::Difference { base, subtract } => {
-            let base = evaluate_selector(capability_specs, base)?;
-            let subtract = evaluate_selector(capability_specs, subtract)?;
-            base.difference(&subtract).cloned().collect()
-        },
-    })
 }
 
 fn mode_prompt_declarations(
@@ -210,85 +120,15 @@ fn mode_prompt_declarations(
 mod tests {
     use std::sync::Arc;
 
-    use astrcode_core::{CapabilityKind, CapabilitySpec, ForkMode, SideEffect};
+    use astrcode_core::ForkMode;
     use astrcode_governance_contract::ModeId;
 
-    use super::{compile_capability_selector, compile_mode_envelope_for_child};
+    use super::compile_mode_envelope_for_child;
     use crate::{mode::builtin_mode_specs, mode_catalog_service::ServerModeCatalog};
 
     fn builtin_test_catalog() -> Arc<ServerModeCatalog> {
         ServerModeCatalog::from_mode_specs(builtin_mode_specs(), Vec::new())
             .expect("builtin catalog should build")
-    }
-
-    fn capability_specs() -> Vec<CapabilitySpec> {
-        vec![
-            CapabilitySpec::builder("readFile", CapabilityKind::Tool)
-                .description("read")
-                .schema(
-                    serde_json::json!({"type":"object"}),
-                    serde_json::json!({"type":"object"}),
-                )
-                .tags(["filesystem", "read"])
-                .side_effect(SideEffect::None)
-                .build()
-                .expect("readFile should build"),
-            CapabilitySpec::builder("writeFile", CapabilityKind::Tool)
-                .description("write")
-                .schema(
-                    serde_json::json!({"type":"object"}),
-                    serde_json::json!({"type":"object"}),
-                )
-                .tags(["filesystem", "write"])
-                .side_effect(SideEffect::Workspace)
-                .build()
-                .expect("writeFile should build"),
-            CapabilitySpec::builder("taskWrite", CapabilityKind::Tool)
-                .description("task")
-                .schema(
-                    serde_json::json!({"type":"object"}),
-                    serde_json::json!({"type":"object"}),
-                )
-                .tags(["task", "execution"])
-                .side_effect(SideEffect::Local)
-                .build()
-                .expect("taskWrite should build"),
-            CapabilitySpec::builder("spawn", CapabilityKind::Tool)
-                .description("spawn")
-                .schema(
-                    serde_json::json!({"type":"object"}),
-                    serde_json::json!({"type":"object"}),
-                )
-                .tags(["agent"])
-                .side_effect(SideEffect::None)
-                .build()
-                .expect("spawn should build"),
-        ]
-    }
-
-    #[test]
-    fn builtin_modes_compile_expected_tool_equivalence() {
-        let capability_specs = capability_specs();
-        let catalog = builtin_test_catalog();
-
-        let code = catalog.get(&ModeId::code()).unwrap();
-        let plan = catalog.get(&ModeId::plan()).unwrap();
-
-        assert_eq!(
-            compile_capability_selector(&capability_specs, &code.capability_selector)
-                .expect("code selector should compile"),
-            vec![
-                "readFile".to_string(),
-                "spawn".to_string(),
-                "taskWrite".to_string(),
-                "writeFile".to_string()
-            ]
-        );
-        assert_eq!(
-            compile_capability_selector(&capability_specs, &plan.capability_selector)
-                .expect("plan selector should compile"),
-            vec!["readFile".to_string()]
-        );
     }
 
     #[test]

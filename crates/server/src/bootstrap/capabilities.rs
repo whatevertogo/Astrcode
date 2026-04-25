@@ -59,12 +59,9 @@ pub(crate) fn build_core_tool_invokers(
         Arc::new(FindFilesTool),
         Arc::new(GrepTool),
         Arc::new(ShellTool),
-        Arc::new(EnterPlanModeTool),
-        Arc::new(ExitPlanModeTool),
         Arc::new(TaskWriteTool),
         Arc::new(ToolSearchTool::new(tool_search_index)),
         Arc::new(SkillTool::new(skill_catalog)),
-        Arc::new(UpsertSessionPlanTool),
     ];
 
     let invokers = tools
@@ -79,6 +76,29 @@ pub(crate) fn build_core_tool_invokers(
         .collect();
 
     Ok(invokers)
+}
+
+/// 构建 planning builtin plugin 的工具调用器。
+///
+/// 这些工具仍是稳定本地能力，但 descriptor 归属独立的 builtin planning plugin，
+/// 避免继续把规划能力混在 core tool 事实源里。
+pub(crate) fn build_planning_tool_invokers() -> Result<Vec<Arc<dyn CapabilityInvoker>>> {
+    let tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(EnterPlanModeTool),
+        Arc::new(ExitPlanModeTool),
+        Arc::new(UpsertSessionPlanTool),
+    ];
+
+    Ok(tools
+        .into_iter()
+        .filter_map(|tool| match ToolCapabilityInvoker::new(tool) {
+            Ok(invoker) => Some(Arc::new(invoker) as Arc<dyn CapabilityInvoker>),
+            Err(error) => {
+                log::error!("注册 planning 工具失败: {error}");
+                None
+            },
+        })
+        .collect())
 }
 
 /// 创建统一的 SkillCatalog。

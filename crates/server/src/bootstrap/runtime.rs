@@ -5,6 +5,7 @@
 //! 组合根只负责把 server-owned bridge、host-session 与 agent-runtime 接起来。
 
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -12,14 +13,17 @@ use std::{
 use astrcode_adapter_storage::session::FileSystemSessionRepository;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
 use astrcode_core::SkillCatalog;
-use astrcode_governance_contract::GovernanceModeSpec;
+use astrcode_governance_contract::{
+    ActionPolicies, ActionPolicyEffect, ApprovalDefault, ApprovalRequest, GovernanceModeSpec,
+};
 use astrcode_host_session::{EventStore, SessionCatalog, SubAgentExecutor};
 use astrcode_plugin_host::{
-    BuiltinHookRegistry, CommandDescriptor, PluginActiveSnapshot, PluginDescriptor, PluginRegistry,
+    BuiltinHookRegistry, PluginActiveSnapshot, PluginDescriptor, PluginRegistry,
     ProviderContributionCatalog, ResourceCatalog, builtin_collaboration_tools_descriptor,
     builtin_modes_descriptor, builtin_openai_provider_descriptor, builtin_tools_descriptor,
     resources_discover,
 };
+use astrcode_runtime_contract::hooks::{HookEffect, HookEventPayload};
 use astrcode_support::hostpaths::resolve_home_dir;
 
 use super::{
@@ -27,9 +31,17 @@ use super::{
         agent_api::ServerAgentApi,
         agent_runtime_bridge::{ServerAgentRuntimeBuildInput, build_server_agent_runtime_bundle},
     },
+    builtin_plugins::{
+        BUILTIN_GOVERNANCE_MODES_PLUGIN_ID, BUILTIN_PLANNING_PLUGIN_ID,
+        EXTERNAL_PLUGIN_MODES_PLUGIN_ID, PERMISSION_PROVIDER_REQUEST_HOOK_ID,
+        PERMISSION_TOOL_CALL_HOOK_ID, PLANNING_INPUT_HOOK_ID, builtin_composer_plugin_descriptor,
+        builtin_permission_descriptor, builtin_planning_descriptor, descriptor_modes,
+        descriptor_modes_for_plugin_ids, split_builtin_planning_modes,
+    },
     capabilities::{
         CapabilitySurfaceSync, build_agent_tool_invokers, build_core_tool_invokers,
-        build_skill_catalog, build_stable_local_invokers, sync_external_tool_search_index,
+        build_planning_tool_invokers, build_skill_catalog, build_stable_local_invokers,
+        sync_external_tool_search_index,
     },
     deps::core::{
         self, AstrError, CapabilityInvoker, Config, ResolvedRuntimeConfig, Result,
@@ -58,9 +70,6 @@ use crate::{
     },
     watch_service::WatchService,
 };
-
-const BUILTIN_GOVERNANCE_MODES_PLUGIN_ID: &str = "builtin-governance-modes";
-const EXTERNAL_PLUGIN_MODES_PLUGIN_ID: &str = "external-plugin-modes";
 
 /// 服务器运行时：组合根输出。
 pub struct ServerRuntime {
@@ -216,16 +225,33 @@ pub async fn bootstrap_server_runtime_with_options(
     );
     let skill_catalog_bridge: Arc<dyn SkillCatalog> = skill_catalog.clone();
     let builtin_mode_specs = builtin_server_mode_specs()?;
+    let builtin_mode_specs_for_reload = builtin_mode_specs.clone();
+    let (governance_mode_specs, planning_mode_specs) =
+        split_builtin_planning_modes(builtin_mode_specs.clone());
     let core_tool_invokers =
         build_core_tool_invokers(Arc::clone(&tool_search_index), skill_catalog.clone())?;
+    let planning_tool_invokers = build_planning_tool_invokers()?;
+    let core_tool_specs = core_tool_invokers
+        .iter()
+        .map(|invoker| invoker.capability_spec())
+        .collect::<Vec<_>>();
+    let planning_tool_specs = planning_tool_invokers
+        .iter()
+        .map(|invoker| invoker.capability_spec())
+        .collect::<Vec<_>>();
     let active_plugin_descriptors = build_server_plugin_contribution_descriptors(
         &core_tool_invokers,
+        &planning_tool_invokers,
         &mcp_invokers,
-        builtin_mode_specs,
+        governance_mode_specs,
+        planning_mode_specs,
         plugin_modes,
         plugin_descriptors.clone(),
     );
-    let builtin_hook_registry = Arc::new(BuiltinHookRegistry::new());
+    let mut builtin_hook_registry = BuiltinHookRegistry::new();
+    register_builtin_planning_hooks(&mut builtin_hook_registry);
+    register_builtin_permission_hooks(&mut builtin_hook_registry, builtin_mode_specs.clone());
+    let builtin_hook_registry = Arc::new(builtin_hook_registry);
     let plugin_host_reload = reload_server_plugin_host_snapshot(
         plugin_registry.as_ref(),
         active_plugin_descriptors,
@@ -248,11 +274,20 @@ pub async fn bootstrap_server_runtime_with_options(
         plugin_host_reload.builtin_modes.clone(),
         plugin_host_reload.plugin_modes.clone(),
     )?;
+    let plugin_hook_dispatcher = Arc::new(PluginHostHookDispatcher::new(
+        plugin_host_reload.snapshot.snapshot_id.clone(),
+        Arc::new(plugin_host_reload.snapshot.hook_bindings.clone()),
+        Arc::clone(&builtin_hook_registry),
+    ));
     let runtime_hook_dispatcher: Arc<dyn astrcode_agent_runtime::HookDispatcher> =
-        Arc::new(PluginHostHookDispatcher::new(
-            Arc::new(plugin_host_reload.snapshot.hook_bindings.clone()),
-            Arc::clone(&builtin_hook_registry),
-        ));
+        plugin_hook_dispatcher.clone();
+    let owner_hook_dispatcher: Arc<dyn astrcode_host_session::HookDispatch> =
+        plugin_hook_dispatcher.clone();
+    let hook_snapshot_id = {
+        let plugin_hook_dispatcher = Arc::clone(&plugin_hook_dispatcher);
+        Arc::new(move || plugin_hook_dispatcher.active_snapshot_id())
+            as Arc<dyn Fn() -> String + Send + Sync>
+    };
 
     let event_store: Arc<dyn EventStore> = Arc::new(
         FileSystemSessionRepository::new_with_projects_root(paths.projects_root.clone()),
@@ -262,6 +297,7 @@ pub async fn bootstrap_server_runtime_with_options(
     // core builtin tools + 当前 external 动态能力。
     // agent tools 要等 agent_service 准备好后再并入稳定本地层。
     let mut initial_router_invokers = core_tool_invokers.clone();
+    initial_router_invokers.extend(planning_tool_invokers.clone());
     initial_router_invokers.extend(external_dynamic_invokers.clone());
     let session_runtime = bootstrap_session_runtime(ServerSessionRuntimeBootstrapInput {
         capability_invokers: initial_router_invokers,
@@ -269,12 +305,14 @@ pub async fn bootstrap_server_runtime_with_options(
             config_service.clone(),
             working_dir.clone(),
             Arc::clone(&provider_catalog),
+            Some(owner_hook_dispatcher.clone()),
         ),
         session_catalog: Arc::clone(&session_catalog),
         mode_catalog: Arc::clone(&mode_catalog),
         agent_limits: resolve_agent_control_limits(&resolved_config),
         hook_dispatcher: Some(runtime_hook_dispatcher),
-        hook_snapshot_id: plugin_host_reload.snapshot.snapshot_id.clone(),
+        owner_hook_dispatcher: Some(owner_hook_dispatcher),
+        hook_snapshot_id,
     })?;
     let profiles = build_profile_resolution_service(agent_loader.clone())?;
     let watch_service = match options.watch_service_override.clone() {
@@ -300,8 +338,14 @@ pub async fn bootstrap_server_runtime_with_options(
         Arc::clone(&agent_runtime.subagent_executor),
         Arc::clone(&agent_runtime.collaboration_executor),
     )?;
+    let collaboration_tool_specs = agent_tool_invokers
+        .iter()
+        .map(|invoker| invoker.capability_spec())
+        .collect::<Vec<_>>();
+    let mut core_and_planning_tool_invokers = core_tool_invokers;
+    core_and_planning_tool_invokers.extend(planning_tool_invokers);
     let stable_local_invokers =
-        build_stable_local_invokers(core_tool_invokers, agent_tool_invokers);
+        build_stable_local_invokers(core_and_planning_tool_invokers, agent_tool_invokers);
     let capability_sync = CapabilitySurfaceSync::new(
         session_runtime.capability_surface.clone(),
         stable_local_invokers,
@@ -335,6 +379,12 @@ pub async fn bootstrap_server_runtime_with_options(
         managed_plugin_components,
         working_dir: working_dir.clone(),
         mode_catalog: Some(Arc::clone(&mode_catalog)),
+        core_tool_specs,
+        planning_tool_specs,
+        collaboration_tool_specs,
+        builtin_mode_specs: builtin_mode_specs_for_reload,
+        builtin_hook_registry: Arc::clone(&builtin_hook_registry),
+        hook_dispatcher: Arc::clone(&plugin_hook_dispatcher),
     });
     let profile_watch_runtime = if options.enable_profile_watch {
         Some(
@@ -382,8 +432,10 @@ pub async fn bootstrap_server_runtime_with_options(
 
 fn build_server_plugin_contribution_descriptors(
     core_tool_invokers: &[Arc<dyn CapabilityInvoker>],
+    planning_tool_invokers: &[Arc<dyn CapabilityInvoker>],
     mcp_invokers: &[Arc<dyn CapabilityInvoker>],
-    builtin_modes: Vec<GovernanceModeSpec>,
+    governance_modes: Vec<GovernanceModeSpec>,
+    planning_modes: Vec<GovernanceModeSpec>,
     plugin_modes: Vec<GovernanceModeSpec>,
     mut external_descriptors: Vec<PluginDescriptor>,
 ) -> Vec<PluginDescriptor> {
@@ -392,14 +444,22 @@ fn build_server_plugin_contribution_descriptors(
         builtin_modes_descriptor(
             BUILTIN_GOVERNANCE_MODES_PLUGIN_ID,
             "Builtin Governance Modes",
-            builtin_modes,
+            governance_modes,
+        ),
+        builtin_permission_descriptor(),
+        builtin_planning_descriptor(
+            planning_tool_invokers
+                .iter()
+                .map(|invoker| invoker.capability_spec())
+                .collect(),
+            planning_modes,
         ),
         builtin_modes_descriptor(
             EXTERNAL_PLUGIN_MODES_PLUGIN_ID,
             "External Plugin Modes",
             plugin_modes,
         ),
-        builtin_composer_resources_descriptor(),
+        builtin_composer_plugin_descriptor(),
         builtin_tools_descriptor(
             "builtin-core-tools",
             "Builtin Core Tools",
@@ -422,14 +482,216 @@ fn build_server_plugin_contribution_descriptors(
     descriptors
 }
 
-fn builtin_composer_resources_descriptor() -> PluginDescriptor {
-    let mut descriptor =
-        PluginDescriptor::builtin("builtin-composer-resources", "Builtin Composer Resources");
-    descriptor.commands.push(CommandDescriptor {
-        command_id: "compact".to_string(),
-        entry_ref: "builtin://commands/compact".to_string(),
+fn register_builtin_planning_hooks(registry: &mut BuiltinHookRegistry) {
+    registry.on_input(PLANNING_INPUT_HOOK_ID, |_context, payload| async move {
+        Ok(planning_input_effects(payload))
     });
-    descriptor
+}
+
+fn register_builtin_permission_hooks(
+    registry: &mut BuiltinHookRegistry,
+    modes: Vec<GovernanceModeSpec>,
+) {
+    let policy_by_mode = Arc::new(
+        modes
+            .into_iter()
+            .map(|mode| (mode.id.as_str().to_string(), mode.action_policies))
+            .collect::<BTreeMap<_, _>>(),
+    );
+
+    let tool_policy_by_mode = Arc::clone(&policy_by_mode);
+    registry.on_tool_call(PERMISSION_TOOL_CALL_HOOK_ID, move |_context, payload| {
+        let policy_by_mode = Arc::clone(&tool_policy_by_mode);
+        async move { Ok(permission_tool_call_effects(payload, &policy_by_mode)) }
+    });
+
+    registry.on_before_provider_request(
+        PERMISSION_PROVIDER_REQUEST_HOOK_ID,
+        move |_context, payload| {
+            let policy_by_mode = Arc::clone(&policy_by_mode);
+            async move {
+                Ok(permission_provider_request_effects(
+                    payload,
+                    &policy_by_mode,
+                ))
+            }
+        },
+    );
+}
+
+fn permission_tool_call_effects(
+    payload: HookEventPayload,
+    policy_by_mode: &BTreeMap<String, ActionPolicies>,
+) -> Vec<HookEffect> {
+    let HookEventPayload::ToolCall {
+        session_id,
+        turn_id,
+        tool_call_id,
+        tool_name,
+        args,
+        capability_spec,
+        current_mode,
+        ..
+    } = payload
+    else {
+        return vec![HookEffect::Continue];
+    };
+    let Some(policy_effect) = current_mode
+        .as_deref()
+        .map(|mode| policy_effect_for_mode(mode, policy_by_mode))
+    else {
+        return vec![HookEffect::Continue];
+    };
+
+    match policy_effect {
+        ActionPolicyEffect::Allow => vec![HookEffect::Continue],
+        ActionPolicyEffect::Deny if should_gate_tool(&capability_spec) => {
+            vec![HookEffect::BlockToolResult {
+                tool_call_id,
+                reason: format!("tool '{tool_name}' is denied by the active mode policy"),
+            }]
+        },
+        ActionPolicyEffect::Deny => vec![HookEffect::Continue],
+        ActionPolicyEffect::Ask if should_gate_tool(&capability_spec) => {
+            let approval = ApprovalRequest {
+                request_id: tool_call_id.clone(),
+                session_id,
+                turn_id,
+                capability: (*capability_spec).clone(),
+                payload: args,
+                prompt: format!("Allow tool '{tool_name}'?"),
+                default: ApprovalDefault::Deny,
+                metadata: serde_json::Value::Null,
+            };
+            vec![HookEffect::RequireApproval {
+                request_id: approval.request_id,
+                reason: approval.prompt,
+            }]
+        },
+        ActionPolicyEffect::Ask => vec![HookEffect::Continue],
+    }
+}
+
+fn permission_provider_request_effects(
+    payload: HookEventPayload,
+    policy_by_mode: &BTreeMap<String, ActionPolicies>,
+) -> Vec<HookEffect> {
+    let HookEventPayload::BeforeProviderRequest {
+        current_mode,
+        model_ref,
+        ..
+    } = payload
+    else {
+        return vec![HookEffect::Continue];
+    };
+    match current_mode
+        .as_deref()
+        .map(|mode| provider_policy_effect_for_mode(mode, policy_by_mode))
+    {
+        Some(ActionPolicyEffect::Deny) => vec![HookEffect::DenyProviderRequest {
+            reason: format!("model request for '{model_ref}' is denied by the active mode policy"),
+        }],
+        Some(ActionPolicyEffect::Ask) => vec![HookEffect::RequireApproval {
+            request_id: format!("provider:{model_ref}"),
+            reason: format!("model request for '{model_ref}' requires approval"),
+        }],
+        Some(ActionPolicyEffect::Allow) | None => vec![HookEffect::Continue],
+    }
+}
+
+fn provider_policy_effect_for_mode(
+    mode_id: &str,
+    policy_by_mode: &BTreeMap<String, ActionPolicies>,
+) -> ActionPolicyEffect {
+    policy_by_mode
+        .get(mode_id)
+        .map(|policy| policy.default_effect)
+        .unwrap_or(ActionPolicyEffect::Allow)
+}
+
+fn policy_effect_for_mode(
+    mode_id: &str,
+    policy_by_mode: &BTreeMap<String, ActionPolicies>,
+) -> ActionPolicyEffect {
+    let Some(policy) = policy_by_mode.get(mode_id) else {
+        return ActionPolicyEffect::Allow;
+    };
+    if policy
+        .rules
+        .iter()
+        .any(|rule| matches!(rule.effect, ActionPolicyEffect::Deny))
+    {
+        return ActionPolicyEffect::Deny;
+    }
+    if policy
+        .rules
+        .iter()
+        .any(|rule| matches!(rule.effect, ActionPolicyEffect::Ask))
+    {
+        return ActionPolicyEffect::Ask;
+    }
+    policy.default_effect
+}
+
+fn should_gate_tool(capability: &core::CapabilitySpec) -> bool {
+    capability.side_effect != core::SideEffect::None
+        && !capability.tags.iter().any(|tag| tag == "plan")
+}
+
+fn planning_input_effects(payload: HookEventPayload) -> Vec<HookEffect> {
+    let HookEventPayload::Input { text, .. } = payload else {
+        return vec![HookEffect::Continue];
+    };
+    let trimmed = text.trim();
+
+    if let Some(rest) =
+        strip_prefixed_input(trimmed, "/plan").or_else(|| strip_prefixed_input(trimmed, "plan:"))
+    {
+        return planning_mode_prefix_effects("plan", rest, "已切换到 plan mode。");
+    }
+
+    if let Some(rest) =
+        strip_prefixed_input(trimmed, "/code").or_else(|| strip_prefixed_input(trimmed, "code:"))
+    {
+        return planning_mode_prefix_effects("code", rest, "已切换到 code mode。");
+    }
+
+    vec![HookEffect::Continue]
+}
+
+fn strip_prefixed_input<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let rest = text.strip_prefix(prefix)?;
+    if prefix.ends_with(':')
+        || rest.is_empty()
+        || rest
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_whitespace())
+    {
+        Some(rest.trim())
+    } else {
+        None
+    }
+}
+
+fn planning_mode_prefix_effects(
+    mode_id: &str,
+    rest: &str,
+    handled_message: &str,
+) -> Vec<HookEffect> {
+    let mut effects = vec![HookEffect::SwitchMode {
+        mode_id: mode_id.to_string(),
+    }];
+    if rest.is_empty() {
+        effects.push(HookEffect::HandledInput {
+            response: handled_message.to_string(),
+        });
+    } else {
+        effects.push(HookEffect::TransformInput {
+            text: rest.to_string(),
+        });
+    }
+    effects
 }
 
 #[derive(Debug, Clone)]
@@ -448,7 +710,13 @@ fn reload_server_plugin_host_snapshot(
 ) -> Result<ServerPluginHostReload> {
     let resources = resources_discover(&descriptors)?.catalog;
     let provider_catalog = ProviderContributionCatalog::from_descriptors(&descriptors)?;
-    let builtin_modes = descriptor_modes(&descriptors, BUILTIN_GOVERNANCE_MODES_PLUGIN_ID);
+    let builtin_modes = descriptor_modes_for_plugin_ids(
+        &descriptors,
+        &[
+            BUILTIN_GOVERNANCE_MODES_PLUGIN_ID,
+            BUILTIN_PLANNING_PLUGIN_ID,
+        ],
+    );
     let plugin_modes = descriptor_modes(&descriptors, EXTERNAL_PLUGIN_MODES_PLUGIN_ID);
     registry.stage_candidate_with_hook_registry(descriptors, hook_registry)?;
     let snapshot = registry.commit_candidate().ok_or_else(|| {
@@ -462,14 +730,6 @@ fn reload_server_plugin_host_snapshot(
         builtin_modes,
         plugin_modes,
     })
-}
-
-fn descriptor_modes(descriptors: &[PluginDescriptor], plugin_id: &str) -> Vec<GovernanceModeSpec> {
-    descriptors
-        .iter()
-        .find(|descriptor| descriptor.plugin_id == plugin_id)
-        .map(|descriptor| descriptor.modes.clone())
-        .unwrap_or_default()
 }
 
 /// 解析插件搜索路径。
@@ -520,7 +780,9 @@ mod tests {
 
     use super::{
         build_server_plugin_contribution_descriptors, builtin_server_mode_specs,
+        register_builtin_permission_hooks, register_builtin_planning_hooks,
         reload_server_plugin_host_snapshot, resolve_agent_control_limits,
+        split_builtin_planning_modes,
     };
     use crate::bootstrap::deps::core::{AgentConfig, Config, RuntimeConfig, config};
 
@@ -561,11 +823,14 @@ mod tests {
     fn server_plugin_descriptors_collect_builtin_and_external_contributions() {
         let external = PluginDescriptor::builtin("external-plugin", "External Plugin");
         let builtin_modes = builtin_server_mode_specs().expect("builtin mode specs should build");
+        let (governance_modes, planning_modes) = split_builtin_planning_modes(builtin_modes);
 
         let descriptors = build_server_plugin_contribution_descriptors(
             &[],
             &[],
-            builtin_modes,
+            &[],
+            governance_modes,
+            planning_modes,
             Vec::new(),
             vec![external],
         );
@@ -579,6 +844,8 @@ mod tests {
             vec![
                 "builtin-provider-openai",
                 "builtin-governance-modes",
+                "builtin-permission-policy",
+                "builtin-planning",
                 "external-plugin-modes",
                 "builtin-composer-resources",
                 "builtin-core-tools",
@@ -587,7 +854,10 @@ mod tests {
                 "external-plugin",
             ]
         );
-        assert_eq!(descriptors[1].modes.len(), 2);
+        assert_eq!(descriptors[1].modes.len(), 1);
+        assert_eq!(descriptors[2].hooks.len(), 2);
+        assert_eq!(descriptors[3].modes.len(), 1);
+        assert_eq!(descriptors[3].hooks.len(), 1);
     }
 
     #[test]
@@ -603,15 +873,21 @@ mod tests {
             api_kind: "openai".to_string(),
         });
         let builtin_modes = builtin_server_mode_specs().expect("builtin mode specs should build");
+        let builtin_modes_for_hooks = builtin_modes.clone();
+        let (governance_modes, planning_modes) = split_builtin_planning_modes(builtin_modes);
         let descriptors = build_server_plugin_contribution_descriptors(
             &[],
             &[],
-            builtin_modes,
+            &[],
+            governance_modes,
+            planning_modes,
             Vec::new(),
             vec![descriptor],
         );
 
-        let hook_registry = BuiltinHookRegistry::new();
+        let mut hook_registry = BuiltinHookRegistry::new();
+        register_builtin_planning_hooks(&mut hook_registry);
+        register_builtin_permission_hooks(&mut hook_registry, builtin_modes_for_hooks);
         let reload = reload_server_plugin_host_snapshot(&registry, descriptors, &hook_registry)
             .expect("bridge reload should commit");
 
@@ -620,6 +896,8 @@ mod tests {
             vec![
                 "builtin-provider-openai".to_string(),
                 "builtin-governance-modes".to_string(),
+                "builtin-permission-policy".to_string(),
+                "builtin-planning".to_string(),
                 "external-plugin-modes".to_string(),
                 "builtin-composer-resources".to_string(),
                 "builtin-core-tools".to_string(),

@@ -51,6 +51,7 @@ pub(crate) fn bootstrap_session_runtime(
         llm_provider: Arc::clone(&input.llm_provider),
         active_sessions: Arc::clone(&active_sessions),
         hook_dispatcher: input.hook_dispatcher,
+        owner_hook_dispatcher: input.owner_hook_dispatcher,
         hook_snapshot_id: input.hook_snapshot_id,
     });
     let session_bridge =
@@ -117,13 +118,13 @@ impl SessionInfoProvider for SessionRuntimeInfoBridge {
     }
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 struct PreparedTestTurn {
     session_id: String,
     _lease: Box<dyn SessionTurnLease>,
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 struct SessionRuntimeTestSupportBridge {
     session_catalog: Arc<SessionCatalog>,
     active_sessions: Arc<ActiveSessionRegistry>,

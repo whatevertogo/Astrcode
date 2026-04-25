@@ -3,20 +3,17 @@
 //! 验证 `GovernanceSurfaceAssembler` 在不同场景下的端到端行为：
 //! - session turn 治理面构建与 prompt declarations 注入
 //! - fresh/resumed child 治理面继承与委派策略
-//! - 工具白名单、协作策略上下文的正确性
-//! - 各种 capability selector（all / subset / none / union / difference）的编译结果
+//! - 协作策略上下文的正确性
 
 use astrcode_core::{
     LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, UserMessageOrigin,
 };
-use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId};
-use serde_json::json;
+use astrcode_governance_contract::ModeId;
 
 use super::{
-    FreshChildGovernanceInput, GOVERNANCE_POLICY_REVISION, GovernanceBusyPolicy,
-    GovernanceSurfaceAssembler, ResolvedGovernanceSurface, ResumedChildGovernanceInput,
+    FreshChildGovernanceInput, GovernanceSurfaceAssembler, ResumedChildGovernanceInput,
     RootGovernanceInput, SessionGovernanceInput, build_inherited_messages,
-    collaboration_policy_context, select_inherited_recent_tail,
+    select_inherited_recent_tail,
 };
 use crate::{ExecutionControl, test_support::StubSessionPort};
 
@@ -33,11 +30,9 @@ fn session_surface_builds_collaboration_prompt_and_policy_context() {
             runtime: ResolvedRuntimeConfig::default(),
             control: None,
             extra_prompt_declarations: Vec::new(),
-            busy_policy: GovernanceBusyPolicy::BranchOnBusy,
         })
         .expect("surface should build");
 
-    assert_eq!(surface.governance_revision, GOVERNANCE_POLICY_REVISION);
     assert!(
         surface
             .prompt_declarations
@@ -45,38 +40,7 @@ fn session_surface_builds_collaboration_prompt_and_policy_context() {
             .any(|declaration| declaration.origin.as_deref()
                 == Some("governance:collaboration-guide"))
     );
-    assert_eq!(surface.prompt_facts_context().approval_mode, "inherit");
     assert_eq!(surface.bound_mode_tool_contract.mode_id, ModeId::code());
-}
-
-#[test]
-fn surface_policy_pipeline_defaults_to_allow_all() {
-    let surface = ResolvedGovernanceSurface {
-        mode_id: ModeId::code(),
-        runtime: ResolvedRuntimeConfig::default(),
-        prompt_declarations: Vec::new(),
-        bound_mode_tool_contract: BoundModeToolContractSnapshot {
-            mode_id: ModeId::code(),
-            artifact: None,
-            exit_gate: None,
-        },
-        resolved_limits: ResolvedExecutionLimitsSnapshot,
-        resolved_overrides: None,
-        injected_messages: Vec::new(),
-        policy_context: astrcode_governance_contract::PolicyContext {
-            session_id: "session-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            step_index: 0,
-            working_dir: ".".to_string(),
-            profile: "coding".to_string(),
-            metadata: json!({}),
-        },
-        collaboration_policy: collaboration_policy_context(&ResolvedRuntimeConfig::default()),
-        requires_approval: true,
-        governance_revision: GOVERNANCE_POLICY_REVISION.to_string(),
-    };
-    assert!(surface.requires_approval);
-    assert_eq!(surface.prompt_facts_context().approval_mode, "required");
 }
 
 #[test]
@@ -144,7 +108,6 @@ async fn fresh_child_surface_restricts_tools_and_inherits_governance_defaults() 
                 runtime: ResolvedRuntimeConfig::default(),
                 description: "只做读取".to_string(),
                 task: "inspect file".to_string(),
-                busy_policy: GovernanceBusyPolicy::BranchOnBusy,
             },
         )
         .await
@@ -174,7 +137,6 @@ fn resumed_child_surface_reuses_existing_limits_and_contract_source() {
             delegation: None,
             message: "continue with the same branch".to_string(),
             context: Some("keep scope tight".to_string()),
-            busy_policy: GovernanceBusyPolicy::RejectOnBusy,
         })
         .expect("surface should build");
     assert_eq!(surface.resolved_limits, limits);

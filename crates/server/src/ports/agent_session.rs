@@ -13,7 +13,7 @@ use astrcode_core::{
     InputBatchStartedPayload, InputDiscardedPayload, InputQueuedPayload, ResolvedRuntimeConfig,
     SessionMeta, StoredEvent, TurnId,
 };
-use astrcode_runtime_contract::ExecutionAccepted;
+use astrcode_runtime_contract::ExecutionSubmissionOutcome;
 use async_trait::async_trait;
 
 use super::{
@@ -39,7 +39,7 @@ pub trait AgentSessionPort: AppSessionPort {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted>;
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome>;
     async fn try_submit_prompt_for_agent_with_turn_id(
         &self,
         session_id: &str,
@@ -47,7 +47,7 @@ pub trait AgentSessionPort: AppSessionPort {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>>;
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>>;
     async fn submit_queued_inputs_for_agent_with_turn_id(
         &self,
         session_id: &str,
@@ -55,7 +55,7 @@ pub trait AgentSessionPort: AppSessionPort {
         queued_inputs: Vec<String>,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>>;
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>>;
 
     // Durable input queue / collaboration 事件追加。
     async fn append_agent_input_queued(

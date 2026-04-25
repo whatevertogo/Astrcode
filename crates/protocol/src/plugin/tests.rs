@@ -4,14 +4,15 @@
 //! 是否正确，确保 JSON 格式与协议版本兼容。
 
 use astrcode_governance_contract::{
-    ActionPolicies, CapabilitySelector, ChildPolicySpec, GovernanceModeSpec, ModeArtifactDef,
-    ModeExecutionPolicySpec, ModeExitGateDef, ModeId, ModePromptHooks, TransitionPolicySpec,
+    ActionPolicies, ChildPolicySpec, GovernanceModeSpec, ModeArtifactDef, ModeExecutionPolicySpec,
+    ModeExitGateDef, ModeId, ModePromptHooks, TransitionPolicySpec,
 };
 use serde_json::json;
 
 use super::{
     CancelMessage, CapabilityKind, CapabilityWireDescriptor, CapabilityWireDescriptorBuildError,
-    ErrorPayload, EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor, InitializeMessage,
+    ErrorPayload, EventMessage, EventPhase, FilterDescriptor, HandlerDescriptor,
+    HookDiagnosticWire, HookDispatchMessage, HookEffectWire, HookResultMessage, InitializeMessage,
     InitializeResultData, InvocationContext, InvocationMode, PROTOCOL_VERSION, PeerDescriptor,
     PeerRole, PermissionSpec, PluginMessage, ProfileDescriptor, ResultMessage, SideEffect,
     Stability, TriggerDescriptor, WorkspaceRef,
@@ -143,7 +144,39 @@ fn plugin_messages_roundtrip_as_v5_json() {
         reason: Some("user interrupted".to_string()),
     });
 
-    for message in [init, invoke, result, event, cancel] {
+    let hook_dispatch = PluginMessage::HookDispatch(HookDispatchMessage {
+        correlation_id: "hook-1".to_string(),
+        snapshot_id: "snapshot-1".to_string(),
+        plugin_id: "plugin-1".to_string(),
+        hook_id: "tool-policy".to_string(),
+        event: "tool_call".to_string(),
+        payload: json!({ "toolCallId": "call-1" }),
+    });
+
+    let hook_result = PluginMessage::HookResult(HookResultMessage {
+        correlation_id: "hook-1".to_string(),
+        effects: vec![HookEffectWire {
+            kind: "BlockToolResult".to_string(),
+            payload: json!({
+                "toolCallId": "call-1",
+                "reason": "policy denied"
+            }),
+        }],
+        diagnostics: vec![HookDiagnosticWire {
+            message: "checked policy".to_string(),
+            severity: Some("info".to_string()),
+        }],
+    });
+
+    for message in [
+        init,
+        invoke,
+        result,
+        event,
+        cancel,
+        hook_dispatch,
+        hook_result,
+    ] {
         let json = serde_json::to_string(&message).expect("serialize message");
         let decoded: PluginMessage = serde_json::from_str(&json).expect("deserialize message");
         assert_eq!(decoded, message);
@@ -183,7 +216,6 @@ fn initialize_result_serializes_declared_modes() {
         id: ModeId::from("plugin.plan-lite"),
         name: "Plan Lite".to_string(),
         description: "Plugin-provided planning mode.".to_string(),
-        capability_selector: CapabilitySelector::Tag("read-only".to_string()),
         action_policies: ActionPolicies::default(),
         child_policy: ChildPolicySpec::default(),
         execution_policy: ModeExecutionPolicySpec::default(),

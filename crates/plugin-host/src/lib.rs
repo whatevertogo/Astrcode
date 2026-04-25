@@ -29,7 +29,9 @@ pub use descriptor::{
     ProviderDescriptor, ResourceDescriptor, SkillDescriptor, ThemeDescriptor,
 };
 pub use hooks::{
-    HookDispatchMode, HookFailurePolicy, HookStage, SUPPORTED_HOOK_EVENTS, dispatch_hooks,
+    ExternalHookDispatchRequest, ExternalHookDispatcher, HookDispatchMode, HookFailurePolicy,
+    HookStage, SUPPORTED_HOOK_EVENTS, dispatch_hooks, dispatch_hooks_with_external,
+    hook_effect_from_wire, hook_effects_from_wire,
 };
 pub use host::{
     ActivePluginRuntimeCatalog, ActivePluginRuntimeEntry, BuiltinCapabilityExecutor,

@@ -6,7 +6,9 @@ use std::{
 
 use astrcode_agent_runtime::HookDispatcher;
 use astrcode_core::{AgentLifecycleStatus, AgentProfile, CapabilityInvoker, Result};
-use astrcode_host_session::{SessionCatalog, SubRunHandle};
+use astrcode_host_session::{
+    HookDispatch as HostSessionHookDispatch, SessionCatalog, SubRunHandle,
+};
 use astrcode_llm_contract::LlmProvider;
 
 use crate::{
@@ -133,7 +135,8 @@ pub(crate) struct ServerSessionRuntimeBootstrapInput {
     pub mode_catalog: Arc<crate::mode_catalog_service::ServerModeCatalog>,
     pub agent_limits: ServerAgentControlLimits,
     pub hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
-    pub hook_snapshot_id: String,
+    pub owner_hook_dispatcher: Option<Arc<dyn HostSessionHookDispatch>>,
+    pub hook_snapshot_id: Arc<dyn Fn() -> String + Send + Sync>,
 }
 
 pub(crate) struct ServerBootstrappedSessionRuntime {

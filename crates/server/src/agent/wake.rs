@@ -146,7 +146,23 @@ impl AgentOrchestrationService {
             )
             .await
         {
-            Ok(Some(accepted)) => accepted,
+            Ok(Some(astrcode_runtime_contract::ExecutionSubmissionOutcome::Accepted(accepted))) => {
+                accepted
+            },
+            Ok(Some(astrcode_runtime_contract::ExecutionSubmissionOutcome::Handled {
+                response,
+                ..
+            })) => {
+                self.kernel
+                    .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)
+                    .await;
+                log::warn!(
+                    "wake turn input was handled before turn creation for session '{}': {}",
+                    parent_session_id,
+                    response
+                );
+                return Ok(false);
+            },
             Ok(None) => {
                 self.kernel
                     .requeue_parent_delivery_batch(&parent_session_id, &batch_delivery_ids)

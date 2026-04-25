@@ -71,17 +71,17 @@ pub(crate) async fn submit_prompt(
         })
         .await
         .map_err(ApiError::from)?;
-    let turn_id = accepted.turn_id.ok_or_else(|| {
-        ApiError::internal_server_error("accepted prompt response omitted turn id".into())
-    })?;
-    let session_id = accepted.session_id.ok_or_else(|| {
-        ApiError::internal_server_error("accepted prompt response omitted session id".into())
-    })?;
     Ok((
-        StatusCode::ACCEPTED,
+        if accepted.accepted {
+            StatusCode::ACCEPTED
+        } else {
+            StatusCode::OK
+        },
         Json(PromptAcceptedResponse {
-            turn_id,
-            session_id,
+            accepted: accepted.accepted,
+            message: accepted.message,
+            turn_id: accepted.turn_id,
+            session_id: accepted.session_id,
             branched_from_session_id: accepted.branched_from_session_id,
             accepted_control,
         }),

@@ -16,11 +16,13 @@ use astrcode_adapter_llm::{
 };
 use astrcode_adapter_storage::config_store::FileConfigStore;
 use astrcode_core::config::{OpenAiApiMode, OpenAiProfileCapabilities};
+use astrcode_host_session::{HookDispatch as HostSessionHookDispatch, apply_model_select_hooks};
 use astrcode_llm_contract::{LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_plugin_host::{OPENAI_API_KIND, ProviderContributionCatalog};
 
 use super::deps::core::{
-    AgentProfile, AstrError, ModelConfig, ResolvedRuntimeConfig, Result, resolve_runtime_config,
+    AgentProfile, AstrError, Config, ModelConfig, ModelSelection, ResolvedRuntimeConfig, Result,
+    resolve_runtime_config,
 };
 use crate::{
     ApplicationError, ConfigService, ProfileProvider, ProfileResolutionService,
@@ -34,11 +36,13 @@ pub(crate) fn build_llm_provider(
     config_service: Arc<ServerConfigService>,
     working_dir: PathBuf,
     provider_catalog: Arc<RwLock<ProviderContributionCatalog>>,
+    model_hook_dispatcher: Option<Arc<dyn HostSessionHookDispatch>>,
 ) -> Arc<dyn LlmProvider> {
     Arc::new(ConfigBackedLlmProvider::new(
         config_service,
         working_dir,
         provider_catalog,
+        model_hook_dispatcher,
     ))
 }
 
@@ -65,6 +69,7 @@ struct ConfigBackedLlmProvider {
     config_service: Arc<ServerConfigService>,
     working_dir: PathBuf,
     provider_catalog: Arc<RwLock<ProviderContributionCatalog>>,
+    model_hook_dispatcher: Option<Arc<dyn HostSessionHookDispatch>>,
     providers: RwLock<HashMap<String, Arc<dyn LlmProvider>>>,
 }
 
@@ -149,22 +154,48 @@ impl ConfigBackedLlmProvider {
         config_service: Arc<ServerConfigService>,
         working_dir: PathBuf,
         provider_catalog: Arc<RwLock<ProviderContributionCatalog>>,
+        model_hook_dispatcher: Option<Arc<dyn HostSessionHookDispatch>>,
     ) -> Self {
         Self {
             config_service,
             working_dir,
             provider_catalog,
+            model_hook_dispatcher,
             providers: RwLock::new(HashMap::new()),
         }
     }
 
     fn resolve_spec(&self) -> std::result::Result<ResolvedLlmProviderSpec, ApplicationError> {
-        let config = self
-            .config_service
-            .load_overlayed_config(Some(self.working_dir.as_path()))
-            .map_err(server_error_to_application)?;
+        let config = self.load_config()?;
         let selection = config_mode_helpers::resolve_current_model(&config)
             .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
+        self.resolve_spec_from_selection(&config, selection)
+    }
+
+    async fn resolve_spec_for_request(
+        &self,
+    ) -> std::result::Result<ResolvedLlmProviderSpec, ApplicationError> {
+        let config = self.load_config()?;
+        let selection = config_mode_helpers::resolve_current_model(&config)
+            .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
+        let selection = apply_model_select_hooks(selection, self.model_hook_dispatcher.clone())
+            .await
+            .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?
+            .selection;
+        self.resolve_spec_from_selection(&config, selection)
+    }
+
+    fn load_config(&self) -> std::result::Result<Config, ApplicationError> {
+        self.config_service
+            .load_overlayed_config(Some(self.working_dir.as_path()))
+            .map_err(server_error_to_application)
+    }
+
+    fn resolve_spec_from_selection(
+        &self,
+        config: &Config,
+        selection: ModelSelection,
+    ) -> std::result::Result<ResolvedLlmProviderSpec, ApplicationError> {
         let profile = config
             .profiles
             .iter()
@@ -265,6 +296,21 @@ impl ConfigBackedLlmProvider {
         let spec = self
             .resolve_spec()
             .map_err(|error| AstrError::Internal(error.to_string()))?;
+        self.resolve_runtime_provider_from_spec(spec)
+    }
+
+    async fn resolve_runtime_provider_for_request(&self) -> Result<Arc<dyn LlmProvider>> {
+        let spec = self
+            .resolve_spec_for_request()
+            .await
+            .map_err(|error| AstrError::Internal(error.to_string()))?;
+        self.resolve_runtime_provider_from_spec(spec)
+    }
+
+    fn resolve_runtime_provider_from_spec(
+        &self,
+        spec: ResolvedLlmProviderSpec,
+    ) -> Result<Arc<dyn LlmProvider>> {
         if let Some(existing) = self
             .providers
             .read()
@@ -332,7 +378,7 @@ fn client_config_from_runtime(runtime: &ResolvedRuntimeConfig) -> LlmClientConfi
 #[async_trait::async_trait]
 impl LlmProvider for ConfigBackedLlmProvider {
     async fn generate(&self, request: LlmRequest, sink: Option<LlmEventSink>) -> Result<LlmOutput> {
-        let provider = self.resolve_runtime_provider()?;
+        let provider = self.resolve_runtime_provider_for_request().await?;
         provider.generate(request, sink).await
     }
 
@@ -418,10 +464,12 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use astrcode_adapter_storage::config_store::FileConfigStore;
-    use astrcode_core::{Config, ModelConfig, Profile};
+    use astrcode_core::{Config, HookEventKey, ModelConfig, Profile, Result};
+    use astrcode_host_session::HookDispatch;
     use astrcode_plugin_host::{
         OPENAI_API_KIND, PluginDescriptor, ProviderContributionCatalog, ProviderDescriptor,
     };
+    use astrcode_runtime_contract::hooks::{HookEffect, HookEventPayload};
 
     use super::ConfigBackedLlmProvider;
     use crate::{ConfigService, config_service_bridge::ServerConfigService};
@@ -430,6 +478,15 @@ mod tests {
         config: Config,
         catalog: ProviderContributionCatalog,
         working_dir: &std::path::Path,
+    ) -> ConfigBackedLlmProvider {
+        provider_with_config_and_hook(config, catalog, working_dir, None)
+    }
+
+    fn provider_with_config_and_hook(
+        config: Config,
+        catalog: ProviderContributionCatalog,
+        working_dir: &std::path::Path,
+        model_hook_dispatcher: Option<Arc<dyn HookDispatch>>,
     ) -> ConfigBackedLlmProvider {
         let config_path = working_dir.join("config.json");
         let store = FileConfigStore::new(config_path);
@@ -440,6 +497,7 @@ mod tests {
             )))),
             working_dir.to_path_buf(),
             Arc::new(RwLock::new(catalog)),
+            model_hook_dispatcher,
         )
     }
 
@@ -501,5 +559,51 @@ mod tests {
 
         assert_eq!(spec.provider_id, "renamed-openai");
         assert_eq!(spec.api_kind, OPENAI_API_KIND);
+    }
+
+    struct HintModelHook;
+
+    #[async_trait::async_trait]
+    impl HookDispatch for HintModelHook {
+        async fn dispatch_hook(
+            &self,
+            event: HookEventKey,
+            payload: HookEventPayload,
+        ) -> Result<Vec<HookEffect>> {
+            assert_eq!(event, HookEventKey::ModelSelect);
+            assert!(matches!(payload, HookEventPayload::ModelSelect { .. }));
+            Ok(vec![HookEffect::ModelHint {
+                model: "hint-model".to_string(),
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_spec_for_request_applies_model_select_hook() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let mut descriptor = PluginDescriptor::builtin("corp-provider", "Corp Provider");
+        descriptor.providers.push(ProviderDescriptor {
+            provider_id: "corp-openai".to_string(),
+            api_kind: OPENAI_API_KIND.to_string(),
+        });
+        let catalog = ProviderContributionCatalog::from_descriptors(&[descriptor])
+            .expect("catalog should build");
+        let mut config = config_for_provider_kind("corp-openai");
+        config.profiles[0]
+            .models
+            .push(ModelConfig::new("hint-model"));
+        let provider = provider_with_config_and_hook(
+            config,
+            catalog,
+            temp.path(),
+            Some(Arc::new(HintModelHook)),
+        );
+
+        let spec = provider
+            .resolve_spec_for_request()
+            .await
+            .expect("provider should resolve with model hook");
+
+        assert_eq!(spec.model, "hint-model");
     }
 }

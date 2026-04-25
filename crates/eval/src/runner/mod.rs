@@ -233,9 +233,23 @@ async fn execute_task_inner(
     let accepted = client
         .submit_turn(&session.session_id, &task.prompt)
         .await?;
+    if !accepted.accepted {
+        return Err(EvalError::validation(format!(
+            "评测 prompt 被 input hook 处理，未创建 turn: {}",
+            accepted.message
+        )));
+    }
+    let accepted_turn_id = accepted
+        .turn_id
+        .as_deref()
+        .ok_or_else(|| EvalError::validation("accepted prompt response 缺少 turnId"))?;
+    let accepted_session_id = accepted
+        .session_id
+        .clone()
+        .ok_or_else(|| EvalError::validation("accepted prompt response 缺少 sessionId"))?;
     wait_for_turn_done(
         &session_log,
-        &accepted.turn_id,
+        accepted_turn_id,
         config.timeout,
         config.poll_interval,
     )
@@ -252,7 +266,7 @@ async fn execute_task_inner(
         score: score.score,
         diagnosis: Some(diagnosis),
         metrics,
-        session_id: Some(accepted.session_id),
+        session_id: Some(accepted_session_id),
         workspace_path: None,
         error: None,
     })

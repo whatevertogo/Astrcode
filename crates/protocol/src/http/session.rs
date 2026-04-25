@@ -106,17 +106,21 @@ pub struct PromptRequest {
     pub control: Option<ExecutionControlDto>,
 }
 
-/// `POST /api/sessions/:id/prompt` 响应体——提示词已被接受。
+/// `POST /api/sessions/:id/prompt` 响应体。
 ///
-/// 返回新创建的 turn ID 和会话 ID。
+/// `accepted=true` 表示已创建 turn；`accepted=false` 表示 input hook 已处理输入且没有创建 turn。
 /// 如果是从其他会话分支出来的新会话，`branched_from_session_id` 会指向源会话。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptAcceptedResponse {
-    /// 新 turn 的唯一标识
-    pub turn_id: String,
-    /// 会话 ID（分支场景下可能是新会话的 ID）
-    pub session_id: String,
+    pub accepted: bool,
+    pub message: String,
+    /// 新 turn 的唯一标识；hook handled 输入时为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    /// 会话 ID（分支场景下可能是新会话的 ID）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// 如果是分支会话，指向源会话 ID
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branched_from_session_id: Option<String>,

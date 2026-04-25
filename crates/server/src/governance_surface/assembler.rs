@@ -17,7 +17,7 @@ use astrcode_governance_contract::ModeId;
 use astrcode_prompt_contract::PromptDeclaration;
 
 use super::{
-    BuildSurfaceInput, FreshChildGovernanceInput, GovernanceBusyPolicy, ResolvedGovernanceSurface,
+    BuildSurfaceInput, FreshChildGovernanceInput, ResolvedGovernanceSurface,
     ResumedChildGovernanceInput, RootGovernanceInput, SessionGovernanceInput,
 };
 use crate::{
@@ -79,16 +79,12 @@ impl GovernanceSurfaceAssembler {
         input: BuildSurfaceInput,
     ) -> Result<ResolvedGovernanceSurface, ApplicationError> {
         let BuildSurfaceInput {
-            session_id,
-            turn_id,
-            working_dir,
-            profile,
             compiled,
             runtime,
-            requested_busy_policy,
             resolved_overrides,
             injected_messages,
             leading_prompt_declaration,
+            ..
         } = input;
         let mut prompt_declarations: Vec<PromptDeclaration> =
             compiled.envelope.prompt_declarations.clone();
@@ -99,10 +95,6 @@ impl GovernanceSurfaceAssembler {
             runtime.agent.max_subrun_depth,
             runtime.agent.max_spawn_per_turn,
         ));
-        let _busy_policy = super::policy::resolve_busy_policy(
-            compiled.envelope.submit_busy_policy,
-            requested_busy_policy,
-        );
         let surface = ResolvedGovernanceSurface {
             mode_id: compiled.envelope.mode_id.clone(),
             runtime: runtime.clone(),
@@ -111,18 +103,7 @@ impl GovernanceSurfaceAssembler {
             resolved_limits: ResolvedExecutionLimitsSnapshot,
             resolved_overrides,
             injected_messages,
-            policy_context: super::policy::build_policy_context(
-                &session_id,
-                &turn_id,
-                &working_dir,
-                &profile,
-                &compiled.envelope,
-            ),
-            collaboration_policy: super::collaboration_policy_context(&runtime),
-            requires_approval: compiled.envelope.action_policies.requires_approval(),
-            governance_revision: super::GOVERNANCE_POLICY_REVISION.to_string(),
         };
-        surface.validate()?;
         Ok(surface)
     }
 
@@ -134,13 +115,8 @@ impl GovernanceSurfaceAssembler {
         let compiled =
             self.compile_mode_surface(&input.mode_id, input.extra_prompt_declarations)?;
         self.build_surface(BuildSurfaceInput {
-            session_id: input.session_id,
-            turn_id: input.turn_id,
-            working_dir: input.working_dir,
-            profile: input.profile,
             compiled,
             runtime,
-            requested_busy_policy: input.busy_policy,
             resolved_overrides: None,
             injected_messages: Vec::new(),
             leading_prompt_declaration: None,
@@ -160,7 +136,6 @@ impl GovernanceSurfaceAssembler {
             runtime: input.runtime,
             control: input.control,
             extra_prompt_declarations: Vec::new(),
-            busy_policy: GovernanceBusyPolicy::BranchOnBusy,
         })
     }
 
@@ -187,13 +162,8 @@ impl GovernanceSurfaceAssembler {
             compiled.envelope.child_policy.restricted,
         );
         self.build_surface(BuildSurfaceInput {
-            session_id: input.session_id,
-            turn_id: input.turn_id,
-            working_dir: input.working_dir,
-            profile: "subagent".to_string(),
             compiled,
             runtime: input.runtime,
-            requested_busy_policy: input.busy_policy,
             resolved_overrides: Some(resolved_overrides),
             injected_messages,
             leading_prompt_declaration: Some(super::build_fresh_child_contract(&delegation)),
@@ -215,13 +185,8 @@ impl GovernanceSurfaceAssembler {
             )
         });
         self.build_surface(BuildSurfaceInput {
-            session_id: input.session_id,
-            turn_id: input.turn_id,
-            working_dir: input.working_dir,
-            profile: "subagent".to_string(),
             compiled,
             runtime,
-            requested_busy_policy: input.busy_policy,
             resolved_overrides: None,
             injected_messages: Vec::new(),
             leading_prompt_declaration: Some(super::build_resumed_child_contract(

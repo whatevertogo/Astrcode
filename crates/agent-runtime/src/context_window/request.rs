@@ -1,23 +1,38 @@
 use std::{sync::Arc, time::Instant};
 
 use astrcode_context_window::{
+    ContextWindowSettings,
     compaction::{
-        auto_compact, build_post_compact_events, build_post_compact_recovery_messages,
-        compact_config_from_settings,
+        CompactResult, auto_compact, build_post_compact_events,
+        build_post_compact_recovery_messages, compact_config_from_settings,
     },
     prune_pass::apply_prune_pass,
-    token_usage::{PromptTokenSnapshot, build_prompt_snapshot, should_compact},
+    token_usage::{
+        PromptTokenSnapshot, build_prompt_snapshot, estimate_request_tokens, should_compact,
+    },
     tool_result_budget::{
         ApplyToolResultBudgetRequest, ToolResultBudgetStats, apply_tool_result_budget,
     },
 };
 use astrcode_core::{
-    AgentEventContext, CompactTrigger, PromptMetricsPayload, StorageEvent, StorageEventPayload,
+    AgentEventContext, AstrError, CompactAppliedMeta, CompactMode, CompactTrigger, HookEventKey,
+    LlmMessage, PromptMetricsPayload, StorageEvent, StorageEventPayload, UserMessageOrigin,
+    format_compact_summary,
 };
 use astrcode_llm_contract::{LlmProvider, LlmRequest, LlmUsage, PromptCacheDiagnostics};
-use astrcode_runtime_contract::RuntimeTurnEvent;
+use astrcode_runtime_contract::{RuntimeTurnEvent, TurnIdentity};
 
-use crate::r#loop::{TurnExecutionContext, TurnExecutionResources};
+use crate::{
+    hook_dispatch::{HookDispatchRequest, HookEffect, HookEventPayload},
+    r#loop::{TurnExecutionContext, TurnExecutionResources},
+};
+
+struct SessionBeforeCompactDecision {
+    trigger: CompactTrigger,
+    messages: Vec<LlmMessage>,
+    provided_summary: Option<String>,
+    cancel_reason: Option<String>,
+}
 
 /// 组装下一次 provider 请求。
 ///
@@ -95,42 +110,54 @@ pub(crate) async fn assemble_runtime_request(
 
     if should_compact(snapshot) {
         if resources.settings.auto_compact_enabled {
-            if let Some(compaction) = auto_compact(
-                provider.as_ref(),
+            let compact_decision = dispatch_session_before_compact_hook(
+                execution,
+                resources,
                 &messages,
-                None,
-                compact_config_from_settings(
-                    &resources.settings,
-                    CompactTrigger::Auto,
-                    resources.events_history_path.clone(),
-                    None,
-                ),
-                resources.cancel.clone(),
+                CompactTrigger::Auto,
             )
-            .await?
-            {
-                messages = compaction.messages.clone();
-                // compact 后重新注入最近访问过的文件内容，恢复被压缩的文件上下文
-                messages.extend(build_post_compact_recovery_messages(
-                    &execution.file_access_tracker,
-                    &resources.settings,
-                ));
-                execution.pending_events.extend(build_post_compact_events(
-                    Some(&resources.turn_id),
-                    &resources.agent,
-                    CompactTrigger::Auto,
-                    &compaction,
-                ));
-                execution.auto_compaction_count = execution.auto_compaction_count.saturating_add(1);
-                snapshot = build_prompt_snapshot(
-                    &execution.token_tracker,
-                    &messages,
-                    None,
-                    provider.model_limits(),
-                    resources.settings.compact_threshold_percent,
-                    resources.settings.summary_reserve_tokens,
-                    resources.settings.reserved_context_size,
+            .await?;
+            if let Some(reason) = compact_decision.cancel_reason {
+                log::info!(
+                    "turn {} step {}: auto compact cancelled by hook: {}",
+                    resources.turn_id,
+                    execution.step_index,
+                    reason
                 );
+            } else {
+                let (compact_trigger, compaction) = compact_from_hook_decision(
+                    provider.as_ref(),
+                    compact_decision,
+                    &resources.settings,
+                    resources.events_history_path.clone(),
+                    resources.cancel.clone(),
+                )
+                .await?;
+                if let Some(compaction) = compaction {
+                    messages = compaction.messages.clone();
+                    // compact 后重新注入最近访问过的文件内容，恢复被压缩的文件上下文
+                    messages.extend(build_post_compact_recovery_messages(
+                        &execution.file_access_tracker,
+                        &resources.settings,
+                    ));
+                    execution.pending_events.extend(build_post_compact_events(
+                        Some(&resources.turn_id),
+                        &resources.agent,
+                        compact_trigger,
+                        &compaction,
+                    ));
+                    execution.auto_compaction_count =
+                        execution.auto_compaction_count.saturating_add(1);
+                    snapshot = build_prompt_snapshot(
+                        &execution.token_tracker,
+                        &messages,
+                        None,
+                        provider.model_limits(),
+                        resources.settings.compact_threshold_percent,
+                        resources.settings.summary_reserve_tokens,
+                        resources.settings.reserved_context_size,
+                    );
+                }
             }
         } else {
             log::warn!(
@@ -170,20 +197,22 @@ pub(crate) async fn recover_from_prompt_too_long(
     provider: &dyn LlmProvider,
 ) -> astrcode_core::Result<bool> {
     execution.reactive_compact_attempts = execution.reactive_compact_attempts.saturating_add(1);
-    let Some(compaction) = auto_compact(
+    let messages = execution.messages.clone();
+    let compact_decision =
+        dispatch_session_before_compact_hook(execution, resources, &messages, CompactTrigger::Auto)
+            .await?;
+    if compact_decision.cancel_reason.is_some() {
+        return Ok(false);
+    }
+    let (compact_trigger, compaction) = compact_from_hook_decision(
         provider,
-        &execution.messages,
-        None,
-        compact_config_from_settings(
-            &resources.settings,
-            CompactTrigger::Auto,
-            resources.events_history_path.clone(),
-            None,
-        ),
+        compact_decision,
+        &resources.settings,
+        resources.events_history_path.clone(),
         resources.cancel.clone(),
     )
-    .await?
-    else {
+    .await?;
+    let Some(compaction) = compaction else {
         return Ok(false);
     };
 
@@ -196,10 +225,184 @@ pub(crate) async fn recover_from_prompt_too_long(
     execution.pending_events.extend(build_post_compact_events(
         Some(&resources.turn_id),
         &resources.agent,
-        CompactTrigger::Auto,
+        compact_trigger,
         &compaction,
     ));
     Ok(true)
+}
+
+async fn dispatch_session_before_compact_hook(
+    execution: &mut TurnExecutionContext,
+    resources: &TurnExecutionResources,
+    messages: &[LlmMessage],
+    trigger: CompactTrigger,
+) -> astrcode_core::Result<SessionBeforeCompactDecision> {
+    let mut decision = SessionBeforeCompactDecision {
+        trigger,
+        messages: messages.to_vec(),
+        provided_summary: None,
+        cancel_reason: None,
+    };
+    let Some(dispatcher) = &resources.hook_dispatcher else {
+        return Ok(decision);
+    };
+
+    let event = HookEventKey::SessionBeforeCompact;
+    let outcome = dispatcher
+        .dispatch_hook(HookDispatchRequest {
+            snapshot_id: resources.hook_snapshot_id.clone(),
+            event,
+            session_id: resources.session_id.clone(),
+            turn_id: resources.turn_id.clone(),
+            agent_id: resources.agent_id.clone(),
+            payload: HookEventPayload::SessionBeforeCompact {
+                session_id: resources.session_id.clone(),
+                reason: trigger,
+                messages: messages.to_vec(),
+                settings: compact_settings_payload(&resources.settings),
+                current_mode: resources.current_mode.clone(),
+            },
+        })
+        .await?;
+
+    execution
+        .pending_events
+        .push(RuntimeTurnEvent::HookDispatched {
+            identity: TurnIdentity::new(
+                resources.session_id.clone(),
+                resources.turn_id.clone(),
+                resources.agent_id.clone(),
+            ),
+            event,
+            effect_count: outcome.effects.len(),
+        });
+
+    for effect in outcome.effects {
+        match effect {
+            HookEffect::Continue | HookEffect::Diagnostic { .. } => {},
+            HookEffect::CancelCompact { reason } => {
+                decision.cancel_reason = Some(reason);
+                return Ok(decision);
+            },
+            HookEffect::OverrideCompactInput { reason, messages } => {
+                decision.trigger = reason;
+                decision.messages = messages;
+            },
+            HookEffect::ProvideCompactSummary { summary } => {
+                decision.provided_summary = Some(summary);
+                return Ok(decision);
+            },
+            other => {
+                return Err(AstrError::Validation(format!(
+                    "session_before_compact hook returned unsupported effect '{}'",
+                    hook_effect_name(&other)
+                )));
+            },
+        }
+    }
+
+    Ok(decision)
+}
+
+async fn compact_from_hook_decision(
+    provider: &dyn LlmProvider,
+    decision: SessionBeforeCompactDecision,
+    settings: &ContextWindowSettings,
+    history_path: Option<String>,
+    cancel: astrcode_core::CancelToken,
+) -> astrcode_core::Result<(CompactTrigger, Option<CompactResult>)> {
+    let trigger = decision.trigger;
+    if let Some(summary) = decision.provided_summary {
+        return Ok((
+            trigger,
+            Some(compact_result_from_provided_summary(
+                summary,
+                &decision.messages,
+                None,
+            )),
+        ));
+    }
+
+    let compaction = auto_compact(
+        provider,
+        &decision.messages,
+        None,
+        compact_config_from_settings(settings, trigger, history_path, None),
+        cancel,
+    )
+    .await?;
+    Ok((trigger, compaction))
+}
+
+fn compact_result_from_provided_summary(
+    summary: String,
+    source_messages: &[LlmMessage],
+    compact_prompt_context: Option<&str>,
+) -> CompactResult {
+    let summary = summary.trim().to_string();
+    let messages = vec![LlmMessage::User {
+        content: format_compact_summary(&summary),
+        origin: UserMessageOrigin::CompactSummary,
+    }];
+    let pre_tokens = estimate_request_tokens(source_messages, compact_prompt_context);
+    let post_tokens_estimate = estimate_request_tokens(&messages, compact_prompt_context);
+    let output_summary_chars = summary.chars().count().min(u32::MAX as usize) as u32;
+    CompactResult {
+        messages,
+        summary,
+        recent_user_context_digest: None,
+        recent_user_context_messages: Vec::new(),
+        preserved_recent_turns: 0,
+        pre_tokens,
+        post_tokens_estimate,
+        messages_removed: source_messages.len(),
+        tokens_freed: pre_tokens.saturating_sub(post_tokens_estimate),
+        timestamp: chrono::Utc::now(),
+        meta: CompactAppliedMeta {
+            mode: CompactMode::Full,
+            instructions_present: false,
+            fallback_used: false,
+            retry_count: 0,
+            input_units: source_messages.len().min(u32::MAX as usize) as u32,
+            output_summary_chars,
+        },
+    }
+}
+
+fn compact_settings_payload(settings: &ContextWindowSettings) -> serde_json::Value {
+    serde_json::json!({
+        "autoCompactEnabled": settings.auto_compact_enabled,
+        "compactThresholdPercent": settings.compact_threshold_percent,
+        "reservedContextSize": settings.reserved_context_size,
+        "summaryReserveTokens": settings.summary_reserve_tokens,
+        "compactMaxOutputTokens": settings.compact_max_output_tokens,
+        "compactMaxRetryAttempts": settings.compact_max_retry_attempts,
+        "compactKeepRecentTurns": settings.compact_keep_recent_turns,
+        "compactKeepRecentUserMessages": settings.compact_keep_recent_user_messages,
+    })
+}
+
+fn hook_effect_name(effect: &HookEffect) -> &'static str {
+    match effect {
+        HookEffect::Continue => "Continue",
+        HookEffect::Diagnostic { .. } => "Diagnostic",
+        HookEffect::TransformInput { .. } => "TransformInput",
+        HookEffect::HandledInput { .. } => "HandledInput",
+        HookEffect::SwitchMode { .. } => "SwitchMode",
+        HookEffect::ModifyProviderRequest { .. } => "ModifyProviderRequest",
+        HookEffect::DenyProviderRequest { .. } => "DenyProviderRequest",
+        HookEffect::MutateToolArgs { .. } => "MutateToolArgs",
+        HookEffect::BlockToolResult { .. } => "BlockToolResult",
+        HookEffect::RequireApproval { .. } => "RequireApproval",
+        HookEffect::OverrideToolResult { .. } => "OverrideToolResult",
+        HookEffect::CancelTurn { .. } => "CancelTurn",
+        HookEffect::CancelCompact { .. } => "CancelCompact",
+        HookEffect::OverrideCompactInput { .. } => "OverrideCompactInput",
+        HookEffect::ProvideCompactSummary { .. } => "ProvideCompactSummary",
+        HookEffect::ResourcePath { .. } => "ResourcePath",
+        HookEffect::ModelHint { .. } => "ModelHint",
+        HookEffect::DenyModelSelect { .. } => "DenyModelSelect",
+    }
 }
 
 /// 将 provider 返回的实际 token 使用量回填到之前发出的 PromptMetrics 事件中。
@@ -327,4 +530,43 @@ fn prompt_metrics_runtime_event(
 
 fn saturating_u32(value: usize) -> u32 {
     value.min(u32::MAX as usize) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use astrcode_core::{LlmMessage, UserMessageOrigin};
+
+    use super::compact_result_from_provided_summary;
+
+    #[test]
+    fn provided_compact_summary_builds_compact_result_without_provider_call() {
+        let source_messages = vec![
+            LlmMessage::User {
+                content: "first".to_string(),
+                origin: UserMessageOrigin::User,
+            },
+            LlmMessage::Assistant {
+                content: "answer".to_string(),
+                tool_calls: Vec::new(),
+                reasoning: None,
+            },
+        ];
+
+        let result = compact_result_from_provided_summary(
+            "  condensed facts  ".to_string(),
+            &source_messages,
+            None,
+        );
+
+        assert_eq!(result.summary, "condensed facts");
+        assert_eq!(result.messages_removed, source_messages.len());
+        assert_eq!(result.meta.input_units, source_messages.len() as u32);
+        assert!(matches!(
+            &result.messages[0],
+            LlmMessage::User {
+                content,
+                origin: UserMessageOrigin::CompactSummary,
+            } if content.contains("condensed facts")
+        ));
+    }
 }

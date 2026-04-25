@@ -164,8 +164,12 @@ mod tests {
                     (
                         reqwest::StatusCode::ACCEPTED,
                         Json(json!({
+                            "accepted": true,
+                            "message": "accepted",
                             "turnId": "turn-1",
                             "sessionId": "session-1",
+                            "branchedFromSessionId": null,
+                            "acceptedControl": null,
                         })),
                     )
                 }),
@@ -198,6 +202,7 @@ mod tests {
             .submit_turn("session-1", "hello")
             .await
             .expect("turn should submit");
-        assert_eq!(accepted.turn_id, "turn-1");
+        assert!(accepted.accepted);
+        assert_eq!(accepted.turn_id.as_deref(), Some("turn-1"));
     }
 }

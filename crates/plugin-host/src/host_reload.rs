@@ -1,7 +1,8 @@
 use astrcode_core::{
-    AstrError, CapabilityContext, CapabilityExecutionResult, InvocationMode, Result,
+    AstrError, CapabilityContext, CapabilityExecutionResult, HookEventKey, InvocationMode, Result,
 };
 use astrcode_protocol::plugin::{CapabilityWireDescriptor, InitializeResultData, InvokeMessage};
+use astrcode_runtime_contract::hooks::{HookEffect, HookEventPayload};
 use serde_json::Value;
 
 use super::{
@@ -19,7 +20,7 @@ use super::{
     to_plugin_invocation_context,
 };
 use crate::{
-    PluginDescriptor,
+    BuiltinHookRegistry, HookContext, PluginDescriptor,
     backend::{
         BuiltinPluginRuntimeHandle, PluginBackendHealth, PluginBackendHealthReport,
         PluginBackendKind,
@@ -27,6 +28,10 @@ use crate::{
     descriptor::{
         CommandDescriptor, HookDescriptor, PromptDescriptor, ProviderDescriptor,
         ResourceDescriptor, SkillDescriptor, ThemeDescriptor,
+    },
+    hooks::{
+        ExternalHookDispatchRequest, ExternalHookDispatcher, dispatch_hooks_with_external,
+        hook_effects_from_wire,
     },
 };
 
@@ -46,6 +51,27 @@ macro_rules! define_descriptor_lookup {
 }
 
 impl PluginHostReload {
+    pub async fn dispatch_hook_live(
+        &mut self,
+        event: HookEventKey,
+        payload: HookEventPayload,
+        context: HookContext,
+        registry: &BuiltinHookRegistry,
+    ) -> Result<Vec<HookEffect>> {
+        self.refresh_backend_health_from_runtime_handles()?;
+        let bindings = self.snapshot.hook_bindings.clone();
+        let mut external_dispatcher = ReloadExternalHookDispatcher { reload: self };
+        dispatch_hooks_with_external(
+            event,
+            payload,
+            context,
+            &bindings,
+            registry,
+            Some(&mut external_dispatcher),
+        )
+        .await
+    }
+
     pub async fn execute_capability_live(
         &mut self,
         capability_name: &str,
@@ -612,6 +638,70 @@ impl PluginHostReload {
         }
     }
 
+    async fn dispatch_external_hook_live(
+        &mut self,
+        request: ExternalHookDispatchRequest,
+    ) -> Result<Vec<HookEffect>> {
+        let plugin_id = request.binding.plugin_id.clone();
+        let needs_remote_initialize = self
+            .external_backends
+            .iter()
+            .find(|backend| backend.plugin_id == plugin_id)
+            .ok_or_else(|| {
+                AstrError::Validation(format!(
+                    "reload 结果中不存在 external plugin '{}'",
+                    plugin_id
+                ))
+            })?
+            .protocol_state()
+            .map(|state| state.remote_initialize.is_none())
+            .unwrap_or(true);
+
+        if needs_remote_initialize {
+            let remote_initialize = {
+                let backend = self
+                    .external_backends
+                    .iter_mut()
+                    .find(|backend| backend.plugin_id == plugin_id)
+                    .ok_or_else(|| {
+                        AstrError::Validation(format!(
+                            "reload 结果中不存在 external plugin '{}'",
+                            plugin_id
+                        ))
+                    })?;
+                backend.initialize_remote().await?.clone()
+            };
+            self.record_remote_initialize(&plugin_id, remote_initialize)?;
+        }
+
+        let message = request.into_protocol_message()?;
+        let result = {
+            let backend = self
+                .external_backends
+                .iter_mut()
+                .find(|backend| backend.plugin_id == plugin_id)
+                .ok_or_else(|| {
+                    AstrError::Validation(format!(
+                        "reload 结果中不存在 external plugin '{}'",
+                        plugin_id
+                    ))
+                })?;
+            backend.dispatch_hook(&message).await
+        };
+
+        match result {
+            Ok(result) => hook_effects_from_wire(result.effects, result.diagnostics),
+            Err(error) => {
+                let _ = self.refresh_backend_health_from_runtime_handles();
+                self.mark_backend_unavailable(
+                    &plugin_id,
+                    Some(format!("live hook dispatch failed: {error}")),
+                );
+                Err(error)
+            },
+        }
+    }
+
     fn refresh_backend_health_from_runtime_handles(&mut self) -> Result<()> {
         let mut reports = self
             .builtin_backends
@@ -653,5 +743,19 @@ impl PluginHostReload {
             .retain(|item| item.plugin_id != plugin_id);
         self.backend_health.reports.push(report);
         self.refresh_runtime_catalog();
+    }
+}
+
+struct ReloadExternalHookDispatcher<'a> {
+    reload: &'a mut PluginHostReload,
+}
+
+#[async_trait::async_trait]
+impl ExternalHookDispatcher for ReloadExternalHookDispatcher<'_> {
+    async fn dispatch_hook(
+        &mut self,
+        request: ExternalHookDispatchRequest,
+    ) -> Result<Vec<HookEffect>> {
+        self.reload.dispatch_external_hook_live(request).await
     }
 }

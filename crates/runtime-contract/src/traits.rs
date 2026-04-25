@@ -52,3 +52,43 @@ pub struct ExecutionAccepted {
     /// 仅 prompt submit 分支场景存在。
     pub branched_from_session_id: Option<String>,
 }
+
+/// Prompt submit 的稳定结果。
+///
+/// `Accepted` 表示 host-session 已创建 turn 并进入后续 runtime 执行；
+/// `Handled` 表示 input hook 已处理输入，不应创建 turn。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionSubmissionOutcome {
+    Accepted(ExecutionAccepted),
+    Handled {
+        session_id: SessionId,
+        response: String,
+    },
+}
+
+impl ExecutionSubmissionOutcome {
+    pub fn accepted(accepted: ExecutionAccepted) -> Self {
+        Self::Accepted(accepted)
+    }
+
+    pub fn handled(session_id: SessionId, response: impl Into<String>) -> Self {
+        Self::Handled {
+            session_id,
+            response: response.into(),
+        }
+    }
+
+    pub fn accepted_ref(&self) -> Option<&ExecutionAccepted> {
+        match self {
+            Self::Accepted(accepted) => Some(accepted),
+            Self::Handled { .. } => None,
+        }
+    }
+
+    pub fn into_accepted(self) -> Option<ExecutionAccepted> {
+        match self {
+            Self::Accepted(accepted) => Some(accepted),
+            Self::Handled { .. } => None,
+        }
+    }
+}

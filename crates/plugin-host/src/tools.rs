@@ -23,24 +23,20 @@ pub fn builtin_collaboration_tools_descriptor() -> PluginDescriptor {
         "Builtin Collaboration Tools",
         vec![
             host_session_tool(
-                "spawn_agent",
+                "spawn",
                 "Spawn a child session and record parent/child lineage through host-session.",
             ),
             host_session_tool(
-                "send_to_child",
-                "Deliver an input from a parent session to a direct child session.",
+                "send",
+                "Send a typed collaboration message along a direct parent/child edge.",
             ),
             host_session_tool(
-                "send_to_parent",
-                "Deliver a typed result from a child session back to its direct parent.",
+                "observe",
+                "Read a direct child session state snapshot through host-session.",
             ),
             host_session_tool(
-                "observe_subtree",
-                "Read the host-session collaboration subtree projection.",
-            ),
-            host_session_tool(
-                "terminate_subtree",
-                "Terminate a session subtree through the host-session owner.",
+                "close",
+                "Close a child session branch through host-session.",
             ),
         ],
     )
@@ -152,11 +148,10 @@ mod tests {
                 .map(|tool| tool.name.to_string())
                 .collect::<Vec<_>>(),
             vec![
-                "spawn_agent".to_string(),
-                "send_to_child".to_string(),
-                "send_to_parent".to_string(),
-                "observe_subtree".to_string(),
-                "terminate_subtree".to_string(),
+                "spawn".to_string(),
+                "send".to_string(),
+                "observe".to_string(),
+                "close".to_string(),
             ]
         );
         assert!(

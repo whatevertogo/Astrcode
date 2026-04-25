@@ -215,11 +215,33 @@
 - `BlockToolResult` 不能替代 `CancelTurn`。
 - effect 不直接持久化；owner 应用后产生正式事件。
 
+### `ExecutionSubmissionOutcome`
+
+- 用途：描述 prompt submit 经 input hook 处理后的结果。
+- 类型：内部 owner/port 合同。
+- 所属边界：`runtime-contract` / server session submit 边界。
+- 来源：`host-session` input hook owner 应用与 turn acceptance。
+- 去向：server root/session prompt API、agent collaboration submit 调用点。
+
+#### 变体定义
+
+| 变体 | 字段 | 说明 |
+| --- | --- | --- |
+| `Accepted` | `ExecutionAccepted` | 已创建 turn，后续进入 runtime 执行 |
+| `Handled` | `session_id`, `response` | input hook 已处理输入，不创建 turn，也没有 turn id |
+
+#### 校验规则与不变量
+
+- `Handled` 不得持有伪造 turn id。
+- 只有 `Accepted` 能触发 runtime turn spawn。
+- child/subagent submit 调用点如收到 `Handled`，必须显式处理或报错，不能当作 accepted turn。
+
 ## 兼容性与迁移
 
 - BREAKING：旧 `HookDescriptor { hook_id, event }` 必须迁移。
 - BREAKING：普通工具拒绝不再使用 generic `Block`，迁移为 `BlockToolResult`。
 - BREAKING：`tool_result` hook 从记录后迁移到记录前。
+- BREAKING：session submit port 从只返回 `ExecutionAccepted` 改为 `ExecutionSubmissionOutcome`，以表达 `HandledInput` 不创建 turn 的语义。
 - external plugin 新增 `dispatch_hook` / `hook_result` 消息；旧协议没有 hook handler，不做兼容层。
 
 ## 复用说明

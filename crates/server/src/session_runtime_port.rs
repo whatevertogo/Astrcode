@@ -5,7 +5,7 @@ use astrcode_core::{
 };
 use astrcode_governance_contract::ModeId;
 use astrcode_host_session::SubRunHandle;
-use astrcode_runtime_contract::ExecutionAccepted;
+use astrcode_runtime_contract::ExecutionSubmissionOutcome;
 use async_trait::async_trait;
 
 use crate::{
@@ -29,7 +29,7 @@ pub(crate) trait SessionRuntimePort: Send + Sync {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted>;
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome>;
     async fn interrupt_session(&self, session_id: &str) -> astrcode_core::Result<()>;
     async fn compact_session(
         &self,
@@ -49,7 +49,7 @@ pub(crate) trait SessionRuntimePort: Send + Sync {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted>;
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome>;
     async fn try_submit_prompt_for_agent_with_turn_id(
         &self,
         session_id: &str,
@@ -57,7 +57,7 @@ pub(crate) trait SessionRuntimePort: Send + Sync {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>>;
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>>;
     async fn submit_queued_inputs_for_agent_with_turn_id(
         &self,
         session_id: &str,
@@ -65,7 +65,7 @@ pub(crate) trait SessionRuntimePort: Send + Sync {
         queued_inputs: Vec<String>,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>>;
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>>;
     async fn observe_agent_session(
         &self,
         open_session_id: &str,

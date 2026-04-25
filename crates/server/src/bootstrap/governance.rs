@@ -14,17 +14,28 @@ use astrcode_adapter_mcp::{
     manager::{McpConnectionManager, McpReloadSnapshot},
 };
 use astrcode_adapter_skills::{LayeredSkillCatalog, load_builtin_skills};
-use astrcode_core::{CapabilityInvoker, SkillSpec};
+use astrcode_core::{CapabilityInvoker, CapabilitySpec, SkillSpec};
+use astrcode_governance_contract::GovernanceModeSpec;
 use astrcode_plugin_host::{
-    PluginEntry, ProviderContributionCatalog, ResourceCatalog, build_skill_catalog_base,
-    builtin_openai_provider_descriptor,
+    BuiltinHookRegistry, PluginActiveSnapshot, PluginDescriptor, PluginEntry,
+    ProviderContributionCatalog, ResourceCatalog, build_skill_catalog_base,
+    builtin_modes_descriptor, builtin_openai_provider_descriptor, builtin_tools_descriptor,
+    resources_discover,
 };
 use astrcode_runtime_contract::{ManagedRuntimeComponent, RuntimeHandle};
 use async_trait::async_trait;
 
 use super::{
-    capabilities::CapabilitySurfaceSync, deps::core::AstrError, mcp::load_declared_configs,
-    plugins::bootstrap_plugins_with_skill_root, runtime_coordinator::RuntimeCoordinator,
+    builtin_plugins::{
+        BUILTIN_GOVERNANCE_MODES_PLUGIN_ID, EXTERNAL_PLUGIN_MODES_PLUGIN_ID,
+        builtin_composer_plugin_descriptor, builtin_permission_descriptor,
+        builtin_planning_descriptor,
+    },
+    capabilities::CapabilitySurfaceSync,
+    deps::core::AstrError,
+    mcp::load_declared_configs,
+    plugins::bootstrap_plugins_with_skill_root,
+    runtime_coordinator::RuntimeCoordinator,
 };
 use crate::{
     AppGovernance, ApplicationError, GovernanceSnapshot, RuntimeGovernancePort,
@@ -35,6 +46,7 @@ use crate::{
         ServerGovernancePort, ServerGovernanceReloadResult, ServerGovernanceService,
         ServerGovernanceSnapshot,
     },
+    hook_adapter::PluginHostHookDispatcher,
     mode_catalog_service::{ServerModeCatalog, ServerModeCatalogSnapshot},
     runtime_owner_bridge::{ServerRuntimeObservability, ServerTaskRegistry},
 };
@@ -55,6 +67,12 @@ pub(crate) struct GovernanceBuildInput {
     pub managed_plugin_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
     pub working_dir: PathBuf,
     pub mode_catalog: Option<Arc<ServerModeCatalog>>,
+    pub core_tool_specs: Vec<CapabilitySpec>,
+    pub planning_tool_specs: Vec<CapabilitySpec>,
+    pub collaboration_tool_specs: Vec<CapabilitySpec>,
+    pub builtin_mode_specs: Vec<GovernanceModeSpec>,
+    pub builtin_hook_registry: Arc<BuiltinHookRegistry>,
+    pub hook_dispatcher: Arc<PluginHostHookDispatcher>,
 }
 
 pub(crate) fn build_server_governance_service(
@@ -75,6 +93,12 @@ pub(crate) fn build_server_governance_service(
         plugin_skill_root: input.plugin_skill_root.clone(),
         working_dir: input.working_dir.clone(),
         mode_catalog: input.mode_catalog,
+        core_tool_specs: input.core_tool_specs,
+        planning_tool_specs: input.planning_tool_specs,
+        collaboration_tool_specs: input.collaboration_tool_specs,
+        builtin_mode_specs: input.builtin_mode_specs,
+        builtin_hook_registry: input.builtin_hook_registry,
+        hook_dispatcher: input.hook_dispatcher,
     });
     let managed_components: Vec<Arc<dyn ManagedRuntimeComponent>> = input.managed_plugin_components;
     input.coordinator.replace_runtime_surface(
@@ -207,6 +231,12 @@ struct ServerRuntimeReloader {
     plugin_skill_root: PathBuf,
     working_dir: PathBuf,
     mode_catalog: Option<Arc<ServerModeCatalog>>,
+    core_tool_specs: Vec<CapabilitySpec>,
+    planning_tool_specs: Vec<CapabilitySpec>,
+    collaboration_tool_specs: Vec<CapabilitySpec>,
+    builtin_mode_specs: Vec<GovernanceModeSpec>,
+    builtin_hook_registry: Arc<BuiltinHookRegistry>,
+    hook_dispatcher: Arc<PluginHostHookDispatcher>,
 }
 
 impl std::fmt::Debug for ServerRuntimeReloader {
@@ -223,8 +253,8 @@ struct PreparedGovernanceReload {
     mcp_configs: Vec<McpServerConfig>,
     mode_snapshot: Option<ServerModeCatalogSnapshot>,
     base_skills: Vec<SkillSpec>,
-    resource_catalog: ResourceCatalog,
-    provider_catalog: ProviderContributionCatalog,
+    plugin_modes: Vec<GovernanceModeSpec>,
+    external_descriptors: Vec<PluginDescriptor>,
     plugin_invokers: Vec<Arc<dyn CapabilityInvoker>>,
     plugin_entries: Vec<PluginEntry>,
     managed_components: Vec<Arc<dyn ManagedRuntimeComponent>>,
@@ -301,21 +331,110 @@ impl ServerRuntimeReloader {
             &plugin_bootstrap.resource_catalog,
         )
         .base_skills;
-        let mut provider_descriptors = vec![builtin_openai_provider_descriptor()];
-        provider_descriptors.extend(plugin_bootstrap.descriptors.clone());
-        let provider_catalog = ProviderContributionCatalog::from_descriptors(&provider_descriptors)
-            .map_err(ApplicationError::from)?;
         Ok(PreparedGovernanceReload {
             search_paths: plugin_bootstrap.search_paths,
             mcp_configs,
             mode_snapshot,
             base_skills,
-            resource_catalog: plugin_bootstrap.resource_catalog,
-            provider_catalog,
+            plugin_modes: plugin_bootstrap.modes,
+            external_descriptors: plugin_bootstrap.descriptors,
             plugin_invokers: plugin_bootstrap.invokers,
             plugin_entries: plugin_bootstrap.registry.snapshot(),
             managed_components: plugin_bootstrap.managed_components,
         })
+    }
+
+    fn build_plugin_host_descriptors(
+        &self,
+        mcp_invokers: &[Arc<dyn CapabilityInvoker>],
+        plugin_modes: Vec<GovernanceModeSpec>,
+        mut external_descriptors: Vec<PluginDescriptor>,
+    ) -> Vec<PluginDescriptor> {
+        let mut descriptors = vec![
+            builtin_openai_provider_descriptor(),
+            builtin_modes_descriptor(
+                BUILTIN_GOVERNANCE_MODES_PLUGIN_ID,
+                "Builtin Governance Modes",
+                self.builtin_mode_specs
+                    .iter()
+                    .filter(|mode| mode.id.as_str() != "plan")
+                    .cloned()
+                    .collect(),
+            ),
+            builtin_permission_descriptor(),
+            builtin_planning_descriptor(
+                self.planning_tool_specs.clone(),
+                self.builtin_mode_specs
+                    .iter()
+                    .filter(|mode| mode.id.as_str() == "plan")
+                    .cloned()
+                    .collect(),
+            ),
+            builtin_modes_descriptor(
+                EXTERNAL_PLUGIN_MODES_PLUGIN_ID,
+                "External Plugin Modes",
+                plugin_modes,
+            ),
+            builtin_composer_plugin_descriptor(),
+            builtin_tools_descriptor(
+                "builtin-core-tools",
+                "Builtin Core Tools",
+                self.core_tool_specs.clone(),
+            ),
+            builtin_tools_descriptor(
+                "external-mcp-tools",
+                "External MCP Tools",
+                mcp_invokers
+                    .iter()
+                    .map(|invoker| invoker.capability_spec())
+                    .collect(),
+            ),
+            builtin_tools_descriptor(
+                "builtin-collaboration-tools",
+                "Builtin Collaboration Tools",
+                self.collaboration_tool_specs.clone(),
+            ),
+        ];
+        descriptors.append(&mut external_descriptors);
+        descriptors
+    }
+
+    fn stage_plugin_host_snapshot(
+        &self,
+        descriptors: Vec<PluginDescriptor>,
+    ) -> Result<PluginActiveSnapshot, ApplicationError> {
+        self.coordinator
+            .plugin_registry()
+            .stage_candidate_with_hook_registry(descriptors, self.builtin_hook_registry.as_ref())
+            .map_err(ApplicationError::from)
+    }
+
+    fn rollback_plugin_host_candidate(&self) {
+        self.coordinator.plugin_registry().rollback_candidate();
+    }
+
+    fn commit_plugin_host_candidate(
+        &self,
+        expected_snapshot_id: &str,
+    ) -> Result<PluginActiveSnapshot, ApplicationError> {
+        let snapshot = self
+            .coordinator
+            .plugin_registry()
+            .commit_candidate()
+            .ok_or_else(|| {
+                ApplicationError::Internal(
+                    "plugin-host active snapshot commit unexpectedly failed".to_string(),
+                )
+            })?;
+        if snapshot.snapshot_id != expected_snapshot_id {
+            return Err(ApplicationError::Internal(format!(
+                "plugin-host committed snapshot '{}' but candidate was '{}'",
+                snapshot.snapshot_id, expected_snapshot_id
+            )));
+        }
+        self.hook_dispatcher
+            .replace_active_snapshot(snapshot.snapshot_id.clone(), snapshot.hook_bindings.clone());
+        Ok(snapshot)
     }
 
     async fn shutdown_replaced_components(
@@ -331,6 +450,24 @@ impl ServerRuntimeReloader {
                 );
             }
         }
+    }
+
+    async fn restore_external_surface_after_failure(
+        &self,
+        rollback: GovernanceReloadRollback,
+        error: ApplicationError,
+    ) -> ApplicationError {
+        log::error!("governance reload failed while preparing plugin-host snapshot: {error}");
+        if let Err(rollback_error) = rollback
+            .restore(&self.mcp_manager, &self.capability_sync)
+            .await
+        {
+            return ApplicationError::Internal(format!(
+                "governance reload failed: {}; rollback failed: {}",
+                error, rollback_error
+            ));
+        }
+        error
     }
 }
 
@@ -354,6 +491,43 @@ impl RuntimeReloader for ServerRuntimeReloader {
                 .reload_config(candidate.mcp_configs)
                 .await
                 .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+            let plugin_host_descriptors = self.build_plugin_host_descriptors(
+                &mcp_invokers,
+                candidate.plugin_modes.clone(),
+                candidate.external_descriptors.clone(),
+            );
+            let resource_catalog =
+                match resources_discover(&plugin_host_descriptors).map(|report| report.catalog) {
+                    Ok(catalog) => catalog,
+                    Err(error) => {
+                        return Err(self
+                            .restore_external_surface_after_failure(
+                                rollback,
+                                ApplicationError::from(error),
+                            )
+                            .await);
+                    },
+                };
+            let provider_catalog =
+                match ProviderContributionCatalog::from_descriptors(&plugin_host_descriptors) {
+                    Ok(catalog) => catalog,
+                    Err(error) => {
+                        return Err(self
+                            .restore_external_surface_after_failure(
+                                rollback,
+                                ApplicationError::from(error),
+                            )
+                            .await);
+                    },
+                };
+            let staged_snapshot = match self.stage_plugin_host_snapshot(plugin_host_descriptors) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return Err(self
+                        .restore_external_surface_after_failure(rollback, error)
+                        .await);
+                },
+            };
             let mut external_invokers = mcp_invokers;
             external_invokers.extend(candidate.plugin_invokers.clone());
 
@@ -361,6 +535,7 @@ impl RuntimeReloader for ServerRuntimeReloader {
                 .capability_sync
                 .apply_external_invokers(external_invokers)
             {
+                self.rollback_plugin_host_candidate();
                 let error = ApplicationError::Internal(error.to_string());
                 log::error!(
                     "governance reload failed while applying candidate capability surface: {error}"
@@ -379,17 +554,33 @@ impl RuntimeReloader for ServerRuntimeReloader {
                 );
                 return Err(error);
             }
+            let committed_snapshot =
+                match self.commit_plugin_host_candidate(&staged_snapshot.snapshot_id) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        if let Err(rollback_error) = rollback
+                            .restore(&self.mcp_manager, &self.capability_sync)
+                            .await
+                        {
+                            return Err(ApplicationError::Internal(format!(
+                                "governance reload failed: {}; rollback failed: {}",
+                                error, rollback_error
+                            )));
+                        }
+                        return Err(error);
+                    },
+                };
 
             self.skill_catalog
                 .replace_base_skills(candidate.base_skills);
             *self
                 .resource_catalog
                 .write()
-                .expect("plugin resource catalog lock poisoned") = candidate.resource_catalog;
+                .expect("plugin resource catalog lock poisoned") = resource_catalog;
             *self
                 .provider_catalog
                 .write()
-                .expect("provider catalog lock poisoned") = candidate.provider_catalog;
+                .expect("provider catalog lock poisoned") = provider_catalog;
             if let (Some(mode_catalog), Some(mode_snapshot)) =
                 (&self.mode_catalog, candidate.mode_snapshot)
             {
@@ -403,10 +594,11 @@ impl RuntimeReloader for ServerRuntimeReloader {
             self.shutdown_replaced_components(previous_components).await;
             log::info!(
                 "governance reload committed: plugin_search_paths={}, base_skills={}, \
-                 capability_count={}",
+                 capability_count={}, hook_snapshot={}",
                 candidate.search_paths.len(),
                 self.skill_catalog.base_skills().len(),
-                self.capability_sync.current_capabilities().len()
+                self.capability_sync.current_capabilities().len(),
+                committed_snapshot.snapshot_id
             );
 
             Ok(candidate.search_paths)

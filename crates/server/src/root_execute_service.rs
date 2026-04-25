@@ -8,6 +8,7 @@ use astrcode_core::{
     AgentMode, AgentProfile, ExecutionControl, ResolvedExecutionLimitsSnapshot,
     ResolvedRuntimeConfig, SubagentContextOverrides, generate_turn_id,
 };
+use astrcode_runtime_contract::ExecutionSubmissionOutcome;
 
 use crate::{
     agent::implicit_session_root_agent_id,
@@ -151,7 +152,7 @@ impl ServerRootExecuteService {
             )));
         }
 
-        let accepted = self
+        let outcome = self
             .sessions
             .submit_prompt_for_agent(
                 &session.session_id,
@@ -161,21 +162,35 @@ impl ServerRootExecuteService {
             )
             .await
             .map_err(ServerRouteError::from)?;
-        let session_id = accepted.session_id.to_string();
         let agent_id = request.agent_id.clone();
-
-        Ok(ServerAgentExecuteSummary {
-            accepted: true,
-            message: format!(
-                "agent '{}' execution accepted; subscribe to \
-                 /api/v1/conversation/sessions/{}/stream for progress",
-                agent_id, session_id
-            ),
-            session_id: Some(session_id),
-            turn_id: Some(accepted.turn_id.to_string()),
-            agent_id: Some(agent_id),
-            branched_from_session_id: accepted.branched_from_session_id,
-        })
+        match outcome {
+            ExecutionSubmissionOutcome::Accepted(accepted) => {
+                let session_id = accepted.session_id.to_string();
+                Ok(ServerAgentExecuteSummary {
+                    accepted: true,
+                    message: format!(
+                        "agent '{}' execution accepted; subscribe to \
+                         /api/v1/conversation/sessions/{}/stream for progress",
+                        agent_id, session_id
+                    ),
+                    session_id: Some(session_id),
+                    turn_id: Some(accepted.turn_id.to_string()),
+                    agent_id: Some(agent_id),
+                    branched_from_session_id: accepted.branched_from_session_id,
+                })
+            },
+            ExecutionSubmissionOutcome::Handled {
+                session_id,
+                response,
+            } => Ok(ServerAgentExecuteSummary {
+                accepted: false,
+                message: response,
+                session_id: Some(session_id.to_string()),
+                turn_id: None,
+                agent_id: Some(agent_id),
+                branched_from_session_id: None,
+            }),
+        }
     }
 
     pub(crate) async fn submit_existing_session_prompt(
@@ -233,7 +248,7 @@ impl ServerRootExecuteService {
             )));
         }
 
-        let accepted = self
+        let outcome = self
             .sessions
             .submit_prompt_for_agent(
                 &request.session_id,
@@ -244,18 +259,31 @@ impl ServerRootExecuteService {
             .await
             .map_err(ServerRouteError::from)?;
 
-        Ok(ServerAgentExecuteSummary {
-            accepted: true,
-            message: format!(
-                "session '{}' prompt accepted; subscribe to \
-                 /api/v1/conversation/sessions/{}/stream for progress",
-                request.session_id, accepted.session_id
-            ),
-            session_id: Some(accepted.session_id.to_string()),
-            turn_id: Some(accepted.turn_id.to_string()),
-            agent_id: Some(agent_id),
-            branched_from_session_id: accepted.branched_from_session_id,
-        })
+        match outcome {
+            ExecutionSubmissionOutcome::Accepted(accepted) => Ok(ServerAgentExecuteSummary {
+                accepted: true,
+                message: format!(
+                    "session '{}' prompt accepted; subscribe to \
+                     /api/v1/conversation/sessions/{}/stream for progress",
+                    request.session_id, accepted.session_id
+                ),
+                session_id: Some(accepted.session_id.to_string()),
+                turn_id: Some(accepted.turn_id.to_string()),
+                agent_id: Some(agent_id),
+                branched_from_session_id: accepted.branched_from_session_id,
+            }),
+            ExecutionSubmissionOutcome::Handled {
+                session_id,
+                response,
+            } => Ok(ServerAgentExecuteSummary {
+                accepted: false,
+                message: response,
+                session_id: Some(session_id.to_string()),
+                turn_id: None,
+                agent_id: Some(agent_id),
+                branched_from_session_id: None,
+            }),
+        }
     }
 }
 

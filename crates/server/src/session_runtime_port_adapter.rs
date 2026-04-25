@@ -17,13 +17,15 @@ use astrcode_core::{
 };
 use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId};
 use astrcode_host_session::{
-    CompactSessionMutationInput, EventTranslator, InputQueueProjection,
-    InterruptSessionMutationInput, SessionCatalog, SubRunFinishStats, SubmitPromptMutationInput,
-    SubmitTurnBusyPolicy, TurnMutationPreparation,
+    CompactSessionMutationInput, EventTranslator, HookDispatch as HostSessionHookDispatch,
+    InputHookApplyRequest, InputHookDecision, InputQueueProjection, InterruptSessionMutationInput,
+    SessionCatalog, SubRunFinishStats, SubmitPromptMutationInput, SubmitTurnBusyPolicy,
+    TurnMutationPreparation, apply_input_hooks,
 };
 use astrcode_llm_contract::{LlmEvent, LlmProvider};
 use astrcode_runtime_contract::{
-    ExecutionAccepted, RuntimeEventSink, RuntimeTurnEvent, TurnStopCause,
+    ExecutionAccepted, ExecutionSubmissionOutcome, RuntimeEventSink, RuntimeTurnEvent,
+    TurnStopCause,
 };
 use astrcode_tool_contract::{ToolContext, ToolEventSink, ToolExecutionResult};
 use async_trait::async_trait;
@@ -51,7 +53,8 @@ pub(crate) struct SessionRuntimePortBuildInput {
     pub llm_provider: Arc<dyn LlmProvider>,
     pub active_sessions: Arc<ActiveSessionRegistry>,
     pub hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
-    pub hook_snapshot_id: String,
+    pub owner_hook_dispatcher: Option<Arc<dyn HostSessionHookDispatch>>,
+    pub hook_snapshot_id: Arc<dyn Fn() -> String + Send + Sync>,
 }
 
 pub(crate) fn build_session_runtime_port(
@@ -65,6 +68,7 @@ pub(crate) fn build_session_runtime_port(
         llm_provider: input.llm_provider,
         active_sessions: input.active_sessions,
         hook_dispatcher: input.hook_dispatcher,
+        owner_hook_dispatcher: input.owner_hook_dispatcher,
         hook_snapshot_id: input.hook_snapshot_id,
     })
 }
@@ -77,7 +81,8 @@ struct SessionRuntimeCompatPort {
     llm_provider: Arc<dyn LlmProvider>,
     active_sessions: Arc<ActiveSessionRegistry>,
     hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
-    hook_snapshot_id: String,
+    owner_hook_dispatcher: Option<Arc<dyn HostSessionHookDispatch>>,
+    hook_snapshot_id: Arc<dyn Fn() -> String + Send + Sync>,
 }
 
 struct RouterToolDispatcher {
@@ -147,6 +152,11 @@ struct SpawnTurnExecutionInput {
     last_assistant_at: Option<chrono::DateTime<Utc>>,
     tool_result_replacements: Vec<ToolResultReplacementRecord>,
     submission: AppAgentPromptSubmission,
+}
+
+enum LiveInputHookDecision {
+    Continue { prompt_text: Option<String> },
+    Handled(ExecutionSubmissionOutcome),
 }
 
 impl From<AgentControlError> for ServerKernelControlError {
@@ -286,7 +296,7 @@ impl SessionRuntimeCompatPort {
         let mode_catalog = Arc::clone(&self.mode_catalog);
         let runtime_loop = AgentRuntime::new();
         let hook_dispatcher = self.hook_dispatcher.clone();
-        let hook_snapshot_id = self.hook_snapshot_id.clone();
+        let hook_snapshot_id = (self.hook_snapshot_id)();
         tokio::spawn(async move {
             let session_id = begun.summary.session_id.clone();
             let turn_id = begun.summary.turn_id.clone();
@@ -387,6 +397,74 @@ impl SessionRuntimeCompatPort {
         });
     }
 
+    async fn apply_live_input_hooks(
+        &self,
+        session_id: &str,
+        prompt_text: Option<String>,
+    ) -> astrcode_core::Result<LiveInputHookDecision> {
+        let Some(prompt_text) = prompt_text else {
+            return Ok(LiveInputHookDecision::Continue { prompt_text: None });
+        };
+        let Some(dispatcher) = self.owner_hook_dispatcher.clone() else {
+            return Ok(LiveInputHookDecision::Continue {
+                prompt_text: Some(prompt_text),
+            });
+        };
+
+        let requested_session_id = SessionId::from(session_id.to_string());
+        let current_mode = self
+            .session_catalog
+            .session_mode_state(&requested_session_id)
+            .await?
+            .current_mode_id;
+        let decision = apply_input_hooks(InputHookApplyRequest {
+            session_id: requested_session_id.clone(),
+            source: "user".to_string(),
+            text: prompt_text,
+            images: Vec::new(),
+            current_mode: current_mode.clone(),
+            dispatcher: Some(dispatcher),
+        })
+        .await?;
+
+        match decision {
+            InputHookDecision::Handled {
+                session_id,
+                response,
+                switch_mode,
+            } => {
+                self.apply_requested_mode_switch(&requested_session_id, &current_mode, switch_mode)
+                    .await?;
+                Ok(LiveInputHookDecision::Handled(
+                    ExecutionSubmissionOutcome::handled(session_id, response),
+                ))
+            },
+            InputHookDecision::Continue { text, switch_mode } => {
+                self.apply_requested_mode_switch(&requested_session_id, &current_mode, switch_mode)
+                    .await?;
+                Ok(LiveInputHookDecision::Continue {
+                    prompt_text: Some(text),
+                })
+            },
+        }
+    }
+
+    async fn apply_requested_mode_switch(
+        &self,
+        session_id: &SessionId,
+        current_mode: &ModeId,
+        requested_mode: Option<ModeId>,
+    ) -> astrcode_core::Result<()> {
+        if let Some(target_mode) = requested_mode.filter(|target| target != current_mode) {
+            self.mode_catalog
+                .validate_transition(current_mode, &target_mode)?;
+            self.session_catalog
+                .switch_mode(session_id, target_mode)
+                .await?;
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn submit_prompt_inner(
         &self,
@@ -397,7 +475,11 @@ impl SessionRuntimeCompatPort {
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
         busy_policy: SubmitTurnBusyPolicy,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>> {
+        let prompt_text = match self.apply_live_input_hooks(session_id, prompt_text).await? {
+            LiveInputHookDecision::Continue { prompt_text } => prompt_text,
+            LiveInputHookDecision::Handled(outcome) => return Ok(Some(outcome)),
+        };
         let accepted = self
             .session_catalog
             .accept_submit_prompt(
@@ -426,7 +508,7 @@ impl SessionRuntimeCompatPort {
             tool_result_replacements: replacements,
             submission,
         });
-        Ok(Some(accepted))
+        Ok(Some(ExecutionSubmissionOutcome::accepted(accepted)))
     }
 }
 
@@ -438,7 +520,7 @@ impl SessionRuntimePort for SessionRuntimeCompatPort {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted> {
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome> {
         let max_branch_depth = runtime.max_concurrent_branch_depth;
         self.submit_prompt_inner(
             session_id,
@@ -521,7 +603,7 @@ impl SessionRuntimePort for SessionRuntimeCompatPort {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<ExecutionAccepted> {
+    ) -> astrcode_core::Result<ExecutionSubmissionOutcome> {
         self.submit_prompt_for_agent(session_id, text, runtime, submission)
             .await
     }
@@ -533,7 +615,7 @@ impl SessionRuntimePort for SessionRuntimeCompatPort {
         text: String,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>> {
         self.submit_prompt_inner(
             session_id,
             Some(turn_id),
@@ -553,7 +635,7 @@ impl SessionRuntimePort for SessionRuntimeCompatPort {
         queued_inputs: Vec<String>,
         runtime: ResolvedRuntimeConfig,
         submission: AppAgentPromptSubmission,
-    ) -> astrcode_core::Result<Option<ExecutionAccepted>> {
+    ) -> astrcode_core::Result<Option<ExecutionSubmissionOutcome>> {
         self.submit_prompt_inner(
             session_id,
             Some(turn_id),

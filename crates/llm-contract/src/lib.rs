@@ -3,7 +3,7 @@ use std::sync::Arc;
 use astrcode_core::{
     CancelToken, LlmMessage, ReasoningContent, Result, ToolCallRequest, ToolDefinition,
 };
-use astrcode_governance_contract::{ModelRequest, SystemPromptBlock};
+use astrcode_governance_contract::SystemPromptBlock;
 pub use astrcode_prompt_contract::{
     PromptCacheBreakReason, PromptCacheDiagnostics, PromptCacheGlobalStrategy, PromptCacheHints,
     PromptLayerFingerprints,
@@ -125,19 +125,6 @@ impl LlmRequest {
     pub fn with_skip_cache_write(mut self, skip_cache_write: bool) -> Self {
         self.skip_cache_write = skip_cache_write;
         self
-    }
-
-    pub fn from_model_request(request: ModelRequest, cancel: CancelToken) -> Self {
-        Self {
-            messages: request.messages,
-            tools: request.tools.into(),
-            cancel,
-            system_prompt: request.system_prompt,
-            system_prompt_blocks: request.system_prompt_blocks,
-            prompt_cache_hints: None,
-            max_output_tokens_override: None,
-            skip_cache_write: false,
-        }
     }
 }
 

@@ -140,7 +140,6 @@ impl AgentOrchestrationService {
             delegation: Some(resume_delegation.clone()),
             message: params.message.clone(),
             context: params.context.clone(),
-            busy_policy: GovernanceBusyPolicy::RejectOnBusy,
         };
         let surface = match self.governance_surface.resumed_child_surface(resumed_input) {
             Ok(surface) => surface,
@@ -171,7 +170,22 @@ impl AgentOrchestrationService {
             )
             .await
         {
-            Ok(Some(accepted)) => accepted,
+            Ok(Some(astrcode_runtime_contract::ExecutionSubmissionOutcome::Accepted(_))) => {},
+            Ok(Some(astrcode_runtime_contract::ExecutionSubmissionOutcome::Handled {
+                response,
+                ..
+            })) => {
+                return self
+                    .restore_pending_inbox_and_fail(
+                        &child.agent_id,
+                        pending,
+                        format!(
+                            "agent '{}' resume prompt was handled before turn creation: {response}",
+                            params.agent_id
+                        ),
+                    )
+                    .await;
+            },
             Ok(None) => {
                 self.restore_pending_inbox(&child.agent_id, pending).await;
                 return Ok(None);

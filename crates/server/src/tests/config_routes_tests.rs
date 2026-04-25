@@ -193,6 +193,7 @@ async fn prompt_route_roundtrips_accepted_execution_control() {
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let payload: PromptAcceptedResponse = json_body(response).await;
+    assert!(payload.accepted);
     let accepted_control = payload
         .accepted_control
         .expect("accepted control should be returned");
@@ -239,7 +240,13 @@ async fn prompt_route_accepts_structured_skill_invocation() {
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let payload: PromptAcceptedResponse = json_body(response).await;
-    assert!(!payload.turn_id.is_empty());
+    assert!(payload.accepted);
+    assert!(
+        payload
+            .turn_id
+            .as_deref()
+            .is_some_and(|turn_id| !turn_id.is_empty())
+    );
 }
 
 #[tokio::test]
@@ -377,6 +384,7 @@ async fn prompt_route_ignores_unknown_execution_control_fields() {
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let payload: PromptAcceptedResponse = json_body(response).await;
+    assert!(payload.accepted);
     assert_eq!(
         payload
             .accepted_control
