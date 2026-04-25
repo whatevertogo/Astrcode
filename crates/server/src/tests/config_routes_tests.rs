@@ -1,7 +1,5 @@
 use astrcode_core::{Phase, SessionId, StorageEventPayload, UserMessageOrigin};
-use astrcode_protocol::http::{
-    CompactSessionResponse, ConfigReloadResponse, PromptAcceptedResponse,
-};
+use astrcode_protocol::http::{CompactSessionResponse, ConfigReloadResponse, PromptSubmitResponse};
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -157,50 +155,6 @@ async fn compact_route_accepts_immediately_when_only_previous_busy_flag_is_set()
 }
 
 #[tokio::test]
-async fn prompt_route_roundtrips_accepted_execution_control() {
-    let (state, _guard) = test_state(None).await;
-    let session = state
-        .session_catalog
-        .create_session(
-            tempfile::tempdir()
-                .expect("tempdir")
-                .path()
-                .display()
-                .to_string(),
-        )
-        .await
-        .expect("session should be created");
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/sessions/{}/prompts", session.session_id))
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "text": "hello",
-                        "control": {}
-                    })
-                    .to_string(),
-                ))
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let payload: PromptAcceptedResponse = json_body(response).await;
-    assert!(payload.accepted);
-    let accepted_control = payload
-        .accepted_control
-        .expect("accepted control should be returned");
-    assert_eq!(accepted_control.manual_compact, None);
-}
-
-#[tokio::test]
 async fn prompt_route_accepts_structured_skill_invocation() {
     let (state, _guard) = test_state(None).await;
     let session = state
@@ -239,14 +193,11 @@ async fn prompt_route_accepts_structured_skill_invocation() {
         .expect("response should be returned");
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let payload: PromptAcceptedResponse = json_body(response).await;
-    assert!(payload.accepted);
-    assert!(
-        payload
-            .turn_id
-            .as_deref()
-            .is_some_and(|turn_id| !turn_id.is_empty())
-    );
+    let payload: PromptSubmitResponse = json_body(response).await;
+    match payload {
+        PromptSubmitResponse::Accepted { turn_id, .. } => assert!(!turn_id.is_empty()),
+        PromptSubmitResponse::Handled { .. } => panic!("prompt should create a turn"),
+    }
 }
 
 #[tokio::test]
@@ -329,7 +280,7 @@ async fn prompt_submission_starts_root_runtime() {
         stored.iter().any(|stored| matches!(
             &stored.event.payload,
             StorageEventPayload::UserMessage { content, origin, .. }
-                if content == "hello" && *origin == UserMessageOrigin::User
+                if content == "hello" && matches!(origin, UserMessageOrigin::User)
         )),
         "prompt route should persist user input before the runtime finishes"
     );
@@ -342,55 +293,6 @@ async fn prompt_submission_starts_root_runtime() {
     assert!(
         control.active_turn_id.is_some(),
         "accepted prompt should keep input locked while the turn is active"
-    );
-}
-
-#[tokio::test]
-async fn prompt_route_ignores_unknown_execution_control_fields() {
-    let (state, _guard) = test_state(None).await;
-    let session = state
-        .session_catalog
-        .create_session(
-            tempfile::tempdir()
-                .expect("tempdir")
-                .path()
-                .display()
-                .to_string(),
-        )
-        .await
-        .expect("session should be created");
-    let app = build_api_router().with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/sessions/{}/prompts", session.session_id))
-                .header(AUTH_HEADER_NAME, "browser-token")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "text": "hello",
-                        "control": {
-                            "maxSteps": 0
-                        }
-                    })
-                    .to_string(),
-                ))
-                .expect("request should be valid"),
-        )
-        .await
-        .expect("response should be returned");
-
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let payload: PromptAcceptedResponse = json_body(response).await;
-    assert!(payload.accepted);
-    assert_eq!(
-        payload
-            .accepted_control
-            .expect("empty control object should round-trip")
-            .manual_compact,
-        None
     );
 }
 

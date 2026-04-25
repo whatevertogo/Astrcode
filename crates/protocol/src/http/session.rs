@@ -95,37 +95,34 @@ pub struct PromptSkillInvocation {
 
 /// `POST /api/sessions/:id/prompt` 请求体——向会话提交用户提示词。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromptRequest {
     /// 用户输入的文本内容
     pub text: String,
     /// 用户通过一级 slash 命令显式点名的 skill。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_invocation: Option<PromptSkillInvocation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub control: Option<ExecutionControlDto>,
 }
 
 /// `POST /api/sessions/:id/prompt` 响应体。
-///
-/// `accepted=true` 表示已创建 turn；`accepted=false` 表示 input hook 已处理输入且没有创建 turn。
-/// 如果是从其他会话分支出来的新会话，`branched_from_session_id` 会指向源会话。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptAcceptedResponse {
-    pub accepted: bool,
-    pub message: String,
-    /// 新 turn 的唯一标识；hook handled 输入时为空。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    /// 会话 ID（分支场景下可能是新会话的 ID）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    /// 如果是分支会话，指向源会话 ID
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branched_from_session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted_control: Option<ExecutionControlDto>,
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PromptSubmitResponse {
+    Accepted {
+        session_id: String,
+        turn_id: String,
+        /// 如果是分支会话，指向源会话 ID。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branched_from_session_id: Option<String>,
+    },
+    Handled {
+        session_id: String,
+        message: String,
+    },
 }
 
 /// `POST /api/sessions/:id/compact` 请求体。

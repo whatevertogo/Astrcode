@@ -11,7 +11,7 @@ use astrcode_core::{
     StorageEventPayload, StoredEvent, TurnId, TurnTerminalKind, UserMessageOrigin,
     generate_turn_id,
 };
-use astrcode_runtime_contract::{ExecutionAccepted, RuntimeTurnEvent};
+use astrcode_runtime_contract::RuntimeTurnEvent;
 use async_trait::async_trait;
 use chrono::Utc;
 
@@ -85,7 +85,6 @@ pub struct SubmitPromptMutationInput {
     pub requested_turn_id: Option<TurnId>,
     pub prompt_text: String,
     pub queued_inputs: Vec<String>,
-    pub control: Option<ExecutionControl>,
     pub preparation: TurnMutationPreparation,
 }
 
@@ -102,21 +101,6 @@ pub struct PromptAcceptedSummary {
     pub turn_id: TurnId,
     pub session_id: SessionId,
     pub branched_from_session_id: Option<String>,
-    pub accepted_control: Option<ExecutionControl>,
-}
-
-impl PromptAcceptedSummary {
-    pub fn from_execution_accepted(
-        accepted: ExecutionAccepted,
-        accepted_control: Option<ExecutionControl>,
-    ) -> Self {
-        Self {
-            turn_id: accepted.turn_id,
-            session_id: accepted.session_id,
-            branched_from_session_id: accepted.branched_from_session_id,
-            accepted_control,
-        }
-    }
 }
 
 /// 已被 `host-session` 接受的 prompt submit。
@@ -221,7 +205,6 @@ impl SessionCatalog {
             requested_turn_id,
             prompt_text,
             queued_inputs,
-            control,
             preparation,
         } = input;
         let live_user_input = normalize_prompt_text(prompt_text);
@@ -259,7 +242,6 @@ impl SessionCatalog {
             turn_id,
             session_id: target.session_id.clone(),
             branched_from_session_id: target.branched_from_session_id.clone(),
-            accepted_control: control,
         };
 
         Ok(Some(AcceptedSubmitPrompt {
@@ -710,11 +692,9 @@ mod tests {
 
     use astrcode_agent_runtime::TurnIdentity;
     use astrcode_core::{
-        AgentId, DeleteProjectResult, Phase, SessionMeta, SessionTurnAcquireResult,
-        SessionTurnBusy, SessionTurnLease, StorageEvent, StorageEventPayload, StoredEvent,
-        TurnTerminalKind,
+        DeleteProjectResult, Phase, SessionMeta, SessionTurnAcquireResult, SessionTurnBusy,
+        SessionTurnLease, StorageEvent, StorageEventPayload, StoredEvent, TurnTerminalKind,
     };
-    use astrcode_runtime_contract::ExecutionAccepted;
     use async_trait::async_trait;
     use chrono::Utc;
 
@@ -893,7 +873,6 @@ mod tests {
             requested_turn_id: Some(TurnId::from(turn_id.into())),
             prompt_text: prompt_text.into(),
             queued_inputs: Vec::new(),
-            control: None,
             preparation: TurnMutationPreparation::external_preparation("application"),
         }
     }
@@ -920,29 +899,6 @@ mod tests {
                 owner: "application".to_string()
             }
         );
-    }
-
-    #[test]
-    fn prompt_summary_preserves_accepted_control_and_branch_source() {
-        let accepted = ExecutionAccepted {
-            session_id: SessionId::from("session-branch"),
-            turn_id: TurnId::from("turn-1"),
-            agent_id: Some(AgentId::from("agent-root")),
-            branched_from_session_id: Some("session-source".to_string()),
-        };
-        let control = Some(ExecutionControl {
-            manual_compact: Some(false),
-        });
-
-        let summary = PromptAcceptedSummary::from_execution_accepted(accepted, control.clone());
-
-        assert_eq!(summary.session_id.as_str(), "session-branch");
-        assert_eq!(summary.turn_id.as_str(), "turn-1");
-        assert_eq!(
-            summary.branched_from_session_id,
-            Some("session-source".to_string())
-        );
-        assert_eq!(summary.accepted_control, control);
     }
 
     #[test]
@@ -997,19 +953,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accept_submit_prompt_keeps_accepted_response_shape() {
+    async fn accept_submit_prompt_keeps_accepted_turn_shape() {
         let catalog = SessionCatalog::new(Arc::new(TurnMutationEventStore::default()));
         let meta = catalog
             .create_session("D:/workspace/project")
             .await
             .expect("session should be created");
         let session_id = SessionId::from(meta.session_id);
-        let control = Some(ExecutionControl {
-            manual_compact: Some(true),
-        });
         let mut input = submit_input(session_id.clone(), "turn-shape", "  hello  ");
         input.queued_inputs = vec!["  queued  ".to_string(), " ".to_string()];
-        input.control = control.clone();
 
         let accepted = catalog
             .accept_submit_prompt(input, SubmitTurnBusyPolicy::RejectOnBusy)
@@ -1020,7 +972,6 @@ mod tests {
         assert_eq!(accepted.summary.session_id, session_id);
         assert_eq!(accepted.summary.turn_id.as_str(), "turn-shape");
         assert_eq!(accepted.summary.branched_from_session_id, None);
-        assert_eq!(accepted.summary.accepted_control, control);
         assert_eq!(accepted.target.session_id, accepted.summary.session_id);
         assert_eq!(accepted.live_user_input.as_deref(), Some("hello"));
         assert_eq!(accepted.queued_inputs, vec!["queued".to_string()]);

@@ -10,6 +10,7 @@
 //!   如需要更细粒度的"只读并行、写串行"分桶策略，可参考旧版 `session-runtime` 的 `tool_cycle.rs`。
 
 mod context_window;
+pub mod event_mapping;
 pub mod hook_dispatch;
 pub mod r#loop;
 pub mod runtime;

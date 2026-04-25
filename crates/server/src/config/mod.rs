@@ -33,7 +33,7 @@ use astrcode_core::{
 };
 use tokio::sync::RwLock;
 
-use crate::ApplicationError;
+use crate::ServerApplicationError;
 
 /// 配置用例入口：负责配置的读取、写入、校验和装配。
 pub struct ConfigService {
@@ -89,7 +89,7 @@ impl ConfigService {
     pub fn load_overlay(
         &self,
         working_dir: &Path,
-    ) -> Result<Option<ConfigOverlay>, ApplicationError> {
+    ) -> Result<Option<ConfigOverlay>, ServerApplicationError> {
         self.store.load_overlay(working_dir).map_err(Into::into)
     }
 
@@ -98,7 +98,7 @@ impl ConfigService {
         &self,
         active_profile: String,
         active_model: String,
-    ) -> Result<(), ApplicationError> {
+    ) -> Result<(), ServerApplicationError> {
         let mut config = self.config.write().await;
         let selection =
             selection::resolve_active_selection(&active_profile, &active_model, &config.profiles)?;
@@ -110,7 +110,7 @@ impl ConfigService {
     }
 
     /// 从磁盘重新加载配置（热重载用例）。
-    pub async fn reload_from_disk(&self) -> Result<Config, ApplicationError> {
+    pub async fn reload_from_disk(&self) -> Result<Config, ServerApplicationError> {
         let loaded = self.store.load()?;
         let normalized = validation::normalize_config(loaded)?;
         let mut guard = self.config.write().await;
@@ -122,7 +122,7 @@ impl ConfigService {
     pub fn load_overlayed_config(
         &self,
         working_dir: Option<&Path>,
-    ) -> Result<Config, ApplicationError> {
+    ) -> Result<Config, ServerApplicationError> {
         let mut config = validation::normalize_config(self.store.load()?)?;
         if let Some(working_dir) = working_dir {
             if let Some(overlay) = self.store.load_overlay(working_dir)? {
@@ -136,7 +136,7 @@ impl ConfigService {
     pub fn load_resolved_runtime_config(
         &self,
         working_dir: Option<&Path>,
-    ) -> Result<ResolvedRuntimeConfig, ApplicationError> {
+    ) -> Result<ResolvedRuntimeConfig, ServerApplicationError> {
         let config = self.load_overlayed_config(working_dir)?;
         Ok(resolve_runtime_config(&config.runtime))
     }
@@ -146,14 +146,17 @@ impl ConfigService {
         &self,
         profile_name: &str,
         model: &str,
-    ) -> Result<TestConnectionResult, ApplicationError> {
+    ) -> Result<TestConnectionResult, ServerApplicationError> {
         let config = self.config.read().await;
         let profile = config
             .profiles
             .iter()
             .find(|p| p.name == profile_name)
             .ok_or_else(|| {
-                ApplicationError::InvalidArgument(format!("profile '{}' not found", profile_name))
+                ServerApplicationError::InvalidArgument(format!(
+                    "profile '{}' not found",
+                    profile_name
+                ))
             })?;
         let model_exists = profile.models.iter().any(|m| m.id == model);
         Ok(TestConnectionResult {
@@ -170,7 +173,9 @@ impl ConfigService {
 
 /// 生成配置摘要输入，供协议层投影复用。
 #[cfg(test)]
-pub fn resolve_config_summary(config: &Config) -> Result<ResolvedConfigSummary, ApplicationError> {
+pub fn resolve_config_summary(
+    config: &Config,
+) -> Result<ResolvedConfigSummary, ServerApplicationError> {
     if config.profiles.is_empty() {
         return Ok(ResolvedConfigSummary {
             active_profile: String::new(),

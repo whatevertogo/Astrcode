@@ -233,23 +233,21 @@ async fn execute_task_inner(
     let accepted = client
         .submit_turn(&session.session_id, &task.prompt)
         .await?;
-    if !accepted.accepted {
-        return Err(EvalError::validation(format!(
-            "评测 prompt 被 input hook 处理，未创建 turn: {}",
-            accepted.message
-        )));
-    }
-    let accepted_turn_id = accepted
-        .turn_id
-        .as_deref()
-        .ok_or_else(|| EvalError::validation("accepted prompt response 缺少 turnId"))?;
-    let accepted_session_id = accepted
-        .session_id
-        .clone()
-        .ok_or_else(|| EvalError::validation("accepted prompt response 缺少 sessionId"))?;
+    let (accepted_turn_id, accepted_session_id) = match accepted {
+        astrcode_protocol::http::PromptSubmitResponse::Accepted {
+            turn_id,
+            session_id,
+            ..
+        } => (turn_id, session_id),
+        astrcode_protocol::http::PromptSubmitResponse::Handled { message, .. } => {
+            return Err(EvalError::validation(format!(
+                "评测 prompt 被 input hook 处理，未创建 turn: {message}"
+            )));
+        },
+    };
     wait_for_turn_done(
         &session_log,
-        accepted_turn_id,
+        &accepted_turn_id,
         config.timeout,
         config.poll_interval,
     )
@@ -564,6 +562,7 @@ mod tests {
                         (
                             reqwest::StatusCode::ACCEPTED,
                             Json(json!({
+                                "status": "accepted",
                                 "turnId": turn_id,
                                 "sessionId": session_id,
                             })),

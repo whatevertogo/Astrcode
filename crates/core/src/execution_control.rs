@@ -8,7 +8,7 @@ use crate::error::AstrError;
 
 /// 执行控制输入。
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutionControl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_compact: Option<bool>,

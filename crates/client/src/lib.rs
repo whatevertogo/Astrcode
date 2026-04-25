@@ -6,8 +6,8 @@ use std::sync::Arc;
 pub use astrcode_protocol::http::{
     AgentLifecycleDto, AuthExchangeRequest, AuthExchangeResponse, CompactSessionRequest,
     CompactSessionResponse, CreateSessionRequest, CurrentModelInfoDto, ExecutionControlDto,
-    ModeSummaryDto, ModelOptionDto, PhaseDto, PromptAcceptedResponse, PromptRequest,
-    PromptSkillInvocation, SaveActiveSelectionRequest, SessionListItem, SessionModeStateDto,
+    ModeSummaryDto, ModelOptionDto, PhaseDto, PromptRequest, PromptSkillInvocation,
+    PromptSubmitResponse, SaveActiveSelectionRequest, SessionListItem, SessionModeStateDto,
     SwitchModeRequest,
     conversation::v1::{
         ConversationAssistantBlockDto, ConversationBannerDto, ConversationBannerErrorCodeDto,
@@ -227,7 +227,7 @@ where
         &self,
         session_id: &str,
         request: PromptRequest,
-    ) -> Result<PromptAcceptedResponse, ClientError> {
+    ) -> Result<PromptSubmitResponse, ClientError> {
         self.send_json(
             TransportMethod::Post,
             &format!("/api/sessions/{session_id}/prompts"),

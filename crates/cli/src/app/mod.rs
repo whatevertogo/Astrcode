@@ -17,7 +17,7 @@ use astrcode_client::{
     AstrcodeClient, ClientConfig, ClientError, ClientTransport,
     ConversationSlashCandidatesResponseDto, ConversationSnapshotResponseDto,
     ConversationStreamItem, CurrentModelInfoDto, ModeSummaryDto, ModelOptionDto,
-    PromptAcceptedResponse, ReqwestTransport, SessionListItem, SessionModeStateDto,
+    PromptSubmitResponse, ReqwestTransport, SessionListItem, SessionModeStateDto,
 };
 use clap::Parser;
 use crossterm::{
@@ -99,7 +99,7 @@ enum Action {
     },
     PromptSubmitted {
         session_id: String,
-        result: Result<PromptAcceptedResponse, ClientError>,
+        result: Result<PromptSubmitResponse, ClientError>,
     },
     ModelSelectionSaved {
         profile_name: String,
@@ -1427,8 +1427,8 @@ mod tests {
             result: Ok(TransportResponse {
                 status: 202,
                 body: json!({
+                    "status": "accepted",
                     "sessionId": "session-1",
-                    "accepted": true,
                     "turnId": "turn-1"
                 })
                 .to_string(),
@@ -1476,8 +1476,8 @@ mod tests {
             result: Ok(TransportResponse {
                 status: 202,
                 body: json!({
+                    "status": "accepted",
                     "sessionId": "session-1",
-                    "accepted": true,
                     "turnId": "turn-2"
                 })
                 .to_string(),

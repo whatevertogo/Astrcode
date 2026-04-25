@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 
 use super::{ConfigService, McpConfigFileScope, validation};
 use crate::{
-    ApplicationError,
+    ServerApplicationError,
     mcp::{McpConfigScope, RegisterMcpServerInput},
 };
 
@@ -50,9 +50,9 @@ fn resolve_sidecar_backed_edit_target<F>(
     name: &str,
     mode: McpTargetResolutionMode,
     load_embedded: F,
-) -> std::result::Result<McpEditTarget, ApplicationError>
+) -> std::result::Result<McpEditTarget, ServerApplicationError>
 where
-    F: FnOnce() -> std::result::Result<(Option<Value>, McpEditTarget), ApplicationError>,
+    F: FnOnce() -> std::result::Result<(Option<Value>, McpEditTarget), ServerApplicationError>,
 {
     match mode {
         McpTargetResolutionMode::PreferSidecarIfPresent => {
@@ -84,7 +84,7 @@ impl ConfigService {
         &self,
         scope: McpConfigFileScope,
         working_dir: Option<&Path>,
-    ) -> std::result::Result<Option<Value>, ApplicationError> {
+    ) -> std::result::Result<Option<Value>, ServerApplicationError> {
         self.store.load_mcp(scope, working_dir).map_err(Into::into)
     }
 
@@ -94,7 +94,7 @@ impl ConfigService {
         scope: McpConfigScope,
         name: &str,
         mode: McpTargetResolutionMode,
-    ) -> std::result::Result<McpEditTarget, ApplicationError> {
+    ) -> std::result::Result<McpEditTarget, ServerApplicationError> {
         match scope {
             McpConfigScope::User => self.resolve_user_mcp_edit_target(name, mode),
             McpConfigScope::Local => self.resolve_local_mcp_edit_target(working_dir, name, mode),
@@ -111,7 +111,7 @@ impl ConfigService {
         &self,
         name: &str,
         mode: McpTargetResolutionMode,
-    ) -> std::result::Result<McpEditTarget, ApplicationError> {
+    ) -> std::result::Result<McpEditTarget, ServerApplicationError> {
         let sidecar = self.store.load_mcp(McpConfigFileScope::User, None)?;
         resolve_sidecar_backed_edit_target(McpConfigFileScope::User, sidecar, name, mode, || {
             let config = validation::normalize_config(self.store.load()?)?;
@@ -127,7 +127,7 @@ impl ConfigService {
         working_dir: &Path,
         name: &str,
         mode: McpTargetResolutionMode,
-    ) -> std::result::Result<McpEditTarget, ApplicationError> {
+    ) -> std::result::Result<McpEditTarget, ServerApplicationError> {
         let sidecar = self
             .store
             .load_mcp(McpConfigFileScope::Local, Some(working_dir))?;
@@ -145,7 +145,7 @@ impl ConfigService {
         working_dir: &Path,
         target: McpEditTarget,
         next: Option<Value>,
-    ) -> std::result::Result<(), ApplicationError> {
+    ) -> std::result::Result<(), ServerApplicationError> {
         match target {
             McpEditTarget::Sidecar { scope, .. } => {
                 self.store.save_mcp(
@@ -173,7 +173,7 @@ impl ConfigService {
         &self,
         working_dir: &Path,
         input: &RegisterMcpServerInput,
-    ) -> std::result::Result<(), ApplicationError> {
+    ) -> std::result::Result<(), ServerApplicationError> {
         let entry = register_input_to_mcp_entry(input)?;
         let target = self.resolve_mcp_edit_target(
             working_dir,
@@ -192,7 +192,7 @@ impl ConfigService {
         working_dir: &Path,
         scope: McpConfigScope,
         name: &str,
-    ) -> std::result::Result<(), ApplicationError> {
+    ) -> std::result::Result<(), ServerApplicationError> {
         let target = self.resolve_mcp_edit_target(
             working_dir,
             scope,
@@ -210,7 +210,7 @@ impl ConfigService {
         scope: McpConfigScope,
         name: &str,
         enabled: bool,
-    ) -> std::result::Result<(), ApplicationError> {
+    ) -> std::result::Result<(), ServerApplicationError> {
         let target = self.resolve_mcp_edit_target(
             working_dir,
             scope,
@@ -233,7 +233,7 @@ fn upsert_mcp_entry(
     current: Option<Value>,
     name: &str,
     entry: Value,
-) -> std::result::Result<Value, ApplicationError> {
+) -> std::result::Result<Value, ServerApplicationError> {
     let mut doc = current.unwrap_or_else(empty_mcp_document);
     let servers = mcp_servers_mut(&mut doc)?;
     servers.insert(name.to_string(), entry);
@@ -243,7 +243,7 @@ fn upsert_mcp_entry(
 fn remove_mcp_entry(
     current: Option<Value>,
     name: &str,
-) -> std::result::Result<Option<Value>, ApplicationError> {
+) -> std::result::Result<Option<Value>, ServerApplicationError> {
     let Some(mut doc) = current else {
         return Ok(None);
     };
@@ -256,19 +256,22 @@ fn set_mcp_entry_enabled(
     current: Option<Value>,
     name: &str,
     enabled: bool,
-) -> std::result::Result<Option<Value>, ApplicationError> {
+) -> std::result::Result<Option<Value>, ServerApplicationError> {
     let Some(mut doc) = current else {
-        return Err(ApplicationError::NotFound(format!(
+        return Err(ServerApplicationError::NotFound(format!(
             "MCP server '{}' not found",
             name
         )));
     };
     let servers = mcp_servers_mut(&mut doc)?;
-    let entry = servers
-        .get_mut(name)
-        .ok_or_else(|| ApplicationError::NotFound(format!("MCP server '{}' not found", name)))?;
+    let entry = servers.get_mut(name).ok_or_else(|| {
+        ServerApplicationError::NotFound(format!("MCP server '{}' not found", name))
+    })?;
     let object = entry.as_object_mut().ok_or_else(|| {
-        ApplicationError::InvalidArgument(format!("MCP server '{}' config is not an object", name))
+        ServerApplicationError::InvalidArgument(format!(
+            "MCP server '{}' config is not an object",
+            name
+        ))
     })?;
     if enabled {
         object.remove("disabled");
@@ -280,12 +283,14 @@ fn set_mcp_entry_enabled(
 
 fn register_input_to_mcp_entry(
     input: &RegisterMcpServerInput,
-) -> std::result::Result<Value, ApplicationError> {
+) -> std::result::Result<Value, ServerApplicationError> {
     let transport_type = input
         .transport_config
         .get("type")
         .and_then(Value::as_str)
-        .ok_or_else(|| ApplicationError::InvalidArgument("MCP transport missing 'type'".into()))?;
+        .ok_or_else(|| {
+            ServerApplicationError::InvalidArgument("MCP transport missing 'type'".into())
+        })?;
     let mut entry = Map::new();
     match transport_type {
         "stdio" => {
@@ -294,7 +299,7 @@ fn register_input_to_mcp_entry(
                 .get("command")
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
-                    ApplicationError::InvalidArgument(
+                    ServerApplicationError::InvalidArgument(
                         "stdio MCP transport missing 'command'".into(),
                     )
                 })?;
@@ -322,7 +327,7 @@ fn register_input_to_mcp_entry(
                 .get("url")
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
-                    ApplicationError::InvalidArgument(format!(
+                    ServerApplicationError::InvalidArgument(format!(
                         "{} MCP transport missing 'url'",
                         transport_type
                     ))
@@ -342,7 +347,7 @@ fn register_input_to_mcp_entry(
             );
         },
         other => {
-            return Err(ApplicationError::InvalidArgument(format!(
+            return Err(ServerApplicationError::InvalidArgument(format!(
                 "unsupported MCP transport type '{}'",
                 other
             )));
@@ -393,7 +398,7 @@ fn normalize_mcp_document(doc: Value) -> Option<Value> {
 fn mcp_document_contains_server(
     current: Option<&Value>,
     name: &str,
-) -> std::result::Result<bool, ApplicationError> {
+) -> std::result::Result<bool, ServerApplicationError> {
     let Some(doc) = current else {
         return Ok(false);
     };
@@ -402,28 +407,28 @@ fn mcp_document_contains_server(
 
 fn mcp_servers_mut(
     doc: &mut Value,
-) -> std::result::Result<&mut Map<String, Value>, ApplicationError> {
+) -> std::result::Result<&mut Map<String, Value>, ServerApplicationError> {
     let root = doc.as_object_mut().ok_or_else(|| {
-        ApplicationError::InvalidArgument("MCP config root must be an object".into())
+        ServerApplicationError::InvalidArgument("MCP config root must be an object".into())
     })?;
     let servers = root
         .entry("mcpServers".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
-    servers
-        .as_object_mut()
-        .ok_or_else(|| ApplicationError::InvalidArgument("'mcpServers' must be an object".into()))
+    servers.as_object_mut().ok_or_else(|| {
+        ServerApplicationError::InvalidArgument("'mcpServers' must be an object".into())
+    })
 }
 
-fn mcp_servers(doc: &Value) -> std::result::Result<&Map<String, Value>, ApplicationError> {
+fn mcp_servers(doc: &Value) -> std::result::Result<&Map<String, Value>, ServerApplicationError> {
     let root = doc.as_object().ok_or_else(|| {
-        ApplicationError::InvalidArgument("MCP config root must be an object".into())
+        ServerApplicationError::InvalidArgument("MCP config root must be an object".into())
     })?;
     let servers = root.get("mcpServers").ok_or_else(|| {
-        ApplicationError::InvalidArgument("MCP config missing 'mcpServers'".into())
+        ServerApplicationError::InvalidArgument("MCP config missing 'mcpServers'".into())
     })?;
-    servers
-        .as_object()
-        .ok_or_else(|| ApplicationError::InvalidArgument("'mcpServers' must be an object".into()))
+    servers.as_object().ok_or_else(|| {
+        ServerApplicationError::InvalidArgument("'mcpServers' must be an object".into())
+    })
 }
 
 #[cfg(test)]

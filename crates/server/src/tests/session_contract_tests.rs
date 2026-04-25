@@ -123,6 +123,7 @@ async fn submit_prompt_contract_returns_accepted_shape() {
             .expect("body should be readable"),
     )
     .expect("payload should deserialize");
+    assert_eq!(payload["status"], "accepted");
     assert_eq!(payload["sessionId"], created.session_id.to_string());
     assert!(!payload["turnId"].as_str().unwrap_or_default().is_empty());
 }

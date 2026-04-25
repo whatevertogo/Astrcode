@@ -18,321 +18,81 @@
     windows_subsystem = "windows"
 )]
 
-#[path = "agent/mod.rs"]
-mod agent;
-#[path = "http/agent_api.rs"]
-mod agent_api;
-#[path = "agent_control_bridge.rs"]
-mod agent_control_bridge;
-#[path = "agent_control_registry/mod.rs"]
-mod agent_control_registry;
-#[cfg(test)]
-#[path = "tests/agent_routes_tests.rs"]
-mod agent_routes_tests;
-#[path = "agent_runtime_bridge.rs"]
-mod agent_runtime_bridge;
-#[path = "application_error_bridge.rs"]
-mod application_error_bridge;
-#[path = "http/auth.rs"]
-mod auth;
-#[cfg(test)]
-#[path = "tests/auth_routes_tests.rs"]
-mod auth_routes_tests;
-#[path = "bootstrap/mod.rs"]
+mod application;
 mod bootstrap;
-#[path = "capability_router.rs"]
-mod capability_router;
-#[path = "http/composer_catalog.rs"]
-mod composer_catalog;
-#[cfg(test)]
-#[path = "tests/composer_routes_tests.rs"]
-mod composer_routes_tests;
-#[path = "config/mod.rs"]
 mod config;
-#[path = "config_mode_helpers.rs"]
 mod config_mode_helpers;
-#[cfg(test)]
-#[path = "tests/config_routes_tests.rs"]
-mod config_routes_tests;
-#[path = "config_service_bridge.rs"]
-mod config_service_bridge;
-#[path = "conversation_read_model.rs"]
-mod conversation_read_model;
-#[path = "errors.rs"]
-mod errors;
-#[path = "execution/mod.rs"]
-mod execution;
-#[path = "governance_service.rs"]
-mod governance_service;
-#[path = "governance_surface/mod.rs"]
-mod governance_surface;
-mod hook_adapter;
-#[path = "lifecycle/mod.rs"]
-mod lifecycle;
-#[path = "logging.rs"]
+mod http;
 mod logging;
-#[path = "http/mapper.rs"]
-mod mapper;
-#[path = "mcp/mod.rs"]
 mod mcp;
-#[path = "mcp_service.rs"]
-mod mcp_service;
-#[path = "mode/mod.rs"]
 mod mode;
-#[path = "mode_catalog_service.rs"]
-mod mode_catalog_service;
-#[path = "observability/mod.rs"]
 mod observability;
-#[path = "ports/mod.rs"]
-mod ports;
-#[path = "profile_service.rs"]
-mod profile_service;
-#[path = "root_execute_service.rs"]
-mod root_execute_service;
-#[path = "http/routes/mod.rs"]
-mod routes;
-#[path = "runtime_owner_bridge.rs"]
-mod runtime_owner_bridge;
-#[cfg(test)]
-#[path = "tests/session_contract_tests.rs"]
-mod session_contract_tests;
-#[path = "session_identity.rs"]
+mod read_model;
+mod runtime_bridge;
 mod session_identity;
-#[path = "session_runtime_owner_bridge.rs"]
-mod session_runtime_owner_bridge;
-#[path = "session_runtime_port.rs"]
-mod session_runtime_port;
-#[path = "http/terminal_projection.rs"]
-mod terminal_projection;
 #[cfg(test)]
-#[path = "tests/test_support.rs"]
-mod test_support;
-#[path = "tool_capability_invoker.rs"]
-mod tool_capability_invoker;
-#[path = "view_projection.rs"]
-mod view_projection;
-#[path = "watch_service.rs"]
-mod watch_service;
+mod tests;
+use std::{net::SocketAddr, sync::Arc};
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
-
-pub(crate) use agent::AgentOrchestrationService;
 use anyhow::{Result as AnyhowResult, anyhow};
-use astrcode_core::{AstrError, SkillCatalog};
-use astrcode_host_session::SessionCatalog;
-use astrcode_plugin_host::ResourceCatalog;
-use axum::{
-    Json, Router,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-};
-pub(crate) use config::ConfigService;
-pub(crate) use errors::ApplicationError;
-pub(crate) use execution::{ExecutionControl, ProfileProvider, ProfileResolutionService};
-pub(crate) use governance_surface::{
-    GovernanceSurfaceAssembler, ResolvedGovernanceSurface, RootGovernanceInput,
-};
-pub(crate) use lifecycle::{
-    TaskRegistry,
-    governance::{
-        AppGovernance, ObservabilitySnapshotProvider, RuntimeGovernancePort,
-        RuntimeGovernanceSnapshot, RuntimeReloader, SessionInfoProvider,
+pub(crate) use application::{
+    agent,
+    agent::AgentOrchestrationService,
+    error as errors,
+    error::ServerApplicationError,
+    execution,
+    execution::{ExecutionControl, ProfileProvider, ProfileResolutionService},
+    governance_surface,
+    governance_surface::{
+        GovernanceSurfaceAssembler, ResolvedGovernanceSurface, RootGovernanceInput,
     },
+    lifecycle,
+    lifecycle::{
+        TaskRegistry,
+        governance::{
+            AppGovernance, ObservabilitySnapshotProvider, RuntimeGovernancePort,
+            RuntimeGovernanceSnapshot, RuntimeReloader, SessionInfoProvider,
+        },
+    },
+    root_execute as root_execute_service, route_error as application_error_bridge,
+};
+use astrcode_core::AstrError;
+use axum::Router;
+pub(crate) use config::ConfigService;
+pub(crate) use http::{
+    AUTH_HEADER_NAME, ApiError, AppState, FrontendBuild, agent_api, auth, composer_catalog, mapper,
+    routes,
 };
 pub(crate) use mcp::{McpConfigScope, RegisterMcpServerInput};
 pub(crate) use mode::{
     CompiledModeEnvelope, compile_mode_envelope, compile_mode_envelope_for_child,
 };
 pub(crate) use observability::{GovernanceSnapshot, RuntimeObservabilityCollector};
-pub(crate) use ports::{
-    AgentKernelPort, AgentSessionPort, AppAgentPromptSubmission, RecoverableParentDelivery,
-    SessionTurnOutcomeSummary,
+pub(crate) use read_model::{
+    conversation as conversation_read_model, terminal as terminal_projection, view_projection,
 };
-use serde::Serialize;
+pub(crate) use runtime_bridge::{
+    agent_control as agent_control_bridge, agent_control_registry,
+    agent_runtime as agent_runtime_bridge, capability_router,
+    config_service as config_service_bridge, governance_service, hook_dispatcher as hook_adapter,
+    mcp_service, mode_catalog as mode_catalog_service, ports,
+    ports::{
+        AgentKernelPort, AgentSessionPort, AppAgentPromptSubmission, RecoverableParentDelivery,
+        SessionTurnOutcomeSummary,
+    },
+    profile_service, runtime_owner as runtime_owner_bridge,
+    session_owner as session_runtime_owner_bridge, session_port as session_runtime_port,
+    tool_capability as tool_capability_invoker, watch_service,
+};
+#[cfg(test)]
+pub(crate) use tests::test_support;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
-    agent_api::ServerAgentApi,
-    application_error_bridge::ServerRouteError,
-    auth::{AuthSessionManager, BootstrapAuth},
-    bootstrap::{
-        ServerRuntimeHandles, attach_frontend_build, build_cors_layer, clear_run_info,
-        prepare_server_launch,
-    },
-    config_service_bridge::ServerConfigService,
-    governance_service::ServerGovernanceService,
-    mcp_service::ServerMcpService,
-    mode_catalog_service::ServerModeCatalog,
+    auth::AuthSessionManager,
+    bootstrap::{attach_frontend_build, build_cors_layer, clear_run_info, prepare_server_launch},
     routes::build_api_router,
 };
-
-/// 认证请求头名称。
-///
-/// 所有 API 请求通过此请求头携带认证 token，
-/// TODO:备选方案是通过 `token` 查询参数传递（SSE EventSource 不支持自定义请求头）。
-pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";
-
-/// 应用状态（共享给所有路由处理器）。
-///
-/// 通过 Axum 的 `State` 提取器注入到每个路由处理器中，
-/// 包含运行时入口、server 侧 owner bridge、治理模型、认证管理器和前端构建产物。
-/// 所有字段均为 `Arc` 或可 `Clone` 类型，支持多线程共享。
-#[derive(Clone)]
-pub(crate) struct AppState {
-    /// server-owned agent route bridge；agent routes 不再经由 `application::agent` 用例入口。
-    agent_api: Arc<ServerAgentApi>,
-    /// server-owned 配置服务桥接；配置/模型 API 不再经由 App 访问配置。
-    config: Arc<ServerConfigService>,
-    /// server-owned 会话目录桥接；catalog API 不再经由 App 访问 session catalog。
-    session_catalog: Arc<SessionCatalog>,
-    /// server-owned MCP service；MCP API 不再经由 App facade。
-    mcp_service: Arc<ServerMcpService>,
-    /// server-owned skill catalog bridge；composer/skill discovery 不再经由 App facade。
-    skill_catalog: Arc<dyn SkillCatalog>,
-    /// server-owned plugin resource catalog；commands/prompts/themes/resources discovery 统一走
-    /// plugin-host。
-    resource_catalog: Arc<std::sync::RwLock<ResourceCatalog>>,
-    /// server-owned mode catalog bridge；mode API 不再经由 App 访问 mode catalog。
-    mode_catalog: Arc<ServerModeCatalog>,
-    /// server-owned 治理层（快照/shutdown/reload）。
-    governance: Arc<ServerGovernanceService>,
-    /// 认证会话管理器
-    auth_sessions: Arc<AuthSessionManager>,
-    /// Bootstrap 阶段的认证（短期 token）
-    bootstrap_auth: BootstrapAuth,
-    /// 前端构建产物（可选）
-    frontend_build: Option<FrontendBuild>,
-    /// server 侧运行时资源守卫。
-    _runtime_handles: Arc<ServerRuntimeHandles>,
-}
-
-/// 前端构建产物。
-///
-/// 包含 dist 目录路径和注入过 bootstrap token 的 index.html 内容。
-/// 如果前端未构建，此字段为 `None`，服务器将只提供 API 路由。
-#[derive(Clone)]
-pub(crate) struct FrontendBuild {
-    /// dist 目录路径
-    dist_dir: PathBuf,
-    /// index.html 内容（已注入 bootstrap token 脚本）
-    index_html: Arc<String>,
-}
-
-/// 错误响应载荷。
-///
-/// 所有 API 错误统一返回此结构，包含 `error` 字段描述错误信息。
-#[derive(Debug, Serialize)]
-struct ErrorPayload {
-    error: String,
-}
-
-/// API 错误。
-///
-/// 将业务逻辑错误映射为 HTTP 状态码和错误消息。
-/// 支持 400（无效输入）、401（未认证）、404（未找到）、
-/// 409（冲突）、500（内部错误）。
-#[derive(Debug)]
-pub(crate) struct ApiError {
-    status: StatusCode,
-    message: String,
-}
-
-impl ApiError {
-    fn unauthorized() -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            message: "unauthorized".to_string(),
-        }
-    }
-
-    pub(crate) fn bad_request(message: String) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message,
-        }
-    }
-
-    pub(crate) fn internal_server_error(message: String) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message,
-        }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(ErrorPayload {
-                error: self.message,
-            }),
-        )
-            .into_response()
-    }
-}
-
-impl From<AstrError> for ApiError {
-    fn from(value: AstrError) -> Self {
-        let message = value.to_string();
-        match value {
-            AstrError::SessionNotFound(_) | AstrError::ProjectNotFound(_) => Self {
-                status: StatusCode::NOT_FOUND,
-                message,
-            },
-            AstrError::TurnInProgress(_) => Self {
-                status: StatusCode::CONFLICT,
-                message,
-            },
-            AstrError::InvalidSessionId(_)
-            | AstrError::ConfigError { .. }
-            | AstrError::MissingApiKey(_)
-            | AstrError::MissingBaseUrl(_)
-            | AstrError::NoProfilesConfigured
-            | AstrError::ModelNotFound { .. }
-            | AstrError::UnsupportedProvider(_)
-            | AstrError::Validation(_) => Self {
-                status: StatusCode::BAD_REQUEST,
-                message,
-            },
-            AstrError::Cancelled => Self {
-                status: StatusCode::CONFLICT,
-                message,
-            },
-            _ => Self {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message,
-            },
-        }
-    }
-}
-
-impl From<ServerRouteError> for ApiError {
-    fn from(value: ServerRouteError) -> Self {
-        match value {
-            ServerRouteError::NotFound(message) => Self {
-                status: StatusCode::NOT_FOUND,
-                message,
-            },
-            ServerRouteError::Conflict(message) => Self {
-                status: StatusCode::CONFLICT,
-                message,
-            },
-            ServerRouteError::InvalidArgument(message) => Self {
-                status: StatusCode::BAD_REQUEST,
-                message,
-            },
-            ServerRouteError::PermissionDenied(message) => Self {
-                status: StatusCode::FORBIDDEN,
-                message,
-            },
-            ServerRouteError::Internal(message) => Self {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message,
-            },
-        }
-    }
-}
 
 /// 服务器主入口
 ///

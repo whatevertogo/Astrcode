@@ -22,11 +22,20 @@ export interface ConfirmDialogState {
   onConfirm: () => void | Promise<void>;
 }
 
-interface PromptSubmission {
+interface PromptAcceptedSubmission {
+  status: 'accepted';
   turnId: string;
   sessionId: string;
   branchedFromSessionId?: string;
 }
+
+interface PromptHandledSubmission {
+  status: 'handled';
+  sessionId: string;
+  message: string;
+}
+
+type PromptSubmission = PromptAcceptedSubmission | PromptHandledSubmission;
 
 interface UseComposerActionsOptions {
   activeProject: Project | null;
@@ -37,11 +46,7 @@ interface UseComposerActionsOptions {
   setConfirmDialog: React.Dispatch<React.SetStateAction<ConfirmDialogState | null>>;
   refreshSessions: (options?: { preferredSessionId?: string | null }) => Promise<void>;
   createSession: (workingDir: string) => Promise<SessionMeta>;
-  submitPrompt: (
-    sessionId: string,
-    text: string,
-    control?: ExecutionControl
-  ) => Promise<PromptSubmission>;
+  submitPrompt: (sessionId: string, text: string) => Promise<PromptSubmission>;
   interrupt: (sessionId: string) => Promise<void>;
   compactSession: (
     sessionId: string,
@@ -225,7 +230,12 @@ export function useComposerActions({
 
       try {
         const submitted = await submitPrompt(sessionId, trimmed);
-        const effectiveSessionId = submitted.sessionId ?? sessionId;
+        if (submitted.status === 'handled') {
+          phaseRef.current = 'idle';
+          dispatch({ type: 'SET_PHASE', phase: 'idle' });
+          return;
+        }
+        const effectiveSessionId = submitted.sessionId;
 
         if (
           submitted.branchedFromSessionId &&

@@ -501,7 +501,6 @@ where
                     PromptRequest {
                         text,
                         skill_invocation,
-                        control: None,
                     },
                 )
                 .await;

@@ -10,7 +10,7 @@ use astrcode_core::{ActiveSelection, Profile};
 #[cfg(test)]
 use astrcode_core::{Config, CurrentModelSelection, ModelOption, ModelSelection};
 
-use crate::ApplicationError;
+use crate::ServerApplicationError;
 
 /// 解析活跃 profile/model 选择，支持回退到第一个可用项。
 ///
@@ -19,9 +19,9 @@ pub fn resolve_active_selection(
     active_profile: &str,
     active_model: &str,
     profiles: &[Profile],
-) -> Result<ActiveSelection, ApplicationError> {
+) -> Result<ActiveSelection, ServerApplicationError> {
     if profiles.is_empty() {
-        return Err(ApplicationError::InvalidArgument(
+        return Err(ServerApplicationError::InvalidArgument(
             "no profiles configured".to_string(),
         ));
     }
@@ -62,7 +62,9 @@ pub fn resolve_active_selection(
 
 /// 获取当前生效的模型信息。
 #[cfg(test)]
-pub fn resolve_current_model(config: &Config) -> Result<CurrentModelSelection, ApplicationError> {
+pub fn resolve_current_model(
+    config: &Config,
+) -> Result<CurrentModelSelection, ServerApplicationError> {
     let selected = resolve_active_selection(
         &config.active_profile,
         &config.active_model,
@@ -74,7 +76,7 @@ pub fn resolve_current_model(config: &Config) -> Result<CurrentModelSelection, A
         .iter()
         .find(|p| p.name == selected.active_profile)
         .ok_or_else(|| {
-            ApplicationError::InvalidArgument(format!(
+            ServerApplicationError::InvalidArgument(format!(
                 "active profile '{}' not found",
                 selected.active_profile
             ))
@@ -87,13 +89,13 @@ pub fn resolve_current_model(config: &Config) -> Result<CurrentModelSelection, A
     ))
 }
 
-fn first_model_id(profile: &Profile) -> Result<&str, ApplicationError> {
+fn first_model_id(profile: &Profile) -> Result<&str, ServerApplicationError> {
     profile
         .models
         .first()
         .map(|model| model.id.as_str())
         .ok_or_else(|| {
-            ApplicationError::InvalidArgument(format!(
+            ServerApplicationError::InvalidArgument(format!(
                 "profile '{}' has no models configured",
                 profile.name
             ))
@@ -103,7 +105,7 @@ fn first_model_id(profile: &Profile) -> Result<&str, ApplicationError> {
 fn fallback_selection(
     profile: &Profile,
     warning: String,
-) -> Result<ActiveSelection, ApplicationError> {
+) -> Result<ActiveSelection, ServerApplicationError> {
     Ok(active_selection(
         profile,
         first_model_id(profile)?.to_string(),

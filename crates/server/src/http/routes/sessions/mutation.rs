@@ -7,8 +7,8 @@ use astrcode_host_session::{
 };
 use astrcode_protocol::http::{
     CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
-    ForkSessionRequest, PromptAcceptedResponse, PromptRequest, SessionListItem,
-    SessionModeStateDto, SwitchModeRequest,
+    ForkSessionRequest, PromptRequest, PromptSubmitResponse, SessionListItem, SessionModeStateDto,
+    SwitchModeRequest,
 };
 use astrcode_support::hostpaths::project_dir;
 use axum::{
@@ -19,8 +19,11 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    ApiError, AppState, auth::require_auth, mapper::to_session_list_item,
-    root_execute_service::ServerSessionPromptRequest, routes::sessions::validate_session_path_id,
+    ApiError, AppState,
+    auth::require_auth,
+    mapper::to_session_list_item,
+    root_execute_service::{ServerAgentExecuteSummary, ServerSessionPromptRequest},
+    routes::sessions::validate_session_path_id,
 };
 
 #[derive(Debug, Deserialize)]
@@ -48,7 +51,7 @@ pub(crate) async fn submit_prompt(
     headers: HeaderMap,
     Path(session_id): Path<String>,
     Json(request): Json<PromptRequest>,
-) -> Result<(StatusCode, Json<PromptAcceptedResponse>), ApiError> {
+) -> Result<(StatusCode, Json<PromptSubmitResponse>), ApiError> {
     require_auth(&state, &headers, None)?;
     let session_id = validate_session_path_id(&session_id)?;
     let loaded = state
@@ -57,35 +60,41 @@ pub(crate) async fn submit_prompt(
         .await
         .map_err(ApiError::from)?;
     let text = normalize_prompt_request_text(request.text, request.skill_invocation)?;
-    if let Some(control) = &request.control {
-        control.validate().map_err(ApiError::from)?;
-    }
-    let accepted_control = request.control.clone();
-    let accepted = state
+    let outcome = state
         .agent_api
         .submit_existing_session_prompt(ServerSessionPromptRequest {
             session_id,
             working_dir: loaded.working_dir.display().to_string(),
             text,
-            control: request.control,
         })
         .await
         .map_err(ApiError::from)?;
-    Ok((
-        if accepted.accepted {
-            StatusCode::ACCEPTED
-        } else {
-            StatusCode::OK
-        },
-        Json(PromptAcceptedResponse {
-            accepted: accepted.accepted,
-            message: accepted.message,
-            turn_id: accepted.turn_id,
-            session_id: accepted.session_id,
-            branched_from_session_id: accepted.branched_from_session_id,
-            accepted_control,
-        }),
-    ))
+    Ok(match outcome {
+        ServerAgentExecuteSummary::Accepted {
+            session_id,
+            turn_id,
+            branched_from_session_id,
+            ..
+        } => (
+            StatusCode::ACCEPTED,
+            Json(PromptSubmitResponse::Accepted {
+                session_id,
+                turn_id,
+                branched_from_session_id,
+            }),
+        ),
+        ServerAgentExecuteSummary::Handled {
+            session_id,
+            message,
+            ..
+        } => (
+            StatusCode::OK,
+            Json(PromptSubmitResponse::Handled {
+                session_id,
+                message,
+            }),
+        ),
+    })
 }
 
 pub(crate) async fn interrupt_session(

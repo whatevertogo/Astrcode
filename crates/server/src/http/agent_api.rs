@@ -2,7 +2,7 @@
 //!
 //! 负责把 agent 路由需要的 root execute / status / close 能力，
 //! 直接接到 kernel + session-runtime + profile/governance 装配面，
-//! 避免继续经由旧的应用层协作入口。
+//! 所有 agent 路由统一经由 server-owned agent API。
 
 use std::sync::Arc;
 

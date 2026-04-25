@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use astrcode_protocol::http::{CreateSessionRequest, PromptAcceptedResponse, PromptRequest};
+use astrcode_protocol::http::{CreateSessionRequest, PromptRequest, PromptSubmitResponse};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 
@@ -90,7 +90,7 @@ impl ServerControlClient {
         &self,
         session_id: &str,
         prompt: &str,
-    ) -> EvalResult<PromptAcceptedResponse> {
+    ) -> EvalResult<PromptSubmitResponse> {
         let request = self
             .http
             .post(format!(
@@ -100,7 +100,6 @@ impl ServerControlClient {
             .json(&PromptRequest {
                 text: prompt.to_string(),
                 skill_invocation: None,
-                control: None,
             });
         let response = self
             .send(request)
@@ -110,7 +109,7 @@ impl ServerControlClient {
             return Err(status_error("提交评测 turn", response.status()));
         }
         response
-            .json::<PromptAcceptedResponse>()
+            .json::<PromptSubmitResponse>()
             .await
             .map_err(|error| EvalError::http("解析 submit_turn 响应失败", error))
     }
@@ -134,6 +133,7 @@ fn status_error(action: &str, status: StatusCode) -> EvalError {
 mod tests {
     use std::{net::SocketAddr, time::Duration};
 
+    use astrcode_protocol::http::PromptSubmitResponse;
     use axum::{
         Json, Router,
         routing::{get, post},
@@ -164,12 +164,10 @@ mod tests {
                     (
                         reqwest::StatusCode::ACCEPTED,
                         Json(json!({
-                            "accepted": true,
-                            "message": "accepted",
+                            "status": "accepted",
                             "turnId": "turn-1",
                             "sessionId": "session-1",
                             "branchedFromSessionId": null,
-                            "acceptedControl": null,
                         })),
                     )
                 }),
@@ -202,7 +200,13 @@ mod tests {
             .submit_turn("session-1", "hello")
             .await
             .expect("turn should submit");
-        assert!(accepted.accepted);
-        assert_eq!(accepted.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(
+            accepted,
+            PromptSubmitResponse::Accepted {
+                session_id: "session-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                branched_from_session_id: None,
+            }
+        );
     }
 }

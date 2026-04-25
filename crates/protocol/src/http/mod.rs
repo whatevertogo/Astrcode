@@ -74,8 +74,8 @@ pub use runtime::{
 };
 pub use session::{
     CompactSessionRequest, CompactSessionResponse, CreateSessionRequest, DeleteProjectResultDto,
-    ForkSessionRequest, ModeSummaryDto, PromptAcceptedResponse, PromptRequest,
-    PromptSkillInvocation, SessionListItem, SessionModeStateDto, SwitchModeRequest,
+    ForkSessionRequest, ModeSummaryDto, PromptRequest, PromptSkillInvocation, PromptSubmitResponse,
+    SessionListItem, SessionModeStateDto, SwitchModeRequest,
 };
 pub use session_event::{SessionCatalogEventEnvelope, SessionCatalogEventPayload};
 pub use terminal::v1::{

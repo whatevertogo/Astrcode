@@ -60,10 +60,11 @@ pub(crate) async fn execute_agent(
         })
         .await
         .map_err(ApiError::from)?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(to_agent_execute_response_dto(summary)),
-    ))
+    let status = match &summary {
+        ServerAgentExecuteSummary::Accepted { .. } => StatusCode::ACCEPTED,
+        ServerAgentExecuteSummary::Handled { .. } => StatusCode::OK,
+    };
+    Ok((status, Json(to_agent_execute_response_dto(summary))))
 }
 
 pub(crate) async fn get_subrun_status(

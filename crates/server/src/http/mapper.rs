@@ -75,12 +75,26 @@ pub(crate) fn to_session_list_item(meta: SessionMeta) -> SessionListItem {
 pub(crate) fn to_agent_execute_response_dto(
     summary: ServerAgentExecuteSummary,
 ) -> AgentExecuteResponseDto {
-    AgentExecuteResponseDto {
-        accepted: summary.accepted,
-        message: summary.message,
-        session_id: summary.session_id,
-        turn_id: summary.turn_id,
-        agent_id: summary.agent_id,
+    match summary {
+        ServerAgentExecuteSummary::Accepted {
+            session_id,
+            turn_id,
+            agent_id,
+            ..
+        } => AgentExecuteResponseDto::Accepted {
+            session_id,
+            turn_id,
+            agent_id,
+        },
+        ServerAgentExecuteSummary::Handled {
+            session_id,
+            agent_id,
+            message,
+        } => AgentExecuteResponseDto::Handled {
+            session_id,
+            agent_id,
+            message,
+        },
     }
 }
 

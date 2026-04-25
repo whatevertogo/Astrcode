@@ -136,6 +136,7 @@ async fn submit_prompt(
     (
         reqwest::StatusCode::ACCEPTED,
         Json(serde_json::json!({
+            "status": "accepted",
             "turnId": turn_id,
             "sessionId": session_id,
         })),

@@ -31,6 +31,7 @@ import {
   submitPrompt,
   switchSessionMode,
 } from '../lib/api/sessions';
+import type { PromptSubmission } from '../lib/api/sessions';
 import { getConfig, reloadConfig, saveActiveSelection } from '../lib/api/config';
 import { getCurrentModel, listAvailableModels, testConnection } from '../lib/api/models';
 import type {
@@ -46,12 +47,6 @@ import type {
   TestResult,
 } from '../types';
 import type { SessionEventFilterQuery } from '../lib/sessionView';
-
-export interface PromptSubmission {
-  turnId: string;
-  sessionId: string;
-  branchedFromSessionId?: string;
-}
 
 const SSE_RECONNECT_BASE_DELAY_MS = 500;
 const SSE_RECONNECT_MAX_DELAY_MS = 5_000;
@@ -440,12 +435,8 @@ export function useAgent() {
   );
 
   const handleSubmitPrompt = useCallback(
-    async (
-      sessionId: string,
-      text: string,
-      control?: ExecutionControl
-    ): Promise<PromptSubmission> => {
-      return submitPrompt(sessionId, text, control);
+    async (sessionId: string, text: string): Promise<PromptSubmission> => {
+      return submitPrompt(sessionId, text);
     },
     []
   );

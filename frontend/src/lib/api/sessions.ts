@@ -11,12 +11,20 @@ import type {
 } from '../../types';
 import { request, requestJson } from './client';
 
-export interface PromptSubmission {
+export interface PromptAcceptedSubmission {
+  status: 'accepted';
   turnId: string;
   sessionId: string;
   branchedFromSessionId?: string;
-  acceptedControl?: ExecutionControl;
 }
+
+export interface PromptHandledSubmission {
+  status: 'handled';
+  sessionId: string;
+  message: string;
+}
+
+export type PromptSubmission = PromptAcceptedSubmission | PromptHandledSubmission;
 
 export interface CompactSessionAcceptance {
   accepted: boolean;
@@ -81,15 +89,14 @@ export async function forkSession(
 
 export async function submitPrompt(
   sessionId: string,
-  text: string,
-  control?: ExecutionControl
+  text: string
 ): Promise<PromptSubmission> {
   const response = await requestJson<PromptSubmission>(
     `/api/sessions/${encodeURIComponent(sessionId)}/prompts`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, control }),
+      body: JSON.stringify({ text }),
     }
   );
   return response;

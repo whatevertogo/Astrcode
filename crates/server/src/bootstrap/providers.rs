@@ -25,7 +25,7 @@ use super::deps::core::{
     resolve_runtime_config,
 };
 use crate::{
-    ApplicationError, ConfigService, ProfileProvider, ProfileResolutionService,
+    ConfigService, ProfileProvider, ProfileResolutionService, ServerApplicationError,
     application_error_bridge::ServerRouteError,
     config_mode_helpers,
     config_service_bridge::ServerConfigService,
@@ -124,19 +124,19 @@ impl ProfileProvider for LoaderBackedProfileProvider {
     fn load_for_working_dir(
         &self,
         working_dir: &Path,
-    ) -> std::result::Result<Vec<AgentProfile>, ApplicationError> {
+    ) -> std::result::Result<Vec<AgentProfile>, ServerApplicationError> {
         let registry = self
             .loader
             .load_for_working_dir(Some(working_dir))
-            .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+            .map_err(|error| ServerApplicationError::Internal(error.to_string()))?;
         Ok(registry.list().into_iter().cloned().collect())
     }
 
-    fn load_global(&self) -> std::result::Result<Vec<AgentProfile>, ApplicationError> {
+    fn load_global(&self) -> std::result::Result<Vec<AgentProfile>, ServerApplicationError> {
         let registry = self
             .loader
             .load()
-            .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+            .map_err(|error| ServerApplicationError::Internal(error.to_string()))?;
         Ok(registry.list().into_iter().cloned().collect())
     }
 }
@@ -165,27 +165,27 @@ impl ConfigBackedLlmProvider {
         }
     }
 
-    fn resolve_spec(&self) -> std::result::Result<ResolvedLlmProviderSpec, ApplicationError> {
+    fn resolve_spec(&self) -> std::result::Result<ResolvedLlmProviderSpec, ServerApplicationError> {
         let config = self.load_config()?;
         let selection = config_mode_helpers::resolve_current_model(&config)
-            .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
+            .map_err(|error| ServerApplicationError::InvalidArgument(error.to_string()))?;
         self.resolve_spec_from_selection(&config, selection)
     }
 
     async fn resolve_spec_for_request(
         &self,
-    ) -> std::result::Result<ResolvedLlmProviderSpec, ApplicationError> {
+    ) -> std::result::Result<ResolvedLlmProviderSpec, ServerApplicationError> {
         let config = self.load_config()?;
         let selection = config_mode_helpers::resolve_current_model(&config)
-            .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?;
+            .map_err(|error| ServerApplicationError::InvalidArgument(error.to_string()))?;
         let selection = apply_model_select_hooks(selection, self.model_hook_dispatcher.clone())
             .await
-            .map_err(|error| ApplicationError::InvalidArgument(error.to_string()))?
+            .map_err(|error| ServerApplicationError::InvalidArgument(error.to_string()))?
             .selection;
         self.resolve_spec_from_selection(&config, selection)
     }
 
-    fn load_config(&self) -> std::result::Result<Config, ApplicationError> {
+    fn load_config(&self) -> std::result::Result<Config, ServerApplicationError> {
         self.config_service
             .load_overlayed_config(Some(self.working_dir.as_path()))
             .map_err(server_error_to_application)
@@ -195,13 +195,13 @@ impl ConfigBackedLlmProvider {
         &self,
         config: &Config,
         selection: ModelSelection,
-    ) -> std::result::Result<ResolvedLlmProviderSpec, ApplicationError> {
+    ) -> std::result::Result<ResolvedLlmProviderSpec, ServerApplicationError> {
         let profile = config
             .profiles
             .iter()
             .find(|profile| profile.name == selection.profile_name)
             .ok_or_else(|| {
-                ApplicationError::InvalidArgument(format!(
+                ServerApplicationError::InvalidArgument(format!(
                     "profile '{}' not found in resolved config",
                     selection.profile_name
                 ))
@@ -211,13 +211,13 @@ impl ConfigBackedLlmProvider {
             .iter()
             .find(|model| model.id == selection.model)
             .ok_or_else(|| {
-                ApplicationError::InvalidArgument(format!(
+                ServerApplicationError::InvalidArgument(format!(
                     "model '{}' not found under profile '{}'",
                     selection.model, profile.name
                 ))
             })?;
         let api_key = config_mode_helpers::resolve_api_key(profile)
-            .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+            .map_err(|error| ServerApplicationError::Internal(error.to_string()))?;
         let limits = resolve_model_limits(&profile.provider_kind, model);
         let runtime = resolve_runtime_config(&config.runtime);
         let client_config = client_config_from_runtime(&runtime);
@@ -231,7 +231,7 @@ impl ConfigBackedLlmProvider {
                 .or_else(|| catalog.provider_for_api_kind(&profile.provider_kind))
                 .cloned()
                 .ok_or_else(|| {
-                    ApplicationError::InvalidArgument(format!(
+                    ServerApplicationError::InvalidArgument(format!(
                         "unsupported provider_kind '{}'：未在 plugin-host ProviderDescriptor \
                          catalog 中注册",
                         profile.provider_kind
@@ -239,7 +239,7 @@ impl ConfigBackedLlmProvider {
                 })?
         };
         if provider_descriptor.api_kind != OPENAI_API_KIND {
-            return Err(ApplicationError::InvalidArgument(format!(
+            return Err(ServerApplicationError::InvalidArgument(format!(
                 "registered provider '{}' uses unsupported api_kind '{}'",
                 provider_descriptor.provider_id, provider_descriptor.api_kind
             )));
@@ -346,23 +346,31 @@ impl ConfigBackedLlmProvider {
     }
 }
 
-fn server_error_to_application(error: ServerRouteError) -> ApplicationError {
+fn server_error_to_application(error: ServerRouteError) -> ServerApplicationError {
     match error {
-        ServerRouteError::NotFound(message) => ApplicationError::NotFound(message),
-        ServerRouteError::Conflict(message) => ApplicationError::Conflict(message),
-        ServerRouteError::InvalidArgument(message) => ApplicationError::InvalidArgument(message),
-        ServerRouteError::PermissionDenied(message) => ApplicationError::PermissionDenied(message),
-        ServerRouteError::Internal(message) => ApplicationError::Internal(message),
+        ServerRouteError::NotFound(message) => ServerApplicationError::NotFound(message),
+        ServerRouteError::Conflict(message) => ServerApplicationError::Conflict(message),
+        ServerRouteError::InvalidArgument(message) => {
+            ServerApplicationError::InvalidArgument(message)
+        },
+        ServerRouteError::PermissionDenied(message) => {
+            ServerApplicationError::PermissionDenied(message)
+        },
+        ServerRouteError::Internal(message) => ServerApplicationError::Internal(message),
     }
 }
 
-fn application_error_to_server(error: ApplicationError) -> ServerRouteError {
+fn application_error_to_server(error: ServerApplicationError) -> ServerRouteError {
     match error {
-        ApplicationError::NotFound(message) => ServerRouteError::NotFound(message),
-        ApplicationError::Conflict(message) => ServerRouteError::Conflict(message),
-        ApplicationError::InvalidArgument(message) => ServerRouteError::InvalidArgument(message),
-        ApplicationError::PermissionDenied(message) => ServerRouteError::PermissionDenied(message),
-        ApplicationError::Internal(message) => ServerRouteError::Internal(message),
+        ServerApplicationError::NotFound(message) => ServerRouteError::NotFound(message),
+        ServerApplicationError::Conflict(message) => ServerRouteError::Conflict(message),
+        ServerApplicationError::InvalidArgument(message) => {
+            ServerRouteError::InvalidArgument(message)
+        },
+        ServerApplicationError::PermissionDenied(message) => {
+            ServerRouteError::PermissionDenied(message)
+        },
+        ServerApplicationError::Internal(message) => ServerRouteError::Internal(message),
     }
 }
 

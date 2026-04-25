@@ -38,8 +38,8 @@ use super::{
     runtime_coordinator::RuntimeCoordinator,
 };
 use crate::{
-    AppGovernance, ApplicationError, GovernanceSnapshot, RuntimeGovernancePort,
-    RuntimeGovernanceSnapshot, RuntimeReloader, SessionInfoProvider,
+    AppGovernance, GovernanceSnapshot, RuntimeGovernancePort, RuntimeGovernanceSnapshot,
+    RuntimeReloader, ServerApplicationError, SessionInfoProvider,
     application_error_bridge::ServerRouteError,
     config_service_bridge::ServerConfigService,
     governance_service::{
@@ -188,14 +188,16 @@ impl RuntimeGovernancePort for CoordinatorGovernancePort {
         timeout_secs: u64,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = std::result::Result<(), ApplicationError>> + Send + '_,
+            dyn std::future::Future<Output = std::result::Result<(), ServerApplicationError>>
+                + Send
+                + '_,
         >,
     > {
         Box::pin(async move {
             self.coordinator
                 .shutdown(timeout_secs)
                 .await
-                .map_err(|error| ApplicationError::Internal(error.to_string()))
+                .map_err(|error| ServerApplicationError::Internal(error.to_string()))
         })
     }
 }
@@ -294,20 +296,22 @@ impl GovernanceReloadRollback {
         self,
         mcp_manager: &McpConnectionManager,
         capability_sync: &CapabilitySurfaceSync,
-    ) -> Result<(), ApplicationError> {
+    ) -> Result<(), ServerApplicationError> {
         let mut external_invokers = mcp_manager
             .restore_reload_snapshot(&self.mcp_snapshot)
             .await
-            .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+            .map_err(|error| ServerApplicationError::Internal(error.to_string()))?;
         external_invokers.extend(self.plugin_invokers);
         capability_sync
             .apply_external_invokers(external_invokers)
-            .map_err(|error| ApplicationError::Internal(error.to_string()))
+            .map_err(|error| ServerApplicationError::Internal(error.to_string()))
     }
 }
 
 impl ServerRuntimeReloader {
-    async fn prepare_reload_candidate(&self) -> Result<PreparedGovernanceReload, ApplicationError> {
+    async fn prepare_reload_candidate(
+        &self,
+    ) -> Result<PreparedGovernanceReload, ServerApplicationError> {
         let mcp_configs = load_declared_configs(&self.config_service, self.working_dir.as_path())
             .await
             .map_err(server_error_to_application)?;
@@ -320,7 +324,7 @@ impl ServerRuntimeReloader {
             Some(mode_catalog) => Some(
                 mode_catalog
                     .preview_plugin_modes(plugin_bootstrap.modes.clone())
-                    .map_err(ApplicationError::from)?,
+                    .map_err(ServerApplicationError::from)?,
             ),
             None => None,
         };
@@ -402,11 +406,11 @@ impl ServerRuntimeReloader {
     fn stage_plugin_host_snapshot(
         &self,
         descriptors: Vec<PluginDescriptor>,
-    ) -> Result<PluginActiveSnapshot, ApplicationError> {
+    ) -> Result<PluginActiveSnapshot, ServerApplicationError> {
         self.coordinator
             .plugin_registry()
             .stage_candidate_with_hook_registry(descriptors, self.builtin_hook_registry.as_ref())
-            .map_err(ApplicationError::from)
+            .map_err(ServerApplicationError::from)
     }
 
     fn rollback_plugin_host_candidate(&self) {
@@ -416,18 +420,18 @@ impl ServerRuntimeReloader {
     fn commit_plugin_host_candidate(
         &self,
         expected_snapshot_id: &str,
-    ) -> Result<PluginActiveSnapshot, ApplicationError> {
+    ) -> Result<PluginActiveSnapshot, ServerApplicationError> {
         let snapshot = self
             .coordinator
             .plugin_registry()
             .commit_candidate()
             .ok_or_else(|| {
-                ApplicationError::Internal(
+                ServerApplicationError::Internal(
                     "plugin-host active snapshot commit unexpectedly failed".to_string(),
                 )
             })?;
         if snapshot.snapshot_id != expected_snapshot_id {
-            return Err(ApplicationError::Internal(format!(
+            return Err(ServerApplicationError::Internal(format!(
                 "plugin-host committed snapshot '{}' but candidate was '{}'",
                 snapshot.snapshot_id, expected_snapshot_id
             )));
@@ -455,14 +459,14 @@ impl ServerRuntimeReloader {
     async fn restore_external_surface_after_failure(
         &self,
         rollback: GovernanceReloadRollback,
-        error: ApplicationError,
-    ) -> ApplicationError {
+        error: ServerApplicationError,
+    ) -> ServerApplicationError {
         log::error!("governance reload failed while preparing plugin-host snapshot: {error}");
         if let Err(rollback_error) = rollback
             .restore(&self.mcp_manager, &self.capability_sync)
             .await
         {
-            return ApplicationError::Internal(format!(
+            return ServerApplicationError::Internal(format!(
                 "governance reload failed: {}; rollback failed: {}",
                 error, rollback_error
             ));
@@ -475,7 +479,11 @@ impl RuntimeReloader for ServerRuntimeReloader {
     fn reload(
         &self,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<PathBuf>, ApplicationError>> + Send + '_>,
+        Box<
+            dyn std::future::Future<Output = Result<Vec<PathBuf>, ServerApplicationError>>
+                + Send
+                + '_,
+        >,
     > {
         Box::pin(async move {
             self.config_service
@@ -490,7 +498,7 @@ impl RuntimeReloader for ServerRuntimeReloader {
                 .mcp_manager
                 .reload_config(candidate.mcp_configs)
                 .await
-                .map_err(|error| ApplicationError::Internal(error.to_string()))?;
+                .map_err(|error| ServerApplicationError::Internal(error.to_string()))?;
             let plugin_host_descriptors = self.build_plugin_host_descriptors(
                 &mcp_invokers,
                 candidate.plugin_modes.clone(),
@@ -503,7 +511,7 @@ impl RuntimeReloader for ServerRuntimeReloader {
                         return Err(self
                             .restore_external_surface_after_failure(
                                 rollback,
-                                ApplicationError::from(error),
+                                ServerApplicationError::from(error),
                             )
                             .await);
                     },
@@ -515,7 +523,7 @@ impl RuntimeReloader for ServerRuntimeReloader {
                         return Err(self
                             .restore_external_surface_after_failure(
                                 rollback,
-                                ApplicationError::from(error),
+                                ServerApplicationError::from(error),
                             )
                             .await);
                     },
@@ -536,7 +544,7 @@ impl RuntimeReloader for ServerRuntimeReloader {
                 .apply_external_invokers(external_invokers)
             {
                 self.rollback_plugin_host_candidate();
-                let error = ApplicationError::Internal(error.to_string());
+                let error = ServerApplicationError::Internal(error.to_string());
                 log::error!(
                     "governance reload failed while applying candidate capability surface: {error}"
                 );
@@ -544,7 +552,7 @@ impl RuntimeReloader for ServerRuntimeReloader {
                     .restore(&self.mcp_manager, &self.capability_sync)
                     .await
                 {
-                    return Err(ApplicationError::Internal(format!(
+                    return Err(ServerApplicationError::Internal(format!(
                         "governance reload failed: {}; rollback failed: {}",
                         error, rollback_error
                     )));
@@ -562,7 +570,7 @@ impl RuntimeReloader for ServerRuntimeReloader {
                             .restore(&self.mcp_manager, &self.capability_sync)
                             .await
                         {
-                            return Err(ApplicationError::Internal(format!(
+                            return Err(ServerApplicationError::Internal(format!(
                                 "governance reload failed: {}; rollback failed: {}",
                                 error, rollback_error
                             )));
@@ -606,23 +614,31 @@ impl RuntimeReloader for ServerRuntimeReloader {
     }
 }
 
-fn server_error_to_application(error: ServerRouteError) -> ApplicationError {
+fn server_error_to_application(error: ServerRouteError) -> ServerApplicationError {
     match error {
-        ServerRouteError::NotFound(message) => ApplicationError::NotFound(message),
-        ServerRouteError::Conflict(message) => ApplicationError::Conflict(message),
-        ServerRouteError::InvalidArgument(message) => ApplicationError::InvalidArgument(message),
-        ServerRouteError::PermissionDenied(message) => ApplicationError::PermissionDenied(message),
-        ServerRouteError::Internal(message) => ApplicationError::Internal(message),
+        ServerRouteError::NotFound(message) => ServerApplicationError::NotFound(message),
+        ServerRouteError::Conflict(message) => ServerApplicationError::Conflict(message),
+        ServerRouteError::InvalidArgument(message) => {
+            ServerApplicationError::InvalidArgument(message)
+        },
+        ServerRouteError::PermissionDenied(message) => {
+            ServerApplicationError::PermissionDenied(message)
+        },
+        ServerRouteError::Internal(message) => ServerApplicationError::Internal(message),
     }
 }
 
-fn application_error_to_server(error: ApplicationError) -> ServerRouteError {
+fn application_error_to_server(error: ServerApplicationError) -> ServerRouteError {
     match error {
-        ApplicationError::NotFound(message) => ServerRouteError::NotFound(message),
-        ApplicationError::Conflict(message) => ServerRouteError::Conflict(message),
-        ApplicationError::InvalidArgument(message) => ServerRouteError::InvalidArgument(message),
-        ApplicationError::PermissionDenied(message) => ServerRouteError::PermissionDenied(message),
-        ApplicationError::Internal(message) => ServerRouteError::Internal(message),
+        ServerApplicationError::NotFound(message) => ServerRouteError::NotFound(message),
+        ServerApplicationError::Conflict(message) => ServerRouteError::Conflict(message),
+        ServerApplicationError::InvalidArgument(message) => {
+            ServerRouteError::InvalidArgument(message)
+        },
+        ServerApplicationError::PermissionDenied(message) => {
+            ServerRouteError::PermissionDenied(message)
+        },
+        ServerApplicationError::Internal(message) => ServerRouteError::Internal(message),
     }
 }
 
