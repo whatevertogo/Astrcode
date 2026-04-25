@@ -386,10 +386,8 @@ name = "astrcode-governance-contract"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "async-trait",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]

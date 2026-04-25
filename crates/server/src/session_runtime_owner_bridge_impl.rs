@@ -117,13 +117,13 @@ impl SessionInfoProvider for SessionRuntimeInfoBridge {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 struct PreparedTestTurn {
     session_id: String,
     _lease: Box<dyn SessionTurnLease>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 struct SessionRuntimeTestSupportBridge {
     session_catalog: Arc<SessionCatalog>,
     active_sessions: Arc<ActiveSessionRegistry>,
