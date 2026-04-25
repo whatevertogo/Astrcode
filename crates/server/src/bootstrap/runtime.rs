@@ -45,7 +45,9 @@ use super::{
     watch::{bootstrap_profile_watch_runtime, build_watch_service},
 };
 #[cfg(test)]
-use crate::{agent_control_bridge::ServerAgentControlPort, profile_service::ServerProfileService};
+use crate::agent_control_bridge::ServerAgentControlPort;
+#[cfg(test)]
+use crate::profile_service::ServerProfileService;
 use crate::{
     config_service_bridge::ServerConfigService,
     governance_service::ServerGovernanceService,
@@ -580,7 +582,7 @@ mod tests {
                 "external-plugin",
             ]
         );
-        assert_eq!(descriptors[1].modes.len(), 3);
+        assert_eq!(descriptors[1].modes.len(), 2);
     }
 
     #[test]
@@ -620,8 +622,8 @@ mod tests {
                 "project-runtime".to_string(),
             ]
         );
-        assert_eq!(reload.builtin_modes.len(), 3);
-        assert_eq!(reload.snapshot.modes.len(), 3);
+        assert_eq!(reload.builtin_modes.len(), 2);
+        assert_eq!(reload.snapshot.modes.len(), 2);
         assert_eq!(reload.resources.commands.len(), 2);
         assert_eq!(
             reload

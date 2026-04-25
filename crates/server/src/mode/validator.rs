@@ -6,7 +6,7 @@
 use astrcode_core::{AstrError, Result};
 use astrcode_governance_contract::{GovernanceModeSpec, ModeId};
 
-use super::ModeCatalog;
+use crate::mode_catalog_service::ServerModeCatalog;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModeTransitionDecision {
@@ -16,7 +16,7 @@ pub struct ModeTransitionDecision {
 }
 
 pub fn validate_mode_transition(
-    catalog: &ModeCatalog,
+    catalog: &ServerModeCatalog,
     from_mode_id: &ModeId,
     to_mode_id: &ModeId,
 ) -> Result<ModeTransitionDecision> {
@@ -46,24 +46,33 @@ pub fn validate_mode_transition(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use astrcode_core::Result;
     use astrcode_governance_contract::ModeId;
 
     use super::validate_mode_transition;
-    use crate::mode::builtin_mode_catalog;
+    use crate::{mode::catalog::builtin_mode_specs, mode_catalog_service::ServerModeCatalog};
 
-    #[test]
-    fn builtin_transition_accepts_known_target() {
-        let catalog = builtin_mode_catalog().expect("builtin catalog should build");
-        let decision = validate_mode_transition(&catalog, &ModeId::code(), &ModeId::plan())
-            .expect("transition should succeed");
-        assert_eq!(decision.to_mode_id, ModeId::plan());
+    fn builtin_test_catalog() -> Result<Arc<ServerModeCatalog>> {
+        ServerModeCatalog::from_mode_specs(builtin_mode_specs(), Vec::new())
     }
 
     #[test]
-    fn unknown_target_is_rejected() {
-        let catalog = builtin_mode_catalog().expect("builtin catalog should build");
+    fn builtin_transition_accepts_known_target() -> Result<()> {
+        let catalog = builtin_test_catalog()?;
+        let decision = validate_mode_transition(&catalog, &ModeId::code(), &ModeId::plan())
+            .expect("transition should succeed");
+        assert_eq!(decision.to_mode_id, ModeId::plan());
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_target_is_rejected() -> Result<()> {
+        let catalog = builtin_test_catalog()?;
         let error = validate_mode_transition(&catalog, &ModeId::code(), &ModeId::from("missing"))
             .expect_err("unknown target should fail");
         assert!(error.to_string().contains("unknown target mode"));
+        Ok(())
     }
 }

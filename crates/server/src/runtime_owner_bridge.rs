@@ -13,7 +13,7 @@ use astrcode_governance_contract::GovernanceModeSpec;
 
 use crate::{
     ObservabilitySnapshotProvider, RuntimeObservabilityCollector, TaskRegistry,
-    builtin_mode_catalog,
+    mode::builtin_mode_specs,
 };
 
 #[derive(Debug, Clone)]
@@ -150,10 +150,5 @@ impl std::fmt::Debug for ServerRuntimeObservability {
 }
 
 pub(crate) fn builtin_server_mode_specs() -> Result<Vec<GovernanceModeSpec>> {
-    Ok(builtin_mode_catalog()?
-        .snapshot()
-        .entries
-        .values()
-        .map(|entry| entry.spec.clone())
-        .collect())
+    Ok(builtin_mode_specs())
 }

@@ -15,6 +15,6 @@ mod catalog;
 mod compiler;
 mod validator;
 
-pub use catalog::{ModeCatalog, builtin_mode_catalog};
+pub(crate) use catalog::builtin_mode_specs;
 pub use compiler::{CompiledModeEnvelope, compile_mode_envelope, compile_mode_envelope_for_child};
 pub use validator::validate_mode_transition;

@@ -21,17 +21,18 @@ use super::{
     ResumedChildGovernanceInput, RootGovernanceInput, SessionGovernanceInput,
 };
 use crate::{
-    AgentSessionPort, ApplicationError, CompiledModeEnvelope, ExecutionControl, ModeCatalog,
+    AgentSessionPort, ApplicationError, CompiledModeEnvelope, ExecutionControl,
     compile_mode_envelope, compile_mode_envelope_for_child,
+    mode_catalog_service::ServerModeCatalog,
 };
 
 #[derive(Debug, Clone)]
 pub struct GovernanceSurfaceAssembler {
-    mode_catalog: ModeCatalog,
+    mode_catalog: ServerModeCatalog,
 }
 
 impl GovernanceSurfaceAssembler {
-    pub fn new(mode_catalog: ModeCatalog) -> Self {
+    pub fn new(mode_catalog: ServerModeCatalog) -> Self {
         Self { mode_catalog }
     }
 
@@ -239,8 +240,9 @@ impl GovernanceSurfaceAssembler {
 impl Default for GovernanceSurfaceAssembler {
     fn default() -> Self {
         Self::new(
-            crate::mode::builtin_mode_catalog()
-                .expect("builtin governance mode catalog should build"),
+            (*ServerModeCatalog::from_mode_specs(crate::mode::builtin_mode_specs(), Vec::new())
+                .expect("builtin governance mode catalog should build"))
+            .clone(),
         )
     }
 }

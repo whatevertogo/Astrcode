@@ -119,8 +119,6 @@ pub(crate) use agent::AgentOrchestrationService;
 use anyhow::{Result as AnyhowResult, anyhow};
 use astrcode_core::{AstrError, SkillCatalog};
 use astrcode_host_session::SessionCatalog;
-#[cfg(test)]
-use astrcode_host_session::SubAgentExecutor;
 use astrcode_plugin_host::ResourceCatalog;
 use axum::{
     Json, Router,
@@ -142,8 +140,7 @@ pub(crate) use lifecycle::{
 };
 pub(crate) use mcp::{McpConfigScope, RegisterMcpServerInput};
 pub(crate) use mode::{
-    CompiledModeEnvelope, ModeCatalog, builtin_mode_catalog, compile_mode_envelope,
-    compile_mode_envelope_for_child,
+    CompiledModeEnvelope, compile_mode_envelope, compile_mode_envelope_for_child,
 };
 pub(crate) use observability::{GovernanceSnapshot, RuntimeObservabilityCollector};
 pub(crate) use ports::{
@@ -153,8 +150,6 @@ pub(crate) use ports::{
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-#[cfg(test)]
-use crate::profile_service::ServerProfileService;
 use crate::{
     agent_api::ServerAgentApi,
     application_error_bridge::ServerRouteError,
@@ -185,19 +180,10 @@ pub(crate) const AUTH_HEADER_NAME: &str = "x-astrcode-token";
 pub(crate) struct AppState {
     /// server-owned agent route bridge；agent routes 不再经由 `application::agent` 用例入口。
     agent_api: Arc<ServerAgentApi>,
-    /// server-owned agent control bridge；测试和路由不直接暴露底层 kernel。
-    #[cfg(test)]
-    agent_control: Arc<dyn agent_control_bridge::ServerAgentControlPort>,
     /// server-owned 配置服务桥接；配置/模型 API 不再经由 App 访问配置。
     config: Arc<ServerConfigService>,
     /// server-owned 会话目录桥接；catalog API 不再经由 App 访问 session catalog。
     session_catalog: Arc<SessionCatalog>,
-    /// server-owned profile resolver；watch/profile 测试不再经由 `App::profiles()`.
-    #[cfg(test)]
-    profiles: Arc<ServerProfileService>,
-    /// subagent 启动桥接；测试直接消费 host-session 合同。
-    #[cfg(test)]
-    subagent_executor: Arc<dyn SubAgentExecutor>,
     /// server-owned MCP service；MCP API 不再经由 App facade。
     mcp_service: Arc<ServerMcpService>,
     /// server-owned skill catalog bridge；composer/skill discovery 不再经由 App facade。
@@ -380,14 +366,8 @@ async fn main() -> AnyhowResult<()> {
 
     let state = AppState {
         agent_api: Arc::clone(&runtime.agent_api),
-        #[cfg(test)]
-        agent_control: Arc::clone(&runtime.agent_control),
         config: Arc::clone(&runtime.config),
         session_catalog: Arc::clone(&runtime.session_catalog),
-        #[cfg(test)]
-        profiles: Arc::clone(&runtime.profiles),
-        #[cfg(test)]
-        subagent_executor: Arc::clone(&runtime.subagent_executor),
         mcp_service: Arc::clone(&runtime.mcp_service),
         skill_catalog: Arc::clone(&runtime.skill_catalog),
         resource_catalog: Arc::clone(&runtime.resource_catalog),

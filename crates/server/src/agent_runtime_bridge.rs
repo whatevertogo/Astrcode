@@ -9,8 +9,8 @@ use astrcode_governance_contract::ModeId;
 use astrcode_host_session::{CollaborationExecutor, SubAgentExecutor};
 
 use crate::{
-    AgentOrchestrationService, ApplicationError, GovernanceSurfaceAssembler, ModeCatalog,
-    ProfileProvider, ProfileResolutionService, ResolvedGovernanceSurface, RootGovernanceInput,
+    AgentOrchestrationService, ApplicationError, GovernanceSurfaceAssembler, ProfileProvider,
+    ProfileResolutionService, ResolvedGovernanceSurface, RootGovernanceInput,
     agent_api::ServerAgentApi,
     agent_control_bridge::ServerAgentControlPort,
     application_error_bridge::ServerRouteError,
@@ -24,7 +24,6 @@ use crate::{
 
 pub(crate) struct ServerAgentRuntimeBundle {
     pub agent_api: Arc<ServerAgentApi>,
-    #[cfg(test)]
     pub agent_control: Arc<dyn ServerAgentControlPort>,
     pub subagent_executor: Arc<dyn SubAgentExecutor>,
     pub collaboration_executor: Arc<dyn CollaborationExecutor>,
@@ -57,9 +56,7 @@ pub(crate) fn build_server_agent_runtime_bundle(
         observability,
     } = input;
     let profile_resolution = build_profile_resolution_service(profiles.clone());
-    let governance_surface = Arc::new(GovernanceSurfaceAssembler::new(
-        build_governance_mode_catalog(mode_catalog.as_ref()),
-    ));
+    let governance_surface = Arc::new(GovernanceSurfaceAssembler::new((*mode_catalog).clone()));
     let agent_service = Arc::new(AgentOrchestrationService::new(
         agent_kernel,
         agent_sessions.clone(),
@@ -86,29 +83,10 @@ pub(crate) fn build_server_agent_runtime_bundle(
 
     ServerAgentRuntimeBundle {
         agent_api,
-        #[cfg(test)]
         agent_control,
         subagent_executor,
         collaboration_executor,
     }
-}
-
-fn build_governance_mode_catalog(mode_catalog: &ServerModeCatalog) -> ModeCatalog {
-    let snapshot = mode_catalog.snapshot();
-    let builtin_modes = snapshot
-        .entries
-        .values()
-        .filter(|entry| entry.builtin)
-        .map(|entry| entry.spec.clone())
-        .collect::<Vec<_>>();
-    let plugin_modes = snapshot
-        .entries
-        .values()
-        .filter(|entry| !entry.builtin)
-        .map(|entry| entry.spec.clone())
-        .collect::<Vec<_>>();
-    ModeCatalog::new(builtin_modes, plugin_modes)
-        .expect("server mode catalog snapshot should stay valid for governance")
 }
 
 fn build_profile_resolution_service(

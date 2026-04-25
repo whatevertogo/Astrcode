@@ -1313,7 +1313,7 @@ mod tests {
         runtime_event_to_live_agent_events,
     };
     use crate::{
-        capability_router::CapabilityRouter, mode::builtin_mode_catalog,
+        capability_router::CapabilityRouter, mode::builtin_mode_specs,
         mode_catalog_service::ServerModeCatalog, tool_capability_invoker::ToolCapabilityInvoker,
     };
 
@@ -1680,13 +1680,7 @@ mod tests {
     }
 
     fn builtin_server_mode_catalog() -> Arc<ServerModeCatalog> {
-        let builtin_catalog = builtin_mode_catalog().expect("builtin catalog should build");
-        let builtin_mode_specs = builtin_catalog
-            .list()
-            .into_iter()
-            .filter_map(|summary| builtin_catalog.get(&summary.id))
-            .collect::<Vec<_>>();
-        ServerModeCatalog::from_mode_specs(builtin_mode_specs, Vec::new())
+        ServerModeCatalog::from_mode_specs(builtin_mode_specs(), Vec::new())
             .expect("server mode catalog should build")
     }
 }

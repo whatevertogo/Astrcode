@@ -254,7 +254,7 @@ async fn execute_agent_rejects_unsupported_context_overrides_before_creating_ses
 
 #[tokio::test]
 async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir() {
-    let (state, _guard) = test_state(None).await;
+    let (state, guard) = test_state(None).await;
     let project = tempfile::tempdir().expect("tempdir should be created");
     write_agent_profile(project.path(), "reviewer", "仓库审查");
     let project_dir = normalize_path(project.path());
@@ -264,8 +264,8 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
         .create_session(project.path().display().to_string())
         .await
         .expect("parent session should be created");
-    state
-        .agent_control
+    guard
+        .agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             parent.session_id.clone(),
@@ -285,8 +285,8 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
         "root-profile",
     ));
 
-    let result = state
-        .subagent_executor
+    let result = guard
+        .subagent_executor()
         .launch(
             SpawnAgentParams {
                 r#type: Some("reviewer".to_string()),
@@ -352,7 +352,7 @@ async fn subagent_launch_uses_resolved_profile_and_inherits_parent_working_dir()
 
 #[tokio::test]
 async fn subagent_launch_rejects_missing_profile_without_creating_child_session() {
-    let (state, _guard) = test_state(None).await;
+    let (state, guard) = test_state(None).await;
     let project = tempfile::tempdir().expect("tempdir should be created");
 
     let parent = state
@@ -360,8 +360,8 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
         .create_session(project.path().display().to_string())
         .await
         .expect("parent session should be created");
-    state
-        .agent_control
+    guard
+        .agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             parent.session_id.clone(),
@@ -387,8 +387,8 @@ async fn subagent_launch_rejects_missing_profile_without_creating_child_session(
         "root-profile",
     ));
 
-    let error = state
-        .subagent_executor
+    let error = guard
+        .subagent_executor()
         .launch(
             SpawnAgentParams {
                 r#type: Some("missing".to_string()),
@@ -502,11 +502,8 @@ async fn get_subrun_status_falls_back_to_durable_snapshot_with_resolved_limits()
     auth_sessions.issue_test_token("browser-token");
     let app = build_api_router().with_state(AppState {
         agent_api: std::sync::Arc::clone(&reloaded_runtime.agent_api),
-        agent_control: std::sync::Arc::clone(&reloaded_runtime.agent_control),
         config: std::sync::Arc::clone(&reloaded_runtime.config),
         session_catalog: std::sync::Arc::clone(&reloaded_runtime.session_catalog),
-        profiles: std::sync::Arc::clone(&reloaded_runtime.profiles),
-        subagent_executor: std::sync::Arc::clone(&reloaded_runtime.subagent_executor),
         mcp_service: std::sync::Arc::clone(&reloaded_runtime.mcp_service),
         skill_catalog: std::sync::Arc::clone(&reloaded_runtime.skill_catalog),
         resource_catalog: std::sync::Arc::clone(&reloaded_runtime.resource_catalog),
@@ -582,7 +579,7 @@ async fn list_agents_uses_loader_backed_profiles() {
 #[tokio::test]
 async fn scoped_agent_profile_watch_refreshes_profiles_without_restart() {
     let watch = ManualWatchHarness::new();
-    let (state, _guard) = test_state_with_options(
+    let (state, guard) = test_state_with_options(
         None,
         crate::bootstrap::ServerBootstrapOptions {
             enable_profile_watch: true,
@@ -607,8 +604,8 @@ async fn scoped_agent_profile_watch_refreshes_profiles_without_restart() {
         .await
         .expect("scoped watch source should be registered before emitting changes");
 
-    let first = state
-        .profiles
+    let first = guard
+        .profiles()
         .resolve(project.path())
         .expect("profiles should resolve")
         .as_ref()
@@ -626,8 +623,8 @@ async fn scoped_agent_profile_watch_refreshes_profiles_without_restart() {
     );
 
     wait_until(Duration::from_secs(5), || {
-        state
-            .profiles
+        guard
+            .profiles()
             .resolve(project.path())
             .ok()
             .map(|profiles| profiles.as_ref().clone())
@@ -731,15 +728,15 @@ async fn global_agent_profile_watch_invalidates_scoped_cache_without_restart() {
 
 #[tokio::test]
 async fn get_subrun_status_rejects_mismatched_root_subrun_id() {
-    let (state, _guard) = test_state(None).await;
+    let (state, guard) = test_state(None).await;
     let project = tempfile::tempdir().expect("tempdir should be created");
     let session = state
         .session_catalog
         .create_session(project.path().display().to_string())
         .await
         .expect("session should be created");
-    state
-        .agent_control
+    guard
+        .agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             session.session_id.clone(),
@@ -768,7 +765,7 @@ async fn get_subrun_status_rejects_mismatched_root_subrun_id() {
 
 #[tokio::test]
 async fn close_agent_rejects_cross_session_requests() {
-    let (state, _guard) = test_state(None).await;
+    let (state, guard) = test_state(None).await;
     let project = tempfile::tempdir().expect("tempdir should be created");
     let owner_session = state
         .session_catalog
@@ -780,8 +777,8 @@ async fn close_agent_rejects_cross_session_requests() {
         .create_session(project.path().display().to_string())
         .await
         .expect("other session should be created");
-    state
-        .agent_control
+    guard
+        .agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             owner_session.session_id.clone(),
@@ -808,7 +805,11 @@ async fn close_agent_rejects_cross_session_requests() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert!(
-        state.agent_control.get_handle("root-agent").await.is_some(),
+        guard
+            .agent_control()
+            .get_handle("root-agent")
+            .await
+            .is_some(),
         "跨 session 请求不得关闭目标 agent"
     );
 }

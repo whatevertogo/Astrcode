@@ -9,7 +9,9 @@ use tower::ServiceExt;
 use crate::{
     AUTH_HEADER_NAME,
     routes::build_api_router,
-    test_support::{seed_completed_root_turn, seed_unfinished_root_turn, test_state},
+    test_support::{
+        ServerTestContext, seed_completed_root_turn, seed_unfinished_root_turn, test_state,
+    },
 };
 
 // Why: 这些契约测试是 API 接口稳定性的核心保障，
@@ -38,12 +40,11 @@ async fn submit_prompt_request(
 }
 
 async fn spawn_test_child_agent(
-    state: &crate::AppState,
+    ctx: &ServerTestContext,
     session_id: &str,
     working_dir: &std::path::Path,
 ) -> String {
-    state
-        .agent_control
+    ctx.agent_control()
         .register_root_agent(
             "root-agent".to_string(),
             session_id.to_string(),
@@ -52,7 +53,7 @@ async fn spawn_test_child_agent(
         .await
         .expect("root agent should be registered");
 
-    let ctx = ToolContext::new(
+    let tool_ctx = ToolContext::new(
         session_id.to_string().into(),
         working_dir.to_path_buf(),
         CancelToken::new(),
@@ -63,8 +64,7 @@ async fn spawn_test_child_agent(
         "root-profile",
     ));
 
-    state
-        .subagent_executor
+    ctx.subagent_executor()
         .launch(
             SpawnAgentParams {
                 r#type: Some("explore".to_string()),
@@ -72,7 +72,7 @@ async fn spawn_test_child_agent(
                 prompt: "请阅读代码".to_string(),
                 context: None,
             },
-            &ctx,
+            &tool_ctx,
         )
         .await
         .expect("agent should launch")
@@ -538,7 +538,7 @@ async fn subrun_cancel_route_returns_not_found_after_removal() {
 
 #[tokio::test]
 async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
-    let (state, _guard) = test_state(None).await;
+    let (state, guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .session_catalog
@@ -546,7 +546,7 @@ async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
         .await
         .expect("session should be created");
 
-    let child_agent_id = spawn_test_child_agent(&state, &created.session_id, temp_dir.path()).await;
+    let child_agent_id = spawn_test_child_agent(&guard, &created.session_id, temp_dir.path()).await;
 
     let app = build_api_router().with_state(state);
     let response = app
@@ -583,7 +583,7 @@ async fn close_agent_route_closes_target_agent_and_returns_closed_ids() {
 
 #[tokio::test]
 async fn close_agent_route_accepts_empty_json_body() {
-    let (state, _guard) = test_state(None).await;
+    let (state, guard) = test_state(None).await;
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
     let created = state
         .session_catalog
@@ -591,7 +591,7 @@ async fn close_agent_route_accepts_empty_json_body() {
         .await
         .expect("session should be created");
 
-    let child_agent_id = spawn_test_child_agent(&state, &created.session_id, temp_dir.path()).await;
+    let child_agent_id = spawn_test_child_agent(&guard, &created.session_id, temp_dir.path()).await;
 
     let app = build_api_router().with_state(state);
     let response = app

@@ -31,7 +31,7 @@ use crate::{
     agent_control_bridge::ServerLiveSubRunStatus,
     execution::ProfileProvider,
     lifecycle::TaskRegistry,
-    mode::builtin_mode_catalog,
+    mode::builtin_mode_specs,
     mode_catalog_service::ServerModeCatalog,
     session_runtime_owner_bridge::{
         ServerAgentControlLimits, ServerRuntimeTestSupport, ServerSessionRuntimeBootstrapInput,
@@ -262,12 +262,7 @@ pub(crate) fn build_agent_test_harness_with_agent_config(
         StaticProfileProvider::default(),
     )));
     let task_registry = Arc::new(TaskRegistry::new());
-    let builtin_catalog = builtin_mode_catalog()?;
-    let builtin_mode_specs = builtin_catalog
-        .list()
-        .into_iter()
-        .filter_map(|summary| builtin_catalog.get(&summary.id))
-        .collect::<Vec<_>>();
+    let builtin_mode_specs = builtin_mode_specs();
     let bootstrapped_runtime = bootstrap_session_runtime(ServerSessionRuntimeBootstrapInput {
         capability_invokers: Vec::new(),
         llm_provider: Arc::new(TestLlmProvider::new(llm_behavior)),

@@ -284,7 +284,7 @@ async fn prompt_route_rejects_unknown_skill_invocation() {
 
 #[tokio::test]
 async fn prompt_submission_starts_root_runtime() {
-    let (state, _guard) = test_state(None).await;
+    let (state, guard) = test_state(None).await;
     let session = state
         .session_catalog
         .create_session(
@@ -305,8 +305,8 @@ async fn prompt_submission_starts_root_runtime() {
     .await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
 
-    let root_status = state
-        .agent_control
+    let root_status = guard
+        .agent_control()
         .query_root_status(&session.session_id)
         .await;
     assert!(

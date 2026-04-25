@@ -13,7 +13,9 @@ use astrcode_core::{
     UserMessageOrigin, mode::ModeId as StoredModeId,
 };
 use astrcode_governance_contract::ModeId;
-use astrcode_host_session::{SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState};
+use astrcode_host_session::{
+    SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState, SubAgentExecutor,
+};
 use astrcode_prompt_contract::PromptDeclaration;
 use astrcode_runtime_contract::ExecutionAccepted;
 use async_trait::async_trait;
@@ -22,6 +24,7 @@ use tokio::sync::broadcast;
 use crate::{
     AgentSessionPort, AppAgentPromptSubmission, AppState, FrontendBuild, RecoverableParentDelivery,
     SessionTurnOutcomeSummary,
+    agent_control_bridge::ServerAgentControlPort,
     application_error_bridge::ServerRouteError,
     auth::{AuthSessionManager, BootstrapAuth},
     bootstrap::{ServerBootstrapOptions, bootstrap_server_runtime_with_options},
@@ -33,22 +36,47 @@ use crate::{
         AppSessionPort, DurableSubRunStatusSummary, SessionObserveSnapshot,
         SessionTurnTerminalState,
     },
+    profile_service::ServerProfileService,
     watch_service::{WatchEvent, WatchPort, WatchService, WatchSource},
 };
 
 pub(crate) struct ServerTestContext {
     temp_home: tempfile::TempDir,
+    pub(crate) agent_control: Option<Arc<dyn ServerAgentControlPort>>,
+    pub(crate) profiles: Option<Arc<ServerProfileService>>,
+    pub(crate) subagent_executor: Option<Arc<dyn SubAgentExecutor>>,
 }
 
 impl ServerTestContext {
     pub(crate) fn new() -> Self {
         Self {
             temp_home: tempfile::tempdir().expect("tempdir should be created"),
+            agent_control: None,
+            profiles: None,
+            subagent_executor: None,
         }
     }
 
     pub(crate) fn home_dir(&self) -> &Path {
         self.temp_home.path()
+    }
+
+    pub(crate) fn agent_control(&self) -> &dyn ServerAgentControlPort {
+        self.agent_control
+            .as_deref()
+            .expect("agent_control only available via test_state_with_options")
+    }
+
+    pub(crate) fn profiles(&self) -> &ServerProfileService {
+        self.profiles
+            .as_deref()
+            .expect("profiles only available via test_state_with_options")
+    }
+
+    pub(crate) fn subagent_executor(&self) -> &dyn SubAgentExecutor {
+        self.subagent_executor
+            .as_deref()
+            .expect("subagent_executor only available via test_state_with_options")
     }
 }
 
@@ -585,17 +613,17 @@ pub(crate) async fn test_state_with_options(
     frontend_build: Option<FrontendBuild>,
     mut options: ServerBootstrapOptions,
 ) -> (AppState, ServerTestContext) {
-    let context = ServerTestContext::new();
+    let mut context = ServerTestContext::new();
     options.home_dir = Some(context.home_dir().to_path_buf());
     let runtime = bootstrap_server_runtime_with_options(options)
         .await
         .expect("server runtime should bootstrap in tests");
+    context.agent_control = Some(Arc::clone(&runtime.agent_control));
+    context.profiles = Some(Arc::clone(&runtime.profiles));
+    context.subagent_executor = Some(Arc::clone(&runtime.subagent_executor));
     let agent_api = Arc::clone(&runtime.agent_api);
-    let agent_control = Arc::clone(&runtime.agent_control);
     let config = Arc::clone(&runtime.config);
     let session_catalog = Arc::clone(&runtime.session_catalog);
-    let profiles = Arc::clone(&runtime.profiles);
-    let subagent_executor = Arc::clone(&runtime.subagent_executor);
     let mcp_service = Arc::clone(&runtime.mcp_service);
     let skill_catalog: Arc<dyn SkillCatalog> = Arc::clone(&runtime.skill_catalog);
     let resource_catalog = Arc::clone(&runtime.resource_catalog);
@@ -607,11 +635,8 @@ pub(crate) async fn test_state_with_options(
     (
         AppState {
             agent_api,
-            agent_control,
             config,
             session_catalog,
-            profiles,
-            subagent_executor,
             mcp_service,
             skill_catalog,
             resource_catalog,

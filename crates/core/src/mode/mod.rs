@@ -625,11 +625,11 @@ mod tests {
     #[test]
     fn resolved_turn_envelope_reports_required_approval_mode_when_rule_asks() {
         let envelope = ResolvedTurnEnvelope {
-            mode_id: ModeId::review(),
+            mode_id: ModeId::plan(),
             prompt_declarations: vec![PromptDeclaration {
-                block_id: "mode.review".to_string(),
-                title: "Review".to_string(),
-                content: "review only".to_string(),
+                block_id: "mode.plan".to_string(),
+                title: "Plan".to_string(),
+                content: "plan only".to_string(),
                 render_target: PromptDeclarationRenderTarget::System,
                 layer: SystemPromptLayer::Dynamic,
                 kind: PromptDeclarationKind::ExtensionInstruction,

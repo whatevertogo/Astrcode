@@ -6,7 +6,7 @@ use std::{
 use astrcode_core::{AstrError, Result};
 use astrcode_governance_contract::{BoundModeToolContractSnapshot, GovernanceModeSpec, ModeId};
 
-use crate::mode::{ModeCatalog, validate_mode_transition};
+use crate::mode::validate_mode_transition;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ServerModeSummary {
@@ -27,6 +27,10 @@ pub(crate) struct ServerModeCatalogSnapshot {
 }
 
 impl ServerModeCatalogSnapshot {
+    pub(crate) fn get(&self, mode_id: &ModeId) -> Option<&GovernanceModeSpec> {
+        self.entries.get(mode_id.as_str()).map(|entry| &entry.spec)
+    }
+
     pub(crate) fn list(&self) -> Vec<ServerModeSummary> {
         self.entries
             .values()
@@ -72,6 +76,10 @@ impl ServerModeCatalog {
         self.snapshot().list()
     }
 
+    pub(crate) fn get(&self, mode_id: &ModeId) -> Option<GovernanceModeSpec> {
+        self.snapshot().get(mode_id).cloned()
+    }
+
     pub(crate) fn preview_plugin_modes(
         &self,
         plugin_modes: Vec<GovernanceModeSpec>,
@@ -98,21 +106,7 @@ impl ServerModeCatalog {
         from_mode_id: &ModeId,
         to_mode_id: &ModeId,
     ) -> Result<()> {
-        let snapshot = self.snapshot();
-        let builtin_modes = snapshot
-            .entries
-            .values()
-            .filter(|entry| entry.builtin)
-            .map(|entry| entry.spec.clone())
-            .collect::<Vec<_>>();
-        let plugin_modes = snapshot
-            .entries
-            .values()
-            .filter(|entry| !entry.builtin)
-            .map(|entry| entry.spec.clone())
-            .collect::<Vec<_>>();
-        let catalog = ModeCatalog::new(builtin_modes, plugin_modes)?;
-        validate_mode_transition(&catalog, from_mode_id, to_mode_id)?;
+        validate_mode_transition(self, from_mode_id, to_mode_id)?;
         Ok(())
     }
 

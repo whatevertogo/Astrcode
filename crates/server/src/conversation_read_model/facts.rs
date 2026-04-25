@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use astrcode_core::{
     ChildAgentRef, CompactAppliedMeta, CompactTrigger, Phase, PromptCacheDiagnostics,
     policy::SystemPromptLayer,
