@@ -275,6 +275,8 @@ pub(crate) fn build_agent_test_harness_with_agent_config(
             inbox_capacity: 64,
             parent_delivery_capacity: 64,
         },
+        hook_dispatcher: None,
+        hook_snapshot_id: "test-snapshot".to_string(),
     })?;
     let kernel_port: Arc<dyn AgentKernelPort> = bootstrapped_runtime.agent_kernel.clone();
     let session_port: Arc<dyn AgentSessionPort> = bootstrapped_runtime.agent_sessions.clone();

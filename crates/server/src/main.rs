@@ -66,6 +66,7 @@ mod execution;
 mod governance_service;
 #[path = "governance_surface/mod.rs"]
 mod governance_surface;
+mod hook_adapter;
 #[path = "lifecycle/mod.rs"]
 mod lifecycle;
 #[path = "logging.rs"]

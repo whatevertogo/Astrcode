@@ -221,6 +221,7 @@ pub(crate) struct RecordedModeSwitch {
     pub(crate) to: ModeId,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct StubSessionPort {
     pub(crate) stored_events: Vec<StoredEvent>,

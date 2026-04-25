@@ -22,8 +22,6 @@ use crate::{
 
 pub const BUILTIN_MODE_CODE_ID: &str = "code";
 pub const BUILTIN_MODE_PLAN_ID: &str = "plan";
-pub const BUILTIN_MODE_REVIEW_ID: &str = "review";
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ModeId(String);
@@ -44,10 +42,6 @@ impl ModeId {
 
     pub fn plan() -> Self {
         Self(BUILTIN_MODE_PLAN_ID.to_string())
-    }
-
-    pub fn review() -> Self {
-        Self(BUILTIN_MODE_REVIEW_ID.to_string())
     }
 
     pub fn as_str(&self) -> &str {

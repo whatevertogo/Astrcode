@@ -21,7 +21,7 @@ pub use astrcode_runtime_contract::{
     RuntimeEventSink, RuntimeTurnEvent, TurnIdentity, TurnLoopTransition, TurnStopCause,
 };
 pub use hook_dispatch::{
-    HookDispatchOutcome, HookDispatchRequest, HookDispatcher, HookEffect, HookEffectKind,
+    HookDispatchOutcome, HookDispatchRequest, HookDispatcher, HookEffect, HookEventPayload,
 };
 pub use r#loop::{
     StepOutcome, TurnExecutionContext, TurnExecutionResources, TurnLoop, TurnStepRunner,

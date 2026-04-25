@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, sync::RwLock};
 use astrcode_core::{CapabilitySpec, Result};
 
 use crate::{
-    PluginActiveSnapshot, PluginDescriptor, PluginManifest, descriptor::validate_descriptors,
+    PluginActiveSnapshot, PluginDescriptor, PluginManifest, builtin_hooks::BuiltinHookRegistry,
+    descriptor::validate_descriptors,
 };
 
 /// 插件生命周期状态。
@@ -95,6 +96,25 @@ impl PluginRegistry {
             format!("plugin-snapshot-{}", state.next_revision),
             &descriptors,
         );
+        state.candidate = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    pub fn stage_candidate_with_hook_registry(
+        &self,
+        descriptors: impl IntoIterator<Item = PluginDescriptor>,
+        hook_registry: &BuiltinHookRegistry,
+    ) -> Result<PluginActiveSnapshot> {
+        let mut state = self.state.write().expect("plugin registry lock poisoned");
+        state.next_revision = state.next_revision.saturating_add(1);
+        let descriptors = descriptors.into_iter().collect::<Vec<_>>();
+        validate_descriptors(&descriptors)?;
+        let snapshot = PluginActiveSnapshot::from_descriptors_with_registry(
+            state.next_revision,
+            format!("plugin-snapshot-{}", state.next_revision),
+            &descriptors,
+            hook_registry,
+        )?;
         state.candidate = Some(snapshot.clone());
         Ok(snapshot)
     }
@@ -294,7 +314,11 @@ mod tests {
     use astrcode_core::{CapabilityKind, CapabilitySpec, InvocationMode, SideEffect, Stability};
 
     use super::PluginRegistry;
-    use crate::{PluginDescriptor, descriptor::PluginSourceKind};
+    use crate::{
+        PluginDescriptor,
+        builtin_hooks::{BuiltinHookExecutor, BuiltinHookRegistry},
+        descriptor::{HookDescriptor, PluginSourceKind},
+    };
 
     fn capability(name: &str) -> CapabilitySpec {
         CapabilitySpec {
@@ -410,5 +434,44 @@ mod tests {
         assert!(error.to_string().contains("plugin_id 'alpha' 重复"));
         assert!(registry.active_snapshot().is_none());
         assert!(registry.candidate_snapshot().is_none());
+    }
+
+    #[test]
+    fn stage_candidate_with_hook_registry_builds_hook_bindings() {
+        let registry = PluginRegistry::default();
+        let mut hooks = BuiltinHookRegistry::new();
+        hooks.register(
+            "builtin://hooks/tool-policy",
+            astrcode_core::HookEventKey::ToolCall,
+            std::sync::Arc::new(ContinueHook),
+        );
+
+        let mut descriptor = builtin("alpha", "tool.alpha");
+        descriptor.hooks.push(HookDescriptor {
+            hook_id: "tool-policy".to_string(),
+            event: "tool_call".to_string(),
+            entry_ref: "builtin://hooks/tool-policy".to_string(),
+            ..Default::default()
+        });
+
+        let staged = registry
+            .stage_candidate_with_hook_registry(vec![descriptor], &hooks)
+            .expect("candidate should stage with hook bindings");
+
+        assert_eq!(staged.hook_bindings.len(), 1);
+        assert_eq!(staged.hook_bindings[0].hook_id, "tool-policy");
+    }
+
+    struct ContinueHook;
+
+    #[async_trait::async_trait]
+    impl BuiltinHookExecutor for ContinueHook {
+        async fn execute(
+            &self,
+            _context: crate::HookContext,
+            _payload: astrcode_runtime_contract::HookEventPayload,
+        ) -> astrcode_core::Result<Vec<astrcode_runtime_contract::HookEffect>> {
+            Ok(vec![astrcode_runtime_contract::HookEffect::Continue])
+        }
     }
 }

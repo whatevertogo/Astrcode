@@ -22,7 +22,10 @@ use crate::{
         ActiveSessionRegistry, ServerBootstrappedSessionRuntime, ServerCapabilitySurfacePort,
         ServerRuntimeTestSupport, ServerSessionRuntimeBootstrapInput,
     },
-    session_runtime_port::{SessionRuntimePort, adapter::build_session_runtime_port},
+    session_runtime_port::{
+        SessionRuntimePort,
+        adapter::{SessionRuntimePortBuildInput, build_session_runtime_port},
+    },
 };
 
 pub(crate) fn bootstrap_session_runtime(
@@ -40,14 +43,16 @@ pub(crate) fn bootstrap_session_runtime(
         parent_delivery_capacity: input.agent_limits.parent_delivery_capacity,
     }));
     let active_sessions = Arc::new(ActiveSessionRegistry::new());
-    let session_runtime = build_session_runtime_port(
-        Arc::clone(&input.session_catalog),
-        Arc::clone(&input.mode_catalog),
-        Arc::clone(&agent_control_registry),
-        capability_router.clone(),
-        Arc::clone(&input.llm_provider),
-        Arc::clone(&active_sessions),
-    );
+    let session_runtime = build_session_runtime_port(SessionRuntimePortBuildInput {
+        session_catalog: Arc::clone(&input.session_catalog),
+        mode_catalog: Arc::clone(&input.mode_catalog),
+        agent_control: Arc::clone(&agent_control_registry),
+        capability_router: capability_router.clone(),
+        llm_provider: Arc::clone(&input.llm_provider),
+        active_sessions: Arc::clone(&active_sessions),
+        hook_dispatcher: input.hook_dispatcher,
+        hook_snapshot_id: input.hook_snapshot_id,
+    });
     let session_bridge =
         build_server_session_bridge(Arc::clone(&input.session_catalog), session_runtime.clone());
     let kernel_bridge = build_server_kernel_bridge(session_runtime.clone());

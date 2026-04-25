@@ -3,9 +3,8 @@
 //! 定义治理层的策略接口和请求/审批类型。
 
 use astrcode_core::{
-    CapabilitySpec, LlmMessage, Result, action::ToolDefinition, policy::SystemPromptLayer,
+    CapabilitySpec, LlmMessage, action::ToolDefinition, policy::SystemPromptLayer,
 };
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -82,15 +81,6 @@ pub enum ApprovalDefault {
     Deny,
 }
 
-impl ApprovalDefault {
-    pub fn resolve(self) -> ApprovalResolution {
-        match self {
-            Self::Allow => ApprovalResolution::approved(),
-            Self::Deny => ApprovalResolution::denied("approval denied by default"),
-        }
-    }
-}
-
 /// 策略层产生的、需要用户确认的审批载荷。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,31 +102,6 @@ impl ApprovalRequest {
     }
 }
 
-/// 审批结果。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovalResolution {
-    pub approved: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-impl ApprovalResolution {
-    pub fn approved() -> Self {
-        Self {
-            approved: true,
-            reason: None,
-        }
-    }
-
-    pub fn denied(reason: impl Into<String>) -> Self {
-        Self {
-            approved: false,
-            reason: Some(reason.into()),
-        }
-    }
-}
-
 /// 等待审批的动作。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,80 +110,12 @@ pub struct ApprovalPending<T> {
     pub action: T,
 }
 
-/// 策略引擎对能力调用的裁决结果。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PolicyVerdict<T> {
-    Allow(T),
-    Deny { reason: String },
-    Ask(Box<ApprovalPending<T>>),
-}
-
-impl<T> PolicyVerdict<T> {
-    pub fn allow(value: T) -> Self {
-        Self::Allow(value)
-    }
-
-    pub fn deny(reason: impl Into<String>) -> Self {
-        Self::Deny {
-            reason: reason.into(),
-        }
-    }
-
-    pub fn ask(request: ApprovalRequest, action: T) -> Self {
-        Self::Ask(Box::new(ApprovalPending { request, action }))
-    }
-}
-
-/// 策略引擎 trait。
-#[async_trait]
-pub trait PolicyEngine: Send + Sync {
-    async fn check_model_request(
-        &self,
-        request: ModelRequest,
-        ctx: &PolicyContext,
-    ) -> Result<ModelRequest>;
-
-    async fn check_capability_call(
-        &self,
-        call: CapabilityCall,
-        ctx: &PolicyContext,
-    ) -> Result<PolicyVerdict<CapabilityCall>>;
-}
-
-/// 允许所有操作的无状态策略引擎。
-#[derive(Debug, Default, Clone, Copy)]
-pub struct AllowAllPolicyEngine;
-
-#[async_trait]
-impl PolicyEngine for AllowAllPolicyEngine {
-    async fn check_model_request(
-        &self,
-        request: ModelRequest,
-        _ctx: &PolicyContext,
-    ) -> Result<ModelRequest> {
-        Ok(request)
-    }
-
-    async fn check_capability_call(
-        &self,
-        call: CapabilityCall,
-        _ctx: &PolicyContext,
-    ) -> Result<PolicyVerdict<CapabilityCall>> {
-        Ok(PolicyVerdict::Allow(call))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use astrcode_core::{CapabilityKind, CapabilitySpec, InvocationMode, SideEffect, Stability};
     use serde_json::{Value, json};
 
-    use super::{
-        AllowAllPolicyEngine, ApprovalDefault, ApprovalRequest, PolicyContext, PolicyEngine,
-        PolicyVerdict,
-    };
-    use crate::ModelRequest;
+    use super::{ApprovalDefault, ApprovalRequest};
 
     fn capability(name: &str) -> CapabilitySpec {
         CapabilitySpec {
@@ -238,61 +135,6 @@ mod tests {
             metadata: Value::Null,
             max_result_inline_size: None,
         }
-    }
-
-    fn policy_context() -> PolicyContext {
-        PolicyContext {
-            session_id: "session-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            step_index: 0,
-            working_dir: ".".to_string(),
-            profile: "coding".to_string(),
-            metadata: Value::Null,
-        }
-    }
-
-    #[tokio::test]
-    async fn allow_all_policy_preserves_requests() {
-        let policy = AllowAllPolicyEngine;
-        let request = ModelRequest {
-            messages: vec![],
-            tools: vec![],
-            system_prompt: Some("system".to_string()),
-            system_prompt_blocks: Vec::new(),
-        };
-        let call = super::CapabilityCall {
-            request_id: "call-1".to_string(),
-            capability: capability("tool.sample"),
-            payload: json!({ "path": "Cargo.toml" }),
-            metadata: Value::Null,
-        };
-
-        let checked_request = policy
-            .check_model_request(request, &policy_context())
-            .await
-            .expect("request should pass");
-        assert_eq!(checked_request.system_prompt.as_deref(), Some("system"));
-        assert!(checked_request.messages.is_empty());
-        assert!(checked_request.tools.is_empty());
-        assert_eq!(
-            policy
-                .check_capability_call(call.clone(), &policy_context())
-                .await
-                .expect("call should pass"),
-            PolicyVerdict::Allow(call)
-        );
-    }
-
-    #[test]
-    fn approval_default_resolves_to_expected_resolution() {
-        assert!(ApprovalDefault::Allow.resolve().approved);
-        assert_eq!(
-            ApprovalDefault::Deny.resolve(),
-            super::ApprovalResolution {
-                approved: false,
-                reason: Some("approval denied by default".to_string()),
-            }
-        );
     }
 
     #[test]

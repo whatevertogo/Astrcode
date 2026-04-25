@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use astrcode_core::{AstrError, HookEventKey, ModelSelection, Result};
-use astrcode_plugin_host::{HookBusEffectKind, HookBusRequest, HookBusStep, dispatch_hook_bus};
+use astrcode_runtime_contract::hooks::{HookEffect, HookEventPayload};
+
+use crate::ports::HookDispatch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSelectionDecision {
@@ -7,35 +11,46 @@ pub struct ModelSelectionDecision {
     pub diagnostics: Vec<String>,
 }
 
-pub fn apply_model_select_hooks(
+/// 使用 typed hook dispatch 执行 model_select hooks。
+pub async fn apply_model_select_hooks(
     selection: ModelSelection,
-    steps: Vec<HookBusStep>,
+    dispatcher: Option<Arc<dyn HookDispatch>>,
 ) -> Result<ModelSelectionDecision> {
-    let payload = serde_json::to_value(&selection).map_err(|error| {
-        AstrError::Internal(format!("serialize model selection failed: {error}"))
-    })?;
-    let outcome = dispatch_hook_bus(
-        HookBusRequest {
-            event: HookEventKey::ModelSelect,
-            payload,
-        },
-        steps,
-    )?;
+    let Some(dispatcher) = dispatcher else {
+        return Ok(ModelSelectionDecision {
+            selection,
+            diagnostics: Vec::new(),
+        });
+    };
 
-    if let Some(blocked_by) = outcome.blocked_by {
-        return Err(AstrError::Validation(format!(
-            "model_select blocked by hook '{blocked_by}'"
-        )));
+    let payload = HookEventPayload::ModelSelect {
+        session_id: String::new(),
+        current_model: selection.model.clone(),
+        candidate_model: selection.model.clone(),
+        reason: format!("profile:{}", selection.profile_name),
+    };
+    let effects = dispatcher
+        .dispatch_hook(HookEventKey::ModelSelect, payload)
+        .await?;
+
+    let mut diagnostics = Vec::new();
+    let mut selection = selection;
+    for effect in &effects {
+        match effect {
+            HookEffect::Diagnostic { message } => {
+                diagnostics.push(message.clone());
+            },
+            HookEffect::ModelHint { model } => {
+                selection.model = model.clone();
+            },
+            HookEffect::DenyModelSelect { reason } => {
+                return Err(AstrError::Validation(format!(
+                    "model_select denied by hook: {reason}"
+                )));
+            },
+            _ => {},
+        }
     }
-
-    let selection = serde_json::from_value(outcome.payload)
-        .map_err(|error| AstrError::Internal(format!("decode model selection failed: {error}")))?;
-    let diagnostics = outcome
-        .effects
-        .into_iter()
-        .filter(|effect| effect.kind == HookBusEffectKind::Diagnostic)
-        .filter_map(|effect| effect.payload.as_str().map(str::to_owned))
-        .collect();
 
     Ok(ModelSelectionDecision {
         selection,
@@ -45,50 +60,72 @@ pub fn apply_model_select_hooks(
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::ModelSelection;
-    use astrcode_plugin_host::{
-        HookBusEffect, HookBusEffectKind, HookBusStep, HookDispatchMode, HookFailurePolicy,
-        HookRegistration, HookStage,
-    };
-    use serde_json::json;
+    use astrcode_core::{HookEventKey, ModelSelection, Result};
+    use astrcode_runtime_contract::hooks::{HookEffect, HookEventPayload};
+    use async_trait::async_trait;
 
     use super::{ModelSelectionDecision, apply_model_select_hooks};
+    use crate::ports::HookDispatch;
 
     fn selection() -> ModelSelection {
         ModelSelection::new("coding", "gpt-5.4", "openai")
     }
 
-    fn step(hook_id: &str, dispatch_mode: HookDispatchMode, effect: HookBusEffect) -> HookBusStep {
-        HookBusStep {
-            registration: HookRegistration {
-                descriptor: astrcode_plugin_host::HookDescriptor {
-                    hook_id: hook_id.to_string(),
-                    event: "model_select".to_string(),
-                },
-                stage: HookStage::Host,
-                dispatch_mode,
-                failure_policy: HookFailurePolicy::FailClosed,
-                priority: 0,
-            },
-            effect,
+    struct DiagnosticHookDispatcher {
+        message: String,
+    }
+
+    #[async_trait]
+    impl HookDispatch for DiagnosticHookDispatcher {
+        async fn dispatch_hook(
+            &self,
+            _event: HookEventKey,
+            _payload: HookEventPayload,
+        ) -> Result<Vec<HookEffect>> {
+            Ok(vec![HookEffect::Diagnostic {
+                message: self.message.clone(),
+            }])
         }
     }
 
-    #[test]
-    fn model_select_keeps_selection_when_hooks_only_report_diagnostics() {
-        let decision = apply_model_select_hooks(
-            selection(),
-            vec![step(
-                "diag",
-                HookDispatchMode::Sequential,
-                HookBusEffect {
-                    kind: HookBusEffectKind::Diagnostic,
-                    payload: json!("keep current model"),
-                    terminal: false,
-                },
-            )],
-        )
-        .expect("diagnostic hook should not block selection");
+    struct DenyHookDispatcher;
+
+    #[async_trait]
+    impl HookDispatch for DenyHookDispatcher {
+        async fn dispatch_hook(
+            &self,
+            _event: HookEventKey,
+            _payload: HookEventPayload,
+        ) -> Result<Vec<HookEffect>> {
+            Ok(vec![HookEffect::DenyModelSelect {
+                reason: "policy denied".to_string(),
+            }])
+        }
+    }
+
+    struct HintHookDispatcher;
+
+    #[async_trait]
+    impl HookDispatch for HintHookDispatcher {
+        async fn dispatch_hook(
+            &self,
+            _event: HookEventKey,
+            _payload: HookEventPayload,
+        ) -> Result<Vec<HookEffect>> {
+            Ok(vec![HookEffect::ModelHint {
+                model: "deepseek-chat".to_string(),
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn model_select_keeps_selection_when_hooks_only_report_diagnostics() {
+        let dispatcher = std::sync::Arc::new(DiagnosticHookDispatcher {
+            message: "keep current model".to_string(),
+        });
+        let decision = apply_model_select_hooks(selection(), Some(dispatcher))
+            .await
+            .expect("diagnostic hook should not block selection");
 
         assert_eq!(
             decision,
@@ -99,52 +136,36 @@ mod tests {
         );
     }
 
-    #[test]
-    fn model_select_can_rewrite_selection_payload() {
-        let decision = apply_model_select_hooks(
-            selection(),
-            vec![step(
-                "rewrite",
-                HookDispatchMode::Modify,
-                HookBusEffect {
-                    kind: HookBusEffectKind::MutatePayload,
-                    payload: json!({
-                        "profileName": "coding",
-                        "model": "deepseek-chat",
-                        "providerKind": "deepseek"
-                    }),
-                    terminal: false,
-                },
-            )],
-        )
-        .expect("rewrite hook should produce a new selection");
+    #[tokio::test]
+    async fn model_select_can_be_blocked_by_host_hook() {
+        let dispatcher = std::sync::Arc::new(DenyHookDispatcher);
+        let error = apply_model_select_hooks(selection(), Some(dispatcher))
+            .await
+            .expect_err("blocking hook should reject selection");
+
+        assert!(error.to_string().contains("model_select denied by hook"));
+    }
+
+    #[tokio::test]
+    async fn model_select_hint_rewrites_candidate_model() {
+        let dispatcher = std::sync::Arc::new(HintHookDispatcher);
+        let decision = apply_model_select_hooks(selection(), Some(dispatcher))
+            .await
+            .expect("model hint should succeed");
 
         assert_eq!(
             decision.selection,
-            ModelSelection::new("coding", "deepseek-chat", "deepseek")
+            ModelSelection::new("coding", "deepseek-chat", "openai")
         );
     }
 
-    #[test]
-    fn model_select_can_be_blocked_by_host_hook() {
-        let error = apply_model_select_hooks(
-            selection(),
-            vec![step(
-                "policy",
-                HookDispatchMode::Cancellable,
-                HookBusEffect {
-                    kind: HookBusEffectKind::Block,
-                    payload: json!({ "reason": "policy denied" }),
-                    terminal: true,
-                },
-            )],
-        )
-        .expect_err("blocking hook should reject selection");
+    #[tokio::test]
+    async fn model_select_without_dispatcher_returns_plain_selection() {
+        let decision = apply_model_select_hooks(selection(), None)
+            .await
+            .expect("no dispatcher should succeed");
 
-        assert!(
-            error
-                .to_string()
-                .contains("model_select blocked by hook 'policy'")
-        );
+        assert_eq!(decision.selection, selection());
+        assert!(decision.diagnostics.is_empty());
     }
 }

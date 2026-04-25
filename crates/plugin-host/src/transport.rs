@@ -2,8 +2,8 @@ use std::{fmt, pin::Pin};
 
 use astrcode_core::{AstrError, Result};
 use astrcode_protocol::plugin::{
-    EventMessage, EventPhase, InitializeMessage, InitializeResultData, InvokeMessage,
-    PluginMessage, ResultMessage,
+    EventMessage, EventPhase, HookDispatchMessage, HookResultMessage, InitializeMessage,
+    InitializeResultData, InvokeMessage, PluginMessage, ResultMessage,
 };
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
@@ -67,6 +67,34 @@ impl PluginStdioTransport {
         self.send_message(&PluginMessage::Invoke(request.clone()))
             .await?;
         self.recv_stream_events(&request.id).await
+    }
+
+    /// 向插件发送 hook dispatch 请求并等待结果。
+    pub async fn dispatch_hook(&self, request: &HookDispatchMessage) -> Result<HookResultMessage> {
+        self.send_message(&PluginMessage::HookDispatch(request.clone()))
+            .await?;
+        loop {
+            match self.recv_message().await? {
+                Some(PluginMessage::HookResult(result)) => {
+                    if result.correlation_id == request.correlation_id {
+                        return Ok(result);
+                    }
+                    log::warn!(
+                        "received HookResult with mismatched correlation_id '{}', expected '{}'",
+                        result.correlation_id,
+                        request.correlation_id
+                    );
+                },
+                Some(other) => {
+                    log::warn!("received unexpected {:?} during hook dispatch", other);
+                },
+                None => {
+                    return Err(AstrError::Internal(
+                        "plugin closed connection during hook dispatch".to_string(),
+                    ));
+                },
+            }
+        }
     }
 
     async fn send_message(&self, message: &PluginMessage) -> Result<()> {

@@ -4,6 +4,7 @@
 //! snapshot 激活和资源发现。
 
 pub mod backend;
+pub mod builtin_hooks;
 pub mod descriptor;
 pub mod hooks;
 pub mod host;
@@ -19,14 +20,16 @@ pub mod snapshot;
 pub mod tools;
 pub mod transport;
 
+pub use builtin_hooks::{
+    BuiltinHookExecutor, BuiltinHookRegistry, HookBinding, HookContext, HookExecutorRef,
+    HookHostView,
+};
 pub use descriptor::{
     CommandDescriptor, HookDescriptor, PluginDescriptor, PluginSourceKind, PromptDescriptor,
     ProviderDescriptor, ResourceDescriptor, SkillDescriptor, ThemeDescriptor,
 };
 pub use hooks::{
-    HookBusEffect, HookBusEffectKind, HookBusOutcome, HookBusRequest, HookBusStep,
-    HookDispatchMode, HookFailurePolicy, HookRegistration, HookStage, SUPPORTED_HOOK_EVENTS,
-    dispatch_hook_bus,
+    HookDispatchMode, HookFailurePolicy, HookStage, SUPPORTED_HOOK_EVENTS, dispatch_hooks,
 };
 pub use host::{
     ActivePluginRuntimeCatalog, ActivePluginRuntimeEntry, BuiltinCapabilityExecutor,

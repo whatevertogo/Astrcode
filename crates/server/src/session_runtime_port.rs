@@ -20,6 +20,7 @@ use crate::{
 #[path = "session_runtime_port_adapter.rs"]
 pub(crate) mod adapter;
 
+#[allow(dead_code)]
 #[async_trait]
 pub(crate) trait SessionRuntimePort: Send + Sync {
     async fn submit_prompt_for_agent(

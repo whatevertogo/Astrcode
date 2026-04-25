@@ -23,9 +23,7 @@ use astrcode_core::{
     AgentCollaborationPolicyContext, LlmMessage, ResolvedExecutionLimitsSnapshot,
     ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
 };
-use astrcode_governance_contract::{
-    ApprovalPending, BoundModeToolContractSnapshot, CapabilityCall, ModeId, PolicyContext,
-};
+use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId, PolicyContext};
 use astrcode_host_session::PromptGovernanceContext;
 use astrcode_prompt_contract::PromptDeclaration;
 pub(crate) use inherited::resolve_inherited_parent_messages;
@@ -52,18 +50,9 @@ pub enum GovernanceBusyPolicy {
     RejectOnBusy,
 }
 
-/// 审批管线状态。
-///
-/// 如果 mode 要求审批某些能力调用，`pending` 会携带一个 `ApprovalPending` 占位骨架，
-/// 在实际执行前需要用户确认。
-#[derive(Clone, PartialEq, Default)]
-pub struct GovernanceApprovalPipeline {
-    pub pending: Option<ApprovalPending<CapabilityCall>>,
-}
-
 /// bind 完成的治理面，一次性消费的 turn 级上下文快照。
 ///
-/// 包含审批管线、prompt declarations、注入消息、协作策略等全部治理决策。
+/// 包含 prompt declarations、注入消息、协作策略等全部治理决策。
 /// 通过 `into_submission()` 转换为应用层提交载荷，再交给 session 端口适配到底层 runtime。
 #[derive(Clone)]
 pub struct ResolvedGovernanceSurface {
@@ -76,7 +65,7 @@ pub struct ResolvedGovernanceSurface {
     pub injected_messages: Vec<LlmMessage>,
     pub policy_context: PolicyContext,
     pub collaboration_policy: AgentCollaborationPolicyContext,
-    pub approval: GovernanceApprovalPipeline,
+    pub requires_approval: bool,
     pub governance_revision: String,
 }
 
@@ -99,7 +88,7 @@ impl ResolvedGovernanceSurface {
         PromptGovernanceContext {
             allowed_capability_names: Vec::new(),
             mode_id: Some(self.mode_id.clone()),
-            approval_mode: if self.approval.pending.is_some() {
+            approval_mode: if self.requires_approval {
                 "required".to_string()
             } else {
                 GOVERNANCE_APPROVAL_MODE_INHERIT.to_string()
@@ -127,7 +116,7 @@ impl ResolvedGovernanceSurface {
             source_tool_call_id,
             policy_context: Some(self.policy_context),
             governance_revision: Some(self.governance_revision),
-            approval: self.approval.pending,
+            requires_approval: self.requires_approval,
             prompt_governance: Some(prompt_governance),
         }
     }

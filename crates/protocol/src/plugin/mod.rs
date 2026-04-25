@@ -26,7 +26,8 @@ mod tests;
 pub use error::{ErrorPayload, ProtocolError};
 pub use handshake::{InitializeMessage, InitializeResultData, PROTOCOL_VERSION};
 pub use messages::{
-    CancelMessage, EventMessage, EventPhase, InvokeMessage, PluginMessage, ResultMessage,
+    CancelMessage, EventMessage, EventPhase, HookDiagnosticWire, HookDispatchMessage,
+    HookEffectWire, HookResultMessage, InvokeMessage, PluginMessage, ResultMessage,
 };
 pub use skill_descriptor::{SkillAssetDescriptor, SkillDescriptor};
 

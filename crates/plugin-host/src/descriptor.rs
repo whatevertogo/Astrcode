@@ -3,6 +3,8 @@ use std::collections::BTreeSet;
 use astrcode_core::{AstrError, CapabilitySpec, Result};
 use astrcode_governance_contract::GovernanceModeSpec;
 
+use crate::hooks::{HookDispatchMode, HookFailurePolicy, HookStage};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PluginSourceKind {
     #[default]
@@ -23,10 +25,33 @@ impl PluginSourceKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookDescriptor {
     pub hook_id: String,
     pub event: String,
+    pub stage: HookStage,
+    pub dispatch_mode: HookDispatchMode,
+    pub failure_policy: HookFailurePolicy,
+    pub priority: i32,
+    pub entry_ref: String,
+    pub input_schema: Option<String>,
+    pub effect_schema: Option<String>,
+}
+
+impl Default for HookDescriptor {
+    fn default() -> Self {
+        Self {
+            hook_id: String::new(),
+            event: String::new(),
+            stage: HookStage::Runtime,
+            dispatch_mode: HookDispatchMode::Sequential,
+            failure_policy: HookFailurePolicy::FailOpen,
+            priority: 0,
+            entry_ref: String::new(),
+            input_schema: None,
+            effect_schema: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -301,11 +326,13 @@ mod tests {
         alpha.hooks.push(HookDescriptor {
             hook_id: "hook.shared".to_string(),
             event: "tool_call".to_string(),
+            ..Default::default()
         });
         let mut beta = PluginDescriptor::builtin("beta", "Beta");
         beta.hooks.push(HookDescriptor {
             hook_id: "hook.shared".to_string(),
             event: "tool_result".to_string(),
+            ..Default::default()
         });
 
         let error =

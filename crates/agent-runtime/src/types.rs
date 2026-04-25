@@ -20,6 +20,7 @@ pub struct AgentRuntimeExecutionSurface {
     pub provider_ref: String,
     pub tool_specs: Vec<CapabilitySpec>,
     pub hook_snapshot_id: String,
+    pub current_mode: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -219,6 +220,7 @@ mod tests {
             provider_ref: "provider-a".to_string(),
             tool_specs: Vec::new(),
             hook_snapshot_id: "snapshot-1".to_string(),
+            current_mode: None,
         });
 
         let output = TurnOutput::empty_for(input);
@@ -247,6 +249,7 @@ mod tests {
             provider_ref: "provider-a".to_string(),
             tool_specs: Vec::new(),
             hook_snapshot_id: "snapshot-1".to_string(),
+            current_mode: None,
         })
         .with_agent(agent.clone());
 

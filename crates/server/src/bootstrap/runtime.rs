@@ -15,7 +15,7 @@ use astrcode_core::SkillCatalog;
 use astrcode_governance_contract::GovernanceModeSpec;
 use astrcode_host_session::{EventStore, SessionCatalog, SubAgentExecutor};
 use astrcode_plugin_host::{
-    CommandDescriptor, PluginActiveSnapshot, PluginDescriptor, PluginRegistry,
+    BuiltinHookRegistry, CommandDescriptor, PluginActiveSnapshot, PluginDescriptor, PluginRegistry,
     ProviderContributionCatalog, ResourceCatalog, builtin_collaboration_tools_descriptor,
     builtin_modes_descriptor, builtin_openai_provider_descriptor, builtin_tools_descriptor,
     resources_discover,
@@ -46,6 +46,7 @@ use crate::{
     agent_control_bridge::ServerAgentControlPort,
     config_service_bridge::ServerConfigService,
     governance_service::ServerGovernanceService,
+    hook_adapter::PluginHostHookDispatcher,
     mcp_service::ServerMcpService,
     mode_catalog_service::ServerModeCatalog,
     profile_service::ServerProfileService,
@@ -224,8 +225,12 @@ pub async fn bootstrap_server_runtime_with_options(
         plugin_modes,
         plugin_descriptors.clone(),
     );
-    let plugin_host_reload =
-        reload_server_plugin_host_snapshot(plugin_registry.as_ref(), active_plugin_descriptors)?;
+    let builtin_hook_registry = Arc::new(BuiltinHookRegistry::new());
+    let plugin_host_reload = reload_server_plugin_host_snapshot(
+        plugin_registry.as_ref(),
+        active_plugin_descriptors,
+        builtin_hook_registry.as_ref(),
+    )?;
     log::info!(
         "plugin-host bridge activated snapshot {} with {} plugins",
         plugin_host_reload.snapshot.snapshot_id,
@@ -243,6 +248,11 @@ pub async fn bootstrap_server_runtime_with_options(
         plugin_host_reload.builtin_modes.clone(),
         plugin_host_reload.plugin_modes.clone(),
     )?;
+    let runtime_hook_dispatcher: Arc<dyn astrcode_agent_runtime::HookDispatcher> =
+        Arc::new(PluginHostHookDispatcher::new(
+            Arc::new(plugin_host_reload.snapshot.hook_bindings.clone()),
+            Arc::clone(&builtin_hook_registry),
+        ));
 
     let event_store: Arc<dyn EventStore> = Arc::new(
         FileSystemSessionRepository::new_with_projects_root(paths.projects_root.clone()),
@@ -263,6 +273,8 @@ pub async fn bootstrap_server_runtime_with_options(
         session_catalog: Arc::clone(&session_catalog),
         mode_catalog: Arc::clone(&mode_catalog),
         agent_limits: resolve_agent_control_limits(&resolved_config),
+        hook_dispatcher: Some(runtime_hook_dispatcher),
+        hook_snapshot_id: plugin_host_reload.snapshot.snapshot_id.clone(),
     })?;
     let profiles = build_profile_resolution_service(agent_loader.clone())?;
     let watch_service = match options.watch_service_override.clone() {
@@ -432,12 +444,13 @@ struct ServerPluginHostReload {
 fn reload_server_plugin_host_snapshot(
     registry: &PluginRegistry,
     descriptors: Vec<PluginDescriptor>,
+    hook_registry: &BuiltinHookRegistry,
 ) -> Result<ServerPluginHostReload> {
     let resources = resources_discover(&descriptors)?.catalog;
     let provider_catalog = ProviderContributionCatalog::from_descriptors(&descriptors)?;
     let builtin_modes = descriptor_modes(&descriptors, BUILTIN_GOVERNANCE_MODES_PLUGIN_ID);
     let plugin_modes = descriptor_modes(&descriptors, EXTERNAL_PLUGIN_MODES_PLUGIN_ID);
-    registry.stage_candidate(descriptors)?;
+    registry.stage_candidate_with_hook_registry(descriptors, hook_registry)?;
     let snapshot = registry.commit_candidate().ok_or_else(|| {
         AstrError::Internal("plugin-host active snapshot commit unexpectedly failed".to_string())
     })?;
@@ -501,7 +514,8 @@ fn resolve_agent_control_limits_from_runtime(
 #[cfg(test)]
 mod tests {
     use astrcode_plugin_host::{
-        CommandDescriptor, PluginDescriptor, PluginRegistry, ProviderDescriptor,
+        BuiltinHookRegistry, CommandDescriptor, PluginDescriptor, PluginRegistry,
+        ProviderDescriptor,
     };
 
     use super::{
@@ -597,7 +611,8 @@ mod tests {
             vec![descriptor],
         );
 
-        let reload = reload_server_plugin_host_snapshot(&registry, descriptors)
+        let hook_registry = BuiltinHookRegistry::new();
+        let reload = reload_server_plugin_host_snapshot(&registry, descriptors, &hook_registry)
             .expect("bridge reload should commit");
 
         assert_eq!(

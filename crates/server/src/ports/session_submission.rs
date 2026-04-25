@@ -1,15 +1,13 @@
 //! 应用层定义的 agent prompt 提交载荷。
 //!
-//! Why: application 可以表达“要提交什么治理上下文”，
+//! Why: application 可以表达"要提交什么治理上下文"，
 //! 但不应该直接依赖 session-runtime 的具体提交结构。
 
 use astrcode_core::{
     AgentEventContext, LlmMessage, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides,
 };
-use astrcode_governance_contract::{
-    ApprovalPending, BoundModeToolContractSnapshot, CapabilityCall, ModeId, PolicyContext,
-};
+use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId, PolicyContext};
 use astrcode_host_session::PromptGovernanceContext;
 use astrcode_prompt_contract::PromptDeclaration;
 
@@ -27,6 +25,6 @@ pub struct AppAgentPromptSubmission {
     pub source_tool_call_id: Option<String>,
     pub policy_context: Option<PolicyContext>,
     pub governance_revision: Option<String>,
-    pub approval: Option<ApprovalPending<CapabilityCall>>,
+    pub requires_approval: bool,
     pub prompt_governance: Option<PromptGovernanceContext>,
 }

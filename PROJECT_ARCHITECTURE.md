@@ -65,16 +65,16 @@ base
 | `governance-contract` | mode DSL、tool policy、action policy、治理 prompt/model request |
 | `tool-contract` | `Tool`、`ToolContext`、tool event sink、stream delta |
 | `llm-contract` | `LlmProvider`、request/output、usage、model limits |
-| `runtime-contract` | runtime handle、turn event、execution accepted |
+| `runtime-contract` | runtime handle、turn event、execution accepted、**hook typed payload/effect 合同** |
 
 ### Owners / Runtime
 
 | Crate | 职责 |
 |---|---|
 | `context-window` | compact、prompt-too-long recovery、tool-result budget、provider request 组装 |
-| `agent-runtime` | 单 turn 循环：provider 调用、工具调度、hook dispatch、pending event 输出 |
+| `agent-runtime` | 单 turn 循环：provider 调用、工具调度、**typed hook dispatch（HookDispatcher port）**、pending event 输出 |
 | `host-session` | session JSONL truth、投影、恢复、fork、input queue、child session、session plan |
-| `plugin-host` | builtin/external plugin active snapshot、贡献校验、hook bus、能力调度 |
+| `plugin-host` | builtin/external plugin active snapshot、贡献校验、**executable hook binding（BuiltinHookRegistry + dispatch_hooks）**、能力调度 |
 
 ### Adapters
 
@@ -118,6 +118,7 @@ core -> no workspace dependency
 
 - `protocol -> governance-contract`：仅用于 mode 相关 DTO。
 - `host-session -> agent-runtime`：仅用于 turn/runtime event 宿主集成。
+- `plugin-host -> runtime-contract`：消费 hook typed payload/effect 合同类型。
 - `adapter-storage` 可作为少数底层存储实现被需要的地方消费，但 adapter 横向依赖不能扩散。
 
 必须通过以下命令验证：
@@ -247,6 +248,43 @@ plugin-host 维护 active snapshot：
 4. 启动 backend。
 5. 原子提交。
 6. 通过 capability router 调度。
+
+## Hook Dispatch
+
+`runtime-contract` 定义 typed `HookEventPayload` 和 `HookEffect` 作为合同类型。
+`plugin-host` 持有 `BuiltinHookRegistry`（内置 handler 注册中心）和 active snapshot 中的 `HookBinding`（executable hook 条目）。
+`agent-runtime` / `host-session` 通过 `HookDispatcher` port 消费 hook 效果，不直接依赖 `plugin-host`。
+
+### 数据流
+
+```text
+runtime event（tool_call / tool_result / before_provider_request 等）
+  -> agent-runtime 构造 HookEventPayload typed variant
+  -> HookDispatcher port（由 server adapter 注入）
+  -> plugin-host dispatch_hooks()
+  -> 按事件过滤 HookBinding -> 按 priority 排序
+  -> BuiltinHookRegistry 解析 executor -> 调用 handler
+  -> handler 返回 Vec<HookEffect>
+  -> dispatch_hooks 校验 effect 属于事件允许集合
+  -> 按 dispatch mode + failure policy 处理
+  -> HookDispatchOutcome 返回给 owner 应用
+```
+
+### 架构边界
+
+- `agent-runtime` 只依赖 `runtime-contract` 和 `agent-runtime` 内部的 `HookDispatcher` trait。
+- `plugin-host` 实现 handler 注册和 dispatch 引擎，但 `agent-runtime` 不直接引用 `plugin-host`。
+- `server` 通过 adapter 将 `plugin-host` dispatch core 包装为 `HookDispatcher` 注入。
+- `HookContext` 只暴露 typed metadata、只读宿主视图，不暴露 `EventStore` 或 mutable session state。
+
+### Builtin Plugin
+
+builtin 能力（plan mode、权限、协作、composer、core tools）逐步迁移为 builtin plugin contribution：
+
+- 每个 builtin plugin 声明 `PluginDescriptor` + 注册 executor
+- descriptor 和 executor 一起 staging，绑定失败则保留旧 snapshot
+- tool/hook/provider/command 统一通过 plugin-host snapshot 调度
+- 函数式注册 helper（如 `registry.on_tool_call(...)`）降低 builtin plugin 作者心智成本
 
 ## Governance Mode
 

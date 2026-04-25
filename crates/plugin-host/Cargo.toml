@@ -9,6 +9,7 @@ authors.workspace = true
 astrcode-core = { path = "../core" }
 astrcode-governance-contract = { path = "../governance-contract" }
 astrcode-protocol = { path = "../protocol" }
+astrcode-runtime-contract = { path = "../runtime-contract" }
 log.workspace = true
 async-trait.workspace = true
 serde.workspace = true

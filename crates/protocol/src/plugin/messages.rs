@@ -136,6 +136,68 @@ pub enum PluginMessage {
     Event(EventMessage),
     /// 取消请求
     Cancel(CancelMessage),
+    /// Hook dispatch 请求（host -> plugin）
+    #[serde(rename = "dispatch_hook")]
+    HookDispatch(HookDispatchMessage),
+    /// Hook 执行结果（plugin -> host）
+    #[serde(rename = "hook_result")]
+    HookResult(HookResultMessage),
+}
+
+// ============================================================================
+// Hook Dispatch 消息
+// ============================================================================
+
+/// Host 向 external plugin 发送的 hook dispatch 请求。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HookDispatchMessage {
+    /// 请求唯一标识，用于关联响应。
+    pub correlation_id: String,
+    /// 当前 active snapshot id。
+    pub snapshot_id: String,
+    /// 目标 plugin id。
+    pub plugin_id: String,
+    /// 目标 hook id。
+    pub hook_id: String,
+    /// 正式事件名（如 "tool_call"）。
+    pub event: String,
+    /// typed payload 的序列化表示。
+    pub payload: serde_json::Value,
+}
+
+/// External plugin 返回的 hook 执行结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HookResultMessage {
+    /// 与 request 对应的 correlation id。
+    pub correlation_id: String,
+    /// handler 输出的 effect 列表。
+    #[serde(default)]
+    pub effects: Vec<HookEffectWire>,
+    /// 诊断信息。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<HookDiagnosticWire>,
+}
+
+/// Wire 格式的 hook effect。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HookEffectWire {
+    /// Effect 类型名，如 "Continue", "BlockToolResult", "CancelTurn"。
+    pub kind: String,
+    /// Effect 负载。
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+/// Wire 格式的诊断消息。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HookDiagnosticWire {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
 }
 
 impl ResultMessage {

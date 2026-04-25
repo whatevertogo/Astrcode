@@ -363,6 +363,15 @@ impl ExternalPluginRuntimeHandle {
         transport.invoke_unary(request).await
     }
 
+    /// 向外部插件发送 hook dispatch 请求并等待结果。
+    pub async fn dispatch_hook(
+        &mut self,
+        request: &astrcode_protocol::plugin::HookDispatchMessage,
+    ) -> Result<astrcode_protocol::plugin::HookResultMessage> {
+        let transport = self.protocol_transport()?;
+        transport.dispatch_hook(request).await
+    }
+
     pub async fn invoke_stream(&mut self, request: &InvokeMessage) -> Result<Vec<EventMessage>> {
         let transport = self.protocol_transport()?;
         transport.invoke_stream(request).await

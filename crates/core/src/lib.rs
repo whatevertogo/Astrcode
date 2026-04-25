@@ -93,10 +93,7 @@ pub use execution_task::{
     EXECUTION_TASK_SNAPSHOT_SCHEMA, ExecutionTaskItem, ExecutionTaskSnapshotMetadata,
     ExecutionTaskStatus, TaskSnapshot,
 };
-pub use hook::{
-    CompactionHookContext, CompactionHookResultContext, HookEvent, HookEventKey, ToolHookContext,
-    ToolHookResultContext,
-};
+pub use hook::HookEventKey;
 pub use ids::{AgentId, CapabilityName, SessionId, SubRunId, TurnId};
 pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
 pub use mcp::{McpApprovalData, McpApprovalStatus};

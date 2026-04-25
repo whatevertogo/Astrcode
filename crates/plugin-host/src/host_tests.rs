@@ -1015,6 +1015,7 @@ fn active_runtime_catalog_resolves_plugin_ownership() {
     builtin.hooks.push(crate::descriptor::HookDescriptor {
         hook_id: "tool_call".to_string(),
         event: "tool_call".to_string(),
+        ..Default::default()
     });
     builtin.commands.push(crate::descriptor::CommandDescriptor {
         command_id: "review".to_string(),
@@ -1142,6 +1143,7 @@ fn plugin_host_reload_resolves_descriptors_by_contribution_id() {
     builtin.hooks.push(crate::descriptor::HookDescriptor {
         hook_id: "tool_call".to_string(),
         event: "tool_call".to_string(),
+        ..Default::default()
     });
     builtin
         .resources

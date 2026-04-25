@@ -119,11 +119,7 @@ impl GovernanceSurfaceAssembler {
                 &compiled.envelope,
             ),
             collaboration_policy: super::collaboration_policy_context(&runtime),
-            approval: super::policy::default_approval_pipeline(
-                &session_id,
-                &turn_id,
-                &compiled.envelope,
-            ),
+            requires_approval: compiled.envelope.action_policies.requires_approval(),
             governance_revision: super::GOVERNANCE_POLICY_REVISION.to_string(),
         };
         surface.validate()?;

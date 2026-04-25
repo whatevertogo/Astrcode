@@ -35,6 +35,7 @@ mod tests {
             provider_ref: "provider-a".to_string(),
             tool_specs: Vec::new(),
             hook_snapshot_id: "snapshot-1".to_string(),
+            current_mode: None,
         });
 
         let output = AgentRuntime::new().execute_turn(input).await;

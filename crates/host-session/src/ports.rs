@@ -4,19 +4,43 @@ use std::{
 };
 
 use astrcode_core::{
-    CapabilitySpec, ChildSessionNode, DeleteProjectResult, Result, SessionId, SessionMeta,
-    SessionTurnAcquireResult, StorageEvent, StoredEvent, TaskSnapshot, TurnId, TurnTerminalKind,
+    CapabilitySpec, ChildSessionNode, DeleteProjectResult, HookEventKey, Result, SessionId,
+    SessionMeta, SessionTurnAcquireResult, StorageEvent, StoredEvent, TaskSnapshot, TurnId,
+    TurnTerminalKind,
 };
 use astrcode_governance_contract::{ModeId, SystemPromptBlock};
 use astrcode_prompt_contract::{
     PromptCacheGlobalStrategy, PromptCacheHints, PromptDeclaration, SystemPromptLayer,
 };
+use astrcode_runtime_contract::hooks::{HookEffect, HookEventPayload};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{AgentState, InputQueueProjection};
+
+// ============================================================================
+// HookDispatch — host-session 的 hook dispatch port
+// ============================================================================
+
+/// host-session 的 hook dispatch port。
+///
+/// server 通过 adapter 注入 plugin-host dispatch core，
+/// 避免 host-session 直接依赖 plugin-host。
+#[async_trait]
+pub trait HookDispatch: Send + Sync {
+    /// 派发 hook 并返回 effects。
+    async fn dispatch_hook(
+        &self,
+        event: HookEventKey,
+        payload: HookEventPayload,
+    ) -> Result<Vec<HookEffect>>;
+}
+
+// ============================================================================
+// EventStore
+// ============================================================================
 
 /// host-session owner 的事件存储端口。
 #[async_trait]

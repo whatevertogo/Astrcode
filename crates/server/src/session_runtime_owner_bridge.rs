@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use astrcode_agent_runtime::HookDispatcher;
 use astrcode_core::{AgentLifecycleStatus, AgentProfile, CapabilityInvoker, Result};
 use astrcode_host_session::{SessionCatalog, SubRunHandle};
 use astrcode_llm_contract::LlmProvider;
@@ -131,6 +132,8 @@ pub(crate) struct ServerSessionRuntimeBootstrapInput {
     pub session_catalog: Arc<SessionCatalog>,
     pub mode_catalog: Arc<crate::mode_catalog_service::ServerModeCatalog>,
     pub agent_limits: ServerAgentControlLimits,
+    pub hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
+    pub hook_snapshot_id: String,
 }
 
 pub(crate) struct ServerBootstrappedSessionRuntime {

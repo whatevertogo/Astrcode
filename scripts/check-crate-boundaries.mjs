@@ -131,6 +131,7 @@ function buildRules() {
         'astrcode-core',
         'astrcode-governance-contract',
         'astrcode-protocol',
+        'astrcode-runtime-contract',
         'astrcode-support',
       ]),
     },

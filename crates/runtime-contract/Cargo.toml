@@ -9,4 +9,6 @@ authors.workspace = true
 astrcode-core = { path = "../core" }
 astrcode-llm-contract = { path = "../llm-contract" }
 async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 

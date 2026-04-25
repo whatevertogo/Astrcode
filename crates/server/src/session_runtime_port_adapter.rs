@@ -4,8 +4,8 @@ use std::{
 };
 
 use astrcode_agent_runtime::{
-    AgentRuntime, AgentRuntimeExecutionSurface, ToolDispatchRequest, ToolDispatcher, TurnInput,
-    TurnOutput,
+    AgentRuntime, AgentRuntimeExecutionSurface, HookDispatcher, ToolDispatchRequest,
+    ToolDispatcher, TurnInput, TurnOutput,
 };
 use astrcode_context_window::tool_result_budget::ToolResultReplacementRecord;
 use astrcode_core::{
@@ -43,21 +43,29 @@ use crate::{
     session_runtime_port::SessionRuntimePort,
 };
 
+pub(crate) struct SessionRuntimePortBuildInput {
+    pub session_catalog: Arc<SessionCatalog>,
+    pub mode_catalog: Arc<ServerModeCatalog>,
+    pub agent_control: Arc<AgentControlRegistry>,
+    pub capability_router: CapabilityRouter,
+    pub llm_provider: Arc<dyn LlmProvider>,
+    pub active_sessions: Arc<ActiveSessionRegistry>,
+    pub hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
+    pub hook_snapshot_id: String,
+}
+
 pub(crate) fn build_session_runtime_port(
-    session_catalog: Arc<SessionCatalog>,
-    mode_catalog: Arc<ServerModeCatalog>,
-    agent_control: Arc<AgentControlRegistry>,
-    capability_router: CapabilityRouter,
-    llm_provider: Arc<dyn LlmProvider>,
-    active_sessions: Arc<ActiveSessionRegistry>,
+    input: SessionRuntimePortBuildInput,
 ) -> Arc<dyn SessionRuntimePort> {
     Arc::new(SessionRuntimeCompatPort {
-        session_catalog,
-        mode_catalog,
-        agent_control,
-        capability_router,
-        llm_provider,
-        active_sessions,
+        session_catalog: input.session_catalog,
+        mode_catalog: input.mode_catalog,
+        agent_control: input.agent_control,
+        capability_router: input.capability_router,
+        llm_provider: input.llm_provider,
+        active_sessions: input.active_sessions,
+        hook_dispatcher: input.hook_dispatcher,
+        hook_snapshot_id: input.hook_snapshot_id,
     })
 }
 
@@ -68,6 +76,8 @@ struct SessionRuntimeCompatPort {
     capability_router: CapabilityRouter,
     llm_provider: Arc<dyn LlmProvider>,
     active_sessions: Arc<ActiveSessionRegistry>,
+    hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
+    hook_snapshot_id: String,
 }
 
 struct RouterToolDispatcher {
@@ -275,6 +285,8 @@ impl SessionRuntimeCompatPort {
         let active_sessions = Arc::clone(&self.active_sessions);
         let mode_catalog = Arc::clone(&self.mode_catalog);
         let runtime_loop = AgentRuntime::new();
+        let hook_dispatcher = self.hook_dispatcher.clone();
+        let hook_snapshot_id = self.hook_snapshot_id.clone();
         tokio::spawn(async move {
             let session_id = begun.summary.session_id.clone();
             let turn_id = begun.summary.turn_id.clone();
@@ -285,7 +297,7 @@ impl SessionRuntimeCompatPort {
             let current_mode_id = submission.current_mode_id.clone();
             let bound_mode_tool_contract = submission.bound_mode_tool_contract.clone();
             let mode_tool_state =
-                RuntimeModeToolState::new(current_mode_id, bound_mode_tool_contract);
+                RuntimeModeToolState::new(current_mode_id.clone(), bound_mode_tool_contract);
             let (runtime_event_sink, runtime_event_bridge) = spawn_runtime_event_bridge(
                 Arc::clone(&session_catalog),
                 session_id.clone(),
@@ -320,14 +332,15 @@ impl SessionRuntimeCompatPort {
                         .to_string()
                 });
 
-            let turn_input = TurnInput::new(AgentRuntimeExecutionSurface {
+            let mut turn_input_builder = TurnInput::new(AgentRuntimeExecutionSurface {
                 session_id: session_id.to_string(),
                 turn_id: turn_id.to_string(),
                 agent_id: agent_id_for_surface(&agent),
                 model_ref: "server-owned-runtime".to_string(),
                 provider_ref: "server-owned-provider".to_string(),
                 tool_specs: capability_router.capability_specs(),
-                hook_snapshot_id: "server-owned".to_string(),
+                hook_snapshot_id: hook_snapshot_id.clone(),
+                current_mode: Some(current_mode_id.to_string()),
             })
             .with_agent(agent.clone())
             .with_messages(messages)
@@ -347,6 +360,12 @@ impl SessionRuntimeCompatPort {
             .with_max_output_continuations(runtime.max_output_continuation_attempts)
             .with_events_history_path(events_history_path)
             .with_event_sink(runtime_event_sink);
+
+            if let Some(dispatcher) = &hook_dispatcher {
+                turn_input_builder = turn_input_builder.with_hook_dispatcher(dispatcher.clone());
+            }
+
+            let turn_input = turn_input_builder;
 
             let output = runtime_loop.execute_turn(turn_input).await;
             if let Err(error) = runtime_event_bridge.await {

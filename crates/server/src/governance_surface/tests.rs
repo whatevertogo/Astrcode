@@ -3,21 +3,20 @@
 //! 验证 `GovernanceSurfaceAssembler` 在不同场景下的端到端行为：
 //! - session turn 治理面构建与 prompt declarations 注入
 //! - fresh/resumed child 治理面继承与委派策略
-//! - 工具白名单、审批管线、协作策略上下文的正确性
+//! - 工具白名单、协作策略上下文的正确性
 //! - 各种 capability selector（all / subset / none / union / difference）的编译结果
 
 use astrcode_core::{
-    CapabilityKind, CapabilitySpec, LlmMessage, ResolvedExecutionLimitsSnapshot,
-    ResolvedRuntimeConfig, UserMessageOrigin,
+    LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, UserMessageOrigin,
 };
-use astrcode_governance_contract::{ApprovalDefault, BoundModeToolContractSnapshot, ModeId};
-use serde_json::{Value, json};
+use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId};
+use serde_json::json;
 
 use super::{
-    FreshChildGovernanceInput, GOVERNANCE_POLICY_REVISION, GovernanceApprovalPipeline,
-    GovernanceBusyPolicy, GovernanceSurfaceAssembler, ResolvedGovernanceSurface,
-    ResumedChildGovernanceInput, RootGovernanceInput, SessionGovernanceInput,
-    build_inherited_messages, collaboration_policy_context, select_inherited_recent_tail,
+    FreshChildGovernanceInput, GOVERNANCE_POLICY_REVISION, GovernanceBusyPolicy,
+    GovernanceSurfaceAssembler, ResolvedGovernanceSurface, ResumedChildGovernanceInput,
+    RootGovernanceInput, SessionGovernanceInput, build_inherited_messages,
+    collaboration_policy_context, select_inherited_recent_tail,
 };
 use crate::{ExecutionControl, test_support::StubSessionPort};
 
@@ -50,8 +49,8 @@ fn session_surface_builds_collaboration_prompt_and_policy_context() {
     assert_eq!(surface.bound_mode_tool_contract.mode_id, ModeId::code());
 }
 
-#[tokio::test]
-async fn surface_policy_pipeline_defaults_to_allow_all() {
+#[test]
+fn surface_policy_pipeline_defaults_to_allow_all() {
     let surface = ResolvedGovernanceSurface {
         mode_id: ModeId::code(),
         runtime: ResolvedRuntimeConfig::default(),
@@ -73,37 +72,11 @@ async fn surface_policy_pipeline_defaults_to_allow_all() {
             metadata: json!({}),
         },
         collaboration_policy: collaboration_policy_context(&ResolvedRuntimeConfig::default()),
-        approval: GovernanceApprovalPipeline {
-            pending: Some(astrcode_governance_contract::ApprovalPending {
-                request: astrcode_governance_contract::ApprovalRequest {
-                    request_id: "approval".to_string(),
-                    session_id: "session-1".to_string(),
-                    turn_id: "turn-1".to_string(),
-                    capability: CapabilitySpec::builder("placeholder", CapabilityKind::Tool)
-                        .description("placeholder")
-                        .schema(json!({"type":"object"}), json!({"type":"object"}))
-                        .build()
-                        .expect("placeholder should build"),
-                    payload: Value::Null,
-                    prompt: "disabled".to_string(),
-                    default: ApprovalDefault::Allow,
-                    metadata: json!({}),
-                },
-                action: astrcode_governance_contract::CapabilityCall {
-                    request_id: "approval-call".to_string(),
-                    capability: CapabilitySpec::builder("placeholder", CapabilityKind::Tool)
-                        .description("placeholder")
-                        .schema(json!({"type":"object"}), json!({"type":"object"}))
-                        .build()
-                        .expect("placeholder should build"),
-                    payload: Value::Null,
-                    metadata: json!({}),
-                },
-            }),
-        },
+        requires_approval: true,
         governance_revision: GOVERNANCE_POLICY_REVISION.to_string(),
     };
-    assert!(surface.approval.pending.is_some());
+    assert!(surface.requires_approval);
+    assert_eq!(surface.prompt_facts_context().approval_mode, "required");
 }
 
 #[test]

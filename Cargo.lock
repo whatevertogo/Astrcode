@@ -431,6 +431,7 @@ dependencies = [
  "astrcode-core",
  "astrcode-governance-contract",
  "astrcode-protocol",
+ "astrcode-runtime-contract",
  "async-trait",
  "log",
  "serde",
@@ -465,6 +466,8 @@ dependencies = [
  "astrcode-core",
  "astrcode-llm-contract",
  "async-trait",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
