@@ -4,8 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use astrcode_core::{AgentEventContext, CancelToken, SpawnAgentParams};
-use astrcode_tool_contract::ToolContext;
+use astrcode_core::{AgentEventContext, CancelToken, SpawnAgentParams, ToolContext};
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},

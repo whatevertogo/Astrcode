@@ -4,8 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use astrcode_core::{LlmMessage, ToolCallRequest, UserMessageOrigin};
-use astrcode_tool_contract::ToolExecutionResult;
+use astrcode_core::{LlmMessage, ToolCallRequest, ToolExecutionResult, UserMessageOrigin};
 use serde::Deserialize;
 
 use super::token_usage::estimate_text_tokens;

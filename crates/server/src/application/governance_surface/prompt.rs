@@ -6,10 +6,9 @@
 //! - `build_resumed_child_contract`：继续委派的增量指令 prompt
 //! - `collaboration_prompt_declarations`：四工具协作指导 prompt
 
-use astrcode_core::ResolvedExecutionLimitsSnapshot;
-use astrcode_prompt_contract::{
+use astrcode_core::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, SystemPromptLayer,
+    PromptDeclarationSource, ResolvedExecutionLimitsSnapshot, SystemPromptLayer,
 };
 
 pub fn build_delegation_metadata(

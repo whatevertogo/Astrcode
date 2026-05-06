@@ -5,7 +5,7 @@ impl AgentOrchestrationService {
         &self,
         child: &SubRunHandle,
         payload: &ParentDeliveryPayload,
-        ctx: &astrcode_tool_contract::ToolContext,
+        ctx: &astrcode_core::ToolContext,
         source_turn_id: &str,
     ) -> ChildSessionNotification {
         let status = self
@@ -39,7 +39,7 @@ impl AgentOrchestrationService {
         &self,
         child: &SubRunHandle,
         envelope: &AgentInboxEnvelope,
-        ctx: &astrcode_tool_contract::ToolContext,
+        ctx: &astrcode_core::ToolContext,
     ) -> astrcode_core::Result<()> {
         let target_session_id = child
             .child_session_id
@@ -97,7 +97,7 @@ impl AgentOrchestrationService {
     pub(in crate::application::agent) async fn append_durable_input_queue_discard_batch(
         &self,
         handles: &[SubRunHandle],
-        ctx: &astrcode_tool_contract::ToolContext,
+        ctx: &astrcode_core::ToolContext,
     ) -> astrcode_core::Result<()> {
         for handle in handles {
             self.append_durable_input_queue_discard(handle, ctx).await?;
@@ -108,7 +108,7 @@ impl AgentOrchestrationService {
     async fn append_durable_input_queue_discard(
         &self,
         handle: &SubRunHandle,
-        ctx: &astrcode_tool_contract::ToolContext,
+        ctx: &astrcode_core::ToolContext,
     ) -> astrcode_core::Result<()> {
         let target_session_id = handle
             .child_session_id

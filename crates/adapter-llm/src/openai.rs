@@ -604,7 +604,7 @@ fn is_official_openai_api_url(url: &str) -> bool {
 fn build_prompt_cache_key(
     model: &str,
     system_prompt: Option<&str>,
-    system_prompt_blocks: &[astrcode_prompt_contract::SystemPromptBlock],
+    system_prompt_blocks: &[astrcode_core::SystemPromptBlock],
     prompt_cache_hints: Option<&PromptCacheHints>,
     tools: &[&ToolDefinition],
 ) -> String {
@@ -1150,7 +1150,7 @@ struct OpenAiBuildRequestInput<'a> {
     messages: &'a [LlmMessage],
     tools: &'a [ToolDefinition],
     system_prompt: Option<&'a str>,
-    system_prompt_blocks: &'a [astrcode_prompt_contract::SystemPromptBlock],
+    system_prompt_blocks: &'a [astrcode_core::SystemPromptBlock],
     prompt_cache_hints: Option<&'a PromptCacheHints>,
     max_output_tokens_override: Option<usize>,
     stream: bool,
@@ -1390,29 +1390,29 @@ mod tests {
             origin: UserMessageOrigin::User,
         }];
         let system_blocks = vec![
-            astrcode_prompt_contract::SystemPromptBlock {
+            astrcode_core::SystemPromptBlock {
                 title: "Stable 1".to_string(),
                 content: "stable content 1".to_string(),
                 cache_boundary: false,
-                layer: astrcode_prompt_contract::SystemPromptLayer::Stable,
+                layer: astrcode_core::SystemPromptLayer::Stable,
             },
-            astrcode_prompt_contract::SystemPromptBlock {
+            astrcode_core::SystemPromptBlock {
                 title: "Stable 2".to_string(),
                 content: "stable content 2".to_string(),
                 cache_boundary: true,
-                layer: astrcode_prompt_contract::SystemPromptLayer::Stable,
+                layer: astrcode_core::SystemPromptLayer::Stable,
             },
-            astrcode_prompt_contract::SystemPromptBlock {
+            astrcode_core::SystemPromptBlock {
                 title: "Semi 1".to_string(),
                 content: "semi content 1".to_string(),
                 cache_boundary: true,
-                layer: astrcode_prompt_contract::SystemPromptLayer::SemiStable,
+                layer: astrcode_core::SystemPromptLayer::SemiStable,
             },
-            astrcode_prompt_contract::SystemPromptBlock {
+            astrcode_core::SystemPromptBlock {
                 title: "Inherited 1".to_string(),
                 content: "inherited content 1".to_string(),
                 cache_boundary: true,
-                layer: astrcode_prompt_contract::SystemPromptLayer::Inherited,
+                layer: astrcode_core::SystemPromptLayer::Inherited,
             },
         ];
         let request = provider.build_request(OpenAiBuildRequestInput {
@@ -1714,7 +1714,7 @@ mod tests {
         }];
         let ordered_tools = order_tools_for_cache(&tools);
         let base_hints = PromptCacheHints {
-            layer_fingerprints: astrcode_prompt_contract::PromptLayerFingerprints {
+            layer_fingerprints: astrcode_core::PromptLayerFingerprints {
                 stable: Some("stable-a".to_string()),
                 semi_stable: Some("semi-a".to_string()),
                 inherited: Some("inherited-a".to_string()),

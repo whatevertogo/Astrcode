@@ -33,7 +33,7 @@ impl AgentOrchestrationService {
         &self,
         child: &SubRunHandle,
         params: &SendToChildParams,
-        ctx: &astrcode_tool_contract::ToolContext,
+        ctx: &astrcode_core::ToolContext,
         collaboration: &ToolCollaborationContext,
         lifecycle: Option<AgentLifecycleStatus>,
     ) -> Result<Option<CollaborationResult>, AgentOrchestrationError> {
@@ -235,7 +235,7 @@ impl AgentOrchestrationService {
         &self,
         child: &SubRunHandle,
         params: &SendToChildParams,
-        ctx: &astrcode_tool_contract::ToolContext,
+        ctx: &astrcode_core::ToolContext,
         collaboration: &ToolCollaborationContext,
     ) -> Result<CollaborationResult, AgentOrchestrationError> {
         let delivery_id = format!(

@@ -15,12 +15,11 @@ use std::{
     time::Instant,
 };
 
-use astrcode_core::{AstrError, CancelToken, Result, SideEffect};
-use astrcode_support::tool_results::maybe_persist_tool_result;
-use astrcode_tool_contract::{
-    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolPromptMetadata,
+use astrcode_core::{
+    AstrError, CancelToken, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
 };
+use astrcode_support::tool_results::maybe_persist_tool_result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;

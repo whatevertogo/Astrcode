@@ -11,8 +11,7 @@ use std::{
     },
 };
 
-use astrcode_core::{AstrError, CapabilityInvoker, Result};
-use astrcode_prompt_contract::PromptDeclaration;
+use astrcode_core::{AstrError, CapabilityInvoker, PromptDeclaration, Result};
 use astrcode_runtime_contract::ManagedRuntimeComponent;
 use async_trait::async_trait;
 use connection::McpConnection;

@@ -1,5 +1,7 @@
-use astrcode_core::{LlmMessage, UserMessageOrigin};
-use astrcode_llm_contract::{LlmUsage, ModelLimits};
+use astrcode_core::{
+    LlmMessage, UserMessageOrigin,
+    llm::{LlmUsage, ModelLimits},
+};
 
 const MESSAGE_BASE_TOKENS: usize = 6;
 const TOOL_CALL_BASE_TOKENS: usize = 12;

@@ -11,10 +11,9 @@
 //! 4. 解析 busy policy（是否在 session busy 时分支或拒绝）
 
 use astrcode_core::{
-    ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
+    PromptDeclaration, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
+    ResolvedSubagentContextOverrides, mode::ModeId,
 };
-use astrcode_core::mode::ModeId;
-use astrcode_prompt_contract::PromptDeclaration;
 
 use super::{
     BuildSurfaceInput, FreshChildGovernanceInput, ResolvedGovernanceSurface,

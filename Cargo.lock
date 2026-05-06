@@ -161,8 +161,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "astrcode-core",
- "astrcode-llm-contract",
- "astrcode-prompt-contract",
  "async-trait",
  "futures-util",
  "log",
@@ -178,7 +176,6 @@ version = "0.1.0"
 dependencies = [
  "astrcode-core",
  "astrcode-plugin-host",
- "astrcode-prompt-contract",
  "astrcode-runtime-contract",
  "astrcode-support",
  "async-trait",
@@ -202,9 +199,7 @@ dependencies = [
  "anyhow",
  "astrcode-core",
  "astrcode-host-session",
- "astrcode-prompt-contract",
  "astrcode-support",
- "astrcode-tool-contract",
  "async-trait",
  "chrono",
  "dirs",
@@ -254,7 +249,6 @@ dependencies = [
  "astrcode-core",
  "astrcode-host-session",
  "astrcode-support",
- "astrcode-tool-contract",
  "async-trait",
  "base64 0.22.1",
  "chrono",
@@ -276,10 +270,7 @@ version = "0.1.0"
 dependencies = [
  "astrcode-context-window",
  "astrcode-core",
- "astrcode-llm-contract",
- "astrcode-prompt-contract",
  "astrcode-runtime-contract",
- "astrcode-tool-contract",
  "async-trait",
  "chrono",
  "futures-util",
@@ -332,10 +323,8 @@ name = "astrcode-context-window"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-llm-contract",
  "astrcode-runtime-contract",
  "astrcode-support",
- "astrcode-tool-contract",
  "chrono",
  "log",
  "regex",
@@ -385,10 +374,8 @@ dependencies = [
  "astrcode-agent-runtime",
  "astrcode-core",
  "astrcode-plugin-host",
- "astrcode-prompt-contract",
  "astrcode-runtime-contract",
  "astrcode-support",
- "astrcode-tool-contract",
  "async-trait",
  "chrono",
  "dashmap",
@@ -396,16 +383,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "astrcode-llm-contract"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "astrcode-prompt-contract",
- "async-trait",
- "serde",
 ]
 
 [[package]]
@@ -424,14 +401,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "astrcode-prompt-contract"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "serde",
-]
-
-[[package]]
 name = "astrcode-protocol"
 version = "0.1.0"
 dependencies = [
@@ -446,7 +415,6 @@ name = "astrcode-runtime-contract"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-llm-contract",
  "async-trait",
  "serde",
  "serde_json",
@@ -468,13 +436,10 @@ dependencies = [
  "astrcode-context-window",
  "astrcode-core",
  "astrcode-host-session",
- "astrcode-llm-contract",
  "astrcode-plugin-host",
- "astrcode-prompt-contract",
  "astrcode-protocol",
  "astrcode-runtime-contract",
  "astrcode-support",
- "astrcode-tool-contract",
  "async-stream",
  "async-trait",
  "axum",
@@ -505,17 +470,6 @@ dependencies = [
  "dirs",
  "log",
  "tempfile",
-]
-
-[[package]]
-name = "astrcode-tool-contract"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "async-trait",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

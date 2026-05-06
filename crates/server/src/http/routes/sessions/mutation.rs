@@ -1,7 +1,6 @@
 use std::{fs, path::Path as FsPath};
 
-use astrcode_core::{ExecutionControl, SessionId};
-use astrcode_core::mode::ModeId;
+use astrcode_core::{ExecutionControl, SessionId, mode::ModeId};
 use astrcode_host_session::{
     CompactSessionMutationInput, ForkPoint, InterruptSessionMutationInput, TurnMutationPreparation,
 };

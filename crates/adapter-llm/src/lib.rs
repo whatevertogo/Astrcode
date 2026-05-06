@@ -39,8 +39,9 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use astrcode_core::{AstrError, CancelToken, ReasoningContent, Result, ToolCallRequest};
-use astrcode_llm_contract::LlmEvent;
+use astrcode_core::{
+    AstrError, CancelToken, ReasoningContent, Result, ToolCallRequest, llm::LlmEvent,
+};
 use log::warn;
 use serde_json::Value;
 use tokio::{select, time::sleep};
@@ -48,7 +49,7 @@ use tokio::{select, time::sleep};
 pub mod cache_tracker;
 pub mod openai;
 
-pub use astrcode_llm_contract::{
+pub use astrcode_core::llm::{
     LlmEventSink as EventSink, LlmFinishReason as FinishReason, LlmOutput, LlmProvider, LlmRequest,
     LlmUsage, ModelLimits, PromptCacheBreakReason, PromptCacheDiagnostics,
     PromptCacheGlobalStrategy, PromptCacheHints, PromptLayerFingerprints,

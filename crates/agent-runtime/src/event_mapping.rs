@@ -3,10 +3,11 @@
 //! 将 `RuntimeTurnEvent`（agent-runtime 内部事件）和 `StorageEvent`（持久化事件）
 //! 转换为 `AgentEvent`（应用层 SSE 广播事件）。
 
-use astrcode_core::{AgentEvent, AgentEventContext, StorageEvent, StorageEventPayload};
-use astrcode_llm_contract::LlmEvent;
+use astrcode_core::{
+    AgentEvent, AgentEventContext, StorageEvent, StorageEventPayload, ToolExecutionResult,
+    llm::LlmEvent,
+};
 use astrcode_runtime_contract::RuntimeTurnEvent;
-use astrcode_tool_contract::ToolExecutionResult;
 
 /// 将 `RuntimeTurnEvent` 转换为 0..N 个 `AgentEvent`。
 pub fn runtime_turn_events_to_agent_events(
@@ -123,8 +124,9 @@ pub fn storage_event_to_agent_events(
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{AgentEvent, AgentEventContext, StorageEvent, StorageEventPayload};
-    use astrcode_tool_contract::ToolOutputStream;
+    use astrcode_core::{
+        AgentEvent, AgentEventContext, StorageEvent, StorageEventPayload, ToolOutputStream,
+    };
 
     use super::runtime_turn_events_to_agent_events;
     use crate::RuntimeTurnEvent;

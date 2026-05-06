@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentCollaborationFact, AgentTurnOutcome, Result, RuntimeMetricsRecorder,
-    RuntimeObservabilitySnapshot, SubRunStorageMode,
+    RuntimeObservabilitySnapshot, SubRunStorageMode, mode::GovernanceModeSpec,
 };
-use astrcode_core::mode::GovernanceModeSpec;
 
 use crate::{
     ObservabilitySnapshotProvider, RuntimeObservabilityCollector, TaskRegistry,

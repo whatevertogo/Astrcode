@@ -4,13 +4,10 @@ use std::{
 };
 
 use astrcode_core::{
-    CapabilitySpec, ChildSessionNode, DeleteProjectResult, HookEventKey, Result, SessionId,
-    SessionMeta, SessionTurnAcquireResult, StorageEvent, StoredEvent, TaskSnapshot, TurnId,
+    CapabilitySpec, ChildSessionNode, DeleteProjectResult, HookEventKey, PromptCacheGlobalStrategy,
+    PromptCacheHints, PromptDeclaration, Result, SessionId, SessionMeta, SessionTurnAcquireResult,
+    StorageEvent, StoredEvent, SystemPromptBlock, SystemPromptLayer, TaskSnapshot, TurnId,
     TurnTerminalKind,
-};
-use astrcode_prompt_contract::SystemPromptBlock;
-use astrcode_prompt_contract::{
-    PromptCacheGlobalStrategy, PromptCacheHints, PromptDeclaration, SystemPromptLayer,
 };
 use astrcode_runtime_contract::hooks::{HookEffect, HookEventPayload};
 use async_trait::async_trait;

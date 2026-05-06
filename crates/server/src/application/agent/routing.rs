@@ -8,10 +8,9 @@ use astrcode_core::{
     AgentLifecycleStatus, ChildAgentRef, ChildSessionNotification, CloseAgentParams,
     CollaborationResult, InboxEnvelopeKind, InputDiscardedPayload, InputQueuedPayload,
     ParentDelivery, ParentDeliveryOrigin, ParentDeliveryPayload, SendAgentParams,
-    SendToChildParams, SendToParentParams,
+    SendToChildParams, SendToParentParams, ToolContext,
 };
 use astrcode_host_session::SubRunHandle;
-use astrcode_tool_contract::ToolContext;
 use collaboration_flow::parent_delivery_label;
 
 use super::{

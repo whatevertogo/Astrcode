@@ -11,9 +11,9 @@ use std::{
 };
 
 use astrcode_core::{
-    AstrError, CapabilityInvoker, CapabilitySpec, Result, ToolCallRequest, support,
+    AstrError, CapabilityInvoker, CapabilitySpec, Result, ToolCallRequest, ToolContext,
+    ToolExecutionResult, support,
 };
-use astrcode_tool_contract::{ToolContext, ToolExecutionResult};
 
 fn validate_capability_spec(capability_spec: &CapabilitySpec) -> Result<()> {
     capability_spec.validate().map_err(|error| {

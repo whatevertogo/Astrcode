@@ -84,6 +84,63 @@ fn is_unspecified_prompt_layer(layer: &SystemPromptLayer) -> bool {
     matches!(layer, SystemPromptLayer::Unspecified)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptLayerFingerprints {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semi_stable: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptCacheGlobalStrategy {
+    #[default]
+    SystemPrompt,
+    ToolBased,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptCacheHints {
+    #[serde(default)]
+    pub layer_fingerprints: PromptLayerFingerprints,
+    #[serde(default)]
+    pub global_cache_strategy: PromptCacheGlobalStrategy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unchanged_layers: Vec<SystemPromptLayer>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub compacted: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tool_result_rebudgeted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPromptBlock {
+    pub title: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cache_boundary: bool,
+    #[serde(default, skip_serializing_if = "is_unspecified_system_prompt_layer")]
+    pub layer: SystemPromptLayer,
+}
+
+impl SystemPromptBlock {
+    pub fn render(&self) -> String {
+        format!("[{}]\n{}", self.title, self.content)
+    }
+}
+
+fn is_unspecified_system_prompt_layer(layer: &SystemPromptLayer) -> bool {
+    matches!(layer, SystemPromptLayer::Unspecified)
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }

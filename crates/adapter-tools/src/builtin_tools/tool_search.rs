@@ -10,10 +10,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use astrcode_core::{CapabilitySpec, Result, SideEffect};
-use astrcode_tool_contract::{
-    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolPromptMetadata,
+use astrcode_core::{
+    CapabilitySpec, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -198,8 +197,7 @@ impl Tool for ToolSearchTool {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::CancelToken;
-    use astrcode_tool_contract::ToolContext;
+    use astrcode_core::{CancelToken, ToolContext};
     use serde_json::json;
 
     use super::*;

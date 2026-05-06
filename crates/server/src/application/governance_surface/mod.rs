@@ -20,11 +20,10 @@ mod tests;
 
 pub use assembler::GovernanceSurfaceAssembler;
 use astrcode_core::{
-    LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
+    LlmMessage, PromptDeclaration, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
     ResolvedSubagentContextOverrides,
+    mode::{BoundModeToolContractSnapshot, ModeId},
 };
-use astrcode_core::mode::{BoundModeToolContractSnapshot, ModeId};
-use astrcode_prompt_contract::PromptDeclaration;
 pub(crate) use inherited::resolve_inherited_parent_messages;
 #[cfg(test)]
 pub(crate) use inherited::{build_inherited_messages, select_inherited_recent_tail};

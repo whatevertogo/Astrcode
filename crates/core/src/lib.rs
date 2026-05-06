@@ -19,6 +19,7 @@ mod execution_result;
 mod execution_task;
 pub mod hook;
 pub mod ids;
+pub mod llm;
 pub mod local_server;
 mod mcp;
 pub mod mode;
@@ -102,14 +103,14 @@ pub use observability::{
     ReplayMetricsSnapshot, ReplayPath, RuntimeMetricsRecorder, RuntimeObservabilitySnapshot,
     SubRunExecutionMetricsSnapshot,
 };
+pub use policy::SystemPromptLayer;
 pub use ports::{McpSettingsStore, SkillCatalog};
 pub use prompt::{
-    PromptCacheBreakReason, PromptCacheDiagnostics, PromptDeclaration, PromptDeclarationKind,
-    PromptDeclarationRenderTarget, PromptDeclarationSource,
+    PromptCacheBreakReason, PromptCacheDiagnostics, PromptCacheGlobalStrategy, PromptCacheHints,
+    PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
+    PromptDeclarationSource, PromptLayerFingerprints, SystemPromptBlock,
 };
-pub use registry::{
-    CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, ExecutionOwner, ToolEventSink,
-};
+pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
 pub use shell::{ResolvedShell, ShellFamily};
 pub use skill::{SkillSource, SkillSpec, is_valid_skill_name, normalize_skill_name};
@@ -119,6 +120,10 @@ pub use store::{
 };
 pub use time::{
     format_local_rfc3339, format_local_rfc3339_opt, local_rfc3339, local_rfc3339_option,
+};
+pub use tool::{
+    DEFAULT_MAX_OUTPUT_SIZE, ExecutionOwner, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolEventSink, ToolPromptMetadata,
 };
 pub use tool_result_persist::{
     DEFAULT_TOOL_RESULT_INLINE_LIMIT, PersistedToolOutput, PersistedToolResult,

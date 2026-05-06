@@ -9,8 +9,7 @@
 //! - 内置工具默认进入稳定摘要，只有工具发现和协作类工具展开详细指南
 //! - 只负责工具指南；外部 `PromptDeclaration` 由独立 contributor 承接
 
-use astrcode_core::CapabilitySpec;
-use astrcode_tool_contract::ToolPromptMetadata;
+use astrcode_core::{CapabilitySpec, ToolPromptMetadata};
 use async_trait::async_trait;
 
 use crate::{BlockKind, BlockSpec, PromptContext, PromptContribution, PromptContributor};
@@ -290,8 +289,9 @@ fn build_detailed_tool_block(guide: &ToolGuideEntry) -> BlockSpec {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{CapabilityKind, CapabilitySpec, test_support::TestEnvGuard};
-    use astrcode_tool_contract::ToolPromptMetadata;
+    use astrcode_core::{
+        CapabilityKind, CapabilitySpec, ToolPromptMetadata, test_support::TestEnvGuard,
+    };
     use serde_json::json;
 
     use super::*;

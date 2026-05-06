@@ -3,8 +3,10 @@
 //! 校验 session 从一个 mode 切换到另一个 mode 是否合法：
 //! 检查当前 mode 的 `transition_policy.allowed_targets` 是否包含目标 mode。
 
-use astrcode_core::{AstrError, Result};
-use astrcode_core::mode::{GovernanceModeSpec, ModeId};
+use astrcode_core::{
+    AstrError, Result,
+    mode::{GovernanceModeSpec, ModeId},
+};
 
 use crate::mode_catalog_service::ServerModeCatalog;
 
@@ -48,8 +50,7 @@ pub fn validate_mode_transition(
 mod tests {
     use std::sync::Arc;
 
-    use astrcode_core::Result;
-    use astrcode_core::mode::ModeId;
+    use astrcode_core::{Result, mode::ModeId};
 
     use super::validate_mode_transition;
     use crate::{mode::catalog::builtin_mode_specs, mode_catalog_service::ServerModeCatalog};

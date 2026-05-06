@@ -1122,10 +1122,9 @@ mod tests {
     use astrcode_core::{
         AgentEventContext, AgentLifecycleStatus, ChildExecutionIdentity, ChildSessionLineageKind,
         ChildSessionNode, ChildSessionStatusSource, ExecutionTaskStatus, ParentExecutionRef, Phase,
-        SessionEventRecord,
+        SessionEventRecord, ToolExecutionResult, ToolOutputStream,
     };
     use astrcode_protocol::http::conversation::v1::ConversationStreamEnvelopeDto;
-    use astrcode_tool_contract::{ToolExecutionResult, ToolOutputStream};
     use serde_json::{Value, json};
     use tokio::sync::broadcast;
 

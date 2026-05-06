@@ -18,8 +18,8 @@ use astrcode_core::{
     AgentEventContext, AstrError, CompactAppliedMeta, CompactMode, CompactTrigger, HookEventKey,
     LlmMessage, PromptMetricsPayload, StorageEvent, StorageEventPayload, UserMessageOrigin,
     format_compact_summary,
+    llm::{LlmProvider, LlmRequest, LlmUsage, PromptCacheDiagnostics},
 };
-use astrcode_llm_contract::{LlmProvider, LlmRequest, LlmUsage, PromptCacheDiagnostics};
 use astrcode_runtime_contract::{RuntimeTurnEvent, TurnIdentity};
 
 use crate::{
@@ -452,22 +452,22 @@ fn core_prompt_cache_diagnostics(
             .reasons
             .into_iter()
             .map(|reason| match reason {
-                astrcode_llm_contract::PromptCacheBreakReason::SystemPromptChanged => {
+                astrcode_core::llm::PromptCacheBreakReason::SystemPromptChanged => {
                     astrcode_core::PromptCacheBreakReason::SystemPromptChanged
                 },
-                astrcode_llm_contract::PromptCacheBreakReason::ToolSchemasChanged => {
+                astrcode_core::llm::PromptCacheBreakReason::ToolSchemasChanged => {
                     astrcode_core::PromptCacheBreakReason::ToolSchemasChanged
                 },
-                astrcode_llm_contract::PromptCacheBreakReason::ModelChanged => {
+                astrcode_core::llm::PromptCacheBreakReason::ModelChanged => {
                     astrcode_core::PromptCacheBreakReason::ModelChanged
                 },
-                astrcode_llm_contract::PromptCacheBreakReason::GlobalCacheStrategyChanged => {
+                astrcode_core::llm::PromptCacheBreakReason::GlobalCacheStrategyChanged => {
                     astrcode_core::PromptCacheBreakReason::GlobalCacheStrategyChanged
                 },
-                astrcode_llm_contract::PromptCacheBreakReason::CompactedPrompt => {
+                astrcode_core::llm::PromptCacheBreakReason::CompactedPrompt => {
                     astrcode_core::PromptCacheBreakReason::CompactedPrompt
                 },
-                astrcode_llm_contract::PromptCacheBreakReason::ToolResultRebudgeted => {
+                astrcode_core::llm::PromptCacheBreakReason::ToolResultRebudgeted => {
                     astrcode_core::PromptCacheBreakReason::ToolResultRebudgeted
                 },
             })

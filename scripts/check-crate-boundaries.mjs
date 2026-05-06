@@ -55,65 +55,37 @@ function buildRules() {
       allowedExact: new Set(['astrcode-core']),
     },
     {
-      id: 'R003',
-      description: 'prompt-contract 只承载 prompt 契约，仅允许依赖 core',
-      source: 'astrcode-prompt-contract',
-      allowedExact: new Set(['astrcode-core']),
-    },
-    {
-      id: 'R005',
-      description: 'tool-contract 只承载工具契约，仅允许依赖 core',
-      source: 'astrcode-tool-contract',
-      allowedExact: new Set(['astrcode-core']),
-    },
-    {
       id: 'R006',
       description: 'support 仅允许依赖 core',
       source: 'astrcode-support',
       allowedExact: new Set(['astrcode-core']),
     },
     {
-      id: 'R007',
-      description: 'llm-contract 只承载 LLM 契约，仅允许依赖 core、prompt-contract',
-      source: 'astrcode-llm-contract',
-      allowedExact: new Set([
-        'astrcode-core',
-        'astrcode-prompt-contract',
-      ]),
-    },
-    {
       id: 'R008',
-      description: 'runtime-contract 只承载 runtime 边界，仅允许依赖 core、llm-contract、tool-contract',
+      description: 'runtime-contract 只承载 runtime 边界，仅允许依赖 core',
       source: 'astrcode-runtime-contract',
       allowedExact: new Set([
         'astrcode-core',
-        'astrcode-llm-contract',
-        'astrcode-tool-contract',
       ]),
     },
     {
       id: 'R009',
-      description: 'context-window 只负责上下文窗口，允许依赖 core、llm-contract、runtime-contract、tool-contract、support',
+      description: 'context-window 只负责上下文窗口，允许依赖 core、runtime-contract、support',
       source: 'astrcode-context-window',
       allowedExact: new Set([
         'astrcode-core',
-        'astrcode-llm-contract',
         'astrcode-runtime-contract',
-        'astrcode-tool-contract',
         'astrcode-support',
       ]),
     },
     {
       id: 'R010',
-      description: 'agent-runtime 是最小执行内核，仅允许依赖 core、context-window、llm-contract、runtime-contract、tool-contract',
+      description: 'agent-runtime 是最小执行内核，仅允许依赖 core、context-window、runtime-contract',
       source: 'astrcode-agent-runtime',
       allowedExact: new Set([
         'astrcode-core',
         'astrcode-context-window',
-        'astrcode-llm-contract',
-        'astrcode-prompt-contract',
         'astrcode-runtime-contract',
-        'astrcode-tool-contract',
       ]),
     },
     {
@@ -129,16 +101,14 @@ function buildRules() {
     },
     {
       id: 'R012',
-      description: 'host-session 只承载 session owner 逻辑，只允许依赖 core、support、agent-runtime、plugin-host、prompt-contract、runtime-contract、tool-contract',
+      description: 'host-session 只承载 session owner 逻辑，只允许依赖 core、support、agent-runtime、plugin-host、runtime-contract',
       source: 'astrcode-host-session',
       allowedExact: new Set([
         'astrcode-core',
         'astrcode-support',
         'astrcode-agent-runtime',
         'astrcode-plugin-host',
-        'astrcode-prompt-contract',
         'astrcode-runtime-contract',
-        'astrcode-tool-contract',
       ]),
     },
   ];

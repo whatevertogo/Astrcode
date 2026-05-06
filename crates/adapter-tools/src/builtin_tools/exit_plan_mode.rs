@@ -5,13 +5,12 @@
 
 use std::{fs, path::Path, time::Instant};
 
-use astrcode_core::{AstrError, Result, SideEffect};
-use astrcode_core::mode::{BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId};
-use astrcode_host_session::session_plan_content_digest;
-use astrcode_tool_contract::{
-    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolPromptMetadata,
+use astrcode_core::{
+    AstrError, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, ToolPromptMetadata,
+    mode::{BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId},
 };
+use astrcode_host_session::session_plan_content_digest;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
@@ -373,7 +372,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl astrcode_tool_contract::ToolEventSink for RecordingSink {
+    impl astrcode_core::ToolEventSink for RecordingSink {
         async fn emit(&self, event: StorageEvent) -> Result<()> {
             self.events
                 .lock()

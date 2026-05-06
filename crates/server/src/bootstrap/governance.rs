@@ -14,8 +14,7 @@ use astrcode_adapter_mcp::{
     manager::{McpConnectionManager, McpReloadSnapshot},
 };
 use astrcode_adapter_skills::{LayeredSkillCatalog, load_builtin_skills};
-use astrcode_core::{CapabilityInvoker, CapabilitySpec, SkillSpec};
-use astrcode_core::mode::GovernanceModeSpec;
+use astrcode_core::{CapabilityInvoker, CapabilitySpec, SkillSpec, mode::GovernanceModeSpec};
 use astrcode_plugin_host::{
     BuiltinHookRegistry, PluginActiveSnapshot, PluginDescriptor, PluginEntry,
     ProviderContributionCatalog, ResourceCatalog, build_skill_catalog_base,
@@ -649,8 +648,8 @@ mod tests {
         sync::{Arc, RwLock},
     };
 
+    use astrcode_core::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
     use astrcode_plugin_host::PluginRegistry;
-    use astrcode_tool_contract::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
     use async_trait::async_trait;
     use serde_json::{Value, json};
 

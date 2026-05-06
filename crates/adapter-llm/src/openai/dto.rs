@@ -11,8 +11,7 @@
 //! - Responses 专有类型继续使用 `serde_json::Value`（在 `responses.rs`）
 //! - 本模块只存放"两个路径都会用到"的类型和函数
 
-use astrcode_core::{LlmMessage, ToolDefinition};
-use astrcode_llm_contract::LlmUsage;
+use astrcode_core::{LlmMessage, ToolDefinition, llm::LlmUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

@@ -3,9 +3,10 @@ use std::{collections::HashSet, sync::OnceLock};
 use astrcode_core::{
     AstrError, CancelToken, CompactAppliedMeta, CompactMode, CompactSummaryEnvelope,
     CompactTrigger, LlmMessage, Result, StorageEvent, StorageEventPayload, UserMessageOrigin,
-    format_compact_summary, parse_compact_summary_message,
+    format_compact_summary,
+    llm::{LlmProvider, LlmRequest, ModelLimits},
+    parse_compact_summary_message,
 };
-use astrcode_llm_contract::{LlmProvider, LlmRequest, ModelLimits};
 use astrcode_runtime_contract::RuntimeTurnEvent;
 use chrono::{DateTime, Utc};
 use regex::Regex;

@@ -9,7 +9,6 @@ authors.workspace = true
 astrcode-core = { path = "../core" }
 astrcode-host-session = { path = "../host-session" }
 astrcode-support = { path = "../support" }
-astrcode-tool-contract = { path = "../tool-contract" }
 async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true

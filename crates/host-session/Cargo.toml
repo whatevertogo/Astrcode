@@ -9,10 +9,8 @@ authors.workspace = true
 astrcode-agent-runtime = { path = "../agent-runtime" }
 astrcode-core = { path = "../core" }
 astrcode-plugin-host = { path = "../plugin-host" }
-astrcode-prompt-contract = { path = "../prompt-contract" }
 astrcode-runtime-contract = { path = "../runtime-contract" }
 astrcode-support = { path = "../support" }
-astrcode-tool-contract = { path = "../tool-contract" }
 async-trait.workspace = true
 chrono.workspace = true
 dashmap.workspace = true

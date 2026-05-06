@@ -10,9 +10,9 @@ use astrcode_core::{
     DeleteProjectResult, InputBatchAckedPayload, InputBatchStartedPayload, InputDiscardedPayload,
     InputQueuedPayload, LlmMessage, ResolvedRuntimeConfig, SessionId, SessionMeta, SkillCatalog,
     StorageEvent, StorageEventPayload, StoredEvent, TaskSnapshot, TurnId, TurnTerminalKind,
-    UserMessageOrigin, mode::ModeId as StoredModeId,
+    UserMessageOrigin,
+    mode::{ModeId as StoredModeId, ModeId},
 };
-use astrcode_core::mode::ModeId;
 use astrcode_host_session::{
     SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState, SubAgentExecutor,
 };

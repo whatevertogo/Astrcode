@@ -20,10 +20,9 @@ use std::{
     time::Instant,
 };
 
-use astrcode_core::{AstrError, CancelToken, Result, SideEffect};
-use astrcode_tool_contract::{
-    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolPromptMetadata,
+use astrcode_core::{
+    AstrError, CancelToken, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext,
+    ToolDefinition, ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use log::warn;

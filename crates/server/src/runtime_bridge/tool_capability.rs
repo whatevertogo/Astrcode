@@ -6,12 +6,10 @@ use std::sync::Arc;
 
 use astrcode_core::{
     AgentEventContext, AstrError, CancelToken, CapabilityContext, CapabilityExecutionResult,
-    CapabilityInvoker, CapabilitySpec, ExecutionOwner as CoreExecutionOwner, Result, SessionId,
-    ToolEventSink as CoreToolEventSink, mode::BoundModeToolContractSnapshot,
-};
-use astrcode_tool_contract::{
-    ExecutionOwner as ContractExecutionOwner, Tool, ToolContext,
-    ToolEventSink as ContractToolEventSink, ToolOutputDelta,
+    CapabilityInvoker, CapabilitySpec, ExecutionOwner as CoreExecutionOwner,
+    ExecutionOwner as ContractExecutionOwner, Result, SessionId, Tool, ToolContext,
+    ToolEventSink as CoreToolEventSink, ToolEventSink as ContractToolEventSink, ToolOutputDelta,
+    mode::BoundModeToolContractSnapshot,
 };
 use async_trait::async_trait;
 use serde_json::Value;

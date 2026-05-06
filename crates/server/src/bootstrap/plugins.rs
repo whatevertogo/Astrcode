@@ -19,9 +19,8 @@ use std::{
 use astrcode_adapter_skills::collect_asset_files;
 use astrcode_core::{
     AstrError, CapabilityContext, CapabilityExecutionResult, CapabilityInvoker, CapabilitySpec,
-    InvocationMode, Result, SkillSource, SkillSpec, is_valid_skill_name,
+    InvocationMode, Result, SkillSource, SkillSpec, is_valid_skill_name, mode::GovernanceModeSpec,
 };
-use astrcode_core::mode::GovernanceModeSpec;
 use astrcode_plugin_host::{
     PluginDescriptor, PluginLoader, PluginManifest, PluginRegistry, PluginSourceKind, PluginType,
     ResourceCatalog,
@@ -973,8 +972,7 @@ fn write_asset_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::SkillSource;
-    use astrcode_core::mode::ModeId;
+    use astrcode_core::{SkillSource, mode::ModeId};
     use astrcode_plugin_host::{PluginHealth, PluginState};
     use astrcode_protocol::plugin::{SkillAssetDescriptor, SkillDescriptor};
     use axum::{Json, Router, routing::post};

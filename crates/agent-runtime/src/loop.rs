@@ -7,13 +7,13 @@ use std::{
 
 use astrcode_core::{
     AgentEventContext, AstrError, CapabilitySpec, HookEventKey, LlmMessage, ResolvedRuntimeConfig,
-    StorageEvent, StorageEventPayload, ToolCallRequest, UserMessageOrigin,
+    StorageEvent, StorageEventPayload, ToolCallRequest, ToolDefinition, ToolExecutionResult,
+    ToolOutputDelta, UserMessageOrigin,
+    llm::{LlmEventSink, LlmOutput, LlmProvider, LlmRequest},
 };
-use astrcode_llm_contract::{LlmEventSink, LlmOutput, LlmProvider, LlmRequest};
 use astrcode_runtime_contract::{
     RuntimeEventSink, RuntimeTurnEvent, StepError, TurnIdentity, TurnLoopTransition, TurnStopCause,
 };
-use astrcode_tool_contract::{ToolDefinition, ToolExecutionResult, ToolOutputDelta};
 use async_trait::async_trait;
 use chrono::Utc;
 
@@ -1157,15 +1157,15 @@ mod tests {
 
     use astrcode_core::{
         AgentEventContext, AstrError, CancelToken, HookEventKey, Result, SubRunStorageMode,
-        TurnTerminalKind,
-    };
-    use astrcode_llm_contract::{
-        LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
+        ToolExecutionResult, ToolOutputDelta, ToolOutputStream, TurnTerminalKind,
+        llm::{
+            LlmEvent, LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest,
+            ModelLimits,
+        },
     };
     use astrcode_runtime_contract::{
         HookEventPayload, RuntimeTurnEvent, StepError, TurnLoopTransition, TurnStopCause,
     };
-    use astrcode_tool_contract::{ToolExecutionResult, ToolOutputDelta, ToolOutputStream};
     use async_trait::async_trait;
 
     use super::{

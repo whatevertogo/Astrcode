@@ -4,13 +4,10 @@
 //! - 保留 mode prompt / contracts / child policy 等稳定语义
 //! - 生成 mode prompt declarations 和子代理策略
 
-use astrcode_core::Result;
-use astrcode_core::mode::{
-    CompiledModeContracts, GovernanceModeSpec, ResolvedChildPolicy, ResolvedTurnEnvelope,
-};
-use astrcode_prompt_contract::{
+use astrcode_core::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, SystemPromptLayer,
+    PromptDeclarationSource, Result, SystemPromptLayer,
+    mode::{CompiledModeContracts, GovernanceModeSpec, ResolvedChildPolicy, ResolvedTurnEnvelope},
 };
 
 #[derive(Clone)]
@@ -120,8 +117,7 @@ fn mode_prompt_declarations(
 mod tests {
     use std::sync::Arc;
 
-    use astrcode_core::ForkMode;
-    use astrcode_core::mode::ModeId;
+    use astrcode_core::{ForkMode, mode::ModeId};
 
     use super::compile_mode_envelope_for_child;
     use crate::{mode::builtin_mode_specs, mode_catalog_service::ServerModeCatalog};

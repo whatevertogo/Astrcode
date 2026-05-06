@@ -5,10 +5,9 @@
 
 use std::sync::Arc;
 
-use astrcode_core::{ObserveParams, Result};
-use astrcode_tool_contract::{
-    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolPromptMetadata,
+use astrcode_core::{
+    ObserveParams, Result, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};

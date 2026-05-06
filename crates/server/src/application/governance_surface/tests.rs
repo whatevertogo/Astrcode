@@ -7,8 +7,8 @@
 
 use astrcode_core::{
     LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, UserMessageOrigin,
+    mode::ModeId,
 };
-use astrcode_core::mode::ModeId;
 
 use super::{
     FreshChildGovernanceInput, GovernanceSurfaceAssembler, ResumedChildGovernanceInput,

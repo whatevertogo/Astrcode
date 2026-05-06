@@ -5,11 +5,12 @@ use std::{
 };
 
 use astrcode_agent_runtime::HookDispatcher;
-use astrcode_core::{AgentLifecycleStatus, AgentProfile, CapabilityInvoker, Result};
+use astrcode_core::{
+    AgentLifecycleStatus, AgentProfile, CapabilityInvoker, Result, llm::LlmProvider,
+};
 use astrcode_host_session::{
     HookDispatch as HostSessionHookDispatch, SessionCatalog, SubRunHandle,
 };
-use astrcode_llm_contract::LlmProvider;
 
 use crate::{
     SessionInfoProvider,

@@ -5,10 +5,9 @@
 
 use astrcode_core::{
     AgentCollaborationActionKind, AgentCollaborationOutcomeKind, AgentLifecycleStatus,
-    CollaborationResult, ObserveParams, ObserveSnapshot,
+    CollaborationResult, ObserveParams, ObserveSnapshot, ToolContext,
 };
 use astrcode_host_session::SubRunHandle;
-use astrcode_tool_contract::ToolContext;
 
 use super::{AgentOrchestrationService, ObserveSnapshotSignature};
 
@@ -212,10 +211,9 @@ mod tests {
 
     use astrcode_core::{
         AgentCollaborationActionKind, AgentCollaborationOutcomeKind, CancelToken, ObserveParams,
-        SessionId, StorageEventPayload,
+        SessionId, StorageEventPayload, ToolContext,
     };
     use astrcode_host_session::{CollaborationExecutor, SubAgentExecutor};
-    use astrcode_tool_contract::ToolContext;
     use tokio::time::sleep;
 
     use super::format_observe_summary;

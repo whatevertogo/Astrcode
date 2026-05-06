@@ -24,9 +24,10 @@ use std::{
     time::SystemTime,
 };
 
-use astrcode_core::{AstrError, CancelToken, PersistedToolOutput, PersistedToolResult, Result};
+use astrcode_core::{
+    AstrError, CancelToken, PersistedToolOutput, PersistedToolResult, Result, ToolContext,
+};
 use astrcode_support::{hostpaths::project_dir, tool_results::maybe_persist_tool_result};
-use astrcode_tool_contract::ToolContext;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 

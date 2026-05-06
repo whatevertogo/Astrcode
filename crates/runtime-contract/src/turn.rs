@@ -1,5 +1,6 @@
-use astrcode_core::{AstrError, HookEventKey, ReasoningContent, StorageEvent, TurnTerminalKind};
-use astrcode_llm_contract::LlmEvent;
+use astrcode_core::{
+    AstrError, HookEventKey, ReasoningContent, StorageEvent, TurnTerminalKind, llm::LlmEvent,
+};
 
 /// runtime 事件发射回调。
 ///

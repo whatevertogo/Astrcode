@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
-use astrcode_core::{AstrError, CapabilitySpec, Result};
-use astrcode_core::mode::GovernanceModeSpec;
+use astrcode_core::{AstrError, CapabilitySpec, Result, mode::GovernanceModeSpec};
 
 use crate::hooks::{HookDispatchMode, HookFailurePolicy, HookStage};
 

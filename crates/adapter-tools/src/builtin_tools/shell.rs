@@ -32,14 +32,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use astrcode_core::{AstrError, ResolvedShell, Result, ShellFamily, SideEffect};
+use astrcode_core::{
+    AstrError, ResolvedShell, Result, ShellFamily, SideEffect, Tool, ToolCapabilityMetadata,
+    ToolContext, ToolDefinition, ToolExecutionResult, ToolOutputStream, ToolPromptMetadata,
+};
 use astrcode_support::{
     shell::{default_shell_label, resolve_shell},
     tool_results::maybe_persist_tool_result,
-};
-use astrcode_tool_contract::{
-    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolOutputStream, ToolPromptMetadata,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -664,8 +663,8 @@ fn default_shell_for_prompt() -> String {
 mod tests {
     use std::{collections::VecDeque, io, path::Path};
 
+    use astrcode_core::ToolOutputDelta;
     use astrcode_support::shell::detect_shell_family;
-    use astrcode_tool_contract::ToolOutputDelta;
     use tokio::sync::mpsc;
 
     use super::*;

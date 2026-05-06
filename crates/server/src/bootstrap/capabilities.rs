@@ -31,10 +31,9 @@ use astrcode_adapter_tools::{
         write_file::WriteFileTool,
     },
 };
-use astrcode_core::{CapabilitySpec, SkillCatalog, SkillSpec};
+use astrcode_core::{CapabilitySpec, SkillCatalog, SkillSpec, Tool};
 use astrcode_host_session::{CollaborationExecutor, SubAgentExecutor};
 use astrcode_plugin_host::{ResourceCatalog, build_skill_catalog_base};
-use astrcode_tool_contract::Tool;
 
 use super::deps::core::{CapabilityInvoker, Result};
 use crate::{
@@ -264,8 +263,8 @@ mod tests {
     };
 
     use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
+    use astrcode_core::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
     use astrcode_plugin_host::ResourceCatalog;
-    use astrcode_tool_contract::{Tool, ToolContext, ToolDefinition, ToolExecutionResult};
     use async_trait::async_trait;
     use serde_json::{Value, json};
 

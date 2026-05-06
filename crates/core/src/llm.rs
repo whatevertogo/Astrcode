@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
-use astrcode_core::{
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+use crate::{
     CancelToken, LlmMessage, ReasoningContent, Result, ToolCallRequest, ToolDefinition,
+    prompt::SystemPromptBlock,
 };
-use astrcode_prompt_contract::SystemPromptBlock;
-pub use astrcode_prompt_contract::{
+pub use crate::{
     PromptCacheBreakReason, PromptCacheDiagnostics, PromptCacheGlobalStrategy, PromptCacheHints,
     PromptLayerFingerprints,
 };
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 
 /// runtime owner 的 provider 能力限制。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,31 +147,5 @@ pub trait LlmProvider: Send + Sync {
     fn model_limits(&self) -> ModelLimits;
     fn supports_cache_metrics(&self) -> bool {
         false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{LlmFinishReason, LlmUsage};
-
-    #[test]
-    fn usage_total_saturates() {
-        let usage = LlmUsage {
-            input_tokens: usize::MAX,
-            output_tokens: 1,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-        };
-
-        assert_eq!(usage.total_tokens(), usize::MAX);
-    }
-
-    #[test]
-    fn finish_reason_accepts_openai_family_values() {
-        assert!(LlmFinishReason::from_api_value("length").is_max_tokens());
-        assert_eq!(
-            LlmFinishReason::from_api_value("tool_calls"),
-            LlmFinishReason::ToolCalls
-        );
     }
 }

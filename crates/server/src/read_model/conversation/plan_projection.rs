@@ -1,4 +1,4 @@
-use astrcode_tool_contract::ToolExecutionResult;
+use astrcode_core::ToolExecutionResult;
 use serde_json::Value;
 
 use super::*;

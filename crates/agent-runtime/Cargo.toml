@@ -8,9 +8,7 @@ authors.workspace = true
 [dependencies]
 astrcode-core = { path = "../core" }
 astrcode-context-window = { path = "../context-window" }
-astrcode-llm-contract = { path = "../llm-contract" }
 astrcode-runtime-contract = { path = "../runtime-contract" }
-astrcode-tool-contract = { path = "../tool-contract" }
 async-trait.workspace = true
 chrono.workspace = true
 log.workspace = true
@@ -21,5 +19,4 @@ futures-util.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-astrcode-prompt-contract = { path = "../prompt-contract" }
 tempfile.workspace = true

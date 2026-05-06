@@ -3,9 +3,10 @@
 //! `enterPlanMode` 与 `exitPlanMode` 都需要发出相同的 `ModeChanged` 事件，
 //! 这里集中实现，避免工具层对同一条领域事件各自维护一份写法。
 
-use astrcode_core::{AgentEventContext, AstrError, Result, StorageEvent, StorageEventPayload};
-use astrcode_core::mode::ModeId;
-use astrcode_tool_contract::ToolContext;
+use astrcode_core::{
+    AgentEventContext, AstrError, Result, StorageEvent, StorageEventPayload, ToolContext,
+    mode::ModeId,
+};
 use chrono::Utc;
 
 pub async fn emit_mode_changed(

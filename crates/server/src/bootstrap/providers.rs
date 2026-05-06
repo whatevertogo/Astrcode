@@ -15,9 +15,11 @@ use astrcode_adapter_llm::{
     openai::{OpenAiProvider, OpenAiProviderCapabilities},
 };
 use astrcode_adapter_storage::config_store::FileConfigStore;
-use astrcode_core::config::{OpenAiApiMode, OpenAiProfileCapabilities};
+use astrcode_core::{
+    config::{OpenAiApiMode, OpenAiProfileCapabilities},
+    llm::{LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits},
+};
 use astrcode_host_session::{HookDispatch as HostSessionHookDispatch, apply_model_select_hooks};
-use astrcode_llm_contract::{LlmEventSink, LlmOutput, LlmProvider, LlmRequest, ModelLimits};
 use astrcode_plugin_host::{OPENAI_API_KIND, ProviderContributionCatalog};
 
 use super::deps::core::{

@@ -7,8 +7,6 @@ authors.workspace = true
 
 [dependencies]
 astrcode-core = { path = "../core" }
-astrcode-llm-contract = { path = "../llm-contract" }
-astrcode-prompt-contract = { path = "../prompt-contract" }
 anyhow.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true

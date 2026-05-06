@@ -144,8 +144,10 @@ pub(crate) fn builtin_mode_specs() -> Vec<GovernanceModeSpec> {
 mod tests {
     use std::sync::Arc;
 
-    use astrcode_core::Result;
-    use astrcode_core::mode::{GovernanceModeSpec, ModeId};
+    use astrcode_core::{
+        Result,
+        mode::{GovernanceModeSpec, ModeId},
+    };
 
     use super::builtin_mode_specs;
     use crate::mode_catalog_service::ServerModeCatalog;

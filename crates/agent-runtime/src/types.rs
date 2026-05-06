@@ -3,8 +3,8 @@ use std::{fmt, path::PathBuf, sync::Arc};
 use astrcode_context_window::tool_result_budget::ToolResultReplacementRecord;
 use astrcode_core::{
     AgentEventContext, CapabilitySpec, LlmMessage, ResolvedRuntimeConfig, TurnTerminalKind,
+    llm::LlmProvider,
 };
-use astrcode_llm_contract::LlmProvider;
 use astrcode_runtime_contract::{RuntimeEventSink, RuntimeTurnEvent, TurnIdentity, TurnStopCause};
 use chrono::{DateTime, Utc};
 

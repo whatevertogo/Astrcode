@@ -5,8 +5,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use astrcode_core::CapabilityInvoker;
-use astrcode_prompt_contract::PromptDeclaration;
+use astrcode_core::{CapabilityInvoker, PromptDeclaration};
 use log::{info, warn};
 use serde::Serialize;
 use tokio::sync::Mutex;

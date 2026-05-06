@@ -17,13 +17,10 @@ astrcode-agent-runtime = { path = "../agent-runtime" }
 astrcode-context-window = { path = "../context-window" }
 astrcode-core = { path = "../core" }
 astrcode-host-session = { path = "../host-session" }
-astrcode-llm-contract = { path = "../llm-contract" }
 astrcode-plugin-host = { path = "../plugin-host" }
-astrcode-prompt-contract = { path = "../prompt-contract" }
 astrcode-protocol = { path = "../protocol" }
 astrcode-runtime-contract = { path = "../runtime-contract" }
 astrcode-support = { path = "../support" }
-astrcode-tool-contract = { path = "../tool-contract" }
 async-stream.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true

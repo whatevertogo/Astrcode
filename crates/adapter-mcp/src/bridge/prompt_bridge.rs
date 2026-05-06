@@ -3,7 +3,7 @@
 //! 将 MCP 服务器握手响应中的 `instructions`
 //! 转换为 `PromptDeclaration`，注入到 Astrcode 的 prompt 组装管线。
 
-use astrcode_prompt_contract::{
+use astrcode_core::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
     PromptDeclarationSource, SystemPromptLayer,
 };

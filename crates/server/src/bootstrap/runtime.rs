@@ -15,7 +15,6 @@ use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
 use astrcode_core::{
     SkillCatalog,
     mode::{ActionPolicies, ActionPolicyEffect, GovernanceModeSpec},
-    policy::{ApprovalDefault, ApprovalRequest},
 };
 use astrcode_host_session::{EventStore, SessionCatalog, SubAgentExecutor};
 use astrcode_plugin_host::{
@@ -525,11 +524,11 @@ fn permission_tool_call_effects(
     policy_by_mode: &BTreeMap<String, ActionPolicies>,
 ) -> Vec<HookEffect> {
     let HookEventPayload::ToolCall {
-        session_id,
-        turn_id,
+        session_id: _,
+        turn_id: _,
         tool_call_id,
         tool_name,
-        args,
+        args: _,
         capability_spec,
         current_mode,
         ..
@@ -554,19 +553,9 @@ fn permission_tool_call_effects(
         },
         ActionPolicyEffect::Deny => vec![HookEffect::Continue],
         ActionPolicyEffect::Ask if should_gate_tool(&capability_spec) => {
-            let approval = ApprovalRequest {
-                request_id: tool_call_id.clone(),
-                session_id,
-                turn_id,
-                capability: (*capability_spec).clone(),
-                payload: args,
-                prompt: format!("Allow tool '{tool_name}'?"),
-                default: ApprovalDefault::Deny,
-                metadata: serde_json::Value::Null,
-            };
             vec![HookEffect::RequireApproval {
-                request_id: approval.request_id,
-                reason: approval.prompt,
+                request_id: tool_call_id.clone(),
+                reason: format!("Allow tool '{tool_name}'?"),
             }]
         },
         ActionPolicyEffect::Ask => vec![HookEffect::Continue],

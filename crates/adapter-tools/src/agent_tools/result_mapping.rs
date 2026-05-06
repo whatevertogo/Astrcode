@@ -6,9 +6,8 @@
 
 use astrcode_core::{
     ChildAgentRef, ChildSessionLineageKind, ExecutionContinuation, ExecutionResultCommon,
-    SubRunResult, SubRunStatus,
+    SubRunResult, SubRunStatus, ToolExecutionResult,
 };
-use astrcode_tool_contract::ToolExecutionResult;
 use serde_json::{Value, json};
 
 const TOOL_NAME: &str = "spawn";

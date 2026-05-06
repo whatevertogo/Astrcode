@@ -15,7 +15,7 @@ impl AgentOrchestrationService {
     pub(in crate::application::agent) async fn close_child(
         &self,
         params: CloseAgentParams,
-        ctx: &astrcode_tool_contract::ToolContext,
+        ctx: &astrcode_core::ToolContext,
     ) -> Result<CollaborationResult, super::AgentOrchestrationError> {
         let collaboration = self.tool_collaboration_context(ctx).await?;
         params

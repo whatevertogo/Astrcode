@@ -3,14 +3,15 @@
 //! `core::ports::PromptProvider` 是 kernel 消费的简化端口接口，
 //! 本模块将其适配到 `LayeredPromptBuilder` 的完整 prompt 构建能力上。
 
-use astrcode_core::{Result, policy::SystemPromptLayer};
-use astrcode_prompt_contract::SystemPromptBlock;
+use astrcode_core::{
+    PromptCacheGlobalStrategy, PromptCacheHints, Result, SystemPromptBlock,
+    policy::SystemPromptLayer,
+};
 use astrcode_host_session::{
     PromptAgentProfileSummary as HostPromptAgentProfileSummary, PromptBuildCacheMetrics,
     PromptBuildOutput, PromptBuildRequest, PromptProvider,
     PromptSkillSummary as HostPromptSkillSummary,
 };
-use astrcode_prompt_contract::{PromptCacheGlobalStrategy, PromptCacheHints};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -247,9 +248,8 @@ fn insert_json_string(
 mod tests {
     use std::path::PathBuf;
 
-    use astrcode_core::{CapabilityKind, CapabilitySpec};
+    use astrcode_core::{CapabilityKind, CapabilitySpec, PromptCacheGlobalStrategy};
     use astrcode_host_session::PromptBuildRequest;
-    use astrcode_prompt_contract::PromptCacheGlobalStrategy;
 
     use super::{build_output_metadata, build_prompt_vars, select_global_cache_strategy};
     use crate::{BlockKind, PromptBlock, PromptDiagnostics, PromptPlan, block::BlockMetadata};

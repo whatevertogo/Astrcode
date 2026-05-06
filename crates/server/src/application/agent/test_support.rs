@@ -13,13 +13,11 @@ use astrcode_core::{
     AgentLifecycleStatus, AgentMode, AgentProfile, AstrError, Config, ConfigOverlay,
     DeleteProjectResult, Phase, Result, SessionId, SessionMeta, SessionTurnAcquireResult,
     SessionTurnBusy, SessionTurnLease, StorageEvent, StoredEvent, SubRunStorageMode,
+    llm::{LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits},
     ports::{ConfigStore, McpConfigFileScope},
 };
 use astrcode_host_session::{
     EventStore, SessionCatalog, SubRunHandle, catalog::display_name_from_working_dir,
-};
-use astrcode_llm_contract::{
-    LlmEventSink, LlmFinishReason, LlmOutput, LlmProvider, LlmRequest, ModelLimits,
 };
 use async_trait::async_trait;
 use chrono::Utc;

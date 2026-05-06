@@ -19,10 +19,10 @@ use crate::{
     AgentEventContext, CancelToken, CapabilityKind, CapabilitySpec, CapabilitySpecBuildError,
     InvocationKind, InvocationMode, PermissionSpec, Result, SessionId, SideEffect, Stability,
     StorageEvent, TurnId,
-    action::{ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream},
     mode::{BoundModeToolContractSnapshot, ModeId},
     tool_result_persist::DEFAULT_TOOL_RESULT_INLINE_LIMIT,
 };
+pub use crate::{ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream};
 
 /// 工具执行的默认最大输出大小（1 MB）
 ///
@@ -679,8 +679,7 @@ pub trait Tool: Send + Sync {
 mod tests {
     use std::path::PathBuf;
 
-    use super::ToolContext;
-    use crate::{CancelToken, mode::BoundModeToolContractSnapshot};
+    use crate::{CancelToken, ToolContext, mode::BoundModeToolContractSnapshot};
 
     #[test]
     fn tool_context_preserves_bound_mode_tool_contract_snapshot() {

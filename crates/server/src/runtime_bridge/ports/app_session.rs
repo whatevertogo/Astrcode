@@ -6,9 +6,8 @@
 
 use astrcode_core::{
     ChildSessionNode, DeleteProjectResult, ResolvedRuntimeConfig, SessionMeta, StoredEvent,
-    TaskSnapshot,
+    TaskSnapshot, mode::ModeId,
 };
-use astrcode_core::mode::ModeId;
 use astrcode_host_session::{SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState};
 use astrcode_runtime_contract::ExecutionSubmissionOutcome;
 use async_trait::async_trait;

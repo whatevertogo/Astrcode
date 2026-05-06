@@ -5,11 +5,9 @@
 
 use std::time::Instant;
 
-use astrcode_core::{AstrError, Result, SideEffect};
-use astrcode_core::mode::ModeId;
-use astrcode_tool_contract::{
-    Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
-    ToolPromptMetadata,
+use astrcode_core::{
+    AstrError, Result, SideEffect, Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition,
+    ToolExecutionResult, ToolPromptMetadata, mode::ModeId,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -164,7 +162,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl astrcode_tool_contract::ToolEventSink for RecordingSink {
+    impl astrcode_core::ToolEventSink for RecordingSink {
         async fn emit(&self, event: StorageEvent) -> Result<()> {
             self.events
                 .lock()
