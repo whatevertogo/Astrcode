@@ -23,7 +23,7 @@ use astrcode_core::{
     LlmMessage, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig,
     ResolvedSubagentContextOverrides,
 };
-use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId};
+use astrcode_core::mode::{BoundModeToolContractSnapshot, ModeId};
 use astrcode_prompt_contract::PromptDeclaration;
 pub(crate) use inherited::resolve_inherited_parent_messages;
 #[cfg(test)]

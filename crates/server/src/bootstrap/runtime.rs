@@ -12,9 +12,10 @@ use std::{
 
 use astrcode_adapter_storage::session::FileSystemSessionRepository;
 use astrcode_adapter_tools::builtin_tools::tool_search::ToolSearchIndex;
-use astrcode_core::SkillCatalog;
-use astrcode_governance_contract::{
-    ActionPolicies, ActionPolicyEffect, ApprovalDefault, ApprovalRequest, GovernanceModeSpec,
+use astrcode_core::{
+    SkillCatalog,
+    mode::{ActionPolicies, ActionPolicyEffect, GovernanceModeSpec},
+    policy::{ApprovalDefault, ApprovalRequest},
 };
 use astrcode_host_session::{EventStore, SessionCatalog, SubAgentExecutor};
 use astrcode_plugin_host::{

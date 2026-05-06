@@ -15,7 +15,7 @@ use astrcode_adapter_mcp::{
 };
 use astrcode_adapter_skills::{LayeredSkillCatalog, load_builtin_skills};
 use astrcode_core::{CapabilityInvoker, CapabilitySpec, SkillSpec};
-use astrcode_governance_contract::GovernanceModeSpec;
+use astrcode_core::mode::GovernanceModeSpec;
 use astrcode_plugin_host::{
     BuiltinHookRegistry, PluginActiveSnapshot, PluginDescriptor, PluginEntry,
     ProviderContributionCatalog, ResourceCatalog, build_skill_catalog_base,

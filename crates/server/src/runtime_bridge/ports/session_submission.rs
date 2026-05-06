@@ -7,7 +7,7 @@ use astrcode_core::{
     AgentEventContext, LlmMessage, ResolvedExecutionLimitsSnapshot,
     ResolvedSubagentContextOverrides,
 };
-use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId};
+use astrcode_core::mode::{BoundModeToolContractSnapshot, ModeId};
 
 /// 应用层提交给 session 端口的稳定载荷。
 #[allow(dead_code)]

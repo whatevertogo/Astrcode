@@ -689,7 +689,7 @@ mod tests {
             latency_ms: None,
             source_tool_call_id: Some("call-1".to_string().into()),
             governance_revision: Some("governance-surface-v1".to_string()),
-            mode_id: Some(astrcode_governance_contract::ModeId::code()),
+            mode_id: Some(astrcode_core::mode::ModeId::code()),
             policy: policy.clone(),
         });
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
@@ -710,7 +710,7 @@ mod tests {
             latency_ms: None,
             source_tool_call_id: Some("call-2".to_string().into()),
             governance_revision: Some("governance-surface-v1".to_string()),
-            mode_id: Some(astrcode_governance_contract::ModeId::code()),
+            mode_id: Some(astrcode_core::mode::ModeId::code()),
             policy: policy.clone(),
         });
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
@@ -731,7 +731,7 @@ mod tests {
             latency_ms: None,
             source_tool_call_id: Some("call-3".to_string().into()),
             governance_revision: Some("governance-surface-v1".to_string()),
-            mode_id: Some(astrcode_governance_contract::ModeId::code()),
+            mode_id: Some(astrcode_core::mode::ModeId::code()),
             policy: policy.clone(),
         });
         collector.record_agent_collaboration_fact(&AgentCollaborationFact {
@@ -752,7 +752,7 @@ mod tests {
             latency_ms: Some(250),
             source_tool_call_id: None,
             governance_revision: Some("governance-surface-v1".to_string()),
-            mode_id: Some(astrcode_governance_contract::ModeId::code()),
+            mode_id: Some(astrcode_core::mode::ModeId::code()),
             policy,
         });
 

@@ -3,7 +3,7 @@ use astrcode_core::{
     DelegationMetadata, ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, StoredEvent,
     TurnId,
 };
-use astrcode_governance_contract::ModeId;
+use astrcode_core::mode::ModeId;
 use astrcode_host_session::SubRunHandle;
 use astrcode_runtime_contract::ExecutionSubmissionOutcome;
 use async_trait::async_trait;

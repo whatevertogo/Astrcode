@@ -4,7 +4,7 @@
 //! 这里集中实现，避免工具层对同一条领域事件各自维护一份写法。
 
 use astrcode_core::{AgentEventContext, AstrError, Result, StorageEvent, StorageEventPayload};
-use astrcode_governance_contract::ModeId;
+use astrcode_core::mode::ModeId;
 use astrcode_tool_contract::ToolContext;
 use chrono::Utc;
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use astrcode_core::{
     CancelToken, LlmMessage, ReasoningContent, Result, ToolCallRequest, ToolDefinition,
 };
-use astrcode_governance_contract::SystemPromptBlock;
+use astrcode_prompt_contract::SystemPromptBlock;
 pub use astrcode_prompt_contract::{
     PromptCacheBreakReason, PromptCacheDiagnostics, PromptCacheGlobalStrategy, PromptCacheHints,
     PromptLayerFingerprints,

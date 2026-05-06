@@ -6,9 +6,7 @@
 use std::{fs, path::Path, time::Instant};
 
 use astrcode_core::{AstrError, Result, SideEffect};
-use astrcode_governance_contract::{
-    BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId,
-};
+use astrcode_core::mode::{BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId};
 use astrcode_host_session::session_plan_content_digest;
 use astrcode_tool_contract::{
     Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,

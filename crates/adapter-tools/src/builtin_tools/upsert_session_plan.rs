@@ -6,7 +6,7 @@
 use std::{fs, time::Instant};
 
 use astrcode_core::{AstrError, Result, SideEffect};
-use astrcode_governance_contract::ModeId;
+use astrcode_core::mode::ModeId;
 use astrcode_host_session::{SessionPlanState, SessionPlanStatus};
 use astrcode_tool_contract::{
     Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
@@ -253,7 +253,7 @@ fn slugify(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_governance_contract::{
+    use astrcode_core::mode::{
         BoundModeToolContractSnapshot, ModeArtifactDef, ModeExitGateDef, ModeId,
     };
     use serde_json::json;

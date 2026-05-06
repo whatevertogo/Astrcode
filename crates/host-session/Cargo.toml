@@ -8,7 +8,6 @@ authors.workspace = true
 [dependencies]
 astrcode-agent-runtime = { path = "../agent-runtime" }
 astrcode-core = { path = "../core" }
-astrcode-governance-contract = { path = "../governance-contract" }
 astrcode-plugin-host = { path = "../plugin-host" }
 astrcode-prompt-contract = { path = "../prompt-contract" }
 astrcode-runtime-contract = { path = "../runtime-contract" }

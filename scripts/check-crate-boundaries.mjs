@@ -50,9 +50,9 @@ function buildRules() {
     },
     {
       id: 'R002',
-      description: 'protocol 必须保持纯 DTO，仅允许依赖 core 与对外传输所需的 contract crate',
+      description: 'protocol 必须保持纯 DTO，仅允许依赖 core',
       source: 'astrcode-protocol',
-      allowedExact: new Set(['astrcode-core', 'astrcode-governance-contract']),
+      allowedExact: new Set(['astrcode-core']),
     },
     {
       id: 'R003',
@@ -61,16 +61,10 @@ function buildRules() {
       allowedExact: new Set(['astrcode-core']),
     },
     {
-      id: 'R004',
-      description: 'governance-contract 只承载治理契约，仅允许依赖 core、prompt-contract',
-      source: 'astrcode-governance-contract',
-      allowedExact: new Set(['astrcode-core', 'astrcode-prompt-contract']),
-    },
-    {
       id: 'R005',
-      description: 'tool-contract 只承载工具契约，仅允许依赖 core、governance-contract',
+      description: 'tool-contract 只承载工具契约，仅允许依赖 core',
       source: 'astrcode-tool-contract',
-      allowedExact: new Set(['astrcode-core', 'astrcode-governance-contract']),
+      allowedExact: new Set(['astrcode-core']),
     },
     {
       id: 'R006',
@@ -80,11 +74,10 @@ function buildRules() {
     },
     {
       id: 'R007',
-      description: 'llm-contract 只承载 LLM 契约，仅允许依赖 core、governance-contract、prompt-contract',
+      description: 'llm-contract 只承载 LLM 契约，仅允许依赖 core、prompt-contract',
       source: 'astrcode-llm-contract',
       allowedExact: new Set([
         'astrcode-core',
-        'astrcode-governance-contract',
         'astrcode-prompt-contract',
       ]),
     },
@@ -125,11 +118,10 @@ function buildRules() {
     },
     {
       id: 'R011',
-      description: 'plugin-host 只承载统一插件宿主，只允许依赖 core、protocol、governance-contract、support',
+      description: 'plugin-host 只承载统一插件宿主，只允许依赖 core、protocol、runtime-contract、support',
       source: 'astrcode-plugin-host',
       allowedExact: new Set([
         'astrcode-core',
-        'astrcode-governance-contract',
         'astrcode-protocol',
         'astrcode-runtime-contract',
         'astrcode-support',
@@ -137,14 +129,13 @@ function buildRules() {
     },
     {
       id: 'R012',
-      description: 'host-session 只承载 session owner 逻辑，只允许依赖 core、support、agent-runtime、plugin-host、governance-contract、prompt-contract、runtime-contract、tool-contract',
+      description: 'host-session 只承载 session owner 逻辑，只允许依赖 core、support、agent-runtime、plugin-host、prompt-contract、runtime-contract、tool-contract',
       source: 'astrcode-host-session',
       allowedExact: new Set([
         'astrcode-core',
         'astrcode-support',
         'astrcode-agent-runtime',
         'astrcode-plugin-host',
-        'astrcode-governance-contract',
         'astrcode-prompt-contract',
         'astrcode-runtime-contract',
         'astrcode-tool-contract',

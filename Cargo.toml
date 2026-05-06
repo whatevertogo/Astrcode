@@ -2,7 +2,6 @@
 members = [
     "crates/core",
     "crates/prompt-contract",
-    "crates/governance-contract",
     "crates/tool-contract",
     "crates/llm-contract",
     "crates/runtime-contract",

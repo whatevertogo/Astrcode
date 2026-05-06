@@ -161,7 +161,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "astrcode-core",
- "astrcode-governance-contract",
  "astrcode-llm-contract",
  "astrcode-prompt-contract",
  "async-trait",
@@ -202,7 +201,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "astrcode-core",
- "astrcode-governance-contract",
  "astrcode-host-session",
  "astrcode-prompt-contract",
  "astrcode-support",
@@ -254,7 +252,6 @@ name = "astrcode-adapter-tools"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-governance-contract",
  "astrcode-host-session",
  "astrcode-support",
  "astrcode-tool-contract",
@@ -382,21 +379,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "astrcode-governance-contract"
-version = "0.1.0"
-dependencies = [
- "astrcode-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "astrcode-host-session"
 version = "0.1.0"
 dependencies = [
  "astrcode-agent-runtime",
  "astrcode-core",
- "astrcode-governance-contract",
  "astrcode-plugin-host",
  "astrcode-prompt-contract",
  "astrcode-runtime-contract",
@@ -416,7 +403,6 @@ name = "astrcode-llm-contract"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-governance-contract",
  "astrcode-prompt-contract",
  "async-trait",
  "serde",
@@ -427,7 +413,6 @@ name = "astrcode-plugin-host"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-governance-contract",
  "astrcode-protocol",
  "astrcode-runtime-contract",
  "async-trait",
@@ -451,7 +436,6 @@ name = "astrcode-protocol"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-governance-contract",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -483,7 +467,6 @@ dependencies = [
  "astrcode-agent-runtime",
  "astrcode-context-window",
  "astrcode-core",
- "astrcode-governance-contract",
  "astrcode-host-session",
  "astrcode-llm-contract",
  "astrcode-plugin-host",
@@ -529,7 +512,6 @@ name = "astrcode-tool-contract"
 version = "0.1.0"
 dependencies = [
  "astrcode-core",
- "astrcode-governance-contract",
  "async-trait",
  "serde",
  "serde_json",

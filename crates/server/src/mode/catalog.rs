@@ -3,7 +3,7 @@
 //! 提供 `builtin_mode_specs()` 返回内置 Code / Plan 两种 mode 的 spec，
 //! 以及 plan 模板辅助函数。
 
-use astrcode_governance_contract::{
+use astrcode_core::mode::{
     ActionPolicies, ActionPolicyEffect, ActionPolicyRule, ChildPolicySpec, GovernanceModeSpec,
     ModeArtifactDef, ModeExecutionPolicySpec, ModeExitGateDef, ModeId, ModePromptHooks,
     PromptProgramEntry, TransitionPolicySpec,
@@ -145,7 +145,7 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::Result;
-    use astrcode_governance_contract::{GovernanceModeSpec, ModeId};
+    use astrcode_core::mode::{GovernanceModeSpec, ModeId};
 
     use super::builtin_mode_specs;
     use crate::mode_catalog_service::ServerModeCatalog;

@@ -10,7 +10,7 @@ use std::{
 };
 
 use astrcode_core::{AstrError, Result};
-use astrcode_governance_contract::ModeArtifactDef;
+use astrcode_core::mode::ModeArtifactDef;
 pub use astrcode_host_session::{SessionPlanState, SessionPlanStatus};
 use astrcode_host_session::{
     WorkflowArtifactRef, WorkflowInstanceState, session_plan_content_digest,

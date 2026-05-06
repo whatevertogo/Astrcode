@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use astrcode_core::{AstrError, Result, SideEffect};
-use astrcode_governance_contract::ModeId;
+use astrcode_core::mode::ModeId;
 use astrcode_tool_contract::{
     Tool, ToolCapabilityMetadata, ToolContext, ToolDefinition, ToolExecutionResult,
     ToolPromptMetadata,

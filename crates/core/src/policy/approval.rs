@@ -1,36 +1,7 @@
-//! # 策略引擎
-//!
-//! 定义治理层的策略接口和请求/审批类型。
-
-use astrcode_core::{CapabilitySpec, policy::SystemPromptLayer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 已渲染的系统提示词块。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemPromptBlock {
-    pub title: String,
-    pub content: String,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub cache_boundary: bool,
-    #[serde(default, skip_serializing_if = "is_unspecified_system_prompt_layer")]
-    pub layer: SystemPromptLayer,
-}
-
-impl SystemPromptBlock {
-    pub fn render(&self) -> String {
-        format!("[{}]\n{}", self.title, self.content)
-    }
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-fn is_unspecified_system_prompt_layer(layer: &SystemPromptLayer) -> bool {
-    matches!(layer, SystemPromptLayer::Unspecified)
-}
+use crate::CapabilitySpec;
 
 /// 审批默认值。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,7 +34,7 @@ impl ApprovalRequest {
 
 #[cfg(test)]
 mod tests {
-    use astrcode_core::{CapabilityKind, CapabilitySpec, InvocationMode, SideEffect, Stability};
+    use crate::{CapabilityKind, CapabilitySpec, InvocationMode, SideEffect, Stability};
     use serde_json::{Value, json};
 
     use super::{ApprovalDefault, ApprovalRequest};

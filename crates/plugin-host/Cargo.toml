@@ -7,7 +7,6 @@ authors.workspace = true
 
 [dependencies]
 astrcode-core = { path = "../core" }
-astrcode-governance-contract = { path = "../governance-contract" }
 astrcode-protocol = { path = "../protocol" }
 astrcode-runtime-contract = { path = "../runtime-contract" }
 log.workspace = true

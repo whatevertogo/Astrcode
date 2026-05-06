@@ -8,7 +8,7 @@ use astrcode_core::{
     SessionMeta, SessionTurnAcquireResult, StorageEvent, StoredEvent, TaskSnapshot, TurnId,
     TurnTerminalKind,
 };
-use astrcode_governance_contract::SystemPromptBlock;
+use astrcode_prompt_contract::SystemPromptBlock;
 use astrcode_prompt_contract::{
     PromptCacheGlobalStrategy, PromptCacheHints, PromptDeclaration, SystemPromptLayer,
 };

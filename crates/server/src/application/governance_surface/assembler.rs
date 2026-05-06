@@ -13,7 +13,7 @@
 use astrcode_core::{
     ResolvedExecutionLimitsSnapshot, ResolvedRuntimeConfig, ResolvedSubagentContextOverrides,
 };
-use astrcode_governance_contract::ModeId;
+use astrcode_core::mode::ModeId;
 use astrcode_prompt_contract::PromptDeclaration;
 
 use super::{

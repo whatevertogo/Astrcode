@@ -4,7 +4,7 @@
 //! 本模块将其适配到 `LayeredPromptBuilder` 的完整 prompt 构建能力上。
 
 use astrcode_core::{Result, policy::SystemPromptLayer};
-use astrcode_governance_contract::SystemPromptBlock;
+use astrcode_prompt_contract::SystemPromptBlock;
 use astrcode_host_session::{
     PromptAgentProfileSummary as HostPromptAgentProfileSummary, PromptBuildCacheMetrics,
     PromptBuildOutput, PromptBuildRequest, PromptProvider,

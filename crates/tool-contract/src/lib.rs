@@ -16,7 +16,7 @@ use astrcode_core::{
     StorageEvent, TurnId, tool_result_persist::DEFAULT_TOOL_RESULT_INLINE_LIMIT,
 };
 pub use astrcode_core::{ToolDefinition, ToolExecutionResult, ToolOutputDelta, ToolOutputStream};
-use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId};
+use astrcode_core::mode::{BoundModeToolContractSnapshot, ModeId};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

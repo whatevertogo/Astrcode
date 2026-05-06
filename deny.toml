@@ -42,7 +42,6 @@ deny = [
       "astrcode-adapter-storage",
       "astrcode-agent-runtime",
       "astrcode-context-window",
-      "astrcode-governance-contract",
       "astrcode-host-session",
       "astrcode-plugin-host",
       "astrcode-tool-contract",

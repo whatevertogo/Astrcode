@@ -15,7 +15,7 @@ use astrcode_core::{
     SessionId, StorageEvent, StorageEventPayload, StoredEvent, SubRunFailure, SubRunFailureCode,
     SubRunHandoff, SubRunResult, TurnId, UserMessageOrigin,
 };
-use astrcode_governance_contract::{BoundModeToolContractSnapshot, ModeId};
+use astrcode_core::mode::{BoundModeToolContractSnapshot, ModeId};
 use astrcode_host_session::{
     CompactSessionMutationInput, EventTranslator, HookDispatch as HostSessionHookDispatch,
     InputHookApplyRequest, InputHookDecision, InterruptSessionMutationInput, SessionCatalog,
@@ -1212,7 +1212,7 @@ mod tests {
         AgentEvent, AgentEventContext, CancelToken, CapabilityInvoker, StorageEvent,
         StorageEventPayload, ToolCallRequest, mode::ModeId as StoredModeId,
     };
-    use astrcode_governance_contract::ModeId;
+    use astrcode_core::mode::ModeId;
     use astrcode_tool_contract::ToolOutputStream;
 
     use super::{

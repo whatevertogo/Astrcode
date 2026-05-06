@@ -5,7 +5,7 @@
 //! - 生成 mode prompt declarations 和子代理策略
 
 use astrcode_core::Result;
-use astrcode_governance_contract::{
+use astrcode_core::mode::{
     CompiledModeContracts, GovernanceModeSpec, ResolvedChildPolicy, ResolvedTurnEnvelope,
 };
 use astrcode_prompt_contract::{
@@ -121,7 +121,7 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::ForkMode;
-    use astrcode_governance_contract::ModeId;
+    use astrcode_core::mode::ModeId;
 
     use super::compile_mode_envelope_for_child;
     use crate::{mode::builtin_mode_specs, mode_catalog_service::ServerModeCatalog};

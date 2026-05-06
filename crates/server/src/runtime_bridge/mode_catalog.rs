@@ -4,7 +4,7 @@ use std::{
 };
 
 use astrcode_core::{AstrError, Result};
-use astrcode_governance_contract::{BoundModeToolContractSnapshot, GovernanceModeSpec, ModeId};
+use astrcode_core::mode::{BoundModeToolContractSnapshot, GovernanceModeSpec, ModeId};
 
 use crate::mode::validate_mode_transition;
 

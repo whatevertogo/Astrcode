@@ -4,7 +4,7 @@
 //! 检查当前 mode 的 `transition_policy.allowed_targets` 是否包含目标 mode。
 
 use astrcode_core::{AstrError, Result};
-use astrcode_governance_contract::{GovernanceModeSpec, ModeId};
+use astrcode_core::mode::{GovernanceModeSpec, ModeId};
 
 use crate::mode_catalog_service::ServerModeCatalog;
 
@@ -49,7 +49,7 @@ mod tests {
     use std::sync::Arc;
 
     use astrcode_core::Result;
-    use astrcode_governance_contract::ModeId;
+    use astrcode_core::mode::ModeId;
 
     use super::validate_mode_transition;
     use crate::{mode::catalog::builtin_mode_specs, mode_catalog_service::ServerModeCatalog};

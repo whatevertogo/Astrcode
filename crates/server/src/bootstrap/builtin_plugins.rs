@@ -3,7 +3,7 @@
 //! runtime.rs（初始引导）和 governance.rs（reload）共用常量与 descriptor builder，
 //! 消除两份相同代码的并行维护。
 
-use astrcode_governance_contract::GovernanceModeSpec;
+use astrcode_core::mode::GovernanceModeSpec;
 use astrcode_plugin_host::{
     CommandDescriptor, HookDescriptor, HookDispatchMode, HookFailurePolicy, HookStage,
     PluginDescriptor, builtin_tools_descriptor,

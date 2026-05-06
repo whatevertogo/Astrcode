@@ -8,7 +8,7 @@ use std::sync::Arc;
 use astrcode_core::{
     AgentLifecycleStatus, AgentMode, AgentProfile, ResolvedRuntimeConfig, RuntimeMetricsRecorder,
 };
-use astrcode_governance_contract::ModeId;
+use astrcode_core::mode::ModeId;
 use astrcode_host_session::SubRunHandle;
 use astrcode_runtime_contract::{ExecutionAccepted, ExecutionSubmissionOutcome};
 

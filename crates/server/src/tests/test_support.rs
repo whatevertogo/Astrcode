@@ -12,7 +12,7 @@ use astrcode_core::{
     StorageEvent, StorageEventPayload, StoredEvent, TaskSnapshot, TurnId, TurnTerminalKind,
     UserMessageOrigin, mode::ModeId as StoredModeId,
 };
-use astrcode_governance_contract::ModeId;
+use astrcode_core::mode::ModeId;
 use astrcode_host_session::{
     SessionCatalogEvent, SessionControlStateSnapshot, SessionModeState, SubAgentExecutor,
 };

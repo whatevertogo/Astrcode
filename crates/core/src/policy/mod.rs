@@ -1,8 +1,9 @@
-//! # Prompt metrics layer
+//! # 策略层
 //!
-//! `core` 只保留 durable event 需要序列化的 prompt layer 枚举。
-//! 策略引擎与治理契约位于 `astrcode-governance-contract`。
+//! `core` 保留 durable event 需要序列化的 prompt layer 枚举以及策略审批类型。
 
+mod approval;
 mod engine;
 
+pub use approval::{ApprovalDefault, ApprovalRequest};
 pub use engine::SystemPromptLayer;

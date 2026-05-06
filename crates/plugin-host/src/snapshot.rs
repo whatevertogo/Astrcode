@@ -1,5 +1,5 @@
 use astrcode_core::{AstrError, CapabilitySpec, HookEventKey, Result};
-use astrcode_governance_contract::GovernanceModeSpec;
+use astrcode_core::mode::GovernanceModeSpec;
 
 use crate::{
     builtin_hooks::{BuiltinHookRegistry, HookBinding, HookExecutorRef},

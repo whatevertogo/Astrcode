@@ -9,7 +9,7 @@ use astrcode_core::{
     AgentCollaborationFact, AgentTurnOutcome, Result, RuntimeMetricsRecorder,
     RuntimeObservabilitySnapshot, SubRunStorageMode,
 };
-use astrcode_governance_contract::GovernanceModeSpec;
+use astrcode_core::mode::GovernanceModeSpec;
 
 use crate::{
     ObservabilitySnapshotProvider, RuntimeObservabilityCollector, TaskRegistry,

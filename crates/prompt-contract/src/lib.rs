@@ -53,3 +53,25 @@ pub enum PromptCacheGlobalStrategy {
 fn is_false(value: &bool) -> bool {
     !*value
 }
+
+/// 已渲染的系统提示词块。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPromptBlock {
+    pub title: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cache_boundary: bool,
+    #[serde(default, skip_serializing_if = "is_unspecified_system_prompt_layer")]
+    pub layer: SystemPromptLayer,
+}
+
+impl SystemPromptBlock {
+    pub fn render(&self) -> String {
+        format!("[{}]\n{}", self.title, self.content)
+    }
+}
+
+fn is_unspecified_system_prompt_layer(layer: &SystemPromptLayer) -> bool {
+    matches!(layer, SystemPromptLayer::Unspecified)
+}

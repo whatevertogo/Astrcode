@@ -5,7 +5,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use astrcode_governance_contract::ModeId;
+use astrcode_core::mode::ModeId;
 use astrcode_host_session::{CollaborationExecutor, SubAgentExecutor};
 
 use crate::{

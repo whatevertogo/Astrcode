@@ -604,7 +604,7 @@ fn is_official_openai_api_url(url: &str) -> bool {
 fn build_prompt_cache_key(
     model: &str,
     system_prompt: Option<&str>,
-    system_prompt_blocks: &[astrcode_governance_contract::SystemPromptBlock],
+    system_prompt_blocks: &[astrcode_prompt_contract::SystemPromptBlock],
     prompt_cache_hints: Option<&PromptCacheHints>,
     tools: &[&ToolDefinition],
 ) -> String {
@@ -1150,7 +1150,7 @@ struct OpenAiBuildRequestInput<'a> {
     messages: &'a [LlmMessage],
     tools: &'a [ToolDefinition],
     system_prompt: Option<&'a str>,
-    system_prompt_blocks: &'a [astrcode_governance_contract::SystemPromptBlock],
+    system_prompt_blocks: &'a [astrcode_prompt_contract::SystemPromptBlock],
     prompt_cache_hints: Option<&'a PromptCacheHints>,
     max_output_tokens_override: Option<usize>,
     stream: bool,
@@ -1390,25 +1390,25 @@ mod tests {
             origin: UserMessageOrigin::User,
         }];
         let system_blocks = vec![
-            astrcode_governance_contract::SystemPromptBlock {
+            astrcode_prompt_contract::SystemPromptBlock {
                 title: "Stable 1".to_string(),
                 content: "stable content 1".to_string(),
                 cache_boundary: false,
                 layer: astrcode_prompt_contract::SystemPromptLayer::Stable,
             },
-            astrcode_governance_contract::SystemPromptBlock {
+            astrcode_prompt_contract::SystemPromptBlock {
                 title: "Stable 2".to_string(),
                 content: "stable content 2".to_string(),
                 cache_boundary: true,
                 layer: astrcode_prompt_contract::SystemPromptLayer::Stable,
             },
-            astrcode_governance_contract::SystemPromptBlock {
+            astrcode_prompt_contract::SystemPromptBlock {
                 title: "Semi 1".to_string(),
                 content: "semi content 1".to_string(),
                 cache_boundary: true,
                 layer: astrcode_prompt_contract::SystemPromptLayer::SemiStable,
             },
-            astrcode_governance_contract::SystemPromptBlock {
+            astrcode_prompt_contract::SystemPromptBlock {
                 title: "Inherited 1".to_string(),
                 content: "inherited content 1".to_string(),
                 cache_boundary: true,

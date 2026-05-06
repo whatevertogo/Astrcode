@@ -1,4 +1,4 @@
-use astrcode_governance_contract::GovernanceModeSpec;
+use astrcode_core::mode::GovernanceModeSpec;
 
 use crate::PluginDescriptor;
 
