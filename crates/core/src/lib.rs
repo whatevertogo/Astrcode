@@ -1,9 +1,7 @@
 //! Astrcode 共享语义层。
 //!
-//! 承载跨 crate 共享的稳定值对象、事件数据模型和最小基础设施。
-//! 工具 trait、LLM 契约、runtime 边界、治理策略分别由 `*-contract` crate 持有；
-//! TODO:prompt cache 诊断类型因被 durable storage 事件引用，暂留于此直到
-//! storage 事件迁移到独立薄类型。
+//! 承载跨 crate 共享的类型、trait、事件数据模型和工具/LLM 契约。
+//! runtime 边界合同由 `runtime-contract` crate 持有。
 
 pub mod action;
 pub mod agent;
