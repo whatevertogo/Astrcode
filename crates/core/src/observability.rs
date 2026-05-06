@@ -16,16 +16,6 @@
 
 use crate::{AgentCollaborationFact, AgentTurnOutcome, SubRunStorageMode};
 
-/// 回放路径：优先缓存，不足时回退到磁盘。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ReplayPath {
-    /// 从内存缓存读取（快速路径）
-    Cache,
-    /// 从磁盘 JSONL 文件加载（慢速回退路径）
-    DiskFallback,
-}
-
 /// 单一操作的指标快照。
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

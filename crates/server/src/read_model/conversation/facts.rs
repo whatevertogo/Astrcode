@@ -1,6 +1,6 @@
 use astrcode_core::{
     ChildAgentRef, CompactAppliedMeta, CompactTrigger, Phase, PromptCacheDiagnostics,
-    ToolOutputStream, policy::SystemPromptLayer,
+    SystemPromptLayer, ToolOutputStream,
 };
 use serde_json::Value;
 

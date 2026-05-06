@@ -14,7 +14,7 @@
 
 use std::{borrow::Cow, collections::HashMap};
 
-pub use astrcode_core::policy::SystemPromptLayer as PromptLayer;
+pub use astrcode_core::SystemPromptLayer as PromptLayer;
 
 use super::template::PromptTemplate;
 

@@ -1,6 +1,15 @@
 use serde::{Deserialize, Serialize};
 
-use crate::policy::SystemPromptLayer;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemPromptLayer {
+    Stable,
+    SemiStable,
+    Inherited,
+    Dynamic,
+    #[default]
+    Unspecified,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

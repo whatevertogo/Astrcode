@@ -10,7 +10,7 @@
 
 pub use astrcode_core::{
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, policy::SystemPromptLayer as PromptLayer,
+    PromptDeclarationSource, SystemPromptLayer as PromptLayer,
 };
 
 use crate::{BlockKind, RenderTarget};

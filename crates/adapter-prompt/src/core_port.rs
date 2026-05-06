@@ -4,8 +4,7 @@
 //! 本模块将其适配到 `LayeredPromptBuilder` 的完整 prompt 构建能力上。
 
 use astrcode_core::{
-    PromptCacheGlobalStrategy, PromptCacheHints, Result, SystemPromptBlock,
-    policy::SystemPromptLayer,
+    PromptCacheGlobalStrategy, PromptCacheHints, Result, SystemPromptBlock, SystemPromptLayer,
 };
 use astrcode_host_session::{
     PromptAgentProfileSummary as HostPromptAgentProfileSummary, PromptBuildCacheMetrics,

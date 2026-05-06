@@ -22,7 +22,6 @@ pub mod local_server;
 mod mcp;
 pub mod mode;
 pub mod observability;
-pub mod policy;
 pub mod ports;
 pub mod project;
 pub mod prompt;
@@ -98,15 +97,14 @@ pub use local_server::{LOCAL_SERVER_READY_PREFIX, LocalServerInfo};
 pub use mcp::{McpApprovalData, McpApprovalStatus};
 pub use observability::{
     AgentCollaborationScorecardSnapshot, ExecutionDiagnosticsSnapshot, OperationMetricsSnapshot,
-    ReplayMetricsSnapshot, ReplayPath, RuntimeMetricsRecorder, RuntimeObservabilitySnapshot,
+    ReplayMetricsSnapshot, RuntimeMetricsRecorder, RuntimeObservabilitySnapshot,
     SubRunExecutionMetricsSnapshot,
 };
-pub use policy::SystemPromptLayer;
 pub use ports::{McpSettingsStore, SkillCatalog};
 pub use prompt::{
     PromptCacheBreakReason, PromptCacheDiagnostics, PromptCacheGlobalStrategy, PromptCacheHints,
     PromptDeclaration, PromptDeclarationKind, PromptDeclarationRenderTarget,
-    PromptDeclarationSource, PromptLayerFingerprints, SystemPromptBlock,
+    PromptDeclarationSource, PromptLayerFingerprints, SystemPromptBlock, SystemPromptLayer,
 };
 pub use registry::{CapabilityContext, CapabilityExecutionResult, CapabilityInvoker};
 pub use session::{DeleteProjectResult, SessionEventRecord, SessionMeta};
